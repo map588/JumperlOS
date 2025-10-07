@@ -1,0 +1,50 @@
+{
+  "name": "micropython",
+  "export": {
+    "exclude": ["build-embed"]
+  },
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": [
+    "micropython_embed/port/micropython_embed.h"
+  ],
+  "build": {
+    "libArchive": false,
+    "includeDir": "micropython_embed",
+    "srcDir": "micropython_embed",
+    "srcFilter": [
+      "+<py/*.c>",
+      "+<port/*.c>",
+      "+<shared/runtime/*.c>",
+      "+<extmod/*.c>",
+      "+<../port/machine_uart_jl.c>",
+      "-<py/mkrules.mk>",
+      "-<py/*.mk>",
+      "-<py/*.cmake>",
+      "-<py/*.py>",
+      "-<port/embed_util.c>",
+      "-<shared/runtime/semihosting_rv32.c>",
+      "-<shared/runtime/semihosting_arm.c>",
+      "-<shared/runtime/pyexec.c>",
+      "-<extmod/modlwip.c>",
+      "-<extmod/modnetwork.c>",
+      "-<extmod/modwebsocket.c>",
+      "-<extmod/modwebrepl.c>",
+      "-<extmod/modbluetooth.c>",
+      "-<extmod/modusocket.c>",
+      "-<extmod/jumperless_hal.c>",
+      "-<*cyw43*>",
+      "-<*bluetooth*>",
+      "-<*network*>"
+    ],
+    "flags": [
+      "-I ../port",
+      "-I micropython_embed",
+      "-I micropython_embed/py",
+      "-I micropython_embed/genhdr",
+      "-I micropython_embed/shared/runtime",
+      "-I micropython_embed/extmod",
+      "-I ../../lib/micropython/port"
+    ]
+  }
+}

@@ -1,0 +1,1521 @@
+// SPDX-License-Identifier: MIT
+
+#include "ArduinoStuff.h"
+#include "JumperlessDefines.h"
+#include "LEDs.h"
+#include "MatrixState.h"
+#include "NetsToChipConnections.h"
+#include "Peripherals.h"
+#include "SerialUART.h"
+#include "config.h"
+
+#include "AsyncPassthrough.h"
+#include "CH446Q.h"
+#include "Commands.h"
+#include "FileParsing.h"
+#include "Graphics.h"
+#include "NetManager.h"
+#include "config.h"
+#include "configManager.h"
+#include "hardware/uart.h"
+#include "usb_interface_config.h"
+// #include "SerialWrapper.h"
+
+// #include <SoftwareSerial.h>
+
+// #if USB_CDC_ENABLE_COUNT >= 2
+Adafruit_USBD_CDC USBSer1;
+// #endif
+
+// #if USB_CDC_ENABLE_COUNT >= 3
+Adafruit_USBD_CDC USBSer2;
+// #endif
+
+// #if USB_CDC_ENABLE_COUNT >= 4
+Adafruit_USBD_CDC USBSer3;
+// #endif
+
+// #if USB_CDC_ENABLE_COUNT >= 5
+//Adafruit_USBD_CDC Serial4;
+// #endif
+
+
+// general debug printing
+#define ARDUINO_DEBUG_PRINTLN( x )                 \
+    if ( debugArduino > 0 ) {                      \
+        changeTerminalColor( 38, true, &Serial );  \
+        Serial.println( x );                       \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+#define ARDUINO_DEBUG_PRINT( x )                   \
+    if ( debugArduino > 0 ) {                      \
+        changeTerminalColor( 38, true, &Serial );  \
+        Serial.print( x );                         \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+#define ARDUINO_DEBUG_PRINTF( x, ... )             \
+    if ( debugArduino > 0 ) {                      \
+        changeTerminalColor( 38, true, &Serial );  \
+        Serial.printf( x, __VA_ARGS__ );           \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+// we'll use this for sending data to the USBSer1
+#define ARDUINO_DEBUG2_PRINTLN( x )                \
+    if ( debugArduino > 1 ) {                      \
+        changeTerminalColor( 43, true, &Serial );  \
+        Serial.println( x );                       \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+#define ARDUINO_DEBUG2_PRINT( x )                  \
+    if ( debugArduino > 1 ) {                      \
+        changeTerminalColor( 43, true, &Serial );  \
+        Serial.print( x );                         \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+#define ARDUINO_DEBUG2_PRINTF( x, ... )            \
+    if ( debugArduino > 1 ) {                      \
+        changeTerminalColor( 43, true, &Serial );  \
+        Serial.printf( x, __VA_ARGS__ );           \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+
+// we'll use this for sending data to the Arduino
+#define ARDUINO_DEBUG3_PRINTLN( x )                \
+    if ( debugArduino > 1 ) {                      \
+        changeTerminalColor( 117, true, &Serial ); \
+        Serial.println( x );                       \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+#define ARDUINO_DEBUG3_PRINT( x )                  \
+    if ( debugArduino > 1 ) {                      \
+        changeTerminalColor( 117, true, &Serial ); \
+        Serial.print( x );                         \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+#define ARDUINO_DEBUG3_PRINTF( x, ... )            \
+    if ( debugArduino > 1 ) {                      \
+        changeTerminalColor( 117, true, &Serial ); \
+        Serial.printf( x, __VA_ARGS__ );           \
+        changeTerminalColor( -1, false, &Serial ); \
+    }
+
+#define ARDUINO_DEBUG_FLUSH( ) \
+    if ( debugArduino > 0 ) {  \
+        Serial.flush( );       \
+    }
+
+bool arduinoDTR[ 3 ] = { false, false, false };
+
+bool arduinoDTRpulse = false;
+
+int debugArduino = 0;
+int connectOnBoot1 = 0;
+int connectOnBoot2 = 0;
+int lockConnection1 = 0;
+int lockConnection2 = 0;
+
+int baudRateUSBSer1 = 115200; // for Arduino-Serial
+int baudRateUSBSer2 = 115200; // for Routable Serial
+
+volatile int backpowered = 1;
+
+volatile bool flashingArduino = false;
+
+void initArduino( void ) // if the UART is set up, the Arduino won't flash from
+                         // it's own USB port
+{
+
+    // Serial1.setRX(17);
+
+    // Serial1.setTX(16);
+
+    // Serial1.begin(115200);
+
+    // delay(1);
+
+    pinMode( 18, INPUT );
+    pinMode( 19, INPUT );
+}
+
+bool ManualArduinoReset = false;
+bool LastArduinoDTR = true;
+bool LastRoutableDTR = true;
+uint8_t numbitsUSBSer1 = 8;
+uint8_t paritytypeUSBSer1 = 0;
+uint8_t stopbitsUSBSer1 = 0;
+uint8_t numbitsUSBSer2 = 8;
+uint8_t paritytypeUSBSer2 = 0;
+uint8_t stopbitsUSBSer2 = 0;
+
+unsigned long FirstDTRTime = 5000;
+bool FirstDTR = true;
+bool ESPBoot = false;
+unsigned long ESPBootTime = 5000;
+
+unsigned long microsPerByteSerial1 = ( 1000000 / 115200 + 1 ) * ( 8 + 0 + 1 );
+unsigned long microsPerByteSerial2 = ( 1000000 / 115200 + 1 ) * ( 8 + 0 + 1 );
+
+// volatile char serialCommandBuffer[512];
+volatile int serialCommandBufferIndex = 0;
+
+int serConfigChangedUSBSer1 = 0;
+int serConfigChangedUSBSer2 = 0;
+
+// SerialPIO SerialPIO1(0, 1, 1024);
+
+void initSecondSerial( void ) {
+    // Wait for TinyUSB to be ready
+    // delay(100);
+
+    // Serial.print("Initializing USB CDC interfaces (");
+    // Serial.print(USB_CDC_ENABLE_COUNT);
+    // Serial.println(" enabled)");
+
+#if USB_CDC_ENABLE_COUNT >= 2
+    // USBSer1 maps to CDC interface 1. Avoid starting Arduino Serial1 if
+    // async passthrough is using pico-sdk UART on the same pins.
+    if ( jumperlessConfig.serial_1.function != 0 ) {
+        USBSer1.begin( baudRateUSBSer1 );
+        if ( jumperlessConfig.serial_1.async_passthrough == false ) {
+            Serial1.setFIFOSize( 8192 );
+            Serial1.setTX( 0 );
+            Serial1.setRX( 1 );
+            Serial1.begin( baudRateUSBSer1, makeSerialConfig( 8, 0, 1 ) );
+        }
+    }
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 3
+    // USBSer2 maps to CDC interface 2 (Routable Serial) - conditionally
+   // if ( jumperlessConfig.serial_2.function != 0 ) {
+       USBSer2.begin( baudRateUSBSer2, makeSerialConfig( 8, 0, 1 ) );
+        // Serial.println("  USBSer2 (Routable) initialized");
+        // Serial2.begin( baudRateUSBSer2, makeSerialConfig( 8, 0, 0 ) );
+   // } else {
+        // Serial.println("  USBSer2 disabled by config");
+   // }
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 4
+    // USBSer3 maps to CDC interface 3 (Debug Serial)
+
+    USBSer3.begin( 115200 );
+   // delay(3000);//!son of a bitch
+  //  Ser3.println("Serial3 initialized");
+
+    // Serial.println("  USBSer3 (Debug) initialized");
+#endif
+
+// Give time for USB enumeration
+// delay(200);
+
+// Serial.println("Enabled USB interfaces with dynamic naming:");
+// Serial.println("  Interface 0: Jumperless Main (this Serial)");
+#define PRINT_SERIAL_INFO_AT_STARTUP 0
+#if PRINT_SERIAL_INFO_AT_STARTUP
+#if USB_CDC_ENABLE_COUNT >= 2
+    Serial.print( "  Interface 1: " );
+    const char* func1_name =
+        getStringFromTable( jumperlessConfig.serial_1.function, uartFunctionTable );
+    if ( func1_name && strcmp( func1_name, "off" ) != 0 &&
+         strcmp( func1_name, "disable" ) != 0 ) {
+        Serial.print( "JL " );
+        // Print with first letter capitalized and underscores as spaces
+        char c = func1_name[ 0 ];
+        if ( c >= 'a' && c <= 'z' )
+            c = c - 'a' + 'A';
+        Serial.print( c );
+        for ( int i = 1; func1_name[ i ]; i++ ) {
+            Serial.print( func1_name[ i ] == '_' ? ' ' : func1_name[ i ] );
+        }
+        // Serial.println(" (USBSer1)");
+    } else {
+        // Serial.println("Jumperless Serial 1 (USBSer1)");
+    }
+#endif
+#if USB_CDC_ENABLE_COUNT >= 3
+    if ( jumperlessConfig.serial_2.function != 0 ) {
+        Serial.print( "  Interface 2: " );
+        const char* func2_name = getStringFromTable(
+            jumperlessConfig.serial_2.function, uartFunctionTable );
+        if ( func2_name && strcmp( func2_name, "off" ) != 0 &&
+             strcmp( func2_name, "disable" ) != 0 ) {
+            Serial.print( "JL " );
+            // Print with first letter capitalized and underscores as spaces
+            char c = func2_name[ 0 ];
+            if ( c >= 'a' && c <= 'z' )
+                c = c - 'a' + 'A';
+            Serial.print( c );
+            for ( int i = 1; func2_name[ i ]; i++ ) {
+                Serial.print( func2_name[ i ] == '_' ? ' ' : func2_name[ i ] );
+            }
+            // Serial.println(" (USBSer2)");
+        } else {
+            // Serial.println("Jumperless Serial 2 (USBSer2)");
+        }
+    }
+#endif
+#if USB_CDC_ENABLE_COUNT >= 4
+    // Serial.println("  Interface 3: Jumperless Debug (USBSer3)");
+#endif
+
+#if USB_MSC_ENABLE
+    Serial.println( "  MSC: Mass Storage" );
+#endif
+#if USB_HID_ENABLE_COUNT > 0
+    Serial.print( "  HID: " );
+    Serial.print( USB_HID_ENABLE_COUNT );
+    Serial.println( " interface(s)" );
+#endif
+#if USB_MIDI_ENABLE
+    Serial.println( "  MIDI: MIDI Device" );
+#endif
+#if USB_VENDOR_ENABLE
+    Serial.println( "  Vendor: Custom Interface" );
+#endif
+
+// Serial.println("\nNote: Interface names are generated dynamically based on
+// your serial function configuration."); Serial.println("serial_1.function = "
+// + String(jumperlessConfig.serial_1.function) +
+//                ", serial_2.function = " +
+//                String(jumperlessConfig.serial_2.function));
+#endif
+}
+
+// Function to print current USB interface naming (can be called anytime)
+void printUSBInterfaceNames( void ) {
+    // Serial.println("\n=== Current USB Interface Names ===");
+    Serial.println( "Interface 0: Jumperless Main" );
+
+#if USB_CDC_ENABLE_COUNT >= 2
+    Serial.print( "Interface 1: " );
+    const char* func1_name =
+        getStringFromTable( jumperlessConfig.serial_1.function, uartFunctionTable );
+    if ( func1_name && strcmp( func1_name, "off" ) != 0 &&
+         strcmp( func1_name, "disable" ) != 0 ) {
+        Serial.print( "JL " );
+        // Print with first letter capitalized and underscores as spaces
+        char c = func1_name[ 0 ];
+        if ( c >= 'a' && c <= 'z' )
+            c = c - 'a' + 'A';
+        Serial.print( c );
+        for ( int i = 1; func1_name[ i ]; i++ ) {
+            Serial.print( func1_name[ i ] == '_' ? ' ' : func1_name[ i ] );
+        }
+        Serial.println( );
+    } else {
+        Serial.println( "Jumperless Serial 1" );
+    }
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 3
+    if ( jumperlessConfig.serial_2.function != 0 ) {
+        Serial.print( "Interface 2: " );
+        const char* func2_name = getStringFromTable(
+            jumperlessConfig.serial_2.function, uartFunctionTable );
+        if ( func2_name && strcmp( func2_name, "off" ) != 0 &&
+             strcmp( func2_name, "disable" ) != 0 ) {
+            Serial.print( "JL " );
+            // Print with first letter capitalized and underscores as spaces
+            char c = func2_name[ 0 ];
+            if ( c >= 'a' && c <= 'z' )
+                c = c - 'a' + 'A';
+            Serial.print( c );
+            for ( int i = 1; func2_name[ i ]; i++ ) {
+                Serial.print( func2_name[ i ] == '_' ? ' ' : func2_name[ i ] );
+            }
+            Serial.println( );
+        } else {
+            Serial.println( "Jumperless Serial 2" );
+        }
+    } else {
+        Serial.println( "Interface 2: Disabled by config" );
+    }
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 4
+    Serial.println( "Interface 3: Jumperless TUI" );
+#endif
+
+#if USB_MSC_ENABLE
+    Serial.println( "MSC: JL Mass Storage" );
+#endif
+
+    // Serial.println("=====================================\n");
+}
+
+unsigned long serial1LEDTimer = 0;
+unsigned long lastSerial1TxRead = 0;
+unsigned long lastSerial1RxRead = 0;
+unsigned long lastSerial2TxRead = 0;
+unsigned long lastSerial2RxRead = 0;
+volatile int arduinoInReset = 0;
+unsigned long lastTimeResetArduino = 0;
+
+int printSerial1Passthrough = 0;
+int printSerial2Passthrough = 0;
+
+int flashArduinoNextLoop = 0;
+
+int arduinoConnected = 0;
+
+unsigned long lastSerial1Check = 5000;
+unsigned long lastSerial2Check = 5000;
+
+unsigned long lastSerialPassthrough = millis( );
+int serialPassthroughStatus = 0;
+int serialPassthroughStatusTimeout = 50;
+
+int secondSerialHandler( void ) {
+//return 0;
+    int ret = 0;
+
+    // if (jumperlessConfig.serial_1.function == 2 ||
+    // jumperlessConfig.serial_2.function == 2) {
+    //   return 0;
+    //   }
+
+    // if ( jumperlessConfig.serial_1.function != 0 &&
+    //      (long)millis( ) - (long)lastSerial1Check > 50 ) {
+
+    //     if ( millis( ) - lastSerial1TxRead > 1000 &&
+    //          millis( ) - lastSerial1RxRead > 1000 ) {
+    //         //       Serial.println("Serial1 lastTx: " + String(millis() -
+    //         //       lastSerial1TxRead));
+    //         // Serial.println("Serial1 lastRx: " + String(millis() -
+    //         // lastSerial1RxRead));
+    if ( jumperlessConfig.serial_1.async_passthrough == false ) {
+        checkForConfigChangesUSBSer1( true );
+    }
+    //     }
+    //     lastSerial1Check = millis( );
+    // }
+
+    // if ( jumperlessConfig.serial_2.function != 0 &&
+    //      (long)millis( ) - (long)lastSerial2Check > 50 ) {
+    //     if ( millis( ) - lastSerial2TxRead > 1000 &&
+    //          millis( ) - lastSerial2RxRead > 1000 ) {
+    //         checkForConfigChangesUSBSer2( true );
+    //     }
+    //     lastSerial2Check = millis( );
+    // }
+
+    if ( ManualArduinoReset ) {
+        ManualArduinoReset = false;
+        SetArduinoResetLine( LOW );
+        delay( 3 );
+        SetArduinoResetLine( HIGH );
+    }
+
+    //   checkForDTRpulse();
+
+    //  if (arduinoDTRpulse) {
+
+    //       flashArduino(1200);
+
+    //   }
+
+    // ret = handleSerialPassthrough(2, 0);
+
+    // do {
+    checkForDTRpulse( );
+    if ( arduinoDTRpulse ) {
+        flashArduino( 1200 );
+        arduinoDTRpulse = false;
+    } else {
+
+        if ( jumperlessConfig.serial_1.async_passthrough == false ) {
+            ret = handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
+            //Serial.println(jumperlessConfig.serial_1.async_passthrough);
+        }
+    }
+    // } while ( Serial1.available( ) > 0 || USBSer1.available( ) > 0 );
+
+    if ( ret != 0 ) {
+        serialPassthroughStatus = 1;
+        lastSerialPassthrough = millis( );
+    } else if ( millis( ) - lastSerialPassthrough >
+                serialPassthroughStatusTimeout ) {
+        serialPassthroughStatus = 0;
+    }
+
+    return ret;
+}
+
+char arduinoCommandStrings[ 10 ][ 50 ] = {
+    // commands to sniff from the Arduino
+    "jumperlessConfig.serial_1.function",
+    "jumperlessConfig.serial_1.connect_on_boot",
+    "jumperlessConfig.serial_1.lock_connection",
+
+};
+
+bool checkForDTRpulse( void ) {
+    if ( USBSer1.dtr( ) != arduinoDTR[ 2 ] ) {
+        // Shift the array to the left, keeping only last 3 states
+        arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
+        arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
+        arduinoDTR[ 2 ] = USBSer1.dtr( );
+
+        //!to make this work with Windows, we just check for any change in DTR, macOS and Linux send a full off-on-off pulse
+
+        if (/* arduinoDTR[ 0 ] == 0 && */arduinoDTR[ 1 ] == 1 && arduinoDTR[ 2 ] == 0 ) { // detect pulses going either direction (some things invert the DTR line)
+            arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
+            arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
+            arduinoDTR[ 2 ] = USBSer1.dtr( );
+            arduinoDTRpulse = true;
+        } else if ( /*arduinoDTR[ 0 ] == 1 && */arduinoDTR[ 1 ] == 0 && arduinoDTR[ 2 ] == 1 ) {
+            arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
+            arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
+            arduinoDTR[ 2 ] = USBSer1.dtr( );
+            arduinoDTRpulse = true;
+        } else {
+            arduinoDTRpulse = false;
+        }
+    }
+    return arduinoDTRpulse;
+}
+
+void flashArduino( unsigned long timeoutTime ) {
+
+    ARDUINO_DEBUG_PRINTLN( "Arduino DTR pulse detected" );
+    Serial.flush( );
+
+    arduinoConnected = checkIfArduinoIsConnected( );
+    int arduinoWasConnected = arduinoConnected;
+
+    ARDUINO_DEBUG_PRINTF( "Arduino %s connected%s\n", arduinoConnected ? "" : "not", arduinoConnected ? "" : "...  connecting automatically" );
+    ARDUINO_DEBUG_PRINTLN( );
+    Serial.flush( );
+    if ( arduinoConnected == 0 ) {
+        // flashArduinoNextLoop = 1;
+        // connectArduino();
+        if ( jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
+            connectArduino( 1, 1 );
+            while ( arduinoConnected == 0 ) {
+                // delay(1);
+                arduinoConnected = checkIfArduinoIsConnected( );
+            }
+
+        } else {
+            ARDUINO_DEBUG_PRINTLN( "Arduino not connected (enter A to connect UART)" );
+            ARDUINO_DEBUG_PRINTLN( "trying to flash anyway\n\r" );
+            Serial.flush( );
+        }
+    }
+
+    flashingArduino = true;
+    // checkForConfigChangesUSBSer1(true);
+
+    char d = 0xdd;
+    char c = 0xcc;
+
+    // uint8_t usbSer1Buffer[100];
+    // int usbSer1BufferIndex = 0;
+
+    // uint8_t serial1Buffer[100];
+    // int serial1BufferIndex = 0;
+
+    unsigned long serTimeout = millis( );
+
+    while ( USBSer1.available( ) == 0 ) {
+        if ( millis( ) - serTimeout > 2000 ) {
+            // ARDUINO_DEBUG_PRINTLN("Arduino not connected (enter A to connect UART)");
+            // ARDUINO_DEBUG_PRINTLN("trying to flash anyway\n\r");
+            // return;
+            break;
+        }
+    }
+
+    uint8_t peeked = 0x00;
+
+    // if (USBSer1.peek() == 0x30) {
+    //   while (USBSer1.available() == 0)
+    //     ;
+    //   peeked = USBSer1.read();
+    //   if (USBSer1.peek() == 0x20) {
+
+    //     Serial1.write(0x30);
+    //     Serial1.flush();
+    //     resetArduino();
+    //   }
+    // } else {
+    //   // ARDUINO_DEBUG_PRINTLN("unpeeked");
+    //   // Serial.flush();
+    //   return;
+    // }
+
+    uint16_t prevConfig = getSerial1Config( );
+    uint16_t prevBaudRate = baudRateUSBSer1;
+
+    if ( jumperlessConfig.serial_1.async_passthrough == false ) {
+
+        ARDUINO_DEBUG_PRINTLN( "Flash Arduino started" );
+        // checkForConfigChangesUSBSer1(true);
+
+        stopbitsUSBSer1 = 1;
+        numbitsUSBSer1 = 8;
+        paritytypeUSBSer1 = 0;
+
+        Serial1.begin( 115200, makeSerialConfig( numbitsUSBSer1, paritytypeUSBSer1, stopbitsUSBSer1 ) );
+
+        //  checkForConfigChangesSerial1(true);
+        Serial.flush( );
+    }
+
+    resetArduino( );
+
+    if ( jumperlessConfig.serial_1.async_passthrough == false ) {
+        // delay(80);
+        lastTimeResetArduino = millis( );
+
+        unsigned long flashTimeout = millis( );
+
+        // timeoutTime = 800;
+
+        int totalBytesTransferred = 0;
+        int totalBytesSent = 0;
+        int totalBytesReceived = 0;
+
+        int dtrStatus = USBSer1.dtr( );
+        int lastDTRStatus = dtrStatus;
+
+        unsigned long totalTimeout = millis( );
+
+        while ( 1 ) {
+
+            int ret =
+                handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
+
+            if ( ret != 0 ) {
+                totalBytesTransferred += abs( ret );
+                if ( ret > 0 ) {
+                    totalBytesSent += ret;
+                } else {
+                    totalBytesReceived += abs( ret );
+                }
+
+                flashTimeout = millis( );
+            }
+
+            if ( millis( ) - totalTimeout > 15000 ) {
+                break;
+            }
+
+            // if (USBSer1.peek() == 0x12) {
+            //   USBSer1.read();
+            //   ARDUINO_DEBUG_PRINTLN("DC2 reset");
+            //   Serial.flush();
+            //   resetArduino(2, 1000);
+            //   }
+            // USBSer1.peek
+            // dtrStatus = USBSer1.dtr();
+            // if (dtrStatus != lastDTRStatus) {
+            //   lastDTRStatus = dtrStatus;
+
+            //     ARDUINO_DEBUG_PRINTLN("DTR reset");
+            //     Serial.flush();
+            //     resetArduino(2, 1000);
+
+            //   }
+
+            if ( ( millis( ) - flashTimeout > timeoutTime ) && totalBytesTransferred > 20 ) {
+                // ARDUINO_DEBUG_PRINTLN("Flash Arduino timeout");
+                // ARDUINO_DEBUG_PRINTLN();
+                // Serial.flush();
+                break;
+            }
+
+            if ( totalBytesTransferred < 20 ) {
+                // ARDUINO_DEBUG_PRINTLN("totalBytesTransferred is 0");
+                // Serial.flush();
+                serTimeout = millis( );
+            }
+
+            if ( millis( ) - serTimeout >
+                 3200 ) { // this is a timeout before the arduino wakes up from reset
+                break;
+            }
+        }
+
+        arduinoInReset = 0;
+        FirstDTR = true;
+
+        ARDUINO_DEBUG_PRINT( "Flash Arduino done" );
+        ARDUINO_DEBUG_PRINT( "\n\r" );
+
+        ARDUINO_DEBUG_PRINT( "totalBytesTransferred: " );
+        ARDUINO_DEBUG_PRINT( totalBytesTransferred );
+        ARDUINO_DEBUG_PRINT( "totalBytesSent: " );
+        ARDUINO_DEBUG_PRINT( totalBytesSent );
+        ARDUINO_DEBUG_PRINT( "totalBytesReceived: " );
+        ARDUINO_DEBUG_PRINT( totalBytesReceived );
+        ARDUINO_DEBUG_PRINT( "\n\r" );
+        Serial.flush( );
+
+        // if ( arduinoWasConnected == 0 ) {
+        //     disconnectArduino( 0 );
+        // }
+
+        // checkForConfigChangesUSBSer1( );
+
+        // Serial1.write('\0');
+        // Serial1.flush();
+        // Serial1.end();
+        // Serial1.begin( 115200, makeSerialConfig( numbitsUSBSer1, paritytypeUSBSer1, stopbitsUSBSer1 ) );
+        Serial1.begin( prevBaudRate, prevConfig );
+        if ( arduinoWasConnected == 0 ) {
+            disconnectArduino( 1 );
+        }
+    }
+
+    flashingArduino = false;
+}
+
+char commandStartString[] = "`[";
+
+char commandString[ 256 ];
+
+int USBSer1Available = 0;
+int Serial1Available = 0;
+int countCheck = 0;
+
+int handleSerialPassthrough( int serial, int print, int printPassthroughFlashing,
+                             int checkForCommands ) {
+    int ret = 0;
+    int sent = 0;
+    int received = 0;
+
+    if ( jumperlessConfig.serial_1.async_passthrough == true ) {
+        return 0;
+    }
+
+    if ( jumperlessConfig.serial_1.function == 1 && ( serial == 0 || serial == 2 ) || true ) {
+
+        // if ( countCheck > 100000 ) {
+        //     ARDUINO_DEBUG_PRINTLN( "countCheck: " + String( countCheck ) );
+        //     Serial.flush( );
+        //     countCheck = 0;
+        // }
+        // countCheck++;
+        unsigned long serial1Timeout = millis( );
+        USBSer1Available = USBSer1.available( );
+        Serial1Available = Serial1.available( );
+        char serial1Buffer[ 512 ];
+
+        for ( int i = 0; i < sizeof( serial1Buffer ); i++ ) {
+            serial1Buffer[ i ] = '\0';
+        }
+        bool bufferFull = false;
+
+        int serial1BufferIndex = 0;
+
+        if ( Serial1.available( ) > 0 ) {
+            // ARDUINO_DEBUG_PRINTLN( "Serial1.available: " + String( Serial1.available( ) ) );
+            // Serial.flush( );
+            serial1Timeout = millis( );
+
+            unsigned long lastSerial1Read = micros( );
+
+            int negativeRead = 0;
+            serial1BufferIndex = 0;
+
+            int loopCount = 0;
+
+            // ARDUINO_DEBUG_PRINTLN( "Serial1.available: " + String( Serial1.available( ) ) );
+            // Serial.print("baudRateUSBSer1: " + String( baudRateUSBSer1 ) );
+            // ARDUINO_DEBUG_PRINTLN( "paritytypeUSBSer1: " + String( paritytypeUSBSer1 ) );
+            // ARDUINO_DEBUG_PRINTLN( "stopbitsUSBSer1: " + String( stopbitsUSBSer1 ) );
+            // ARDUINO_DEBUG_PRINTLN( "numbitsUSBSer1: " + String( numbitsUSBSer1 ) );
+            // ARDUINO_DEBUG_PRINTLN( "microsPerByteSerial1: " + String( microsPerByteSerial1 ) );
+            // Serial.flush( );
+            // Serial1.
+            while ( 1 ) {
+
+                if ( Serial1.available( ) > 0 ) {
+
+                    int c = Serial1.read( );
+
+                    // if ( c == -1 ) {
+                    //     negativeRead++;
+                    //     ARDUINO_DEBUG_PRINTLN( "negativeRead: " + String( negativeRead ) );
+                    //     Serial.flush( );
+                    // }
+
+                    serial1Buffer[ serial1BufferIndex++ ] = c;
+                    lastSerial1Read = micros( );
+
+                    while ( micros( ) - lastSerial1Read < microsPerByteSerial1 * 3 && Serial1.available( ) == 0 ) {
+                        // delayMicroseconds(1);
+                        // loopCount++;
+                    }
+
+                    if ( Serial1.getWriteError( ) > 0 ) {
+                        ARDUINO_DEBUG_PRINTF( "Serial1 write error: %d", Serial1.getWriteError( ) );
+                        Serial.flush( );
+                        break;
+                    }
+                }
+                if ( micros( ) - lastSerial1Read > microsPerByteSerial1 * 10 ) {
+                    // ARDUINO_DEBUG_PRINTLN("serial1Timeout");
+                    //  Serial.flush();
+                    break;
+                }
+
+                unsigned long delayTime = micros( );
+
+                if ( millis( ) - serial1Timeout > 400 ) {
+                    // ARDUINO_DEBUG_PRINTLN("serial1Timeout");
+                    // Serial.flush();
+                    break;
+                }
+            }
+            serial1Buffer[ serial1BufferIndex ] = '\0';
+
+            // printMicrosPerByte( );
+            //  Serial.print( "microsPerByteSerial1: " );
+            //  ARDUINO_DEBUG_PRINTLN( microsPerByteSerial1 );
+            //  Serial.print( "loopCount: " );
+            //  ARDUINO_DEBUG_PRINTLN( loopCount );
+            //  Serial.flush( );
+
+            // for (int i = 0; i < serial1BufferIndex; i++){
+            //   // if (i % 32 == 0 ){
+            //   //   ARDUINO_DEBUG_PRINTLN();
+            //   // }
+            //   Serial.print(serial1Buffer[i]);
+            //  // Serial.print(" ");
+
+            //   }
+
+            // ARDUINO_DEBUG2_PRINT(serial1BufferIndex);
+            // ARDUINO_DEBUG2_PRINT("  ")
+            // ARDUINO_DEBUG_PRINTLN(serial1Buffer[serial1BufferIndex], HEX);
+
+            // serial1BufferIndex--;
+            USBSer1.write( serial1Buffer, serial1BufferIndex );
+            // USBSer1.write('\0');
+            USBSer1.flush( );
+
+            ret += serial1BufferIndex;
+            received = serial1BufferIndex;
+
+            if ( print || printSerial1Passthrough == 1 ||
+                 printPassthroughFlashing == 1 ) {
+                ARDUINO_DEBUG2_PRINT( "received << " );
+                for ( int i = 0; i < serial1BufferIndex; i++ ) {
+                    ARDUINO_DEBUG2_PRINTF( "%02x ", serial1Buffer[ i ] );
+                    // ARDUINO_DEBUG_PRINT( " " );
+                }
+
+                // serial1Buffer[ 0 ] = '\0';
+                serial1BufferIndex = 0;
+                ARDUINO_DEBUG2_PRINTLN( );
+                Serial.flush( );
+            }
+
+            gpioReadingColors[ 9 ] = 0x00191f;
+            // gpioReading[9] = 1;
+            lastSerial1RxRead = millis( );
+            showLEDsCore2 = 2;
+            // lastTimeResetArduino = millis( );
+            // USBSer1Available = USBSer1.available( );
+            // Serial1Available = Serial1.available( );
+
+            return 0 - received;
+            //  ARDUINO_DEBUG_PRINT(c);
+        }
+        if ( millis( ) - lastSerial1RxRead > 50 ) {
+            gpioReadingColors[ 9 ] = 0x010508;
+            // gpioReading[9] = 0;
+            showLEDsCore2 = 2;
+        }
+
+        if ( USBSer1.available( ) > 0 ) {
+
+            serial1Timeout = millis( );
+
+            while ( USBSer1.available( ) > 0 ) {
+
+                int c = USBSer1.read( );
+
+                serial1Buffer[ serial1BufferIndex++ ] = c;
+
+                if ( serial1BufferIndex >= sizeof( serial1Buffer ) - 1 ) {
+                    // ARDUINO_DEBUG_PRINTLN( "Serial1 buffer full" );
+                    // Serial.flush( );
+                    // bufferFull = true;
+                    break;
+                }
+
+                unsigned long delayTime = micros( );
+
+                while ( ( micros( ) - delayTime < microsPerByteSerial1 * 2 ) &&
+                        USBSer1.available( ) == 0 ) {
+                    // wait for the next byte or continue if there is one
+                }
+
+                if ( millis( ) - serial1Timeout > 400 ) {
+                    bufferFull = true;
+                    break;
+                }
+            }
+            // serial1Buffer[++serial1BufferIndex] = '\0';
+            // serial1BufferIndex--;
+
+            ret += serial1BufferIndex;
+            sent = serial1BufferIndex;
+
+            Serial1.write( serial1Buffer, serial1BufferIndex );
+            // Serial1.flush( );
+
+            // if ( Serial1.getWriteError( ) > 0 ) {
+            //     ARDUINO_DEBUG_PRINTLN( "Serial1 write error: " + String( Serial1.getWriteError( ) ) );
+            //     Serial.flush( );
+            //     Serial1.clearWriteError( );
+            //     // break;
+            // }
+            //  }
+
+            // ARDUINO_DEBUG_PRINT("USBSer1: ");
+            // ARDUINO_DEBUG_PRINTLN(c, HEX);
+            if ( print || printSerial1Passthrough == 1 ||
+                 printPassthroughFlashing == 1 ) {
+
+                ARDUINO_DEBUG3_PRINT( "sent     >> " );
+                for ( int i = 0; i < serial1BufferIndex; i++ ) {
+                    ARDUINO_DEBUG3_PRINTF( "%02x ", serial1Buffer[ i ] );
+                    // ARDUINO_DEBUG_PRINT( " " );
+                }
+                ARDUINO_DEBUG3_PRINTLN( );
+                // ARDUINO_DEBUG_PRINTLN(serial1BufferIndex);
+                // ARDUINO_DEBUG_PRINTLN();
+                Serial.flush( );
+            }
+
+            gpioReadingColors[ 8 ] = 0x1f1900;
+            // gpioReading[8] = 1;
+            lastSerial1TxRead = millis( );
+            showLEDsCore2 = 2;
+            lastTimeResetArduino = millis( );
+            // Serial.write(c);
+            USBSer1Available = USBSer1.available( );
+            Serial1Available = Serial1.available( );
+
+            //   if (USBSer1.available() == 0) {
+            //  Serial1.write('\0');
+            //  Serial1.flush();
+            //   }
+
+            return sent;
+        }
+
+        if ( millis( ) - lastSerial1TxRead > 50 ) {
+            gpioReadingColors[ 8 ] = 0x080501;
+            // gpioReading[8] = 0;
+            showLEDsCore2 = 2;
+        }
+
+        //}
+    }
+
+    return ret;
+}
+void resetArduino( int topBottomBoth, unsigned long holdMicroseconds ) {
+    SetArduinoResetLine( LOW, topBottomBoth );
+    delayMicroseconds( holdMicroseconds );
+    SetArduinoResetLine( HIGH, topBottomBoth );
+}
+
+void printMicrosPerByte( void ) {
+    Serial.println( );
+    checkForConfigChangesUSBSer1( 2 );
+    Serial.println( "uS per byte    = (1000000 /  baud  + 1)     * (numbits + "
+                    "stopbits + paritybits)" );
+
+    Serial.print( "uS per byte    = (1000000 / " );
+    Serial.print( baudRateUSBSer1 );
+    Serial.print( " + 1 = " );
+    Serial.print( 1000000 / baudRateUSBSer1 + 1 );
+    Serial.print( ") * (   " );
+    Serial.print( numbitsUSBSer1 );
+    Serial.print( "     +    " );
+    Serial.print( stopbitsUSBSer1 );
+    Serial.print( "    +     " );
+    Serial.print( paritytypeUSBSer1 == 0 ? 0 : 1 );
+    Serial.print( "      = " );
+    Serial.print( numbitsUSBSer1 + stopbitsUSBSer1 +
+                  ( paritytypeUSBSer1 == 0 ? 0 : 1 ) );
+    Serial.print( ")  =  " );
+    Serial.println( microsPerByteSerial1 );
+
+    Serial.println( );
+    Serial.print( "microsPerByteSerial1: " );
+    Serial.println( microsPerByteSerial1 );
+    Serial.println( );
+
+    // Serial.print("microsPerByteSerial2: ");
+    // Serial.println(microsPerByteSerial2);
+}
+
+// void toggleArduinoResetLine(void){
+//   pinMode(ARDUINO_RESET_0_PIN, OUTPUT_12MA);
+//   pinMode(ARDUINO_RESET_1_PIN, OUTPUT_12MA);
+//   digitalWrite(ARDUINO_RESET_0_PIN, HIGH);
+//   digitalWrite(ARDUINO_RESET_1_PIN, HIGH);
+//   delay(1);
+//   digitalWrite(ARDUINO_RESET_0_PIN, LOW);
+//   digitalWrite(ARDUINO_RESET_1_PIN, LOW);
+// }
+
+void connectArduino( int flashOrLocal, int refreshConnections ) {
+
+    // removeBridgeFromNodeFile(NANO_D1, RP_UART_RX, netSlot, flashOrLocal);
+    // removeBridgeFromNodeFile(NANO_D0, RP_UART_TX, netSlot, flashOrLocal);
+    addBridgeToNodeFile( RP_UART_RX, NANO_D1, netSlot, flashOrLocal, 0 );
+    addBridgeToNodeFile( RP_UART_TX, NANO_D0, netSlot, flashOrLocal, 0 );
+    // ManualArduinoReset = true;
+    // goto loadfile;
+    refresh( flashOrLocal, -1, 1, 0 );
+
+    // sendPaths();
+
+    leds.show();
+
+    while ( checkIfArduinoIsConnected( ) == 0 ) {
+    }
+    // refreshBlind(0, 0);
+    // sendPaths();
+    //  waitCore2();
+    // sendPaths();
+}
+
+void disconnectArduino( int flashOrLocal ) {
+
+    removeBridgeFromNodeFile( NANO_D1, RP_UART_RX, netSlot, flashOrLocal );
+    removeBridgeFromNodeFile( NANO_D0, RP_UART_TX, netSlot, flashOrLocal );
+    refresh( flashOrLocal, -1, 1 );
+    // if (flashOrLocal == 1) {
+    //   refreshLocalConnections(1, 0);
+    //   } else {
+    //   refreshConnections(1, 0);
+    //   }
+    // refreshBlind(1, 0);
+    // sendPaths();
+    // waitCore2();
+    // sendPaths();
+}
+
+int checkIfArduinoIsConnected( void ) {
+
+    int connected = checkIfBridgeExistsLocal( NANO_D1, RP_UART_RX );
+    connected += checkIfBridgeExistsLocal( NANO_D0, RP_UART_TX );
+    // Serial.println("connected: " + String(connected));
+    if ( connected == 2 ) {
+        return 1;
+    }
+    return 0;
+}
+
+void SetArduinoResetLine( bool state, int topBottomBoth ) {
+    if ( state == LOW ) {
+        // Serial.println("Setting Arduino Reset Line to LOW");
+        if ( topBottomBoth == 1 || topBottomBoth == 2 ) {
+            pinMode( ARDUINO_RESET_0_PIN, OUTPUT_12MA );
+            digitalWrite( ARDUINO_RESET_0_PIN, LOW );
+            rstColors[ 1 ] = 0x002a10;
+        }
+        if ( topBottomBoth == 0 || topBottomBoth == 2 ) {
+            pinMode( ARDUINO_RESET_1_PIN, OUTPUT_12MA );
+            digitalWrite( ARDUINO_RESET_1_PIN, LOW );
+            rstColors[ 0 ] = 0x002a10;
+        }
+
+        showLEDsCore2 = 2;
+
+        delayMicroseconds( 1000 );
+
+    } else if ( state == HIGH ) {
+        // Serial.println("Setting Arduino Reset Line to HIGH");
+        //  digitalWrite(ARDUINO_RESET_0_PIN, HIGH);
+        //  digitalWrite(ARDUINO_RESET_1_PIN, HIGH);
+
+        if ( topBottomBoth == 1 || topBottomBoth == 2 ) {
+            pinMode( ARDUINO_RESET_0_PIN, INPUT );
+        }
+        if ( topBottomBoth == 0 || topBottomBoth == 2 ) {
+            pinMode( ARDUINO_RESET_1_PIN, INPUT );
+        }
+        // headerColors[0] = 0x2000b9;
+        // headerColors[1] = 0x0020f9;
+        // showLEDsCore2 = 2;
+    }
+}
+
+void ESPReset( ) {
+    Serial.println( "ESP Boot Mode" );
+    pinMode( ARDUINO_RESET_0_PIN, OUTPUT );
+    pinMode( ARDUINO_RESET_1_PIN, OUTPUT );
+    digitalWrite( ARDUINO_RESET_0_PIN, LOW );
+    digitalWrite( ARDUINO_RESET_1_PIN, LOW );
+    delay( 1 );
+    digitalWrite( ARDUINO_RESET_1_PIN, HIGH );
+    delay( 2 );
+    digitalWrite( ARDUINO_RESET_0_PIN, HIGH );
+}
+
+void setBaudRate( int baudRate ) {}
+
+void arduinoPrint( void ) {}
+
+void uploadArduino( void ) {}
+
+uint16_t makeSerialConfig( uint8_t numbits, uint8_t paritytype,
+                           uint8_t stopbits ) {
+    uint16_t config = 0;
+
+    //   #define SERIAL_PARITY_EVEN   (0x1ul)
+    // #define SERIAL_PARITY_ODD    (0x2ul)
+    // #define SERIAL_PARITY_NONE   (0x3ul)
+    // #define SERIAL_PARITY_MARK   (0x4ul)
+    // #define SERIAL_PARITY_SPACE  (0x5ul)
+    // #define SERIAL_PARITY_MASK   (0xFul)
+
+    // #define SERIAL_STOP_BIT_1    (0x10ul)
+    // #define SERIAL_STOP_BIT_1_5  (0x20ul)
+    // #define SERIAL_STOP_BIT_2    (0x30ul)
+    // #define SERIAL_STOP_BIT_MASK (0xF0ul)
+
+    // #define SERIAL_DATA_5        (0x100ul)
+    // #define SERIAL_DATA_6        (0x200ul)
+    // #define SERIAL_DATA_7        (0x300ul)
+    // #define SERIAL_DATA_8        (0x400ul)
+    // #define SERIAL_DATA_MASK     (0xF00ul)
+    // #define SERIAL_5N1           (SERIAL_STOP_BIT_1 | SERIAL_PARITY_NONE  |
+    // SERIAL_DATA_5)
+
+    unsigned long parity = 0x3ul;
+    unsigned long stop = 0x10ul;
+    unsigned long data = 0x400ul;
+
+    switch ( numbits ) {
+    case 5:
+        data = 0x100ul;
+        break;
+    case 6:
+        data = 0x200ul;
+        break;
+    case 7:
+        data = 0x300ul;
+        break;
+    case 8:
+        data = 0x400ul;
+        break;
+    default:
+        data = 0x400ul;
+        break;
+    }
+
+    switch ( paritytype ) {
+    case 0:
+        parity = 0x3ul;
+        break;
+    case 2:
+        parity = 0x1ul;
+        break;
+    case 1:
+        parity = 0x2ul;
+        break;
+    case 3:
+        parity = 0x3ul;
+        break;
+    case 4:
+        parity = 0x4ul;
+        break;
+    case 5:
+        parity = 0x5ul;
+        break;
+    default:
+        parity = 0x3ul;
+        break;
+    }
+
+    switch ( stopbits ) {
+    case 1:
+        stop = 0x10ul;
+        break;
+    case 2:
+        stop = 0x30ul;
+        break;
+    default:
+        stop = 0x10ul;
+        // stopbits = 1; // default to 1 stop bit
+        break;
+    }
+
+    config = data | parity | stop;
+
+    return config;
+}
+
+uint16_t getSerial1Config( void ) {
+
+    uint8_t numbits = USBSer1.numbits( );
+    uint8_t paritytype = USBSer1.paritytype( );
+    uint8_t stopbits = USBSer1.stopbits( );
+
+    return makeSerialConfig( numbits, paritytype, stopbits );
+}
+
+uint16_t getSerial2Config( void ) {
+
+    uint8_t numbits = USBSer2.numbits( );
+    uint8_t paritytype = USBSer2.paritytype( );
+    uint8_t stopbits = USBSer2.stopbits( );
+
+    return makeSerialConfig( numbits, paritytype, stopbits );
+}
+
+void checkForConfigChangesUSBSer1( int print ) {
+
+    if ( USBSer1.numbits( ) != numbitsUSBSer1 ) {
+        numbitsUSBSer1 = USBSer1.numbits( );
+        serConfigChangedUSBSer1 = 1;
+    }
+
+    if ( USBSer1.paritytype( ) != paritytypeUSBSer1 ) {
+        paritytypeUSBSer1 = USBSer1.paritytype( );
+        serConfigChangedUSBSer1 = 1;
+    }
+
+    if ( USBSer1.stopbits( ) + 1 != stopbitsUSBSer1 ) {
+        stopbitsUSBSer1 = USBSer1.stopbits( ) + 1;
+        serConfigChangedUSBSer1 = 1;
+    }
+
+    if ( USBSer1.baud( ) != baudRateUSBSer1 ) {
+        baudRateUSBSer1 = USBSer1.baud( );
+        // microsPerByteSerial1 = (1000000 / baudRateUSBSer1 + 1) * (numbitsUSBSer1
+        // + stopbitsUSBSer1 + paritytypeUSBSer1==0?0:1);
+        //  USBSer1.begin(baudRate);
+        serConfigChangedUSBSer1 = 1;
+    }
+
+    if ( serConfigChangedUSBSer1 == 1 && jumperlessConfig.serial_1.function != 0 ) {
+        USBSer1.begin(
+            baudRateUSBSer1,
+            makeSerialConfig( numbitsUSBSer1, paritytypeUSBSer1, stopbitsUSBSer1 ) );
+        Serial1.begin(
+            baudRateUSBSer1,
+            makeSerialConfig( numbitsUSBSer1, paritytypeUSBSer1, stopbitsUSBSer1 ) );
+        microsPerByteSerial1 =
+            ( 1000000 / baudRateUSBSer1 + 1 ) *
+            ( numbitsUSBSer1 + stopbitsUSBSer1 + ( paritytypeUSBSer1 == 0 ? 0 : 1 ) );
+        serConfigChangedUSBSer1 = 0;
+
+        if ( print > 0 && millis( ) > 4000 ) {
+            if ( print == 1 ) {
+                ARDUINO_DEBUG_PRINT( "Serial1 config changed " );
+                if ( debugArduino > 1 ) {
+                    ARDUINO_DEBUG_PRINT( "to " );
+                }
+            } else if ( print == 2 ) {
+                ARDUINO_DEBUG_PRINT( "Serial1 config = " );
+            }
+
+            ARDUINO_DEBUG2_PRINTF( "%d ", baudRateUSBSer1 );
+            // ARDUINO_DEBUG_PRINT( " " );
+
+            ARDUINO_DEBUG2_PRINTF( "%d", numbitsUSBSer1 );
+            switch ( paritytypeUSBSer1 ) {
+            case 0:
+                ARDUINO_DEBUG2_PRINT( "N" );
+                break;
+            case 1:
+                ARDUINO_DEBUG2_PRINT( "O" );
+                break;
+            case 2:
+                ARDUINO_DEBUG2_PRINT( "E" );
+                break;
+            case 3:
+                ARDUINO_DEBUG2_PRINT( "M" );
+                break;
+            case 4:
+                ARDUINO_DEBUG2_PRINT( "S" );
+                break;
+            default:
+                ARDUINO_DEBUG2_PRINT( "N" );
+                break;
+            }
+
+            ARDUINO_DEBUG2_PRINTF( "%d\n\r", stopbitsUSBSer1 );
+            ARDUINO_DEBUG_FLUSH( );
+        }
+
+        // delay(1);
+        // } else if (serConfigChangedUSBSer1 == 1) {
+        //   serConfigChangedUSBSer1 = 2;
+        //   delay(1);
+        //   } else if (serConfigChangedUSBSer1 == 2) {
+        //     serConfigChangedUSBSer1 = 3;
+        //     delay(1);
+    } else if ( print == 2 ) {
+        ARDUINO_DEBUG_PRINT( "Serial1 config = " );
+
+        ARDUINO_DEBUG3_PRINTF( "%d ", baudRateUSBSer1 );
+        // ARDUINO_DEBUG_PRINT( " " );
+
+        ARDUINO_DEBUG3_PRINTF( "%d", numbitsUSBSer1 );
+        switch ( paritytypeUSBSer1 ) {
+        case 0:
+            ARDUINO_DEBUG3_PRINT( "N" );
+            break;
+        case 1:
+            ARDUINO_DEBUG3_PRINT( "O" );
+            break;
+        case 2:
+            ARDUINO_DEBUG3_PRINT( "E" );
+            break;
+        case 3:
+            ARDUINO_DEBUG3_PRINT( "M" );
+            break;
+        case 4:
+            ARDUINO_DEBUG3_PRINT( "S" );
+            break;
+        default:
+            ARDUINO_DEBUG3_PRINT( "N" );
+            break;
+        }
+
+        ARDUINO_DEBUG3_PRINTF( "%d\n\r", stopbitsUSBSer1 );
+        ARDUINO_DEBUG_FLUSH( );
+    }
+}
+
+void checkForConfigChangesUSBSer2( int print ) {
+
+    if ( USBSer2.numbits( ) != numbitsUSBSer2 ) {
+        numbitsUSBSer2 = USBSer2.numbits( );
+        serConfigChangedUSBSer2 = 1;
+    }
+
+    if ( USBSer2.paritytype( ) != paritytypeUSBSer2 ) {
+        paritytypeUSBSer2 = USBSer2.paritytype( );
+        serConfigChangedUSBSer2 = 1;
+    }
+
+    if ( USBSer2.stopbits( ) != stopbitsUSBSer2 ) {
+        stopbitsUSBSer2 = USBSer2.stopbits( );
+        serConfigChangedUSBSer2 = 1;
+    }
+
+    if ( USBSer2.baud( ) != baudRateUSBSer2 ) {
+        baudRateUSBSer2 = USBSer2.baud( );
+        // microsPerByteSerial2 = 1000000 / baudRateUSBSer2 + 1;
+        //  USBSer1.begin(baudRate);
+        serConfigChangedUSBSer2 = 1;
+    }
+
+    if ( serConfigChangedUSBSer2 == 1 && jumperlessConfig.serial_2.function != 0 ) {
+        USBSer2.begin(
+            baudRateUSBSer2,
+            makeSerialConfig( numbitsUSBSer2, paritytypeUSBSer2, stopbitsUSBSer2 ) );
+        Serial2.begin(
+            baudRateUSBSer2,
+            makeSerialConfig( numbitsUSBSer2, paritytypeUSBSer2, stopbitsUSBSer2 ) );
+        microsPerByteSerial2 =
+            ( 1000000 / baudRateUSBSer2 + 1 ) *
+            ( numbitsUSBSer2 + stopbitsUSBSer2 + ( paritytypeUSBSer2 == 0 ? 0 : 1 ) );
+        serConfigChangedUSBSer2 = 0;
+
+        if ( print > 0 && millis( ) > 2000 ) {
+            ARDUINO_DEBUG_PRINT( "Serial2 config changed " );
+            if ( debugArduino > 1 ) {
+                ARDUINO_DEBUG_PRINT( "to " );
+            }
+            ARDUINO_DEBUG2_PRINTF( "%d ", baudRateUSBSer2 );
+            // ARDUINO_DEBUG_PRINT( " " );
+
+            ARDUINO_DEBUG2_PRINTF( "%d ", numbitsUSBSer2 );
+            switch ( paritytypeUSBSer2 ) {
+            case 0:
+                ARDUINO_DEBUG2_PRINT( "N" );
+                break;
+            case 1:
+                ARDUINO_DEBUG2_PRINT( "O" );
+                break;
+            case 2:
+                ARDUINO_DEBUG2_PRINT( "E" );
+                break;
+            case 3:
+                ARDUINO_DEBUG2_PRINT( "M" );
+                break;
+            case 4:
+                ARDUINO_DEBUG2_PRINT( "S" );
+                break;
+            default:
+                ARDUINO_DEBUG2_PRINT( "N" );
+                break;
+            }
+            ARDUINO_DEBUG2_PRINTF( "%d\n\r", stopbitsUSBSer2 );
+            ARDUINO_DEBUG_FLUSH( );
+        }
+        /// delay(10);
+    } else if ( serConfigChangedUSBSer2 == 1 ) {
+        serConfigChangedUSBSer2 = 2;
+        /// delay(10);
+    } else if ( serConfigChangedUSBSer2 == 2 ) {
+        serConfigChangedUSBSer2 = 3;
+        /// delay(10);
+    }
+}
+
+void replyWithSerialInfo( void ) {
+
+    // if (flashingArduino == true) {
+    //   return;
+    // }
+
+    // Check main Serial (CDC 0) for ENQ character - responds for ALL ports
+    if ( Serial.available( ) > 0 ) {
+        char c = Serial.peek( ); // Look at the character without removing it
+        if ( c == 0x05 ) {       // ENQ character
+            Serial.read( );      // Remove the ENQ character from buffer
+
+            // Report all enabled serial ports
+            Serial.println( "CDC0: Jumperless Main" );
+
+#if USB_CDC_ENABLE_COUNT >= 2
+            if ( jumperlessConfig.serial_1.function != 0 ) {
+                const char* func1_name = getStringFromTable(
+                    jumperlessConfig.serial_1.function, uartFunctionTable );
+                if ( func1_name && strcmp( func1_name, "off" ) != 0 &&
+                     strcmp( func1_name, "disable" ) != 0 ) {
+                    Serial.print( "CDC1: JL " );
+                    // Print with first letter capitalized and underscores as spaces
+                    char c = func1_name[ 0 ];
+                    if ( c >= 'a' && c <= 'z' )
+                        c = c - 'a' + 'A';
+                    Serial.print( c );
+                    for ( int i = 1; func1_name[ i ]; i++ ) {
+                        Serial.print( func1_name[ i ] == '_' ? ' ' : func1_name[ i ] );
+                    }
+                    Serial.println( );
+                } else {
+                    Serial.println( "CDC1: Jumperless Serial 1" );
+                }
+            } else {
+                Serial.println( "CDC1: Disabled" );
+            }
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 3
+            if ( jumperlessConfig.serial_2.function != 0 ) {
+                const char* func2_name = getStringFromTable(
+                    jumperlessConfig.serial_2.function, uartFunctionTable );
+                if ( func2_name && strcmp( func2_name, "off" ) != 0 &&
+                     strcmp( func2_name, "disable" ) != 0 ) {
+                    Serial.print( "CDC2: JL " );
+                    // Print with first letter capitalized and underscores as spaces
+                    char c = func2_name[ 0 ];
+                    if ( c >= 'a' && c <= 'z' )
+                        c = c - 'a' + 'A';
+                    Serial.print( c );
+                    for ( int i = 1; func2_name[ i ]; i++ ) {
+                        Serial.print( func2_name[ i ] == '_' ? ' ' : func2_name[ i ] );
+                    }
+                    Serial.println( );
+                } else {
+                    Serial.println( "CDC2: Jumperless Serial 2" );
+                }
+            } else {
+                Serial.println( "CDC2: Disabled" );
+            }
+
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 4
+            Serial.println( "CDC3: Jumperless TUI" );
+#endif
+            Serial.flush( );
+        }
+    }
+#if USB_CDC_ENABLE_COUNT >= 2
+    // delay(100);
+    // Check USBSer1 (CDC 1) for ENQ character - responds only for itself
+    if ( USBSer1.available( ) > 0 && flashingArduino == false && millis( ) < 2000 ) {
+        char c = USBSer1.peek( ); // Look at the character without removing it
+        if ( c == 0x05 ) {        // ENQ character
+            USBSer1.read( );      // Remove the ENQ character from buffer
+
+            // Generate dynamic name based on config
+            const char* func1_name = getStringFromTable(
+                jumperlessConfig.serial_1.function, uartFunctionTable );
+            if ( func1_name && strcmp( func1_name, "off" ) != 0 &&
+                 strcmp( func1_name, "disable" ) != 0 ) {
+                USBSer1.print( "CDC1: JL " );
+                // Print with first letter capitalized and underscores as spaces
+                char c = func1_name[ 0 ];
+                if ( c >= 'a' && c <= 'z' )
+                    c = c - 'a' + 'A';
+                USBSer1.print( c );
+                for ( int i = 1; func1_name[ i ]; i++ ) {
+                    USBSer1.print( func1_name[ i ] == '_' ? ' ' : func1_name[ i ] );
+                }
+                USBSer1.println( );
+            } else {
+                USBSer1.println( "CDC1: Jumperless Serial 1" );
+            }
+            USBSer1.flush( );
+        }
+    }
+#endif
+
+#if USB_CDC_ENABLE_COUNT >= 3
+    // delay(100);
+    // Check USBSer2 (CDC 2) for ENQ character - responds only for itself
+    if ( jumperlessConfig.serial_2.function != 0 && USBSer2.available( ) > 0 ) {
+        char c = USBSer2.peek( ); // Look at the character without removing it
+        if ( c == 0x05 ) {        // ENQ character
+            USBSer2.read( );      // Remove the ENQ character from buffer
+
+            // Generate dynamic name based on config
+            const char* func2_name = getStringFromTable(
+                jumperlessConfig.serial_2.function, uartFunctionTable );
+            if ( func2_name && strcmp( func2_name, "off" ) != 0 &&
+                 strcmp( func2_name, "disable" ) != 0 ) {
+                USBSer2.print( "CDC2: JL " );
+                // Print with first letter capitalized and underscores as spaces
+                char c = func2_name[ 0 ];
+                if ( c >= 'a' && c <= 'z' )
+                    c = c - 'a' + 'A';
+                USBSer2.print( c );
+                for ( int i = 1; func2_name[ i ]; i++ ) {
+                    USBSer2.print( func2_name[ i ] == '_' ? ' ' : func2_name[ i ] );
+                }
+                USBSer2.println( );
+            } else {
+                USBSer2.println( "CDC2: Jumperless Serial 2" );
+            }
+            USBSer2.flush( );
+        }
+    }
+
+#endif
+}
+
+int checkForArduinoCommands( uint8_t serialBuffer[], int serialBufferIndex ) {
+    for ( int i = 0; i < 10; i++ ) {
+        if ( strcasecmp( arduinoCommandStrings[ i ], (const char*)serialBuffer ) == 0 ) {
+            Serial.println( "Arduino command received" );
+            Serial.println( arduinoCommandStrings[ i ] );
+            Serial.println( );
+            return i;
+        }
+    }
+    Serial.println( "Arduino command not found" );
+    Serial.println( (const char*)serialBuffer );
+    Serial.println( );
+    Serial.flush( );
+    return -1;
+}

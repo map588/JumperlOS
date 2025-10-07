@@ -1,0 +1,129 @@
+CompileFlags:
+  Compiler: arm-none-eabi-gcc
+  Add:
+    # C++ standard library include paths
+    - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/arm-none-eabi/include/c++/14.2.0"
+    - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/arm-none-eabi/include/c++/14.2.0/arm-none-eabi/thumb"
+    - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/arm-none-eabi/include/c++/14.2.0/backward"
+    
+    # System include paths from ARM GCC
+    - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/lib/gcc/arm-none-eabi/14.2.0/include"
+    - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/lib/gcc/arm-none-eabi/14.2.0/include-fixed"
+    - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/arm-none-eabi/include"
+    
+    # Project includes
+    - "-Iinclude"
+    - "-Ilib/JDI_MIP_Display"
+    - "-Isrc/"
+    - "-Iboards/jumperless_v5"
+    - "-Ilib"
+    - "-Isrc/*"
+    
+    # Library dependencies
+    - "-I.pio/libdeps/jumperless_v5/INA219/src"
+    - "-I.pio/libdeps/jumperless_v5/Adafruit NeoPixel/src" 
+    - "-I.pio/libdeps/jumperless_v5/Adafruit MCP4725/src"
+    - "-I.pio/libdeps/jumperless_v5/Adafruit BusIO/src"
+    - "-I.pio/libdeps/jumperless_v5/Adafruit SSD1306"
+    - "-I.pio/libdeps/jumperless_v5/Adafruit MCP4728/src"
+    - "-I.pio/libdeps/jumperless_v5/U8g2/src"
+    - "-I.pio/libdeps/jumperless_v5/PNGdec/src"
+    - "-I.pio/libdeps/jumperless_v5/SafeString/src"
+    - "-I.pio/libdeps/jumperless_v5/ArduinoJson/src"
+    - "-I.pio/libdeps/jumperless_v5/Arduino_JSON/src"
+    - "-I.pio/libdeps/jumperless_v5/logic-analyzer/src"
+    - "-I.pio/libdeps/jumperless_v5/JDI_MIP_Display"
+    
+    # MicroPython includes
+    - "-Ilib/micropython"
+    - "-Ilib/micropython/port"
+    - "-Ilib/micropython/micropython_embed"
+    - "-Ilib/micropython/micropython_embed/py"
+    - "-Ilib/micropython/micropython_embed/extmod"
+    - "-Ilib/micropython/micropython_embed/shared"
+    - "-Ilib/micropython/micropython_embed/port"
+    - "-Ilib/micropython/micropython_embed/genhdr"
+    
+    # Arduino Core includes (framework-specific)
+    - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/cores/rp2040"
+    - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/variants/rpipico"
+    - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/libraries"
+    
+    # lwIP includes (for networking)
+    - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/pico-sdk/lib/"
+    - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/pico-sdk/src/rp2_common/pico_lwip/include"
+    
+    # Arduino preprocessor defines
+    - "-DARDUINO=10607"
+    - "-DARDUINO_RASPBERRY_PI_PICO"
+    - "-DBOARD_NAME=\"jumperless_v5\""
+    - "-DPICO_RP2350A=0"
+    - "-DF_CPU=150000000L"
+    - "-DUSE_TINYUSB"
+    - "-DCFG_TUSB_CONFIG_FILE=\"custom_tusb_config.h\""
+    
+    # MicroPython preprocessor defines
+    - "-DMICROPY_ENABLE_COMPILER=1"
+    - "-DMICROPY_ENABLE_GC=1"
+    - "-DMICROPY_PY_GC=1"
+    - "-DMICROPY_CONFIG_ROM_LEVEL=2"
+    - "-DMICROPY_FLOAT_IMPL=1"
+    - "-DMICROPY_PY_BUILTINS_FLOAT=1"
+    - "-DMICROPY_PY_IO=1"
+    - "-DMICROPY_PY_SYS=1"
+    - "-DMICROPY_HELPER_REPL=1"
+    - "-DMICROPY_REPL_AUTO_INDENT=1"
+    - "-DMICROPY_PY_BUILTINS_COMPILE=1"
+    - "-DMICROPY_PY_BUILTINS_EVAL_EXEC=1"
+    - "-DMICROPY_PY_ARRAY=1"
+    - "-DMICROPY_PY_COLLECTIONS=1"
+    - "-DMICROPY_PY_STRUCT=1"
+    - "-DMICROPY_PY_MATH=1"
+    - "-DMICROPY_ERROR_REPORTING=2"
+    - "-DMICROPY_ENABLE_SOURCE_LINE=1"
+    
+    # Suppress specific warnings
+    - "-Wno-backslash-newline-escape"
+    - "-Wno-macro-redefined"
+    
+    # C++ standard and settings (only for C++ files)
+    - "-fno-rtti"
+    - "-fno-exceptions"
+
+  CompilationDatabase: .
+
+---
+If:
+  PathMatch: .*\.c$
+CompileFlags:
+  Add:
+    - "-std=c99"
+  Remove:
+    - "-std=c++11"
+
+---
+If:
+  PathMatch: .*\.(cpp|cc|cxx|c\+\+)$
+CompileFlags:
+  Add:
+    - "-std=c++11"
+
+---
+Diagnostics:
+  ClangTidy:
+    Remove: 
+      - misc-definitions-in-headers
+  UnusedIncludes: None
+
+---
+Format:
+  BasedOnStyle: LLVM
+  ColumnLimit: 0
+  AllowShortIfStatementsOnASingleLine: false
+  AllowShortLoopsOnASingleLine: false
+  AllowShortFunctionsOnASingleLine: Empty
+  AlwaysBreakTemplateDeclarations: Yes
+  BreakBeforeBraces: Attach
+  IndentWidth: 2
+  TabWidth: 2
+  UseTab: Never

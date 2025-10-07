@@ -1,0 +1,23 @@
+// Pin mapping for Jumperless V5 (RP2350) - Minimal set for machine module
+// Only includes essential pins: UART (0,1), GPIO (20-27), ADC (0-3,7)
+
+// UART pins (can be used as GPIO)
+UART_TX,GPIO0
+UART_RX,GPIO1
+
+// Routable GPIO pins (1-8)
+GPIO_1,GPIO20
+GPIO_2,GPIO21
+GPIO_3,GPIO22
+GPIO_4,GPIO23
+GPIO_5,GPIO24
+GPIO_6,GPIO25
+GPIO_7,GPIO26
+GPIO_8,GPIO27
+
+// ADC pins
+ADC_0,GPIO40
+ADC_1,GPIO41
+ADC_2,GPIO42
+ADC_3,GPIO43
+ADC_7,GPIO47
