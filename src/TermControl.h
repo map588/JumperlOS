@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include "SyntaxHighlighting.h"
 
+extern int termInInteractiveMode;
+
 // Forward declarations
 class ScriptHistory;
 
@@ -68,7 +70,8 @@ private:
     enum AnsiState {
         ANSI_NORMAL,
         ANSI_ESCAPE,
-        ANSI_BRACKET
+        ANSI_BRACKET,
+        ANSI_MAIN_SERIAL_ENQ
     } ansi_state;
     
     // Internal methods
@@ -81,6 +84,7 @@ private:
     void handleArrowRight();
     void handleCtrlU();                 // Clear line
     void handleTab();                   // Could be used for completion later
+    void handleMainSerialENQ();
     
     void renderCurrentLine();
     void clearCurrentLine();

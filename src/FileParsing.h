@@ -66,6 +66,12 @@ int removeBridgeFromNodeFile(int node1, int node2 = -1, int slot = 0, int flashO
 int addBridgeToNodeFile(int node1, int node2, int slot = 0, int flashOrLocal = 0, int allowDuplicates = 1); //returns 1 if duplicate was found
 void savePreformattedNodeFile (int source = 0, int slot = 0, int keepEncoder = 1);
 
+// New RAM-based state functions (preferred over file-based functions above)
+// All code should use these functions instead of addBridgeToNodeFile/removeBridgeFromNodeFile
+bool addBridgeToState(int node1, int node2, int duplicates = -1, bool autoRefresh = true); // Add bridge to globalState
+bool removeBridgeFromState(int node1, int node2, bool autoRefresh = true); // Remove bridge from globalState (node2=-1 removes ALL connections containing node1)
+bool saveStateToSlot(int slot = -1); // Save globalState to YAML file (slot=-1 uses current slot)
+
 void readStringFromSerial(int source = 0, int addRemove = 0);
 // void addStringToNodeFile(String str);
 // void removeStringFromNodeFile(String str);

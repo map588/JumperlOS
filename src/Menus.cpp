@@ -2600,22 +2600,22 @@ int doMenuAction(int menuPosition, int selection) {
         if (currentAction.from[i] != -1) {
           switch (currentAction.from[i]) {
             case 0:
-              addBridgeToNodeFile(ADC0, currentAction.to[i], netSlot);
+              addBridgeToState(ADC0, currentAction.to[i]);
               break;
             case 1:
 
-              addBridgeToNodeFile(ADC1, currentAction.to[i], netSlot);
+              addBridgeToState(ADC1, currentAction.to[i]);
               break;
               // break;
             case 2:
 
-              addBridgeToNodeFile(ADC2, currentAction.to[i], netSlot);
+              addBridgeToState(ADC2, currentAction.to[i]);
               break;
             case 3:
-              addBridgeToNodeFile(ADC3, currentAction.to[i], netSlot);
+              addBridgeToState(ADC3, currentAction.to[i]);
               break;
             case 4:
-              addBridgeToNodeFile(ADC4, currentAction.to[i], netSlot);
+              addBridgeToState(ADC4, currentAction.to[i]);
               break;
 
             default:
@@ -2637,11 +2637,11 @@ int doMenuAction(int menuPosition, int selection) {
           if (currentAction.from[i] != -1) {
             switch (currentAction.from[i]) {
               case 0:
-                addBridgeToNodeFile(ISENSE_PLUS, currentAction.to[i], netSlot);
+                addBridgeToState(ISENSE_PLUS, currentAction.to[i]);
                 break;
               case 1:
 
-                addBridgeToNodeFile(ISENSE_MINUS, currentAction.to[i], netSlot);
+                addBridgeToState(ISENSE_MINUS, currentAction.to[i]);
                 break;
                 // break;
 
@@ -2658,35 +2658,35 @@ int doMenuAction(int menuPosition, int selection) {
               if (currentAction.from[i] != -1) {
                 switch (currentAction.from[i]) {
                   case 0:
-                    addBridgeToNodeFile(RP_GPIO_1, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_1, currentAction.to[i]);
                     gpioState[0] = 2;
                     break;
                   case 1:
-                    addBridgeToNodeFile(RP_GPIO_2, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_2, currentAction.to[i]);
                     gpioState[1] = 2;
                     break;
                   case 2:
-                    addBridgeToNodeFile(RP_GPIO_3, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_3, currentAction.to[i]);
                     gpioState[2] = 2;
                     break;
                   case 3:
-                    addBridgeToNodeFile(RP_GPIO_4, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_4, currentAction.to[i]);
                     gpioState[3] = 2;
                     break;
                   case 4:
-                    addBridgeToNodeFile(RP_GPIO_5, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_5, currentAction.to[i]);
                     gpioState[4] = 2;
                     break;
                   case 5:
-                    addBridgeToNodeFile(RP_GPIO_6, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_6, currentAction.to[i]);
                     gpioState[5] = 2;
                     break;
                   case 6:
-                    addBridgeToNodeFile(RP_GPIO_7, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_7, currentAction.to[i]);
                     gpioState[6] = 2;
                     break;
                   case 7:
-                    addBridgeToNodeFile(RP_GPIO_8, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_8, currentAction.to[i]);
                     gpioState[7] = 2;
                     break;
                   default:
@@ -2794,40 +2794,40 @@ int doMenuAction(int menuPosition, int selection) {
               if (currentAction.from[i] != -1) {
                 switch (currentAction.from[i]) {
                   case 0:
-                    addBridgeToNodeFile(RP_GPIO_1, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_1, currentAction.to[i]);
                     break;
                   case 1:
 
-                    addBridgeToNodeFile(RP_GPIO_2, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_2, currentAction.to[i]);
                     break;
 
                   case 2:
 
-                    addBridgeToNodeFile(RP_GPIO_3, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_3, currentAction.to[i]);
                     break;
                   case 3:
 
-                    addBridgeToNodeFile(RP_GPIO_4, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_4, currentAction.to[i]);
                     break;
 
                   case 4:
 
-                    addBridgeToNodeFile(RP_GPIO_5, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_5, currentAction.to[i]);
                     break;
 
                   case 5:
 
-                    addBridgeToNodeFile(RP_GPIO_6, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_6, currentAction.to[i]);
                     break;
 
                   case 6:
 
-                    addBridgeToNodeFile(RP_GPIO_7, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_7, currentAction.to[i]);
                     break;
 
                   case 7:
 
-                    addBridgeToNodeFile(RP_GPIO_8, currentAction.to[i], netSlot);
+                    addBridgeToState(RP_GPIO_8, currentAction.to[i]);
                     break;
 
                   default:
@@ -2853,14 +2853,14 @@ int doMenuAction(int menuPosition, int selection) {
                 if (currentAction.from[i] != -1 && currentAction.to[i] != -1) {
                   switch (currentAction.from[i]) {
                     case 0:
-                      addBridgeToNodeFile(DAC0, currentAction.to[i], netSlot);
+                      addBridgeToState(DAC0, currentAction.to[i]);
                       // setDac0_5Vvoltage(currentAction.analogVoltage);
                       jumperlessConfig.dacs.dac_0 = currentAction.analogVoltage;
                       dacOutput[0] = currentAction.analogVoltage;
                       break;
                     case 1:
 
-                      addBridgeToNodeFile(DAC1, currentAction.to[i], netSlot);
+                      addBridgeToState(DAC1, currentAction.to[i]);
                       jumperlessConfig.dacs.dac_1 = currentAction.analogVoltage;
                       dacOutput[1] = currentAction.analogVoltage;
                       // setDac1_8Vvoltage(currentAction.analogVoltage);
@@ -2868,12 +2868,12 @@ int doMenuAction(int menuPosition, int selection) {
                       // break;
 
                       case 2:
-                        addBridgeToNodeFile(TOP_RAIL, currentAction.to[i], netSlot);
+                        addBridgeToState(TOP_RAIL, currentAction.to[i]);
                         jumperlessConfig.dacs.top_rail = currentAction.analogVoltage;
                         railVoltage[0] = currentAction.analogVoltage;
                         break;
                       case 3:
-                        addBridgeToNodeFile(BOTTOM_RAIL, currentAction.to[i], netSlot);
+                        addBridgeToState(BOTTOM_RAIL, currentAction.to[i]);
                         jumperlessConfig.dacs.bottom_rail = currentAction.analogVoltage;
                         railVoltage[1] = currentAction.analogVoltage;
                         break;
@@ -2892,11 +2892,11 @@ int doMenuAction(int menuPosition, int selection) {
                   if (currentAction.from[i] != -1 && currentAction.to[i] != -1) {
                     switch (currentAction.from[i]) {
                       case 0:
-                        addBridgeToNodeFile(RP_UART_TX, currentAction.to[i], netSlot);
+                        addBridgeToState(RP_UART_TX, currentAction.to[i]);
                         break;
                       case 1:
 
-                        addBridgeToNodeFile(RP_UART_RX, currentAction.to[i], netSlot);
+                        addBridgeToState(RP_UART_RX, currentAction.to[i]);
                         break;
                         // break;
                       default:

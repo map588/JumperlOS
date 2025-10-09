@@ -11,6 +11,10 @@
 extern struct config jumperlessConfig;
 extern volatile bool core1busy;
 extern volatile bool core2busy;
+extern int netSlot;  // Global slot number (defined in RotaryEncoder.cpp)
+
+// Global singleton - THE single source of truth for all Jumperless state
+JumperlessState globalState;
 
 // ============================================================================
 // ConnectionState Implementation
@@ -22,15 +26,24 @@ ConnectionState::ConnectionState() {
 
 void ConnectionState::clear() {
     memset(bridges, 0, sizeof(bridges));
-    memset(bridgeDuplicates, 0, sizeof(bridgeDuplicates));
     numBridges = 0;
     numNets = 0;
     numPaths = 0;
     pathsCacheValid = false;
     chipStatesCacheValid = false;
+    clearAllNTCC();
+    return;
+    // Clear nets
+    for (int i = 0; i < MAX_NETS; i++) {
+        memset(&nets[i], 0, sizeof(netStruct));
+    }
     
-    // Clear chip XY states
+    // Clear paths
+    memset(paths, 0, sizeof(paths));
+    
+    // Clear chip states
     for (int i = 0; i < 12; i++) {
+        memset(&chipStates[i], 0, sizeof(chipStatus));
         memset(&chipXY[i], 0, sizeof(struct justXY));
     }
 }
@@ -43,6 +56,52 @@ void ConnectionState::invalidateCache(bool autoRefresh) {
     if (autoRefresh) {
         refreshConnections(-1);
     }
+}
+
+void ConnectionState::recomputePaths() {
+    // This will be called to rebuild paths from bridges
+    // The actual computation is done by bridgesToPaths() in NetsToChipConnections.cpp
+    pathsCacheValid = false;
+    chipStatesCacheValid = false;
+}
+
+void ConnectionState::syncBridgesFromNets() {
+    // Generate bridges from net node lists
+    // Used when NETS_PRIMARY mode is active
+    numBridges = 0;
+    
+    for (int netIdx = 0; netIdx < numNets && netIdx < MAX_NETS; netIdx++) {
+        netStruct& currentNet = nets[netIdx];
+        
+        // Skip empty nets
+        if (currentNet.nodes[0] == 0) continue;
+        
+        // Connect all nodes in this net
+        for (int i = 0; i < MAX_NODES && currentNet.nodes[i] != 0; i++) {
+            for (int j = i + 1; j < MAX_NODES && currentNet.nodes[j] != 0; j++) {
+                if (numBridges >= MAX_BRIDGES) {
+                    Serial.println("Warning: Maximum bridges reached during sync");
+                    return;
+                }
+                
+                // Add bridge
+                bridges[numBridges][0] = currentNet.nodes[i];
+                bridges[numBridges][1] = currentNet.nodes[j];
+                bridges[numBridges][2] = currentNet.numberOfDuplicates;
+                numBridges++;
+            }
+        }
+    }
+    
+    invalidateCache(false);
+}
+
+void ConnectionState::syncNetsFromBridges() {
+    // Generate nets from bridges
+    // Used when BRIDGES_PRIMARY mode is active (default)
+    // This is typically done by the existing net management code
+    // We just invalidate to trigger recomputation
+    invalidateCache(false);
 }
 
 // ============================================================================
@@ -153,6 +212,10 @@ ConfigState::ConfigState() {
 }
 
 void ConfigState::setDefaults() {
+    // Source of truth defaults
+    sourceOfTruth = BRIDGES_PRIMARY;  // Default: bridges define connections
+    
+    // Routing preferences
     stackPaths = 2;
     stackRails = 3;
     stackDacs = 0;
@@ -184,7 +247,9 @@ void ConfigState::setDefaults() {
 // ============================================================================
 
 JumperlessState::JumperlessState() {
-    version = 1;  // Current format version
+    version = 2;  // Current format version (2 = YAML format)
+    dirty = false;
+    lastModifiedTime = 0;
     clear();
 }
 
@@ -193,6 +258,8 @@ void JumperlessState::clear() {
     power.setDefaults();
     display.clear();
     config.setDefaults();
+    dirty = false;
+    lastModifiedTime = 0;
 }
 
 // Connection management
@@ -217,8 +284,9 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
         if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
             (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
             // Connection exists - increment duplicates
-            connections.bridgeDuplicates[i]++;
+            connections.bridges[i][2]++;
             connections.invalidateCache(config.autoRefreshOnChange);
+            markDirty();
             return true;
         }
     }
@@ -241,12 +309,12 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
     int idx = connections.numBridges;
     connections.bridges[idx][0] = node1;
     connections.bridges[idx][1] = node2;
-    connections.bridges[idx][2] = -1;  // Net number assigned later
-    connections.bridgeDuplicates[idx] = numDuplicates;
+    connections.bridges[idx][2] = numDuplicates;  // Store duplicates
     connections.numBridges++;
     
     // Invalidate caches - paths need to be recalculated
     connections.invalidateCache(config.autoRefreshOnChange);
+    markDirty();
     
     return true;
 }
@@ -277,6 +345,7 @@ bool JumperlessState::removeConnection(int node1, int node2, String& errorMsg) {
     
     // Invalidate caches
     connections.invalidateCache(config.autoRefreshOnChange);
+    markDirty();
     
     return true;
 }
@@ -293,13 +362,14 @@ bool JumperlessState::hasConnection(int node1, int node2) const {
 
 void JumperlessState::clearAllConnections() {
     connections.clear();
+    markDirty();
 }
 
 int JumperlessState::getConnectionDuplicates(int node1, int node2) const {
     for (int i = 0; i < connections.numBridges; i++) {
         if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
             (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
-            return connections.bridgeDuplicates[i];
+            return connections.bridges[i][2];  // Return duplicates from third element
         }
     }
     return 0;  // Not found
@@ -314,8 +384,9 @@ bool JumperlessState::setConnectionDuplicates(int node1, int node2, int duplicat
     for (int i = 0; i < connections.numBridges; i++) {
         if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
             (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
-            connections.bridgeDuplicates[i] = duplicates;
+            connections.bridges[i][2] = duplicates;  // Store duplicates in third element
             connections.invalidateCache(config.autoRefreshOnChange);
+            markDirty();
             return true;
         }
     }
@@ -331,6 +402,7 @@ void JumperlessState::setDacVoltage(int dacNum, float voltage) {
     } else if (dacNum == 1) {
         power.dac1 = voltage;
     }
+    markDirty();
 }
 
 float JumperlessState::getDacVoltage(int dacNum) const {
@@ -343,6 +415,7 @@ void JumperlessState::setRailVoltage(bool isTopRail, float voltage) {
     } else {
         power.bottomRail = voltage;
     }
+    markDirty();
 }
 
 float JumperlessState::getRailVoltage(bool isTopRail) const {
@@ -354,6 +427,7 @@ void JumperlessState::setPathStacking(int paths, int rails, int dacs) {
     config.stackPaths = paths;
     config.stackRails = rails;
     config.stackDacs = dacs;
+    markDirty();
 }
 
 void JumperlessState::getPathStacking(int& paths, int& rails, int& dacs) const {
@@ -366,6 +440,7 @@ void JumperlessState::getPathStacking(int& paths, int& rails, int& dacs) const {
 void JumperlessState::setGpioDirection(int gpio, int direction) {
     if (gpio >= 0 && gpio < 10) {
         config.gpioDirection[gpio] = direction;
+        markDirty();
     }
 }
 
@@ -379,6 +454,7 @@ int JumperlessState::getGpioDirection(int gpio) const {
 void JumperlessState::setGpioPull(int gpio, int pull) {
     if (gpio >= 0 && gpio < 10) {
         config.gpioPulls[gpio] = pull;
+        markDirty();
     }
 }
 
@@ -392,6 +468,7 @@ int JumperlessState::getGpioPull(int gpio) const {
 // Display
 void JumperlessState::setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name) {
     display.setNetColor(netNum, color, raw, name);
+    markDirty();
 }
 
 bool JumperlessState::getNetColor(int netNum, rgbColor& color, uint32_t& raw, char* name) const {
@@ -484,359 +561,419 @@ size_t JumperlessState::estimateRAMUsage() const {
 }
 
 // ============================================================================
-// JSON Serialization
+// YAML Serialization
 // ============================================================================
 
-bool JumperlessState::toJSON(String& output, bool pretty) const {
-    JsonDocument doc;
+bool JumperlessState::toYAML(String& output) const {
+    output = "";
     
-    doc["version"] = version;
+    // Header
+    output += "version: " + String(version) + "\n\r";
+    output += "sourceOfTruth: " + String(config.sourceOfTruth == BRIDGES_PRIMARY ? "bridges" : "nets") + "\n\r\n\r";
     
-    // Serialize in logical order: power → connections → config → display → chipXY
-    JsonObject powerObj = doc["power"].to<JsonObject>();
-    if (!serializePower(powerObj)) return false;
+    // Bridges section
+    serializeBridges(output);
     
-    JsonObject connectionsObj = doc["connections"].to<JsonObject>();
-    if (!serializeConnections(connectionsObj)) return false;
+    // Nets section (optional, for colors/names)
+    serializeNets(output);
     
-    JsonObject configObj = doc["config"].to<JsonObject>();
-    if (!serializeConfig(configObj)) return false;
+    // Power section
+    serializePower(output);
     
-    // Only include display if there are custom colors
-    if (display.hasCustomColors()) {
-        JsonObject displayObj = doc["display"].to<JsonObject>();
-        if (!serializeDisplay(displayObj)) return false;
-    }
-    
-    // Serialize chip XY states
-    JsonObject chipXYObj = doc["chipXY"].to<JsonObject>();
-    if (!serializeChipXY(chipXYObj)) return false;
-    
-    // Convert to string
-    if (pretty) {
-        serializeJsonPretty(doc, output);
-    } else {
-        serializeJson(doc, output);
-    }
+    // Config section
+    serializeConfig(output);
     
     return true;
 }
 
-bool JumperlessState::fromJSON(const String& input, String& errorMsg) {
-    JsonDocument doc;
+bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
+    // Simple YAML parser for our specific format
+    // Parse line by line
+    int lineStart = 0;
+    String currentSection = "";
     
-    DeserializationError error = deserializeJson(doc, input);
-    if (error) {
-        errorMsg = "JSON parse error: " + String(error.c_str());
-        return false;
+    clear();
+    
+    while (lineStart < (int)input.length()) {
+        int lineEnd = input.indexOf('\n', lineStart);
+        if (lineEnd == -1) lineEnd = input.length();
+        
+        String line = input.substring(lineStart, lineEnd);
+        line.trim();
+        
+        // Skip empty lines and comments
+        if (line.length() == 0 || line.startsWith("#")) {
+            lineStart = lineEnd + 1;
+            continue;
+        }
+        
+        // Check for section headers
+        if (line.startsWith("version:")) {
+            int colonIdx = line.indexOf(':');
+            String val = line.substring(colonIdx + 1);
+            val.trim();
+            version = val.toInt();
+        }
+        else if (line.startsWith("sourceOfTruth:")) {
+            int colonIdx = line.indexOf(':');
+            String val = line.substring(colonIdx + 1);
+            val.trim();
+            config.sourceOfTruth = (val == "nets") ? NETS_PRIMARY : BRIDGES_PRIMARY;
+        }
+        else if (line.startsWith("bridges:")) {
+            currentSection = "bridges";
+        }
+        else if (line.startsWith("nets:")) {
+            currentSection = "nets";
+        }
+        else if (line.startsWith("power:")) {
+            currentSection = "power";
+        }
+        else if (line.startsWith("config:")) {
+            currentSection = "config";
+        }
+        // Parse section content
+        else if (line.startsWith("- {") || line.startsWith("-{")) {
+            // Bridge or net entry
+            if (currentSection == "bridges") {
+                if (!deserializeBridges(line.c_str(), errorMsg)) {
+            return false;
+        }
+            } else if (currentSection == "nets") {
+                if (!deserializeNets(line.c_str(), errorMsg)) {
+                    return false;
+                }
+            }
+        }
+        else if (currentSection == "power") {
+            if (!deserializePower(line.c_str(), errorMsg)) {
+            return false;
+        }
     }
-    
-    // Check version
-    if (doc["version"].is<int>()) {
-        int ver = doc["version"];
-        if (ver > version) {
-            errorMsg = "File version " + String(ver) + " newer than supported version " + String(version);
+        else if (currentSection == "config") {
+            if (!deserializeConfig(line.c_str(), errorMsg)) {
             return false;
         }
     }
     
-    // Deserialize each section
-    if (doc["power"].is<JsonObject>()) {
-        JsonObject powerObj = doc["power"].as<JsonObject>();
-        if (!deserializePower(powerObj, errorMsg)) {
-            return false;
-        }
+        lineStart = lineEnd + 1;
     }
     
-    if (doc["config"].is<JsonObject>()) {
-        JsonObject configObj = doc["config"].as<JsonObject>();
-        if (!deserializeConfig(configObj, errorMsg)) {
-            return false;
-        }
-    }
-    
-    if (doc["connections"].is<JsonObject>()) {
-        JsonObject connectionsObj = doc["connections"].as<JsonObject>();
-        if (!deserializeConnections(connectionsObj, errorMsg)) {
-            return false;
-        }
-    }
-    
-    if (doc["display"].is<JsonObject>()) {
-        JsonObject displayObj = doc["display"].as<JsonObject>();
-        if (!deserializeDisplay(displayObj, errorMsg)) {
-            return false;
-        }
-    }
-    
-    if (doc["chipXY"].is<JsonObject>()) {
-        JsonObject chipXYObj = doc["chipXY"].as<JsonObject>();
-        if (!deserializeChipXY(chipXYObj, errorMsg)) {
-            return false;
-        }
+    // Reconcile bridges and nets based on source of truth
+    if (config.sourceOfTruth == NETS_PRIMARY) {
+        connections.syncBridgesFromNets();
+    } else {
+        connections.syncNetsFromBridges();
     }
     
     return validate(errorMsg);
 }
 
-// JSON serialization helpers
-bool JumperlessState::serializePower(JsonObject& obj) const {
-    obj["topRail"] = power.topRail;
-    obj["bottomRail"] = power.bottomRail;
-    obj["dac0"] = power.dac0;
-    obj["dac1"] = power.dac1;
-    return true;
-}
-
-bool JumperlessState::deserializePower(JsonObject& obj, String& errorMsg) {
-    if (obj["topRail"].is<float>()) power.topRail = obj["topRail"];
-    if (obj["bottomRail"].is<float>()) power.bottomRail = obj["bottomRail"];
-    if (obj["dac0"].is<float>()) power.dac0 = obj["dac0"];
-    if (obj["dac1"].is<float>()) power.dac1 = obj["dac1"];
-    return power.validate(errorMsg);
-}
-
-bool JumperlessState::serializeConfig(JsonObject& obj) const {
-    obj["stackPaths"] = config.stackPaths;
-    obj["stackRails"] = config.stackRails;
-    obj["stackDacs"] = config.stackDacs;
-    obj["railPriority"] = config.railPriority;
-    
-    // Build GPIO arrays as compact single-line strings
-    obj["gpioDirection"] = serialized("[" + 
-        String(config.gpioDirection[0]) + "," + String(config.gpioDirection[1]) + "," + 
-        String(config.gpioDirection[2]) + "," + String(config.gpioDirection[3]) + "," + 
-        String(config.gpioDirection[4]) + "," + String(config.gpioDirection[5]) + "," + 
-        String(config.gpioDirection[6]) + "," + String(config.gpioDirection[7]) + "," + 
-        String(config.gpioDirection[8]) + "," + String(config.gpioDirection[9]) + "]");
-    
-    obj["gpioPulls"] = serialized("[" + 
-        String(config.gpioPulls[0]) + "," + String(config.gpioPulls[1]) + "," + 
-        String(config.gpioPulls[2]) + "," + String(config.gpioPulls[3]) + "," + 
-        String(config.gpioPulls[4]) + "," + String(config.gpioPulls[5]) + "," + 
-        String(config.gpioPulls[6]) + "," + String(config.gpioPulls[7]) + "," + 
-        String(config.gpioPulls[8]) + "," + String(config.gpioPulls[9]) + "]");
-    
-    obj["uartTxFunction"] = config.uartTxFunction;
-    obj["uartRxFunction"] = config.uartRxFunction;
-    obj["oledConnected"] = config.oledConnected;
-    obj["oledLockConnection"] = config.oledLockConnection;
-    obj["autoRefresh"] = config.autoRefreshOnChange;
-    
-    return true;
-}
-
-bool JumperlessState::deserializeConfig(JsonObject& obj, String& errorMsg) {
-    if (obj["stackPaths"].is<int>()) config.stackPaths = obj["stackPaths"];
-    if (obj["stackRails"].is<int>()) config.stackRails = obj["stackRails"];
-    if (obj["stackDacs"].is<int>()) config.stackDacs = obj["stackDacs"];
-    if (obj["railPriority"].is<int>()) config.railPriority = obj["railPriority"];
-    
-    if (obj["gpioDirection"].is<JsonArray>()) {
-        JsonArray arr = obj["gpioDirection"];
-        for (int i = 0; i < 10 && i < (int)arr.size(); i++) {
-            config.gpioDirection[i] = arr[i];
-        }
+// YAML serialization helpers
+void JumperlessState::serializeBridges(String& output) const {
+    if (connections.numBridges == 0) {
+        return;  // Don't output empty bridges section
     }
     
-    if (obj["gpioPulls"].is<JsonArray>()) {
-        JsonArray arr = obj["gpioPulls"];
-        for (int i = 0; i < 10 && i < (int)arr.size(); i++) {
-            config.gpioPulls[i] = arr[i];
-        }
-    }
-    
-    if (obj["uartTxFunction"].is<int>()) config.uartTxFunction = obj["uartTxFunction"];
-    if (obj["uartRxFunction"].is<int>()) config.uartRxFunction = obj["uartRxFunction"];
-    if (obj["oledConnected"].is<bool>()) config.oledConnected = obj["oledConnected"];
-    if (obj["oledLockConnection"].is<bool>()) config.oledLockConnection = obj["oledLockConnection"];
-    if (obj["autoRefresh"].is<bool>()) config.autoRefreshOnChange = obj["autoRefresh"];
-    
-    return true;
-}
-
-bool JumperlessState::serializeConnections(JsonObject& obj) const {
-    obj["numBridges"] = connections.numBridges;
-    
-    JsonArray bridgesArray = obj["bridges"].to<JsonArray>();
+    output += "bridges:\n\r";
     for (int i = 0; i < connections.numBridges; i++) {
-        JsonObject bridgeObj = bridgesArray.add<JsonObject>();
-        bridgeObj["n1"] = connections.bridges[i][0];
-        bridgeObj["n2"] = connections.bridges[i][1];
-        bridgeObj["dup"] = connections.bridgeDuplicates[i];
+        output += "  - {n1: " + String(connections.bridges[i][0]) + 
+                  ", n2: " + String(connections.bridges[i][1]) + 
+                  ", dup: " + String(connections.bridges[i][2]) + "}\n\r";
     }
-    
-    return true;
+    output += "\n\r";
 }
 
-bool JumperlessState::deserializeConnections(JsonObject& obj, String& errorMsg) {
-    connections.clear();
+bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorMsg) {
+    // Parse bridge entry: - {n1: 1, n2: 5, dup: 2}
+    String line = String(yamlContent);
+    line.trim();
     
-    if (!obj["bridges"].is<JsonArray>()) {
-        errorMsg = "Missing 'bridges' array in connections";
+    // Extract values
+    int n1 = -1, n2 = -1, dup = -1;
+    
+    int n1Idx = line.indexOf("n1:");
+    if (n1Idx >= 0) {
+        int commaIdx = line.indexOf(',', n1Idx);
+        String val = line.substring(n1Idx + 3, commaIdx);
+        val.trim();
+        n1 = val.toInt();
+    }
+    
+    int n2Idx = line.indexOf("n2:");
+    if (n2Idx >= 0) {
+        int commaIdx = line.indexOf(',', n2Idx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', n2Idx);
+        String val = line.substring(n2Idx + 3, commaIdx);
+        val.trim();
+        n2 = val.toInt();
+    }
+    
+    int dupIdx = line.indexOf("dup:");
+    if (dupIdx >= 0) {
+        int endIdx = line.indexOf('}', dupIdx);
+        String val = line.substring(dupIdx + 4, endIdx);
+        val.trim();
+        dup = val.toInt();
+    }
+    
+    if (n1 < 0 || n2 < 0) {
+        errorMsg = "Invalid bridge format: " + line;
         return false;
     }
     
-    JsonArray bridgesArray = obj["bridges"];
-    for (JsonVariant v : bridgesArray) {
-        // Support both old format (string "1-5") and new format (object {"n1":1,"n2":5,"dup":2})
-        if (v.is<String>()) {
-            // Legacy format
-            String bridge = v.as<String>();
-            int dashIdx = bridge.indexOf('-');
-            if (dashIdx == -1) {
-                errorMsg = "Invalid bridge format: " + bridge;
-                return false;
-            }
-            
-            int node1 = bridge.substring(0, dashIdx).toInt();
-            int node2 = bridge.substring(dashIdx + 1).toInt();
-            
-            if (!addConnection(node1, node2, errorMsg, -1)) {  // Use default duplicates
-                return false;
-            }
-        } else if (v.is<JsonObject>()) {
-            // New format
-            JsonObject bridgeObj = v.as<JsonObject>();
-            int node1 = bridgeObj["n1"];
-            int node2 = bridgeObj["n2"];
-            int duplicates = bridgeObj["dup"] | -1;  // Default to -1 if not present
-            
-            if (!addConnection(node1, node2, errorMsg, duplicates)) {
-                return false;
-            }
-        } else {
-            errorMsg = "Invalid bridge entry format";
-            return false;
-        }
-    }
-    
-    return true;
+    return addConnection(n1, n2, errorMsg, dup);
 }
 
-bool JumperlessState::serializeDisplay(JsonObject& obj) const {
-    if (!display.hasCustomColors()) {
-        return true;  // Nothing to serialize
-    }
-    
-    JsonArray colorsArray = obj["customColors"].to<JsonArray>();
+void JumperlessState::serializeNets(String& output) const {
+    // Only serialize nets with custom colors or names
+    bool hasCustomNets = false;
     for (int i = 0; i < display.numCustomColors; i++) {
-        JsonObject colorObj = colorsArray.add<JsonObject>();
-        colorObj["net"] = display.customColors[i].netNumber;
-        colorObj["r"] = display.customColors[i].color.r;
-        colorObj["g"] = display.customColors[i].color.g;
-        colorObj["b"] = display.customColors[i].color.b;
-        colorObj["raw"] = display.customColors[i].rawColor;
-        colorObj["name"] = display.customColors[i].colorName;
+        hasCustomNets = true;
+        break;
     }
     
-    return true;
+    if (!hasCustomNets) {
+        return;  // Don't output empty nets section
+    }
+    
+    output += "nets:\n\r";
+    for (int i = 0; i < display.numCustomColors; i++) {
+        const DisplayState::NetColorEntry& entry = display.customColors[i];
+        output += "  - {num: " + String(entry.netNumber) + 
+                  ", name: \"" + String(entry.colorName) + "\"" +
+                  ", color: 0x" + String(entry.rawColor, HEX) + "}\n\r";
+    }
+    output += "\n\r";
 }
 
-bool JumperlessState::deserializeDisplay(JsonObject& obj, String& errorMsg) {
-    display.clear();
+bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg) {
+    // Parse net entry: - {num: 6, name: "Signal A", color: 0xFF0000}
+    String line = String(yamlContent);
+    line.trim();
     
-    if (obj["customColors"].is<JsonArray>()) {
-        JsonArray colorsArray = obj["customColors"];
-        for (JsonVariant v : colorsArray) {
-            JsonObject colorObj = v.as<JsonObject>();
-            int netNum = colorObj["net"];
+    int netNum = -1;
+    String netName = "";
+    uint32_t rawColor = 0;
+    
+    int numIdx = line.indexOf("num:");
+    if (numIdx >= 0) {
+        int commaIdx = line.indexOf(',', numIdx);
+        String val = line.substring(numIdx + 4, commaIdx);
+        val.trim();
+        netNum = val.toInt();
+    }
+    
+    int nameIdx = line.indexOf("name:");
+    if (nameIdx >= 0) {
+        int startQuote = line.indexOf('"', nameIdx);
+        int endQuote = line.indexOf('"', startQuote + 1);
+        if (startQuote >= 0 && endQuote > startQuote) {
+            netName = line.substring(startQuote + 1, endQuote);
+        }
+    }
+    
+    int colorIdx = line.indexOf("color:");
+    if (colorIdx >= 0) {
+        int endIdx = line.indexOf('}', colorIdx);
+        if (endIdx == -1) endIdx = line.length();
+        String val = line.substring(colorIdx + 6, endIdx);
+        val.trim();
+        if (val.startsWith("0x") || val.startsWith("0X")) {
+            rawColor = strtoul(val.c_str() + 2, NULL, 16);
+        }
+    }
+    
+    if (netNum >= 0) {
             rgbColor color;
-            color.r = colorObj["r"];
-            color.g = colorObj["g"];
-            color.b = colorObj["b"];
-            uint32_t raw = colorObj["raw"];
-            const char* name = colorObj["name"];
-            
-            display.setNetColor(netNum, color, raw, name);
-        }
+        color.r = (rawColor >> 16) & 0xFF;
+        color.g = (rawColor >> 8) & 0xFF;
+        color.b = rawColor & 0xFF;
+        display.setNetColor(netNum, color, rawColor, netName.c_str());
     }
     
     return true;
 }
 
-bool JumperlessState::serializeChipXY(JsonObject& obj) const {
-    JsonArray chipsArray = obj["chips"].to<JsonArray>();
-    
-    for (int chip = 0; chip < 12; chip++) {
-        // Check if this chip has any connections
-        uint16_t xBits = 0;
-        uint8_t yBits = 0;
-        
-        for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 8; y++) {
-                if (connections.chipXY[chip].connected[x][y]) {
-                    xBits |= (1 << x);  // Set bit for this X
-                    yBits |= (1 << y);  // Set bit for this Y
-                }
-            }
-        }
-        
-        // Only store chips that have connections
-        if (xBits != 0 || yBits != 0) {
-            JsonObject chipObj = chipsArray.add<JsonObject>();
-            chipObj["c"] = chip;     // Chip number (shortened key)
-            chipObj["x"] = xBits;    // X connections as bitfield
-            chipObj["y"] = yBits;    // Y connections as bitfield
-        }
-    }
-    
-    return true;
+void JumperlessState::serializePower(String& output) const {
+    output += "power:\n\r";
+    output += "  topRail: " + String(power.topRail, 2) + "\n\r";
+    output += "  bottomRail: " + String(power.bottomRail, 2) + "\n\r";
+    output += "  dac0: " + String(power.dac0, 2) + "\n\r";
+    output += "  dac1: " + String(power.dac1, 2) + "\n\r\n\r";
 }
 
-bool JumperlessState::deserializeChipXY(JsonObject& obj, String& errorMsg) {
-    // Clear all chip states
-    for (int i = 0; i < 12; i++) {
-        memset(&connections.chipXY[i], 0, sizeof(struct justXY));
+bool JumperlessState::deserializePower(const char* yamlContent, String& errorMsg) {
+    String line = String(yamlContent);
+    line.trim();
+    
+    if (line.startsWith("topRail:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.topRail = val.toFloat();
+    }
+    else if (line.startsWith("bottomRail:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.bottomRail = val.toFloat();
+    }
+    else if (line.startsWith("dac0:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.dac0 = val.toFloat();
+    }
+    else if (line.startsWith("dac1:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.dac1 = val.toFloat();
     }
     
-    if (obj["chips"].is<JsonArray>()) {
-        JsonArray chipsArray = obj["chips"];
-        for (JsonVariant v : chipsArray) {
-            JsonObject chipObj = v.as<JsonObject>();
-            
-            // Support both old format ("chip") and new format ("c")
-            int chip = -1;
-            if (chipObj["c"].is<int>()) {
-                chip = chipObj["c"];
-            } else if (chipObj["chip"].is<int>()) {
-                chip = chipObj["chip"];
+    return power.validate(errorMsg);
+}
+
+void JumperlessState::serializeConfig(String& output) const {
+    output += "config:\n\r";
+    output += "  routing: {stackPaths: " + String(config.stackPaths) + 
+              ", stackRails: " + String(config.stackRails) + 
+              ", stackDacs: " + String(config.stackDacs) + 
+              ", railPriority: " + String(config.railPriority) + "}\n\r";
+    
+    // GPIO direction array
+    output += "  gpio:\n\r";
+    output += "    direction: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioDirection[i]);
+        if (i < 9) output += ",";
+    }
+    output += "]\n\r";
+    
+    // GPIO pulls array
+    output += "    pulls: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPulls[i]);
+        if (i < 9) output += ",";
+    }
+    output += "]\n\r";
+    
+    // UART and OLED
+    output += "  uart: {txFunction: " + String(config.uartTxFunction) + 
+              ", rxFunction: " + String(config.uartRxFunction) + "}\n\r";
+    output += "  oled: {connected: " + String(config.oledConnected ? "true" : "false") + 
+              ", lockConnection: " + String(config.oledLockConnection ? "true" : "false") + "}\n\r";
+}
+
+bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMsg) {
+    String line = String(yamlContent);
+    line.trim();
+    
+    // Parse routing line
+    if (line.startsWith("routing:")) {
+        int stackPathsIdx = line.indexOf("stackPaths:");
+        if (stackPathsIdx >= 0) {
+            int commaIdx = line.indexOf(',', stackPathsIdx);
+            String val = line.substring(stackPathsIdx + 11, commaIdx);
+            val.trim();
+            config.stackPaths = val.toInt();
+        }
+        
+        int stackRailsIdx = line.indexOf("stackRails:");
+        if (stackRailsIdx >= 0) {
+            int commaIdx = line.indexOf(',', stackRailsIdx);
+            String val = line.substring(stackRailsIdx + 11, commaIdx);
+            val.trim();
+            config.stackRails = val.toInt();
+        }
+        
+        int stackDacsIdx = line.indexOf("stackDacs:");
+        if (stackDacsIdx >= 0) {
+            int commaIdx = line.indexOf(',', stackDacsIdx);
+            String val = line.substring(stackDacsIdx + 10, commaIdx);
+            val.trim();
+            config.stackDacs = val.toInt();
+        }
+        
+        int railPriorityIdx = line.indexOf("railPriority:");
+        if (railPriorityIdx >= 0) {
+            int endIdx = line.indexOf('}', railPriorityIdx);
+            String val = line.substring(railPriorityIdx + 13, endIdx);
+            val.trim();
+            config.railPriority = val.toInt();
+        }
+    }
+    // Parse GPIO direction array
+    else if (line.startsWith("direction:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioDirection[idx++] = val.toInt();
+                pos = commaIdx + 1;
             }
-            
-            if (chip < 0 || chip >= 12) {
-                errorMsg = "Invalid chip number: " + String(chip);
-                return false;
+        }
+    }
+    // Parse GPIO pulls array
+    else if (line.startsWith("pulls:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPulls[idx++] = val.toInt();
+                pos = commaIdx + 1;
             }
-            
-            // New compact format: bitfields
-            if (chipObj["x"].is<int>() && chipObj["y"].is<int>()) {
-                uint16_t xBits = chipObj["x"];
-                uint8_t yBits = chipObj["y"];
-                
-                // Reconstruct connections from bitfields
-                for (int x = 0; x < 16; x++) {
-                    if (xBits & (1 << x)) {
-                        for (int y = 0; y < 8; y++) {
-                            if (yBits & (1 << y)) {
-                                connections.chipXY[chip].connected[x][y] = true;
-                            }
-                        }
-                    }
-                }
-            }
-            // Old verbose format: array of connection objects
-            else if (chipObj["connections"].is<JsonArray>()) {
-                JsonArray connectionsArray = chipObj["connections"];
-                for (JsonVariant c : connectionsArray) {
-                    JsonObject connObj = c.as<JsonObject>();
-                    int x = connObj["x"];
-                    int y = connObj["y"];
-                    
-                    if (x >= 0 && x < 16 && y >= 0 && y < 8) {
-                        connections.chipXY[chip].connected[x][y] = true;
-                    }
-                }
-            }
+        }
+    }
+    // Parse UART
+    else if (line.startsWith("uart:")) {
+        int txIdx = line.indexOf("txFunction:");
+        if (txIdx >= 0) {
+            int commaIdx = line.indexOf(',', txIdx);
+            String val = line.substring(txIdx + 11, commaIdx);
+            val.trim();
+            config.uartTxFunction = val.toInt();
+        }
+        
+        int rxIdx = line.indexOf("rxFunction:");
+        if (rxIdx >= 0) {
+            int endIdx = line.indexOf('}', rxIdx);
+            String val = line.substring(rxIdx + 11, endIdx);
+            val.trim();
+            config.uartRxFunction = val.toInt();
+        }
+    }
+    // Parse OLED
+    else if (line.startsWith("oled:")) {
+        int connectedIdx = line.indexOf("connected:");
+        if (connectedIdx >= 0) {
+            int commaIdx = line.indexOf(',', connectedIdx);
+            String val = line.substring(connectedIdx + 10, commaIdx);
+            val.trim();
+            config.oledConnected = (val == "true");
+        }
+        
+        int lockIdx = line.indexOf("lockConnection:");
+        if (lockIdx >= 0) {
+            int endIdx = line.indexOf('}', lockIdx);
+            String val = line.substring(lockIdx + 15, endIdx);
+            val.trim();
+            config.oledLockConnection = (val == "true");
         }
     }
     
@@ -911,8 +1048,10 @@ bool JumperlessState::fromLegacyNodeFile(const String& nodeFileContent, String& 
 // ============================================================================
 
 SlotManager::SlotManager() 
-    : activeSlotNumber(-1), historySize(STATE_HISTORY_SIZE), 
+    : activeState(globalState), activeSlotNumber(0), historySize(STATE_HISTORY_SIZE), 
       historyHead(0), historyCount(0), historyPosition(0) {
+    // Always initialize to slot 0, sync with netSlot on first use
+    netSlot = 0;  // Ensure global is also 0
     initHistory();
 }
 
@@ -941,11 +1080,15 @@ const JumperlessState& SlotManager::getActiveState() const {
 }
 
 String SlotManager::getSlotFilename(int slotNum) const {
-    return "/slots/slot" + String(slotNum) + ".json";
+    return "/slots/slot" + String(slotNum) + ".yaml";
 }
 
 String SlotManager::getLegacySlotFilename(int slotNum) const {
     return "/nodeFileSlot" + String(slotNum) + ".txt";
+}
+
+String SlotManager::getJSONSlotFilename(int slotNum) const {
+    return "/slots/slot" + String(slotNum) + ".json";
 }
 
 bool SlotManager::slotExists(int slotNum) const {
@@ -971,31 +1114,53 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
     
     String content;
     String filename = getSlotFilename(slotNum);
+
+    Serial.println("Loading slot " + String(slotNum) + " from " + filename);
+    Serial.flush();
     
-    // Try new format first
+    // Try loading YAML slot file
     if (FatFS.exists(filename.c_str())) {
+        Serial.println("  File exists, reading...");
+        Serial.flush();
+        
         if (!readSlotFile(slotNum, content, errorMsg)) {
+            Serial.println("  Read failed: " + errorMsg);
+            Serial.flush();
             return false;
         }
         
-        if (!activeState.fromJSON(content, errorMsg)) {
-            errorMsg = "Failed to parse slot " + String(slotNum) + ": " + errorMsg;
+        Serial.println("  Parsing YAML...");
+        Serial.flush();
+        
+        if (!activeState.fromYAML(content, errorMsg)) {
+            errorMsg = "Failed to parse YAML slot " + String(slotNum) + ": " + errorMsg;
+            Serial.println("  Parse failed: " + errorMsg);
+            Serial.flush();
             return false;
         }
+        
+        Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
+        Serial.flush();
         
         activeSlotNumber = slotNum;
+        netSlot = slotNum;  // Sync global slot tracker
         return true;
     }
     
-    // Try legacy format
-    String legacyFilename = getLegacySlotFilename(slotNum);
-    if (FatFS.exists(legacyFilename.c_str())) {
-        return migrateOldSlotFile(slotNum, errorMsg);
-    }
+    // Slot file doesn't exist - start with empty state
+    Serial.println("  File doesn't exist, creating empty slot");
+    Serial.flush();
     
-    // Slot doesn't exist - create empty slot
     activeState.clear();
     activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Sync global slot tracker
+    
+    // Create empty YAML file for this slot
+    if (!ensureSlotExists(slotNum)) {
+        // Failed to create file, but we can still continue with RAM-only state
+        errorMsg = "Warning: Could not create slot file, using RAM only";
+    }
+    
     return true;
 }
 
@@ -1005,25 +1170,52 @@ bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
         return false;
     }
     
+    // Serial.println("Saving slot " + String(slotNum) + " with " + String(activeState.connections.numBridges) + " connections");
+    // Serial.flush();
+    
+    // Ensure /slots directory exists (create on-demand)
+    if (!FatFS.exists("/slots")) {
+        Serial.println("  Creating /slots directory");
+        Serial.flush();
+        if (!FatFS.mkdir("/slots")) {
+            errorMsg = "Failed to create /slots directory";
+            return false;
+        }
+    }
+    
     // Validate state before saving
     if (!activeState.validate(errorMsg)) {
         errorMsg = "Cannot save invalid state: " + errorMsg;
+        Serial.println("  Validation failed: " + errorMsg);
+        Serial.flush();
         return false;
     }
     
-    // Convert to JSON
-    String jsonContent;
-    if (!activeState.toJSON(jsonContent, true)) {  // pretty format
-        errorMsg = "Failed to serialize state to JSON";
+    // Convert to YAML
+    String yamlContent;
+    if (!activeState.toYAML(yamlContent)) {
+        errorMsg = "Failed to serialize state to YAML";
+        Serial.println("  Serialization failed");
+        Serial.flush();
         return false;
     }
     
-    // Write to file
-    if (!writeSlotFile(slotNum, jsonContent, errorMsg)) {
+    // Serial.println("  Writing to file...");
+    // Serial.flush();
+    
+    // Write to file (this will create the file if it doesn't exist)
+    if (!writeSlotFile(slotNum, yamlContent, errorMsg)) {
+        Serial.println("  Write failed: " + errorMsg);
+        Serial.flush();
         return false;
     }
+    
+    // Serial.println("  ✓ Saved successfully");
+    // Serial.flush();
     
     activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Sync global slot tracker
+    activeState.clearDirty();  // Mark as saved
     return true;
 }
 
@@ -1059,6 +1251,7 @@ bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
     if (activeSlotNumber == slotNum) {
         activeState.clear();
         activeSlotNumber = -1;
+        netSlot = 0;  // Reset to slot 0
     }
     
     return true;
@@ -1066,6 +1259,22 @@ bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
 
 void SlotManager::clearActiveSlot() {
     activeState.clear();
+}
+
+void SlotManager::setActiveSlot(int slotNum) {
+    activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Keep global slot tracker in sync
+}
+
+void SlotManager::syncFromGlobalNetSlot() {
+    // Call this when netSlot changes externally (e.g., rotary encoder)
+    if (activeSlotNumber != netSlot) {
+        activeSlotNumber = netSlot;
+        
+        // Optionally auto-load the new slot
+        // String errorMsg;
+        // loadSlot(netSlot, errorMsg);
+    }
 }
 
 bool SlotManager::ensureSlotExists(int slotNum) {
@@ -1077,27 +1286,54 @@ bool SlotManager::ensureSlotExists(int slotNum) {
     JumperlessState emptyState;
     String errorMsg;
     
-    String jsonContent;
-    if (!emptyState.toJSON(jsonContent, true)) {
+    String yamlContent;
+    if (!emptyState.toYAML(yamlContent)) {
         return false;
     }
     
-    return writeSlotFile(slotNum, jsonContent, errorMsg);
+    return writeSlotFile(slotNum, yamlContent, errorMsg);
 }
 
 // File I/O helpers
 bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
     String filename = getSlotFilename(slotNum);
     
-    while (core2busy) {
-        delay(1);
+    // Detect which core we're running on and synchronize appropriately
+    uint coreNum = get_core_num();
+    
+    // Add timeout to prevent deadlock during boot or race conditions
+    unsigned long timeout = millis() + 5000;  // 5 second timeout
+    
+    if (coreNum == 0) {
+        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
+        while (core2busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core2 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core1busy = true;
+    } else {
+        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
+        while (core1busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core1 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core2busy = true;
     }
-    core1busy = true;
     
     File file = FatFS.open(filename.c_str(), "r");
     if (!file) {
         errorMsg = "Failed to open slot file: " + filename;
-        core1busy = false;
+        if (coreNum == 0) {
+            core1busy = false;
+        } else {
+            core2busy = false;
+        }
         return false;
     }
     
@@ -1107,7 +1343,12 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
     }
     
     file.close();
-    core1busy = false;
+    
+    if (coreNum == 0) {
+        core1busy = false;
+    } else {
+        core2busy = false;
+    }
     
     return true;
 }
@@ -1123,21 +1364,53 @@ bool SlotManager::writeSlotFile(int slotNum, const String& content, String& erro
     
     String filename = getSlotFilename(slotNum);
     
-    while (core2busy) {
-        delay(1);
+    // Detect which core we're running on and synchronize appropriately
+    uint coreNum = get_core_num();
+    
+    // Add timeout to prevent deadlock during boot or race conditions
+    unsigned long timeout = millis() + 5000;  // 5 second timeout
+    
+    if (coreNum == 0) {
+        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
+        while (core2busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core2 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core1busy = true;
+    } else {
+        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
+        while (core1busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core1 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core2busy = true;
     }
-    core1busy = true;
     
     File file = FatFS.open(filename.c_str(), "w");
     if (!file) {
         errorMsg = "Failed to open slot file for writing: " + filename;
-        core1busy = false;
+        if (coreNum == 0) {
+            core1busy = false;
+        } else {
+            core2busy = false;
+        }
         return false;
     }
     
-    file.print(content);
+    file.write((const uint8_t*)content.c_str(), content.length());
     file.close();
-    core1busy = false;
+    
+    if (coreNum == 0) {
+        core1busy = false;
+    } else {
+        core2busy = false;
+    }
     
     return true;
 }
@@ -1145,15 +1418,31 @@ bool SlotManager::writeSlotFile(int slotNum, const String& content, String& erro
 bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
     String legacyFilename = getLegacySlotFilename(slotNum);
     
-    while (core2busy) {
-        delay(1);
+    // Detect which core we're running on and synchronize appropriately
+    uint coreNum = get_core_num();
+    
+    if (coreNum == 0) {
+        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
+        while (core2busy) {
+            delay(1);
+        }
+        core1busy = true;
+    } else {
+        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
+        while (core1busy) {
+            delay(1);
+        }
+        core2busy = true;
     }
-    core1busy = true;
     
     File file = FatFS.open(legacyFilename.c_str(), "r");
     if (!file) {
         errorMsg = "Failed to open legacy slot file: " + legacyFilename;
-        core1busy = false;
+        if (coreNum == 0) {
+            core1busy = false;
+        } else {
+            core2busy = false;
+        }
         return false;
     }
     
@@ -1162,7 +1451,12 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
         content += (char)file.read();
     }
     file.close();
-    core1busy = false;
+    
+    if (coreNum == 0) {
+        core1busy = false;
+    } else {
+        core2busy = false;
+    }
     
     // Parse legacy format
     JumperlessState newState;
@@ -1187,6 +1481,7 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
     }
     
     activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Sync global slot tracker
     
     Serial.println("✓ Migrated legacy slot " + String(slotNum) + " to new format");
     return true;

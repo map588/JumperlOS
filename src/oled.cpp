@@ -1497,15 +1497,11 @@ int oled::connect(void) {
     // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, -1, netSlot, 0);
     // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, -1, netSlot, 0);
     
-    // Use batch operation to add both bridges at once for better performance
+    // Use RAM-based state system
+    addBridgeToState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row);
+    addBridgeToState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);
     
-    int oledBridges[2][2] = {
-        {jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row},
-        {jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row}
-    };
-    addBridgeToNodeFile(oledBridges[0][0], oledBridges[0][1], netSlot, 0, 0);
-    addBridgeToNodeFile(oledBridges[1][0], oledBridges[1][1], netSlot, 0, 0);
-    
+    // Extra refresh to ensure OLED connections are applied
     refreshConnections(1, 0, 0);
     // Serial.print("waitCore2     ");
     // Serial.println(millis());
@@ -1536,8 +1532,9 @@ void oled::disconnect(void) {
     if (jumperlessConfig.top_oled.enabled == 0) {
         return;
     }
-    removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, netSlot, 0);
-    removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, netSlot, 0);
+    // Use RAM-based state system
+    removeBridgeFromState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row);
+    removeBridgeFromState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);
     // Restore pins to unassigned in net map so they show as normal when disconnected
     // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -1;
     // gpioNet[jumperlessConfig.top_oled.scl_pin - 20] = -1;

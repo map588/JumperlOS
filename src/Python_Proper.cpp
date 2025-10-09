@@ -8,7 +8,7 @@
 #include "CH446Q.h"
 #include "Commands.h"
 #include "AsyncPassthrough.h"
-
+#include "TermControl.h"
 #include "LEDs.h"
 
 extern "C" {
@@ -444,6 +444,7 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
 
   if (global_mp_stream == &Serial) {
     global_mp_stream->write(0x0E); // turn on interactive mode
+    termInInteractiveMode = 1;
     global_mp_stream->flush();
   }
 
@@ -808,6 +809,7 @@ void processMicroPythonInput(Stream *stream) {
           // Restore interactive mode after returning from eKilo
           if (global_mp_stream == &Serial) {
             global_mp_stream->write(0x0E); // turn on interactive mode
+            termInInteractiveMode = 1;
             global_mp_stream->flush();
           }
           
@@ -864,6 +866,7 @@ void processMicroPythonInput(Stream *stream) {
           // Restore interactive mode after returning from eKilo
           if (global_mp_stream == &Serial) {
             global_mp_stream->write(0x0E); // turn on interactive mode
+            termInInteractiveMode = 1;
             global_mp_stream->flush();
           }
           
@@ -916,6 +919,7 @@ void processMicroPythonInput(Stream *stream) {
           // Restore interactive mode after returning from eKilo
           if (global_mp_stream == &Serial) {
             global_mp_stream->write(0x0E); // turn on interactive mode
+            termInInteractiveMode = 1;
             global_mp_stream->flush();
           }
           
@@ -1097,6 +1101,7 @@ void processMicroPythonInput(Stream *stream) {
           // Restore interactive mode after returning from file manager
           if (global_mp_stream == &Serial) {
             global_mp_stream->write(0x0E); // turn on interactive mode
+            termInInteractiveMode = 1;
             global_mp_stream->flush();
           }
 
@@ -1398,7 +1403,8 @@ void processMicroPythonInput(Stream *stream) {
         // Restore interactive mode after returning from eKilo
         if (global_mp_stream == &Serial) {
           global_mp_stream->write(0x0E); // turn on interactive mode
-          global_mp_stream->flush();
+          termInInteractiveMode = 1;
+            global_mp_stream->flush();
         }
         
         // Handle the return from eKilo

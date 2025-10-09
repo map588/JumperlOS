@@ -36,9 +36,8 @@ Adafruit_USBD_CDC USBSer3;
 // #endif
 
 // #if USB_CDC_ENABLE_COUNT >= 5
-//Adafruit_USBD_CDC Serial4;
+// Adafruit_USBD_CDC Serial4;
 // #endif
-
 
 // general debug printing
 #define ARDUINO_DEBUG_PRINTLN( x )                 \
@@ -187,21 +186,21 @@ void initSecondSerial( void ) {
 
 #if USB_CDC_ENABLE_COUNT >= 3
     // USBSer2 maps to CDC interface 2 (Routable Serial) - conditionally
-   // if ( jumperlessConfig.serial_2.function != 0 ) {
-       USBSer2.begin( baudRateUSBSer2, makeSerialConfig( 8, 0, 1 ) );
-        // Serial.println("  USBSer2 (Routable) initialized");
-        // Serial2.begin( baudRateUSBSer2, makeSerialConfig( 8, 0, 0 ) );
-   // } else {
-        // Serial.println("  USBSer2 disabled by config");
-   // }
+    // if ( jumperlessConfig.serial_2.function != 0 ) {
+    USBSer2.begin( baudRateUSBSer2, makeSerialConfig( 8, 0, 1 ) );
+    // Serial.println("  USBSer2 (Routable) initialized");
+    // Serial2.begin( baudRateUSBSer2, makeSerialConfig( 8, 0, 0 ) );
+    // } else {
+    // Serial.println("  USBSer2 disabled by config");
+    // }
 #endif
 
 #if USB_CDC_ENABLE_COUNT >= 4
     // USBSer3 maps to CDC interface 3 (Debug Serial)
 
     USBSer3.begin( 115200 );
-   // delay(3000);//!son of a bitch
-  //  Ser3.println("Serial3 initialized");
+    // delay(3000);//!son of a bitch
+    //  Ser3.println("Serial3 initialized");
 
     // Serial.println("  USBSer3 (Debug) initialized");
 #endif
@@ -367,7 +366,7 @@ int serialPassthroughStatus = 0;
 int serialPassthroughStatusTimeout = 50;
 
 int secondSerialHandler( void ) {
-//return 0;
+    // return 0;
     int ret = 0;
 
     // if (jumperlessConfig.serial_1.function == 2 ||
@@ -426,7 +425,7 @@ int secondSerialHandler( void ) {
 
         if ( jumperlessConfig.serial_1.async_passthrough == false ) {
             ret = handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
-            //Serial.println(jumperlessConfig.serial_1.async_passthrough);
+            // Serial.println(jumperlessConfig.serial_1.async_passthrough);
         }
     }
     // } while ( Serial1.available( ) > 0 || USBSer1.available( ) > 0 );
@@ -457,14 +456,14 @@ bool checkForDTRpulse( void ) {
         arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
         arduinoDTR[ 2 ] = USBSer1.dtr( );
 
-        //!to make this work with Windows, we just check for any change in DTR, macOS and Linux send a full off-on-off pulse
+        //! to make this work with Windows, we just check for any change in DTR, macOS and Linux send a full off-on-off pulse
 
-        if (/* arduinoDTR[ 0 ] == 0 && */arduinoDTR[ 1 ] == 1 && arduinoDTR[ 2 ] == 0 ) { // detect pulses going either direction (some things invert the DTR line)
+        if ( /* arduinoDTR[ 0 ] == 0 && */ arduinoDTR[ 1 ] == 1 && arduinoDTR[ 2 ] == 0 ) { // detect pulses going either direction (some things invert the DTR line)
             arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
             arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
             arduinoDTR[ 2 ] = USBSer1.dtr( );
             arduinoDTRpulse = true;
-        } else if ( /*arduinoDTR[ 0 ] == 1 && */arduinoDTR[ 1 ] == 0 && arduinoDTR[ 2 ] == 1 ) {
+        } else if ( /*arduinoDTR[ 0 ] == 1 && */ arduinoDTR[ 1 ] == 0 && arduinoDTR[ 2 ] == 1 ) {
             arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
             arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
             arduinoDTR[ 2 ] = USBSer1.dtr( );
@@ -970,17 +969,16 @@ void printMicrosPerByte( void ) {
 
 void connectArduino( int flashOrLocal, int refreshConnections ) {
 
-    // removeBridgeFromNodeFile(NANO_D1, RP_UART_RX, netSlot, flashOrLocal);
-    // removeBridgeFromNodeFile(NANO_D0, RP_UART_TX, netSlot, flashOrLocal);
-    addBridgeToNodeFile( RP_UART_RX, NANO_D1, netSlot, flashOrLocal, 0 );
-    addBridgeToNodeFile( RP_UART_TX, NANO_D0, netSlot, flashOrLocal, 0 );
+    // Use RAM-based state system
+    addBridgeToState( RP_UART_RX, NANO_D1 );
+    addBridgeToState( RP_UART_TX, NANO_D0 );
     // ManualArduinoReset = true;
     // goto loadfile;
     refresh( flashOrLocal, -1, 1, 0 );
 
     // sendPaths();
 
-    leds.show();
+    leds.show( );
 
     while ( checkIfArduinoIsConnected( ) == 0 ) {
     }
@@ -992,8 +990,10 @@ void connectArduino( int flashOrLocal, int refreshConnections ) {
 
 void disconnectArduino( int flashOrLocal ) {
 
-    removeBridgeFromNodeFile( NANO_D1, RP_UART_RX, netSlot, flashOrLocal );
-    removeBridgeFromNodeFile( NANO_D0, RP_UART_TX, netSlot, flashOrLocal );
+    // Use RAM-based state system
+    removeBridgeFromState( NANO_D1, RP_UART_RX );
+    removeBridgeFromState( NANO_D0, RP_UART_TX );
+    // State functions already refresh, but do explicit refresh for safety
     refresh( flashOrLocal, -1, 1 );
     // if (flashOrLocal == 1) {
     //   refreshLocalConnections(1, 0);
@@ -1370,14 +1370,14 @@ void checkForConfigChangesUSBSer2( int print ) {
     }
 }
 
-void replyWithSerialInfo( void ) {
+void replyWithSerialInfo( int force ) {
 
     // if (flashingArduino == true) {
     //   return;
     // }
 
     // Check main Serial (CDC 0) for ENQ character - responds for ALL ports
-    if ( Serial.available( ) > 0 ) {
+    if ( Serial.available( ) > 0 || force == 1 ) {
         char c = Serial.peek( ); // Look at the character without removing it
         if ( c == 0x05 ) {       // ENQ character
             Serial.read( );      // Remove the ENQ character from buffer

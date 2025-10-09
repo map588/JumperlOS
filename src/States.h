@@ -8,7 +8,46 @@
 #include "MatrixState.h"
 #include "LEDs.h"
 #include "CH446Q.h"
-#include "ArduinoJson.h"
+#include <YAMLDuino.h>
+
+
+/*
+This is the new target YAML format for the states system
+
+everything is optional, it'll default to the config values
+
+make sure it's easy to add new fields in the future
+
+Example YAML format:
+version: 2
+sourceOfTruth: bridges  # or 'nets'
+
+bridges:
+  - {n1: 1, n2: 5, dup: 2}
+  - {n1: 10, n2: 20, dup: 3}
+
+nets:  # optional, for colors/names
+  - {num: 6, name: "Signal A", color: 0xFF0000, nodes: [1, 5]}
+  - {num: 7, name: "Signal B", nodes: [10, 20]}
+
+power:
+  topRail: 5.0
+  bottomRail: 0.0
+  dac0: 3.33
+  dac1: 0.0
+
+config:
+  routing: {stackPaths: 2, stackRails: 3, stackDacs: 0, railPriority: 1}
+  gpio:
+    direction: [1,1,1,1,1,1,1,1,1,1]
+    pulls: [0,0,0,0,0,0,0,0,0,0]
+  uart: {txFunction: 0, rxFunction: 1}
+  oled: {connected: false, lockConnection: false}
+
+*/
+
+
+
 
 // History buffer size (adjustable for undo/redo)
 #ifndef STATE_HISTORY_SIZE
@@ -19,35 +58,39 @@
 class JumperlessState;
 class SlotManager;
 
+// Source of truth for state reconciliation
+enum SourceOfTruth {
+    BRIDGES_PRIMARY,  // Bridges define connections, nets computed from bridges
+    NETS_PRIMARY      // Nets define connections, bridges generated from nets
+};
+
 /**
  * @brief Stores the connection topology: bridges, nets, and routing paths
  * This is the core of what makes a "slot" unique
  */
 struct ConnectionState {
-    // Raw bridge connections (what the user specifies)
-    int bridges[MAX_BRIDGES][3];  // [bridge_index][node1, node2, net]
-    int bridgeDuplicates[MAX_BRIDGES];  // How many parallel copies of each bridge
+    // STORED: Essential data (saved to YAML)
+    int bridges[MAX_BRIDGES][3];  // [bridge_index][node1, node2, duplicates]
     int numBridges;
     
-    // Network structures (derived from bridges)
-    netStruct nets[MAX_NETS];
-    int numNets;
+    netStruct nets[MAX_NETS];  // User-defined nets (optional, for colors/names/reference)
+    int numNets;  // Derived count
     
-    // Routing paths (calculated from nets, can be cached)
+    // COMPUTED: Runtime caches (NOT saved to YAML, computed from bridges/nets)
     pathStruct paths[MAX_BRIDGES];
     int numPaths;
     bool pathsCacheValid;  // Set to false when connections change
     
-    // Physical crossbar switch states (STORED in slot file)
-    struct justXY chipXY[12];  // Actual switch positions for all 12 chips
-    
-    // Chip status arrays (CACHED - recalculated from paths)
-    chipStatus chipStates[12];
+    chipStatus chipStates[12];  // Derived from paths
+    struct justXY chipXY[12];   // Crossbar switch states (reconstructed from paths)
     bool chipStatesCacheValid;
     
     ConnectionState();
     void clear();
     void invalidateCache(bool autoRefresh = true);  // Optional auto-refresh on invalidate
+    void recomputePaths();  // Calls bridgesToPaths() to rebuild paths from current state
+    void syncBridgesFromNets();  // Generate bridges from net node lists
+    void syncNetsFromBridges();  // Generate nets from bridges
 };
 
 /**
@@ -91,6 +134,9 @@ struct DisplayState {
  * @brief Configuration options that affect routing and behavior
  */
 struct ConfigState {
+    // State reconciliation mode
+    SourceOfTruth sourceOfTruth;  // Which representation is authoritative
+    
     // Routing preferences
     int stackPaths;     // How many paths to stack (0-3)
     int stackRails;     // How many rail connections to stack (0-3)
@@ -154,6 +200,8 @@ public:
     void getPathStacking(int& paths, int& rails, int& dacs) const;
     void setAutoRefresh(bool enabled) { config.autoRefreshOnChange = enabled; }
     bool getAutoRefresh() const { return config.autoRefreshOnChange; }
+    void setSourceOfTruth(SourceOfTruth source) { config.sourceOfTruth = source; markDirty(); }
+    SourceOfTruth getSourceOfTruth() const { return config.sourceOfTruth; }
     
     // GPIO
     void setGpioDirection(int gpio, int direction);
@@ -165,12 +213,18 @@ public:
     void setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name);
     bool getNetColor(int netNum, rgbColor& color, uint32_t& raw, char* name) const;
     
+    // Dirty flag management (for lazy writes)
+    void markDirty() { dirty = true; lastModifiedTime = millis(); }
+    bool isDirty() const { return dirty; }
+    void clearDirty() { dirty = false; }
+    unsigned long getLastModifiedTime() const { return lastModifiedTime; }
+    
     // Validation
     bool validate(String& errorMsg) const;
     
-    // Serialization (JSON format)
-    bool toJSON(String& output, bool pretty = false) const;
-    bool fromJSON(const String& input, String& errorMsg);
+    // Serialization (YAML format)
+    bool toYAML(String& output) const;
+    bool fromYAML(const String& input, String& errorMsg);
     
     // Legacy format support
     bool fromLegacyNodeFile(const String& nodeFileContent, String& errorMsg);
@@ -184,21 +238,23 @@ public:
     size_t estimateRAMUsage() const;
     
 private:
+    // Dirty flag infrastructure
+    bool dirty;
+    unsigned long lastModifiedTime;
+    
     // Helper for validation
     bool isNodeValid(int node) const;
     bool isConnectionAllowed(int node1, int node2, String& errorMsg) const;
     
-    // JSON serialization helpers
-    bool serializeConnections(JsonObject& obj) const;
-    bool deserializeConnections(JsonObject& obj, String& errorMsg);
-    bool serializePower(JsonObject& obj) const;
-    bool deserializePower(JsonObject& obj, String& errorMsg);
-    bool serializeDisplay(JsonObject& obj) const;
-    bool deserializeDisplay(JsonObject& obj, String& errorMsg);
-    bool serializeConfig(JsonObject& obj) const;
-    bool deserializeConfig(JsonObject& obj, String& errorMsg);
-    bool serializeChipXY(JsonObject& obj) const;
-    bool deserializeChipXY(JsonObject& obj, String& errorMsg);
+    // YAML serialization helpers
+    void serializeBridges(String& output) const;
+    bool deserializeBridges(const char* yamlContent, String& errorMsg);
+    void serializeNets(String& output) const;
+    bool deserializeNets(const char* yamlContent, String& errorMsg);
+    void serializePower(String& output) const;
+    bool deserializePower(const char* yamlContent, String& errorMsg);
+    void serializeConfig(String& output) const;
+    bool deserializeConfig(const char* yamlContent, String& errorMsg);
 };
 
 /**
@@ -227,6 +283,10 @@ public:
     bool deleteSlot(int slotNum, String& errorMsg);
     void clearActiveSlot();
     
+    // Slot tracking synchronization
+    void setActiveSlot(int slotNum);  // Sets activeSlotNumber and syncs with global netSlot
+    void syncFromGlobalNetSlot();     // Updates activeSlotNumber from netSlot (for external changes)
+    
     // Create slot files on-demand (not pre-created)
     bool ensureSlotExists(int slotNum);
     
@@ -252,8 +312,8 @@ private:
     SlotManager();
     ~SlotManager() = default;
     
-    // State storage
-    JumperlessState activeState;
+    // State storage - reference to globalState (no duplication!)
+    JumperlessState& activeState;
     int activeSlotNumber;
     
     // History buffer (circular buffer for undo/redo)
@@ -264,8 +324,9 @@ private:
     int historyPosition;   // Current position in history (for redo)
     
     // File I/O helpers
-    String getSlotFilename(int slotNum) const;
-    String getLegacySlotFilename(int slotNum) const;
+    String getSlotFilename(int slotNum) const;  // Returns .yaml filename
+    String getLegacySlotFilename(int slotNum) const;  // Returns old .txt filename
+    String getJSONSlotFilename(int slotNum) const;  // Returns old .json filename
     bool readSlotFile(int slotNum, String& content, String& errorMsg);
     bool writeSlotFile(int slotNum, const String& content, String& errorMsg);
     
@@ -274,6 +335,10 @@ private:
     void cleanupHistory();
     int historyIndex(int offset) const;  // Helper for circular buffer indexing
 };
+
+// Global singleton declaration - THE single source of truth for all Jumperless state
+// This replaces the old global arrays (net[], path[], ch[]) with a unified state object
+extern JumperlessState globalState;
 
 // Global helpers for easy access
 namespace StateHelpers {

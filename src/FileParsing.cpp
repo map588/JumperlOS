@@ -7,6 +7,7 @@
 #include "Commands.h"
 // #include "MachineCommands.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 #include "Probing.h"
 #include "RotaryEncoder.h"
@@ -213,6 +214,175 @@ void createLocalNodeFile(int slot) {
 }
 
 void clearNodeFileString() { nodeFileString.clear(); }
+
+//==============================================================================
+// New RAM-based state functions - Preferred over legacy file-based functions
+//==============================================================================
+
+/**
+ * @brief Add a bridge connection to globalState (RAM only, no file I/O)
+ * @param node1 First node number
+ * @param node2 Second node number  
+ * @param duplicates Number of parallel paths (-1 = use default from config)
+ * @param autoRefresh If true, immediately refresh hardware (default: true for single ops, set false for batch)
+ * @return true if added successfully, false if invalid
+ */
+bool addBridgeToState(int node1, int node2, int duplicates, bool autoRefresh) {
+    String errorMsg;
+    
+    // Use the state's built-in validation and addition
+    bool success = globalState.addConnection(node1, node2, errorMsg, duplicates);
+    
+    if (!success) {
+        if (debugFP) {
+            Serial.print("addBridgeToState failed: ");
+            Serial.println(errorMsg);
+        }
+        return false;
+    }
+    
+    // Mark as dirty for future save
+    globalState.markDirty();
+    
+    // Optionally update hardware immediately
+    if (autoRefresh) {
+        refreshLocalConnections(1, 1, 0);
+    }
+    
+    if (debugFP) {
+        Serial.print("Added bridge to state: ");
+        Serial.print(node1);
+        Serial.print(" - ");
+        Serial.println(node2);
+    }
+    
+    return true;
+}
+
+/**
+ * @brief Remove a bridge connection from globalState (RAM only, no file I/O)
+ * @param node1 First node number
+ * @param node2 Second node number (or -1 to remove ALL connections containing node1)
+ * @param autoRefresh If true, immediately refresh hardware (default: true for single ops, set false for batch)
+ * @return true if removed successfully, false if not found or invalid
+ */
+bool removeBridgeFromState(int node1, int node2, bool autoRefresh) {
+    String errorMsg;
+    bool success = false;
+    int removedCount = 0;
+    
+    // Clear the lastRemovedNodes tracking array
+    lastRemovedNodesIndex = 0;
+    for (int i = 0; i < 20; i++) {
+        lastRemovedNodes[i] = -1;
+    }
+    
+    if (node2 == -1) {
+        // Remove ALL connections containing node1
+        // We need to iterate through bridges and remove any that contain node1
+        int numBridges = globalState.connections.numBridges;
+        
+        // Iterate backwards so we can remove without index issues
+        for (int i = numBridges - 1; i >= 0; i--) {
+            int bridgeNode1 = globalState.connections.bridges[i][0];
+            int bridgeNode2 = globalState.connections.bridges[i][1];
+            
+            if (bridgeNode1 == node1 || bridgeNode2 == node1) {
+                // Track the OTHER node that was disconnected
+                int otherNode = (bridgeNode1 == node1) ? bridgeNode2 : bridgeNode1;
+                if (lastRemovedNodesIndex < 20) {
+                    lastRemovedNodes[lastRemovedNodesIndex++] = otherNode;
+                }
+                
+                // Remove this bridge
+                if (globalState.removeConnection(bridgeNode1, bridgeNode2, errorMsg)) {
+                    removedCount++;
+                    success = true;
+                }
+            }
+        }
+        
+        if (removedCount > 0) {
+            disconnectedNodeNewData = true;
+        }
+        
+    } else {
+        // Remove specific connection node1-node2
+        success = globalState.removeConnection(node1, node2, errorMsg);
+        
+        if (success) {
+            removedCount = 1;
+            // Track both nodes as removed
+            lastRemovedNodes[0] = node1;
+            lastRemovedNodes[1] = node2;
+            lastRemovedNodesIndex = 2;
+            disconnectedNodeNewData = true;
+        }
+    }
+    
+    if (!success) {
+        if (debugFP) {
+            Serial.print("removeBridgeFromState failed: ");
+            Serial.println(errorMsg);
+        }
+        return false;
+    }
+    
+    // Mark as dirty for future save
+    globalState.markDirty();
+    
+    // Optionally update hardware immediately
+    if (autoRefresh) {
+        refreshLocalConnections(1, 1, 0);
+    }
+    
+    if (debugFP) {
+        if (node2 == -1) {
+            Serial.print("Removed ");
+            Serial.print(removedCount);
+            Serial.print(" bridges containing node ");
+            Serial.println(node1);
+        } else {
+            Serial.print("Removed bridge from state: ");
+            Serial.print(node1);
+            Serial.print(" - ");
+            Serial.println(node2);
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * @brief Save globalState to YAML file
+ * @param slot Slot number to save to (-1 = use current netSlot)
+ * @return true if saved successfully
+ */
+bool saveStateToSlot(int slot) {
+    if (slot == -1) {
+        slot = netSlot;
+    }
+    
+    String errorMsg;
+    SlotManager& mgr = SlotManager::getInstance();
+    
+    bool success = mgr.saveSlot(slot, errorMsg);
+    
+    if (!success) {
+        Serial.print("Failed to save state to slot ");
+        Serial.print(slot);
+        Serial.print(": ");
+        Serial.println(errorMsg);
+        return false;
+    }
+    
+    if (debugFP) {
+        Serial.print("Saved state to slot ");
+        Serial.println(slot);
+    }
+    
+    return true;
+}
 
 void saveLocalNodeFile(int slot) {
   // Serial.println("saving local node file");
@@ -665,135 +835,100 @@ void saveCurrentSlotToSlot(int slotFrom, int slotTo, int flashOrLocalfrom,
 }
 
 void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
-
+  // NEW: Parse input directly into RAM state (no file I/O until auto-save)
+  
   specialFunctionsString.clear();
-  openFileThreadSafe(w, slot);
-  // Serial.println("Slot " + String(slot));
-
-  // if (debugFP) {
-  //  Serial.print("source = ");
-  //  Serial.println(source);
-  //  Serial.flush();
-  // }
-  // char reads[20] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '
-  // ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '}; int readsIndex = 0;
+  
   if (source == 0 || true) {
-    int charCount = 0;
-
-    //   uint8_t portMaskAvailable = Serial.availablePort();
-
-    //   uint8_t existingSerialTarget = Serial.getSerialTarget();
-    //   // Serial.println("portMaskAvailable");
-    //   // Serial.println(portMaskAvailable, BIN);
-    //   // Serial.flush();
-    //  // Serial.setSerialTarget(portMaskAvailable);
-
-    //   if (portMaskAvailable == SERIAL_PORT_SERIAL1){
-    //     specialFunctionsString.print("116-70, 117-71, ");
-    //   }
-
+    // Handle serial command buffer (for UART connections)
     if (serialCommandBufferIndex > 0) {
       specialFunctionsString.print("{ 116-70, 117-71, ");
-      // specialFunctionsString.print((const char*)serialCommandBuffer);
-      // //specialFunctionsString.print(", ");
-      // specialFunctionsString.printTo(Serial);
-      // Serial.println();
-      // Serial.flush();
       serialCommandBufferIndex = 0;
     }
 
+    // Read from serial
     specialFunctionsString.read(Serial);
     specialFunctionsString.trim();
     if (specialFunctionsString.endsWith(",") == 0) {
       specialFunctionsString.concat(",\n\r");
     }
-    nodeFileString.clear();
+    
+    // Replace special names with node numbers
+    replaceSFNamesWithDefinedInts();
+    replaceNanoNamesWithDefinedInts();
 
-    specialFunctionsString.printTo(nodeFileString);
-    // nodeFileString.print(specialFunctionsString);
-    // nodeFileString.printTo(Serial);
-    // nodeFileString.concat(specialFunctionsString);
-    removeBridgeFromNodeFile(116, -1, 0, 1, 1);
-    specialFunctionsString.clear();
-    // Serial.println("specialFunctionsString");
-    // Serial.flush();
-    nodeFileString.printTo(specialFunctionsString);
-    // specialFunctionsString.printTo(Serial);
-    // specialFunctionsString.concat(nodeFileString);
-
-    // Serial.println("specialFunctionsString");
-    // Serial.flush();
-    // Serial.setSerialTarget(existingSerialTarget);
-    // while (Serial.available() == 0) {
-    // }
-    // Serial.println("source = 0");
-    // nodeFile.print("{");
-    // if (jumperlessConfig.serial_1.lock_connection == 1) {
-    //   nodeFile.print("116-70, 117-71, ");
-    //   }
-    // while (Serial.available() > 0) {
-    //   // nodeFile.write(Serial.read());
-    //   uint8_t c = Serial.read();
-    //   // reads[readsIndex] = c;
-    //   // readsIndex++;
-    //   // if (readsIndex > 19) {
-    //   //   readsIndex = 0;
-    //   // }
-
-    //   if (c != 'f' && c != '}' && c != '{' && c != ' ' && c != '\n' &&
-    //       c != '\r' && c != '\t') {
-    //        if (charCount == 0 && c == '-') {
-    //          continue;
-
-    //        }
-    //     ///nodeFile.write(c);
-    //     specialFunctionsString.write(c);
-    //     charCount++;
-    //     Serial.write(c);
-    //   }
-
-    // delayMicroseconds(microsPerByteSerial1);
-    // }
+    
+    // Parse into RAM state instead of file
+    // Clear current connections in state
+    globalState.clearAllConnections();
+    
+    // Parse the connections from specialFunctionsString
+    // Format: "1-2, 3-4, 5-6, ..."
+    specialFunctionsString.replace("{", "");
+    specialFunctionsString.replace("}", "");
+    specialFunctionsString.replace("\n", "");
+    specialFunctionsString.replace("\r", "");
+    specialFunctionsString.trim();
+    
+    // Parse each connection using SafeString tokenizer
+    int connCount = 0;
+    createSafeString(connBuf, 20);
+    createSafeString(nodeBuf, 10);
+    char commaDelim[] = ",";
+    char dashDelim[] = "-";
+    createSafeStringFromCharArray(commaDelimiters, commaDelim);
+    createSafeStringFromCharArray(dashDelimiters, dashDelim);
+    
+    int stringIndex = 0;
+    while (stringIndex >= 0) {
+      stringIndex = specialFunctionsString.stoken(connBuf, stringIndex, commaDelimiters);
+      if (stringIndex == -1) break;
+      
+      connBuf.trim();
+      if (connBuf.length() < 3) continue;  // Skip empty tokens
+      
+      // Parse "node1-node2" format using SafeString
+      int nodeIndex = 0;
+      nodeIndex = connBuf.stoken(nodeBuf, nodeIndex, dashDelimiters);
+      if (nodeIndex == -1) continue;
+      
+      int node1 = 0;
+      nodeBuf.toInt(node1);
+      
+      nodeIndex = connBuf.stoken(nodeBuf, nodeIndex, dashDelimiters);
+      if (nodeIndex == -1) continue;
+      
+      int node2 = 0;
+      nodeBuf.toInt(node2);
+      
+      if (node1 > 0 && node2 > 0) {
+        // Add to RAM state (no auto-refresh for batch operation)
+        if (addBridgeToState(node1, node2, -1, false)) {
+          connCount++;
+          if (debugFP) {
+            Serial.print("Parsed: ");
+            Serial.print(node1);
+            Serial.print("-");
+            Serial.println(node2);
+          }
+        }
+      }
+    }
+    
+    Serial.print("Loaded ");
+    Serial.print(connCount);
+    Serial.println(" connections into RAM (will auto-save)");
+    
+    // Mark as dirty and refresh once at the end (batch optimization)
+    if (connCount > 0) {
+      globalState.markDirty();
+      refreshLocalConnections(1, 1, 0);
+    }
+    
   }
-  // if (source == 1) {
-  //   nodeFile.print("{117-71, 116-70,");
-  //   while (Serial1.available() == 0) {
-  //   }
-  //   delayMicroseconds(microsPerByteSerial1);
-  //   // Serial.println("waiting for Arduino to send file");
-  //   while (Serial1.available() > 0) {
-
-  //     char c = Serial1.read();
-  //     // nodeFile.write(c);
-  //     specialFunctionsString.write(c);
-  //     delayMicroseconds(microsPerByteSerial1);
-  //     // Serial.println(Serial1.available());
-  //   }
-
-  //   while (Serial1.available() > 0) {
-  //     Serial1.read();
-  //     delayMicroseconds(microsPerByteSerial1);
-  //   }
-  // }
-
-  specialFunctionsString.trim();
-  if (specialFunctionsString.endsWith(",") == 0) {
-    specialFunctionsString.concat(",");
-  }
-
-  // Serial.println("\n\n\rbefore replaceSFNamesWithDefinedInts");
-  // specialFunctionsString.printTo(Serial);
-
-  replaceSFNamesWithDefinedInts();
-  replaceNanoNamesWithDefinedInts();
-
-  specialFunctionsString.printTo(nodeFile);
-
-  nodeFile.print(" } ");
-
-  nodeFile.close();
-  markSlotAsModified(slot); // Mark slot as needing re-validation
-  core1busy = false;
+  
+  // No file write here - auto-save scheduler handles it
+  // State is already marked dirty by addBridgeToState() calls
 }
 
 int getSlotLength(int slot, int flashOrLocal) {
@@ -1655,13 +1790,15 @@ void readStringFromSerial(int source, int addRemove) {
     }
 
     if (addRemove == 0) {
-      addBridgeToNodeFile(node1, node2, netSlot, 0, 1);
+      addBridgeToState(node1, node2);
+      saveStateToSlot();  // Save after each addition
     } else if (addRemove == 1) {
       if (node1 == node2 || isNodeValid(node2) == 0) {
         node2 = -1;
       }
 
-      removeBridgeFromNodeFile(node1, node2, netSlot, 0, 0);
+      removeBridgeFromState(node1, node2);
+      saveStateToSlot();  // Save after each removal
     }
 
   } while (finished == 0);
@@ -2461,24 +2598,24 @@ void parseStringToBridges(void) {
     // Serial.print("stringIndex = ");
     // Serial.println(stringIndex);
 
-    buffer.toInt(path[newBridgeIndex].node1);
+    buffer.toInt(globalState.connections.paths[newBridgeIndex].node1);
 
-    // Serial.print("path[newBridgeIndex].node1 = ");
-    // Serial.println(path[newBridgeIndex].node1);
+    // Serial.print("globalState.connections.paths[newBridgeIndex].node1 = ");
+    // Serial.println(globalState.connections.paths[newBridgeIndex].node1);
 
     if (debugFP) {
       Serial.print("node1 = ");
-      Serial.println(path[newBridgeIndex].node1);
+      Serial.println(globalState.connections.paths[newBridgeIndex].node1);
     }
 
     stringIndex =
         specialFunctionsString.stoken(buffer, stringIndex, delimiters);
 
-    buffer.toInt(path[newBridgeIndex].node2);
+    buffer.toInt(globalState.connections.paths[newBridgeIndex].node2);
 
     if (debugFP) {
       Serial.print("node2 = ");
-      Serial.println(path[newBridgeIndex].node2);
+      Serial.println(globalState.connections.paths[newBridgeIndex].node2);
     }
 
     readLength = stringIndex;
@@ -2509,9 +2646,9 @@ void parseStringToBridges(void) {
   if (debugFP)
     for (int i = 0; i < newBridgeLength; i++) {
       Serial.print("[");
-      Serial.print(path[newBridgeIndex].node1);
+      Serial.print(globalState.connections.paths[newBridgeIndex].node1);
       Serial.print("-");
-      Serial.print(path[newBridgeIndex].node2);
+      Serial.print(globalState.connections.paths[newBridgeIndex].node2);
       Serial.print("],");
       newBridgeIndex++;
     }
@@ -2720,7 +2857,7 @@ int loadChangedNetColorsFromFile(int slot, int flashOrLocal) {
     }
     return 0; // Indicate operation not performed or not applicable
   }
-
+return 0;
   // Fast check: if slot has no colors according to our tracking variable, skip file operations
   if (!slotHasNetColors(slot)) {
     if (debugFP) {

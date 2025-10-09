@@ -22,6 +22,7 @@
 
 #include "LogicAnalyzer.h"
 #include "WaveGen.h"
+#include "States.h"
 
 extern LogicAnalyzer logicAnalyzer; // defined in main.cpp
 extern WaveGen wavegen; // defined in main.cpp
@@ -416,56 +417,52 @@ void jl_gpio_set_pull(int pin, int pull) {
 
 // Node Functions
 int jl_nodes_connect(int node1, int node2, int save) {
+    // Add to RAM state
+    addBridgeToState(node1, node2);
+    
     if (save) {
-        addBridgeToNodeFile(node1, node2, netSlot, 0);
+        // Immediately save to YAML
+        saveStateToSlot();
         refreshConnections();
     } else {
-        addBridgeToNodeFile(node1, node2, netSlot, 1);
+        // Just refresh locally (save happens later)
         refreshLocalConnections();
     }
     return 1;
 }
 
 int jl_nodes_disconnect(int node1, int node2) {
-    removeBridgeFromNodeFile(node1, node2, netSlot, 0);
+    // Remove from RAM state
+    removeBridgeFromState(node1, node2);
+    // Save immediately
+    saveStateToSlot();
     refreshConnections(-1);
     return 1;
 }
 
 int jl_nodes_clear(void) {
-    createSlots(netSlot,  1);
-    //delay(2);
+    // Clear the entire state
+    globalState.clearAllConnections();
+    // Save the cleared state
+    saveStateToSlot();
     refreshConnections(-1, 1, 1);
     waitCore2();
     return 1;
 }
 
 int jl_nodes_is_connected(int node1, int node2) {
-
-    int connected = checkIfBridgeExists(node1, node2, netSlot, 0 );
-    // Serial.print("jl_nodes_is_connected = ");
-    // Serial.println(connected);
-    return connected;
-    //return checkIfBridgeExists(node1, node2, netSlot, 0 );
+    // Check in globalState instead of file
+    bool connected = globalState.hasConnection(node1, node2);
+    return connected ? 1 : 0;
 }
 
 int jl_nodes_save(int slot) {
     int target_slot = (slot == -1) ? netSlot : slot;  // Use current slot if -1
     
-    // Save the local nodeFileString to the specified slot
-    saveLocalNodeFile(target_slot);
-//     printSlots(-1);
-//     //saveLocalNodeFile(netSlot);
-//     Serial.println("netslot = " + String(netSlot));
-//     Serial.print("jl_nodes_save: slot = ");
-//     Serial.println(slot);
-//     Serial.print("jl_nodes_save: target_slot = ");
-//     Serial.println(target_slot);
-//     Serial.println("jl_nodes_save: saving local nodeFileString to slot " + String(target_slot));
-// saveCurrentSlotToSlot(netSlot, target_slot, 0, 0);
-//     //saveLocalNodeFile(target_slot);
+    // Save globalState to YAML
+    saveStateToSlot(target_slot);
     
-//     // Refresh connections to make sure everything is in sync
+    // Refresh connections to make sure everything is in sync
     refreshConnections();
     
     return target_slot;  // Return the slot that was saved to

@@ -103,12 +103,14 @@ namespace {
       const String A = tuiNetHelpers::toLabel(ep.from);
       const String B = tuiNetHelpers::toLabel(ep.to);
       if (ep.status != tuiNetHelpers::OK) { st.errors++; TUI::log(String("  Error: ") + ep.message); continue; }
-      int rc = addBridgeToNodeFile((int)ep.from, (int)ep.to, netSlot, 0, 0);
-      if (rc >= 0) { st.applied++; TUI::log(String("  + Added ") + A + "-" + B); }
-      else         { st.failed++;  TUI::log(String("  ! Add failed for ") + A + "-" + B + " (rc=" + rc + ")"); }
+      bool success = addBridgeToState((int)ep.from, (int)ep.to);
+      if (success) { st.applied++; TUI::log(String("  + Added ") + A + "-" + B); }
+      else         { st.failed++;  TUI::log(String("  ! Add failed for ") + A + "-" + B); }
     }
 
-    saveConfig(); refreshConnections(-1,1,1);
+    saveConfig(); 
+    saveStateToSlot();  // Save after all additions
+    refreshConnections(-1,1);
     if (res.truncated) TUI::log(String("  Note: input truncated to first ") + tuiNetHelpers::MAX_NET_PAIRS + " pairs.");
     TUI::setStatus(String("Add: ") + (int)st.applied + " applied, " + (int)(st.errors+st.failed+st.notfound) + " skipped/err.");
     if (TUI::S.logDirty) TUI::drawLog();

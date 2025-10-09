@@ -5,13 +5,15 @@
 #include "MatrixState.h"
 #include "config.h"
 #include "CH446Q.h"
+#include "States.h"  // For globalState access (but not GlobalStateMacros.h)
 
 
 
 
 
 
-struct netStruct net[MAX_NETS] = { //these are the special function nets that will always be made
+// Special function nets initialization data (will be copied to globalState.connections.nets)
+static const netStruct specialFunctionNetsInit[] = { //these are the special function nets that will always be made
   //netNumber,       ,netName          ,memberNodes[]         ,memberBridges[][2]     ,specialFunction        ,intsctNet[] ,doNotIntersectNodes[]                 ,priority (unused)
       {     127      ,"Empty Net"      ,{EMPTY_NET}           ,{{}}                   ,EMPTY_NET              ,{}          ,{EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET} , 0},
       {     1        ,"GND"            ,{GND}                 ,{{}}                   ,GND                    ,{}          ,{BOTTOM_RAIL,TOP_RAIL,DAC0,DAC1}    , 1},
@@ -53,123 +55,30 @@ int indexByNet[MAX_BRIDGES] = {0};
 
 // void initPaths(void) {
 //   for (int i = 0; i < MAX_BRIDGES; i++) {
-//     path[i].net = 0;
-//     path[i].node1 = 0;
-//     path[i].node2 = 0;
-//     path[i].duplicate = 0;
-//     path[i].pathType = BBtoBB;
-//     path[i].nodeType[0] = BB;
-//     path[i].nodeType[1] = BB;
-//     path[i].nodeType[2] = BB;
-//     path[i].sameChip = false;
-//     path[i].skip = false;
-//     path[i].altPathNeeded = false;
+//     globalState.connections.paths[i].net = 0;
+//     globalState.connections.paths[i].node1 = 0;
+//     globalState.connections.paths[i].node2 = 0;
+//     globalState.connections.paths[i].duplicate = 0;
+//     globalState.connections.paths[i].pathType = BBtoBB;
+//     globalState.connections.paths[i].nodeType[0] = BB;
+//     globalState.connections.paths[i].nodeType[1] = BB;
+//     globalState.connections.paths[i].nodeType[2] = BB;
+//     globalState.connections.paths[i].sameChip = false;
+//     globalState.connections.paths[i].skip = false;
+//     globalState.connections.paths[i].altPathNeeded = false;
 
 
 //   }
 // }
 
 
-void initNets(void) {
-  for (int i = 0; i < 6; i++) {
-    net[i].priority = 1;
-    
-    //net[i].uniqueID = i;
-  }
-  // net[0].name = "Empty Net";
-  // net[1].name = "GND";
-  // net[1].doNotIntersectNodes[0] = BOTTOM_RAIL;
-  // net[1].doNotIntersectNodes[1] = TOP_RAIL;
-  // net[1].doNotIntersectNodes[2] = DAC0;
-  // net[1].doNotIntersectNodes[3] = DAC1;
-  
-
-
-  // net[2].name = "Top Rail";
-  // net[2].doNotIntersectNodes[0] = GND;
-  // net[2].doNotIntersectNodes[1] = BOTTOM_RAIL;
-  // net[2].doNotIntersectNodes[2] = DAC0;
-  // net[2].doNotIntersectNodes[3] = DAC1;
-  // net[2].doNotIntersectNodes[4] = RP_GPIO_1;
-  // net[2].doNotIntersectNodes[5] = RP_GPIO_2;
-  // net[2].doNotIntersectNodes[6] = RP_GPIO_3;
-  // net[2].doNotIntersectNodes[7] = RP_GPIO_4;
-  // net[2].doNotIntersectNodes[8] = RP_GPIO_5;
-  // net[2].doNotIntersectNodes[9] = RP_GPIO_6;
-  // net[2].doNotIntersectNodes[10] = RP_GPIO_7;
-  // net[2].doNotIntersectNodes[11] = RP_GPIO_8;
-
-  // net[3].name = "Bottom Rail";
-  // net[3].doNotIntersectNodes[0] = GND;
-  // net[3].doNotIntersectNodes[1] = TOP_RAIL;
-  // net[3].doNotIntersectNodes[2] = DAC0;
-  // net[3].doNotIntersectNodes[3] = DAC1;
-  // net[3].doNotIntersectNodes[4] = RP_GPIO_1;
-  // net[3].doNotIntersectNodes[5] = RP_GPIO_2;
-  // net[3].doNotIntersectNodes[6] = RP_GPIO_3;
-  // net[3].doNotIntersectNodes[7] = RP_GPIO_4;
-  // net[3].doNotIntersectNodes[8] = RP_GPIO_5;
-  // net[3].doNotIntersectNodes[9] = RP_GPIO_6;
-  // net[3].doNotIntersectNodes[10] = RP_GPIO_7;
-  // net[3].doNotIntersectNodes[11] = RP_GPIO_8;
-
-  // net[4].name = "DAC 0";
-  // net[4].doNotIntersectNodes[0] = GND;
-  // net[4].doNotIntersectNodes[1] = TOP_RAIL;
-  // net[4].doNotIntersectNodes[2] = BOTTOM_RAIL;
-  // net[4].doNotIntersectNodes[3] = DAC1;
-  // net[4].doNotIntersectNodes[4] = RP_GPIO_1;
-  // net[4].doNotIntersectNodes[5] = RP_GPIO_2;
-  // net[4].doNotIntersectNodes[6] = RP_GPIO_3;
-  // net[4].doNotIntersectNodes[7] = RP_GPIO_4;
-  // net[4].doNotIntersectNodes[8] = RP_GPIO_5;
-  // net[4].doNotIntersectNodes[9] = RP_GPIO_6;
-  // net[4].doNotIntersectNodes[10] = RP_GPIO_7;
-  // net[4].doNotIntersectNodes[11] = RP_GPIO_8;
-
-  // net[5].name = "DAC 1";
-  // net[5].doNotIntersectNodes[0] = GND;
-  // net[5].doNotIntersectNodes[1] = TOP_RAIL;
-  // net[5].doNotIntersectNodes[2] = BOTTOM_RAIL;
-  // net[5].doNotIntersectNodes[3] = DAC0;
-  // net[5].doNotIntersectNodes[4] = RP_GPIO_1;
-  // net[5].doNotIntersectNodes[5] = RP_GPIO_2;
-  // net[5].doNotIntersectNodes[6] = RP_GPIO_3;
-  // net[5].doNotIntersectNodes[7] = RP_GPIO_4;
-  // net[5].doNotIntersectNodes[8] = RP_GPIO_5;
-  // net[5].doNotIntersectNodes[9] = RP_GPIO_6;
-  // net[5].doNotIntersectNodes[10] = RP_GPIO_7;
-  // net[5].doNotIntersectNodes[11] = RP_GPIO_8;
-
-
-  for (int i = 6; i < MAX_NETS; i++) {
-    // uint16_t   uniqueID = net[i].uniqueID;
-
-    net[i] = {0, " ", {}, {{}}, 0, {}, {}, 0, 0, 0, 0, false};
-    net[i].priority = 1;
-    net[i].termColor = 15; // white
-
-
-  }
-  // for (int i = 6; i < MAX_NETS; i++) {
-  //   net[i].priority = 1;
-  //   net[i].visible = 0;
-  //   net[i].name = "";
-  //   for (int j = 0; j < MAX_DUPLICATE; j++) {
-  //     net[i].duplicatePaths[j] = -1;
-  //   }
-  //   net[i].machine = false;
-  //   net[i].numberOfDuplicates = 0;
-  //   net[i].termColor = 15;
-
-
-  // }
-}
+  // MOVED: initNets() moved to after static data declarations
 
 
 
 
-struct chipStatus ch[12] = { //this is the revision 5 chip status (default now)
+// Chip status initialization data (will be copied to globalState.connections.chipStates)
+static const chipStatus chipStatusInit[12] = { //this is the revision 5 chip status (default now)
   {0,'A',
   {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
   {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
@@ -524,14 +433,14 @@ bool isConnectable(int node) {
   for (int i = 0; i < 12; i++) {
     if (i < 8) {
       for (int j = 0; j < 8; j++) {
-        if (ch[i].yMap[j] == node) {
+        if (globalState.connections.chipStates[i].yMap[j] == node) {
           return true;
         }
       }
     }
     else {
       for (int j = 0; j < 16; j++) {
-        if (ch[i].xMap[j] == node) {
+        if (globalState.connections.chipStates[i].xMap[j] == node) {
           return true;
         }
       }
@@ -551,7 +460,7 @@ void initChipStatus(void) {
   if (jumperlessConfig.hardware.revision <= 4) {
     for (int i = 0; i < 12; i++) {
       for (int j = 0; j < 16; j++) {
-        ch[i].xMap[j] = rev4minusXmap[i][j];
+        globalState.connections.chipStates[i].xMap[j] = rev4minusXmap[i][j];
         }
       }
     //#endif
@@ -565,83 +474,7 @@ void initChipStatus(void) {
   }
 
 
-/*
 
-//!rev4
-struct chipStatus ch[12] = {
-      {0,'A',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_I, CHIP_J, CHIP_B, CHIP_B, CHIP_C, CHIP_C, CHIP_D, CHIP_D, CHIP_E, CHIP_K, CHIP_F, CHIP_F, CHIP_G, CHIP_L, CHIP_H, CHIP_H},//X MAP constant
-      {BOUNCE_NODE, TOP_1, TOP_2,TOP_3, TOP_4, TOP_5, TOP_6, TOP_7}},  // Y MAP constant
-
-      {1,'B',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_A, CHIP_I, CHIP_J, CHIP_C, CHIP_C, CHIP_D, CHIP_D, CHIP_E, CHIP_E, CHIP_F, CHIP_K, CHIP_G, CHIP_G, CHIP_H, CHIP_L},
-      {BOUNCE_NODE, TOP_8, TOP_9,TOP_10,TOP_11,TOP_12,TOP_13,TOP_14}},//yMap
-
-      {2,'C',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_A, CHIP_B, CHIP_B, CHIP_I, CHIP_J, CHIP_D, CHIP_D, CHIP_E, CHIP_L, CHIP_F, CHIP_F, CHIP_G, CHIP_K, CHIP_H, CHIP_H},
-      {BOUNCE_NODE,TOP_15, TOP_16,TOP_17,TOP_18,TOP_19,TOP_20,TOP_21}},
-
-      {3,'D',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_A, CHIP_B, CHIP_B, CHIP_C, CHIP_C, CHIP_I, CHIP_J, CHIP_E, CHIP_E, CHIP_F, CHIP_L, CHIP_G, CHIP_G, CHIP_H, CHIP_K},
-      {BOUNCE_NODE,TOP_22, TOP_23,TOP_24,TOP_25,TOP_26,TOP_27,TOP_28}},
-
-      {4,'E',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_K, CHIP_B, CHIP_B, CHIP_C, CHIP_L, CHIP_D, CHIP_D, CHIP_I, CHIP_J, CHIP_F, CHIP_F, CHIP_G, CHIP_G, CHIP_H, CHIP_H},
-      {BOUNCE_NODE, BOTTOM_1,  BOTTOM_2, BOTTOM_3, BOTTOM_4, BOTTOM_5, BOTTOM_6, BOTTOM_7}},
-
-      {5,'F',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_A, CHIP_B, CHIP_K, CHIP_C, CHIP_C, CHIP_D, CHIP_L, CHIP_E, CHIP_E, CHIP_I, CHIP_J, CHIP_G, CHIP_G, CHIP_H, CHIP_H},
-      {BOUNCE_NODE, BOTTOM_8,  BOTTOM_9, BOTTOM_10,BOTTOM_11,BOTTOM_12,BOTTOM_13,BOTTOM_14}},
-
-      {6,'G',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_L, CHIP_B, CHIP_B, CHIP_C, CHIP_K, CHIP_D, CHIP_D, CHIP_E, CHIP_E, CHIP_F, CHIP_F, CHIP_I, CHIP_J, CHIP_H, CHIP_H},
-      {BOUNCE_NODE,BOTTOM_15, BOTTOM_16,BOTTOM_17,BOTTOM_18,BOTTOM_19,BOTTOM_20,BOTTOM_21}},
-
-      {7,'H',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {CHIP_A, CHIP_A, CHIP_B, CHIP_L, CHIP_C, CHIP_C, CHIP_D, CHIP_K, CHIP_E, CHIP_E, CHIP_F, CHIP_F, CHIP_G, CHIP_G, CHIP_I, CHIP_J},
-      {BOUNCE_NODE,BOTTOM_22,  BOTTOM_23,BOTTOM_24,BOTTOM_25,BOTTOM_26,BOTTOM_27,BOTTOM_28}},
-
-      {8,'I',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {NANO_A0, NANO_D1, NANO_A2, NANO_D3, NANO_A4, NANO_D5, NANO_A6, NANO_D7, NANO_D11, NANO_D9, NANO_D13,ISENSE_PLUS or NANO_RESET_0  , CHIP_L, CHIP_J, CHIP_K,RP_UART_RX }, //this is for V5r1 change this for V5r2
-      {CHIP_A,CHIP_B,CHIP_C,CHIP_D,CHIP_E,CHIP_F,CHIP_G,CHIP_H}},
-
-      {9,'J',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {NANO_D0, NANO_A1, NANO_D2, NANO_A3, NANO_D4, NANO_A5, NANO_D6, NANO_A7, NANO_D8, NANO_D10, NANO_D12, ISENSE_MINUS or NANO_RESET_1, CHIP_L, CHIP_I, CHIP_K, RP_UART_TX},  //this is for V5r1 change this for V5r2
-      {CHIP_A,CHIP_B,CHIP_C,CHIP_D,CHIP_E,CHIP_F,CHIP_G,CHIP_H}},
-
-      {10,'K',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {29, 59, ROUTABLE_BUFFER_OUT, NANO_AREF, TOP_RAIL, BOTTOM_RAIL, DAC1, DAC0, ADC0, ADC1, ADC2, ADC3, CHIP_L, CHIP_I, CHIP_J, GND}, //this is for V5r1 change this for V5r2
-      {CHIP_A,CHIP_B,CHIP_C,CHIP_D,CHIP_E,CHIP_F,CHIP_G,CHIP_H}},
-
-      {11,'L',
-      {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
-      {-1,-1,-1,-1,-1,-1,-1,-1}, //y status
-      {30, 60, ROUTABLE_BUFFER_IN, ADC4_5V, RP_GPIO_20, RP_GPIO_21, RP_GPIO_22, RP_GPIO_23, RP_GPIO_24, RP_GPIO_25, RP_GPIO_26, RP_GPIO_27, CHIP_I, CHIP_J, CHIP_K, GND}, //this is for V5r1 change this for V5r2
-      {CHIP_A,CHIP_B,CHIP_C,CHIP_D,CHIP_E,CHIP_F,CHIP_G,CHIP_H}}
-      };
-      */
 
 enum nanoPinsToIndex { NANO_PIN_D0, NANO_PIN_D1, NANO_PIN_D2, NANO_PIN_D3, NANO_PIN_D4, NANO_PIN_D5, NANO_PIN_D6, NANO_PIN_D7, NANO_PIN_D8, NANO_PIN_D9, NANO_PIN_D10, NANO_PIN_D11, NANO_PIN_D12, NANO_PIN_D13, NANO_PIN_RST, NANO_PIN_REF, NANO_PIN_A0, NANO_PIN_A1, NANO_PIN_A2, NANO_PIN_A3, NANO_PIN_A4, NANO_PIN_A5, NANO_PIN_A6, NANO_PIN_A7 };
 
@@ -679,9 +512,6 @@ struct nanoStatus nano = {  //there's only one of these so ill declare and inita
 {NANO_D0, NANO_D1, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12, NANO_D13, NANO_RESET, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,GND,101,102,SUPPLY_3V3,104,SUPPLY_5V,DAC0,DAC1,ISENSE_PLUS,ISENSE_MINUS}
 
   };
-
-struct pathStruct path[MAX_BRIDGES]; // node1, node2, net, chip[3], x[3], y[3]
-
 
 
 SFmapPair sfMappings[100] = {
@@ -780,3 +610,24 @@ SFmapPair sfMappings[100] = {
     {"A7", 93}
 
   };
+
+// Initialize nets and chip status from static data
+void initNets(void) {
+  // Copy special function nets from static data to globalState
+  for (int i = 0; i < 6; i++) {
+    globalState.connections.nets[i] = specialFunctionNetsInit[i];
+    globalState.connections.nets[i].priority = 1;
+  }
+  
+  // Copy chip status initialization data to globalState
+  for (int i = 0; i < 12; i++) {
+    globalState.connections.chipStates[i] = chipStatusInit[i];
+  }
+  
+  // Initialize remaining nets
+  for (int i = 6; i < MAX_NETS; i++) {
+    globalState.connections.nets[i] = {0, " ", {}, {{}}, 0, {}, {}, 0, 0, 0, 0, false};
+    globalState.connections.nets[i].priority = 1;
+    globalState.connections.nets[i].termColor = 15; // white
+  }
+}

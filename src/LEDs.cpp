@@ -4,6 +4,7 @@
 #include "FileParsing.h"
 #include "Graphics.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
@@ -1919,17 +1920,17 @@ int checkChangedNetColors(int netIndex) {
 
 
     for (int k = 0; k < MAX_NODES; k++) {
-      if (net[i].nodes[k] <= 0) {
+      if (globalState.connections.nets[i].nodes[k] <= 0) {
         break;
         }
       if (nodeFound == true) {
         break;
         }
-      if (net[i].nodes[k] > 0) {
+      if (globalState.connections.nets[i].nodes[k] > 0) {
 
         for (int j = 5; j < numberOfNets; j++) {
 
-          if (net[i].nodes[k] == changedNetColors[j].node1 && changedNetColors[j].node1 > 0) {
+          if (globalState.connections.nets[i].nodes[k] == changedNetColors[j].node1 && changedNetColors[j].node1 > 0) {
             // Serial.print("node1: ");
             // Serial.println(changedNetColors[j].node1);
             if (changedNetColors[j].node2 > 0) {
@@ -1938,12 +1939,12 @@ int checkChangedNetColors(int netIndex) {
 
               for (int l = 0; l < MAX_NODES; l++) {
 
-                if (net[i].nodes[l] <= 0) {
+                if (globalState.connections.nets[i].nodes[l] <= 0) {
                   break;
                   }
 
-                if (net[i].nodes[l] > 0) {
-                  if (net[i].nodes[l] == changedNetColors[j].node2 && changedNetColors[j].node2 > 0) {
+                if (globalState.connections.nets[i].nodes[l] > 0) {
+                  if (globalState.connections.nets[i].nodes[l] == changedNetColors[j].node2 && changedNetColors[j].node2 > 0) {
                     nodeFound = true;
                     changedNetColorIndex = j;
                     nodeNetIndex = k;
@@ -2002,10 +2003,10 @@ int checkChangedNetColors(int netIndex) {
         // Serial.print(i);
         // Serial.print("].node1: ");
         // Serial.println(changedNetColors[i].node1);
-        // Serial.print("net[");
+        // Serial.print("globalState.connections.nets[");
         // Serial.print(i);
         // Serial.print("].node: ");
-        // Serial.println(net[i].nodes[nodeNetIndex]);
+        // Serial.println(globalState.connections.nets[i].nodes[nodeNetIndex]);
         // Serial.print("changedNetColors[");
         //   Serial.print(i);
         // Serial.print("].net: ");
@@ -2014,8 +2015,8 @@ int checkChangedNetColors(int netIndex) {
         }
 
 
-      net[i].color = unpackRgb(changedNetColors[i].color);
-      netColors[i] = net[i].color;
+      globalState.connections.nets[i].color = unpackRgb(changedNetColors[i].color);
+      netColors[i] = globalState.connections.nets[i].color;
       changedNetColors[i].net = i;
 
 
@@ -2078,10 +2079,10 @@ void assignNetColors(int preview) {
 //  }
 
   for (int i = 1; i < 6; i++) {
-    if (net[i].machine == true) {
+    if (globalState.connections.nets[i].machine == true) {
       rgbColor specialNetRgb = unpackRgb(rawSpecialNetColors[i]);
 
-      net[i].color = specialNetRgb;
+      globalState.connections.nets[i].color = specialNetRgb;
       specialNetColors[i] = specialNetRgb;
 
       netColors[i] = specialNetRgb;
@@ -2110,18 +2111,18 @@ void assignNetColors(int preview) {
             //   }
 
             // netColors[i] = unpackRgb(railColor);
-            // net[i].color = netColors[i];
+            // globalState.connections.nets[i].color = netColors[i];
             netColors[i] = unpackRgb(railNetColors[0]);
-            net[i].color = netColors[i];
+            globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
             break;
           case 2:
             // railColor = logoColors8vSelect[map((long)(railVoltage[0] * 10), -80, 80,
             //                                    0, 59)];
             // netColors[i] = unpackRgb(railColor);
-            // net[i].color = netColors[i];
+            // globalState.connections.nets[i].color = netColors[i];
             netColors[i] = unpackRgb(railNetColors[1]);
-            net[i].color = netColors[i];
+            globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
             // Serial.print("railVoltage[0]: ");
             // Serial.println(railVoltage[0]);
@@ -2134,23 +2135,23 @@ void assignNetColors(int preview) {
             // railColor = logoColors8vSelect[map((long)(railVoltage[1] * 10), -80, 80,
             //                                    0, 59)];
             // netColors[i] = unpackRgb(railColor);
-            // net[i].color = netColors[i];
+            // globalState.connections.nets[i].color = netColors[i];
             netColors[i] = unpackRgb(railNetColors[2]);
-            net[i].color = netColors[i];
+            globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
             break;
           case 4:
             railColor =
               logoColors8vSelect[map((long)(dacOutput[0] * 10), -80, 80, 0, 59)];
             netColors[i] = unpackRgb(railColor);
-            net[i].color = netColors[i];
+            globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
             break;
           case 5:
             railColor =
               logoColors8vSelect[map((long)(dacOutput[1] * 10), -80, 80, 0, 59)];
             netColors[i] = unpackRgb(railColor);
-            net[i].color = netColors[i];
+            globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
             break;
           case 6:
@@ -2174,21 +2175,21 @@ void assignNetColors(int preview) {
         // Serial.print(netRgb.b, HEX);
 
         // netColors[i] = specialNetColors[i];
-        // net[i].color = netColors[i];
+        // globalState.connections.nets[i].color = netColors[i];
       }
 
     // if (debugLEDs) {
     //   Serial.print("\n\r");
-    //   int netLength = Serial.print(net[i].name);
+    //   int netLength = Serial.print(globalState.connections.nets[i].name);
     //   if (netLength < 8) {
     //     Serial.print("\t");
     //   }
     //   Serial.print("\t");
-    //   Serial.print(net[i].color.r, HEX);
+    //   Serial.print(globalState.connections.nets[i].color.r, HEX);
     //   Serial.print("\t");
-    //   Serial.print(net[i].color.g, HEX);
+    //   Serial.print(globalState.connections.nets[i].color.g, HEX);
     //   Serial.print("\t");
-    //   Serial.print(net[i].color.b, HEX);
+    //   Serial.print(globalState.connections.nets[i].color.b, HEX);
     //   Serial.print("\t\t");
     //   // Serial.print(netHsv.h);
     //   Serial.print("\t");
@@ -2349,7 +2350,7 @@ void assignNetColors(int preview) {
   // }
   int frontIndex = 0;
   for (int i = 6; i <= numberOfNets; i++) {
-    if (net[i].visible == 0) {
+    if (globalState.connections.nets[i].visible == 0) {
       // Serial.print("net ");
       // Serial.print(i);
       // Serial.println(" is not visible");
@@ -2365,8 +2366,8 @@ void assignNetColors(int preview) {
 
 
       if (changedNetColors[i].net == i) {
-        net[i].color = unpackRgb(changedNetColors[i].color);
-        netColors[i] = net[i].color;
+        globalState.connections.nets[i].color = unpackRgb(changedNetColors[i].color);
+        netColors[i] = globalState.connections.nets[i].color;
         continue;
         //break;
         }
@@ -2377,8 +2378,8 @@ void assignNetColors(int preview) {
       for (int a = 0; a < 8; a++) {
         if (i == showADCreadings[a]) {
           // netColors[i] = unpackRgb(rawOtherColors[8]);
-          net[i].color = unpackRgb(adcReadingColors[a]);
-          netColors[i] = net[i].color;
+          globalState.connections.nets[i].color = unpackRgb(adcReadingColors[a]);
+          netColors[i] = globalState.connections.nets[i].color;
           showingReading = 1;
           // Serial.print("showing reading: ");
           // Serial.println(i);
@@ -2387,8 +2388,8 @@ void assignNetColors(int preview) {
         }
       for (int a = 0; a < 10; a++) {
         if (i == gpioNet[a]) {
-          net[i].color = unpackRgb(gpioReadingColors[a]);
-          netColors[i] = net[i].color;
+          globalState.connections.nets[i].color = unpackRgb(gpioReadingColors[a]);
+          netColors[i] = globalState.connections.nets[i].color;
           // Serial.print("showing gpio: ");
           // Serial.println(i);
           // Serial.print("gpioReadingColors[");
@@ -2421,7 +2422,7 @@ void assignNetColors(int preview) {
       hsvColor netHsv = { hue, 255, LEDbrightness };
 
       //This was the old way, directly using index, prone to errors if nets are removed/added
-      // if (changedNetColors[i].uniqueID == net[i].uniqueID) {
+      // if (changedNetColors[i].uniqueID == globalState.connections.nets[i].uniqueID) {
       //   hsvColor changedNetHsv = RgbToHsv(unpackRgb(changedNetColors[i].color));
       //   netHsv = changedNetHsv;
       // } else {
@@ -2439,25 +2440,25 @@ void assignNetColors(int preview) {
       // netHsv.v = 200;
 
 
-      net[i].color = HsvToRgb(netHsv);
-      netColors[i] = net[i].color;
+      globalState.connections.nets[i].color = HsvToRgb(netHsv);
+      netColors[i] = globalState.connections.nets[i].color;
 
-      //  netColors[i] = net[i].color;
+      //  netColors[i] = globalState.connections.nets[i].color;
 
         // leds.setPixelColor(i, netColors[i]);
 
-        // net[i].color.r = netColors[i].r;
-        // net[i].color.g = netColors[i].g;
-        // net[i].color.b = netColors[i].b;
+        // globalState.connections.nets[i].color.r = netColors[i].r;
+        // globalState.connections.nets[i].color.g = netColors[i].g;
+        // globalState.connections.nets[i].color.b = netColors[i].b;
         // if (debugLEDs) {
         //   Serial.print("\n\r");
-        //   Serial.print(net[i].name);
+        //   Serial.print(globalState.connections.nets[i].name);
         //   Serial.print("\t\t");
-        //   Serial.print(net[i].color.r, DEC);
+        //   Serial.print(globalState.connections.nets[i].color.r, DEC);
         //   Serial.print("\t");
-        //   Serial.print(net[i].color.g, DEC);
+        //   Serial.print(globalState.connections.nets[i].color.g, DEC);
         //   Serial.print("\t");
-        //   Serial.print(net[i].color.b, DEC);
+        //   Serial.print(globalState.connections.nets[i].color.b, DEC);
         //   Serial.print("\t\t");
         //   Serial.print(hue);
         //   Serial.print("\t");
@@ -2494,62 +2495,62 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
   if (netNumber <= 0 || netNumber >= MAX_NETS) {
     return;
     }
-  if (net[netNumber].nodes[1] != 0 &&
-      net[netNumber].nodes[1] <= 141) { // NANO_A7) {
+  if (globalState.connections.nets[netNumber].nodes[1] != 0 &&
+      globalState.connections.nets[netNumber].nodes[1] <= 141) { // NANO_A7) {
 
     for (int j = 0; j < MAX_NODES; j++) {
-      if (net[netNumber].nodes[j] <= 0) {
+      if (globalState.connections.nets[netNumber].nodes[j] <= 0) {
         break;
         }
 
-      if (net[netNumber].machine == true) {
+      if (globalState.connections.nets[netNumber].machine == true) {
         //Serial.println("machine");
-        if (net[netNumber].nodes[j] == node || node == -1) {
+        if (globalState.connections.nets[netNumber].nodes[j] == node || node == -1) {
           if (onOff == 1) {
-            if (nodesToPixelMap[net[netNumber].nodes[j]] > 0) {
+            if (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]] > 0) {
               leds.setPixelColor(
-                  (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 0,
-                  scaleDownBrightness(net[netNumber].rawColor));
+                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 0,
+                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
               leds.setPixelColor(
-                  (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 1,
-                  scaleDownBrightness(net[netNumber].rawColor));
+                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 1,
+                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
               leds.setPixelColor(
-                  (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 2,
-                  scaleDownBrightness(net[netNumber].rawColor));
+                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 2,
+                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
               leds.setPixelColor(
-                  (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 3,
-                  scaleDownBrightness(net[netNumber].rawColor));
+                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 3,
+                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
               leds.setPixelColor(
-                  (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 4,
-                  scaleDownBrightness(net[netNumber].rawColor));
+                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 4,
+                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
 
               if (debugLEDs) {
                 Serial.print("net: ");
                 Serial.print(netNumber);
                 Serial.print(" node: ");
-                Serial.print(net[netNumber].nodes[j]);
+                Serial.print(globalState.connections.nets[netNumber].nodes[j]);
                 Serial.print(" mapped to LED:");
-                Serial.println(nodesToPixelMap[net[netNumber].nodes[j]]);
+                Serial.println(nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]);
 
                 Serial.print("rawColor: ");
-                Serial.println(net[netNumber].rawColor, HEX);
+                Serial.println(globalState.connections.nets[netNumber].rawColor, HEX);
                 }
               }
             }
           }
         } else {
 
-        if (net[netNumber].nodes[j] <= NANO_A7) {
+        if (globalState.connections.nets[netNumber].nodes[j] <= NANO_A7) {
 
-          if (net[netNumber].nodes[j] == node || node == -1) {
+          if (globalState.connections.nets[netNumber].nodes[j] == node || node == -1) {
             if (onOff == 1) {
 
               pcbExtinction = 0;
               colorCorrection = 0;
               pcbHueShift = 0;
 
-              if (net[netNumber].nodes[j] >= NANO_D0 &&
-                  net[netNumber].nodes[j] <= NANO_A7) {
+              if (globalState.connections.nets[netNumber].nodes[j] >= NANO_D0 &&
+                  globalState.connections.nets[netNumber].nodes[j] <= NANO_A7) {
                 // pcbExtinction = PCBEXTINCTION;
 
                 // Serial.println (brightness2);
@@ -2558,9 +2559,9 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                 }
               // pcbExtinction += (brightness2-DEFAULTBRIGHTNESS);
 
-              struct rgbColor colorToShift = { net[netNumber].color.r,
-                                              net[netNumber].color.g,
-                                              net[netNumber].color.b };
+              struct rgbColor colorToShift = { globalState.connections.nets[netNumber].color.r,
+                                              globalState.connections.nets[netNumber].color.g,
+                                              globalState.connections.nets[netNumber].color.b };
 
               if (forceColor != 0xffffff) {
                 // Serial.println("force color");
@@ -2581,8 +2582,8 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
 
               hsvColor shiftedColorHsv = RgbToHsv(shiftedColor);
 
-              if (net[netNumber].specialFunction >= 100 &&
-                  net[netNumber].specialFunction <= 105) {
+              if (globalState.connections.nets[netNumber].specialFunction >= 100 &&
+                  globalState.connections.nets[netNumber].specialFunction <= 105) {
                 // Serial.println("rail color");
                 if (brightness2 != DEFAULTBRIGHTNESS) {
                   shiftedColorHsv.v = brightness2;
@@ -2600,8 +2601,8 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                 // * LEDbrightnessRail) >> 8);
                 //  Serial.print("rail color: ");
                 //  Serial.print(color, HEX);
-                } else if (net[netNumber].specialFunction >= 100 &&
-                           net[netNumber].specialFunction <= 120) {
+                } else if (globalState.connections.nets[netNumber].specialFunction >= 100 &&
+                           globalState.connections.nets[netNumber].specialFunction <= 120) {
                   // Serial.println("special function");
                   if (brightness2 != DEFAULTBRIGHTNESS) {
                     shiftedColorHsv.v = brightness2;
@@ -2642,7 +2643,7 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                   // LEDbrightness) >> 8);
                   }
                 int allOnTop = 1;
-                if (net[netNumber].nodes[j] >= NANO_D0) {
+                if (globalState.connections.nets[netNumber].nodes[j] >= NANO_D0) {
                   rgbColor colorToShift = unpackRgb(color);
                   // colorToShift = shiftHue(colorToShift, hueShift);
                   hsvColor brighterColor = RgbToHsv(colorToShift);
@@ -2661,8 +2662,8 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                   color = packRgb(bright.r, bright.g, bright.b);
 
                   for (int k = 0; k < MAX_NODES; k++) {
-                    if (net[netNumber].nodes[k] < NANO_D0 &&
-                        net[netNumber].nodes[k] > 0) {
+                    if (globalState.connections.nets[netNumber].nodes[k] < NANO_D0 &&
+                        globalState.connections.nets[netNumber].nodes[k] > 0) {
                       allOnTop = 0;
                       break;
                       }
@@ -2671,16 +2672,16 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                 if (allOnTop == 1) {
                   netColors[netNumber] = unpackRgb(color);
                   }
-                // net[netNumber].rawColor = color;
-                // net[netNumber].color = unpackRgb(color);
+                // globalState.connections.nets[netNumber].rawColor = color;
+                // globalState.connections.nets[netNumber].color = unpackRgb(color);
 
-                if (probeHighlight - 1 != (nodesToPixelMap[net[netNumber].nodes[j]])) {
-                  // Serial.print("nodesToPixelMap[net[netNumber].nodes[j]] = ");
-                  // Serial.println(nodesToPixelMap[net[netNumber].nodes[j]]);
-                  if (net[netNumber].nodes[j] >= NANO_D0) {
+                if (probeHighlight - 1 != (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]])) {
+                  // Serial.print("nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]] = ");
+                  // Serial.println(nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]);
+                  if (globalState.connections.nets[netNumber].nodes[j] >= NANO_D0) {
                     if (brightenedNet == netNumber) {
                       
-                      if (brightenedNode == net[netNumber].nodes[j]) {
+                      if (brightenedNode == globalState.connections.nets[netNumber].nodes[j]) {
                         color = scaleBrightness(color, brightenedNodeAmount);
                         } else {
                           color = scaleBrightness(color, brightenedNetAmount);
@@ -2689,24 +2690,24 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                       color = scaleBrightness(color, 0);
                       }
                     leds.setPixelColor(
-                        (nodesToPixelMap[net[netNumber].nodes[j]]) + 320, color);
+                        (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) + 320, color);
 
                     } else {
 
                     leds.setPixelColor(
-                        (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 0,
+                        (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 0,
                         color);
                     leds.setPixelColor(
-                        (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 1,
+                        (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 1,
                         color);
                     leds.setPixelColor(
-                        (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 2,
+                        (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 2,
                         color);
                     leds.setPixelColor(
-                        (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 3,
+                        (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 3,
                         color);
                     leds.setPixelColor(
-                        (nodesToPixelMap[net[netNumber].nodes[j]]) * 5 + 4,
+                        (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 4,
                         color);
 
                     // if (logoTopSetting[
@@ -2788,60 +2789,60 @@ void showSkippedNodes(uint32_t onColor, uint32_t offColor) {
 
   for (int i = 0; i < numberOfPaths; i++) {
 
-    if (path[i].skip == true) {
+    if (globalState.connections.paths[i].skip == true) {
       // colorCycleOff = (colorCycleOff) % 254;
       // colorCycleOn = (colorCycleOn + (numberOfUnconnectablePaths)) % 254;
-      if (path[i].node1 > 0 && path[i].node1 <= 60) {
+      if (globalState.connections.paths[i].node1 > 0 && globalState.connections.paths[i].node1 <= 60) {
 
-        if ((toggleSkippedNodes == 1 && path[i].node1 % 2 == 0) || (toggleSkippedNodes == 0 && path[i].node1 % 2 == 1)) {
+        if ((toggleSkippedNodes == 1 && globalState.connections.paths[i].node1 % 2 == 0) || (toggleSkippedNodes == 0 && globalState.connections.paths[i].node1 % 2 == 1)) {
 
-          leds.setPixelColor((path[i].node1 - 1) * 5 + 0, onColor);
+          leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 0, onColor);
 
-          // leds.setPixelColor((path[i].node1 - 1) * 5 + 0, offColor);
+          // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 0, offColor);
 
-          // leds.setPixelColor((path[i].node1 - 1) * 5 + 1, onColor);
+          // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 1, onColor);
 
-          leds.setPixelColor((path[i].node1 - 1) * 5 + 1, offColor);
+          leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 1, offColor);
 
-          leds.setPixelColor((path[i].node1 - 1) * 5 + 2, onColor);
+          leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 2, onColor);
 
-          // leds.setPixelColor((path[i].node1 - 1) * 5 + 2, offColor);
+          // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 2, offColor);
 
-          // leds.setPixelColor((path[i].node1 - 1) * 5 + 3, onColor);
+          // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 3, onColor);
 
-          leds.setPixelColor((path[i].node1 - 1) * 5 + 3, offColor);
+          leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 3, offColor);
 
-          leds.setPixelColor((path[i].node1 - 1) * 5 + 4, onColor);
+          leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 4, onColor);
 
-          // leds.setPixelColor((path[i].node1 - 1) * 5 + 4, offColor);
+          // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 4, offColor);
           //toggleSkippedNodes = !toggleSkippedNodes;
 
-          } else if ((toggleSkippedNodes == 0 && path[i].node1 % 2 == 0) || (toggleSkippedNodes == 1 && path[i].node1 % 2 == 1)) {
+          } else if ((toggleSkippedNodes == 0 && globalState.connections.paths[i].node1 % 2 == 0) || (toggleSkippedNodes == 1 && globalState.connections.paths[i].node1 % 2 == 1)) {
 
-            // leds.setPixelColor((path[i].node1 - 1) * 5 + 0, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 0, onColor);
 
-            leds.setPixelColor((path[i].node1 - 1) * 5 + 0, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 0, offColor);
 
-            leds.setPixelColor((path[i].node1 - 1) * 5 + 1, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 1, onColor);
 
-            // leds.setPixelColor((path[i].node1 - 1) * 5 + 1, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 1, offColor);
 
-            // leds.setPixelColor((path[i].node1 - 1) * 5 + 2, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 2, onColor);
 
-            leds.setPixelColor((path[i].node1 - 1) * 5 + 2, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 2, offColor);
 
-            leds.setPixelColor((path[i].node1 - 1) * 5 + 3, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 3, onColor);
 
-            // leds.setPixelColor((path[i].node1 - 1) * 5 + 3, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 3, offColor);
 
-            // leds.setPixelColor((path[i].node1 - 1) * 5 + 4, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 4, onColor);
 
-            leds.setPixelColor((path[i].node1 - 1) * 5 + 4, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node1 - 1) * 5 + 4, offColor);
             // toggleSkippedNodes = !toggleSkippedNodes;
              //}
             }
 
-        } else if (path[i].node1 >= NANO_D0 && path[i].node1 <= NANO_5V) {
+        } else if (globalState.connections.paths[i].node1 >= NANO_D0 && globalState.connections.paths[i].node1 <= NANO_5V) {
           hsvColor onColorHsv = RgbToHsv(onColorRgb);
           hsvColor offColorHsv = RgbToHsv(offColorRgb);
           onColorHsv.h = (onColorHsv.h + colorCycleOn + 40) % 254;
@@ -2856,67 +2857,67 @@ void showSkippedNodes(uint32_t onColor, uint32_t offColor) {
           uint32_t offColorHeader = packRgb(offColorRgb.r / 3, offColorRgb.g / 2, offColorRgb.b);
           if (toggleSkippedNodes == 1) {
             for (int j = 0; j < 35; j++) {
-              if (bbPixelToNodesMapV5[j][0] == path[i].node1) {
+              if (bbPixelToNodesMapV5[j][0] == globalState.connections.paths[i].node1) {
                 leds.setPixelColor(bbPixelToNodesMapV5[j][1], onColorHeader);
                 }
               }
             } else {
             for (int j = 0; j < 35; j++) {
-              if (bbPixelToNodesMapV5[j][0] == path[i].node1) {
+              if (bbPixelToNodesMapV5[j][0] == globalState.connections.paths[i].node1) {
                 leds.setPixelColor(bbPixelToNodesMapV5[j][1], offColorHeader);
                 }
               }
             }
           }
 
-        if (path[i].node2 > 0 && path[i].node2 <= 60) {
+        if (globalState.connections.paths[i].node2 > 0 && globalState.connections.paths[i].node2 <= 60) {
           if (toggleSkippedNodes == 0) {
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 0, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 0, onColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 0, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 0, offColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 1, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 1, onColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 1, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 1, offColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 2, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 2, onColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 2, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 2, offColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 3, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 3, onColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 3, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 3, offColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 4, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 4, onColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 4, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 4, offColor);
 
             } else {
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 0, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 0, onColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 0, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 0, offColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 1, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 1, onColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 1, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 1, offColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 2, onColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 2, onColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 2, offColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 2, offColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 3, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 3, onColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 3, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 3, offColor);
 
-            leds.setPixelColor((path[i].node2 - 1) * 5 + 4, onColor);
+            leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 4, onColor);
 
-            // leds.setPixelColor((path[i].node2 - 1) * 5 + 4, offColor);
+            // leds.setPixelColor((globalState.connections.paths[i].node2 - 1) * 5 + 4, offColor);
             //}
             }
 
-          } else if (path[i].node1 >= NANO_D0 && path[i].node2 <= NANO_5V) {
+          } else if (globalState.connections.paths[i].node1 >= NANO_D0 && globalState.connections.paths[i].node2 <= NANO_5V) {
             hsvColor onColorHsv = RgbToHsv(onColorRgb);
             hsvColor offColorHsv = RgbToHsv(offColorRgb);
             onColorHsv.h = (onColorHsv.h + colorCycleOn + 40) % 254;
@@ -2931,13 +2932,13 @@ void showSkippedNodes(uint32_t onColor, uint32_t offColor) {
             uint32_t offColorHeader = packRgb(offColorRgb.r / 3, offColorRgb.g / 2, offColorRgb.b);
             if (toggleSkippedNodes == 0) {
               for (int j = 0; j < 35; j++) {
-                if (bbPixelToNodesMapV5[j][0] == path[i].node2) {
+                if (bbPixelToNodesMapV5[j][0] == globalState.connections.paths[i].node2) {
                   leds.setPixelColor(bbPixelToNodesMapV5[j][1], onColorHeader);
                   }
                 }
               } else {
               for (int j = 0; j < 35; j++) {
-                if (bbPixelToNodesMapV5[j][0] == path[i].node2) {
+                if (bbPixelToNodesMapV5[j][0] == globalState.connections.paths[i].node2) {
                   leds.setPixelColor(bbPixelToNodesMapV5[j][1], offColorHeader);
                   }
                 }

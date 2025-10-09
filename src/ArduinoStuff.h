@@ -91,6 +91,6 @@ int handleSerialPassthrough(int serial = 2, int print = 0, int printPassthroughF
 
 void printMicrosPerByte(void);
 void printUSBInterfaceNames(void);
-void replyWithSerialInfo(void);
+void replyWithSerialInfo(int force = 0);
 
 #endif

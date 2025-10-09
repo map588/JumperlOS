@@ -4,6 +4,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
@@ -342,12 +343,14 @@ restartProbingNoPrint:
             if ( millis( ) - fadeTimer > 500 ) {
                 fadeTimer = millis( );
                 if ( numberOfLocalChanges > 0 ) {
-                    saveLocalNodeFile( netSlot );
+
+                    //saveStateToSlot( netSlot );
+                   // saveLocalNodeFile( netSlot );
                     // Serial.print("\n\r");
                     // Serial.print("saving local node file\n\r");
 
                     // refreshConnections();
-                    numberOfLocalChanges = 0;
+                    //numberOfLocalChanges = 0;
                 }
             }
             // showLEDsCore2 = -1;
@@ -392,12 +395,12 @@ restartProbingNoPrint:
                     fadeClear = 1;
                     showLEDsCore2 = -1;
                     if ( numberOfLocalChanges > 0 ) {
-                        saveLocalNodeFile( netSlot );
+                       // saveLocalNodeFile( netSlot );
                         // Serial.print("\n\r");
                         // Serial.print("saving local node file\n\r");
-
+                       // saveStateToSlot( netSlot );
                         // refreshConnections();
-                        numberOfLocalChanges = 0;
+                        //numberOfLocalChanges = 0;
                     }
                 }
             }
@@ -673,14 +676,17 @@ restartProbingNoPrint:
                     }
 
                     if ( firstConnection == -3 ) {
-                        addBridgeToNodeFile( nodesToConnect[ 0 ], nodesToConnect[ 1 ], netSlot, 0 );
+                        // Add to RAM state - DON'T save yet, let auto-save handle it
+                        addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ] );
+                        numberOfLocalChanges++;
                         // refreshConnections(1, 1, 0);
                         // showLEDsCore2 = -1;
                         break;
 
                     } else {
 
-                        addBridgeToNodeFile( nodesToConnect[ 0 ], nodesToConnect[ 1 ], netSlot, 1 );
+                        // Add to RAM state (local changes accumulated in RAM)
+                        addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ] );
                         numberOfLocalChanges++;
                     }
                     brightenNet( -1 );
@@ -694,9 +700,8 @@ restartProbingNoPrint:
                     // oled.show();
                     // Serial.println(numberOfLocalChanges);
 
-                    // if (firstConnection != -3) {
-                    refreshLocalConnections( -1 );
-                    // }
+                    // NOTE: refreshLocalConnections() is already called inside addBridgeToState()
+                    // No need to call it again here - that was causing double refresh delay!
                     fadeTimer = millis( );
                     // if (numberOfLocalChanges > 5) {
                     //   saveLocalNodeFile(netSlot);
@@ -776,15 +781,20 @@ restartProbingNoPrint:
                     }
                     clearHighlighting( );
                     //  Serial.println();
-                    int rowsRemoved =
-                        removeBridgeFromNodeFile( nodesToConnect[ 0 ], -1, netSlot, 1 );
-                    // numberOfLocalChanges += rowsRemoved;
+                    // Remove from RAM state - let auto-save handle persistence
+                    // This removes ALL connections containing nodesToConnect[0]
+                    bool removed = removeBridgeFromState( nodesToConnect[ 0 ], -1 );
+                    
+                    // The number of removed connections is tracked in lastRemovedNodesIndex
+                    int rowsRemoved = removed ? lastRemovedNodesIndex : 0;
+                    if ( removed ) {
+                        numberOfLocalChanges += rowsRemoved;
+                    }
                     // waitCore2();
                     if ( rowsRemoved > 0 ) {
                         removeFade = 10;
 
                         // goto restartProbing;
-                        numberOfLocalChanges += rowsRemoved;
 
                         // Print the disconnected nodes using our helper function
                         Serial.print( ", " );
@@ -816,7 +826,10 @@ restartProbingNoPrint:
 
                         // Serial.println(numberOfLocalChanges);
                         // clearLEDsExceptMiddle(1,60);
-                        refreshLocalConnections( 0 );
+                        
+                        // NOTE: refreshLocalConnections() is already called inside removeBridgeFromState()
+                        // No need to call it again here - that was causing double refresh delay!
+                        
                         // delay(10);
                         waitCore2( );
                         showLEDsCore2 = -1;
@@ -935,10 +948,13 @@ restartProbingNoPrint:
     // showLEDsCore2 = -1;
     // refreshLocalConnections(-1);
     // delay(10);
-    if ( firstConnection != -3 && numberOfLocalChanges > 0 ) {
-        Serial.println( "saving local node file" );
+    if ( numberOfLocalChanges > 0 ) {
+        Serial.print( "Accumulated " );
+        Serial.print( numberOfLocalChanges );
+        Serial.println( " changes in RAM (will auto-save)" );
         Serial.flush( );
-        saveLocalNodeFile( );
+        // Don't save immediately - let auto-save scheduler handle it after 2 seconds
+        // This keeps probing responsive
     }
     // delay(10);
     refreshConnections( 1, 1, 0 );
@@ -2449,18 +2465,18 @@ void routableBufferPower( int offOn, int flash, int force ) {
         if ( probePowerDAC == 0 ) {
             setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
-                removeBridgeFromNodeFile( ROUTABLE_BUFFER_IN, DAC1, netSlot, flashOrLocal, 0 );
-                addBridgeToNodeFile( ROUTABLE_BUFFER_IN, DAC0, netSlot, flashOrLocal, 0 );
-                // refresh(flashOrLocal, 0);
-                needToRefresh = true;
+                removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0 );
+                // State functions already call refresh, no need to set needToRefresh
+                needToRefresh = false;  // Already refreshed by state functions
             }
         } else if ( probePowerDAC == 1 ) {
             setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
-                removeBridgeFromNodeFile( ROUTABLE_BUFFER_IN, DAC0, netSlot, flashOrLocal, 0 );
-                addBridgeToNodeFile( ROUTABLE_BUFFER_IN, DAC1, netSlot, flashOrLocal, 0 );
-                // refresh(flashOrLocal, 0);
-                needToRefresh = true;
+                removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1 );
+                // State functions already call refresh, no need to set needToRefresh
+                needToRefresh = false;  // Already refreshed by state functions
             }
         }
 
@@ -2468,43 +2484,32 @@ void routableBufferPower( int offOn, int flash, int force ) {
         //   pinMode(27, OUTPUT);
         //    digitalWrite(27, HIGH);
 
-        if ( flash == 1 ) {
-            if ( probePowerDAC == 0 ) {
-                if ( bufferPowerConnected == false ) {
-                    addBridgeToNodeFile( ROUTABLE_BUFFER_IN, DAC0, netSlot, flashOrLocal, 0 );
-
-                    needToRefresh = true;
-                }
-            } else if ( probePowerDAC == 1 ) {
-                if ( bufferPowerConnected == false ) {
-                    addBridgeToNodeFile( ROUTABLE_BUFFER_IN, DAC1, netSlot, flashOrLocal, 0 );
-                    needToRefresh = true;
-                }
-            }
-            // Serial.print("needToRefresh = "); Serial.println(needToRefresh);
-            if ( needToRefresh == true || force == 1 ) {
-                refreshConnections( 0, 0, 0 );
-            }
-        } else {
-            if ( probePowerDAC == 0 ) {
-                if ( bufferPowerConnected == false ) {
-
-                    addBridgeToNodeFile( ROUTABLE_BUFFER_IN, DAC0, netSlot, flashOrLocal, 0 );
-                    needToRefresh = true;
-                }
-            } else if ( probePowerDAC == 1 ) {
-                if ( bufferPowerConnected == false ) {
-
-                    addBridgeToNodeFile( ROUTABLE_BUFFER_IN, DAC1, netSlot, flashOrLocal, 0 );
-                    needToRefresh = true;
+        // Add buffer power connection to state (RAM-based)
+        // No need to distinguish flash vs local - state system handles it
+        if ( probePowerDAC == 0 ) {
+            if ( bufferPowerConnected == false ) {
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0 );
+                // State function already refreshes, but force if needed
+                if ( force == 1 ) {
+                    if ( flash == 1 ) {
+                        refreshConnections( 0, 0, 0 );
+                    } else {
+                        refreshLocalConnections( 0, 0, 0 );
+                    }
                 }
             }
-            // Serial.print("needToRefresh = "); Serial.println(needToRefresh);
-            if ( needToRefresh == true || force == 1 ) {
-                refreshLocalConnections( 0, 0, 0 );
+        } else if ( probePowerDAC == 1 ) {
+            if ( bufferPowerConnected == false ) {
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1 );
+                // State function already refreshes, but force if needed
+                if ( force == 1 ) {
+                    if ( flash == 1 ) {
+                        refreshConnections( 0, 0, 0 );
+                    } else {
+                        refreshLocalConnections( 0, 0, 0 );
+                    }
+                }
             }
-
-            // refreshLocalConnections(0, 0, 0);
         }
 
         bufferPowerConnected = true;
@@ -2516,13 +2521,13 @@ void routableBufferPower( int offOn, int flash, int force ) {
 
                 if ( probePowerDAC == 0 ) {
                     if ( bufferPowerConnected == true ) {
-                        removeBridgeFromNodeFile( ROUTABLE_BUFFER_IN, DAC0, netSlot, 1 );
-                        removeBridgeFromNodeFile( ROUTABLE_BUFFER_IN, DAC0, netSlot, 0 );
+                        removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
+                        // State function already handles both RAM and refresh
                     }
                 } else if ( probePowerDAC == 1 ) {
                     if ( bufferPowerConnected == true ) {
-                        removeBridgeFromNodeFile( ROUTABLE_BUFFER_IN, DAC1, netSlot, 1 );
-                        removeBridgeFromNodeFile( ROUTABLE_BUFFER_IN, DAC1, netSlot, 0 );
+                        removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
+                        // State function already handles both RAM and refresh
                     }
                 }
 
@@ -2532,6 +2537,7 @@ void routableBufferPower( int offOn, int flash, int force ) {
                 //   setDac1voltage(0.0, 1);
                 // }
 
+                // Extra refresh to ensure everything is synced
                 refreshConnections( 0, 0, 0 );
             }
         }
@@ -3779,7 +3785,7 @@ int scanRows( int pin ) {
             sendXYraw( chipScan, 0, 0, 1 );
             sendXYraw( chipScan, 0, yToScan, 1 );
 
-            rowBeingScanned = ch[ chipScan ].yMap[ yToScan ];
+            rowBeingScanned = globalState.connections.chipStates[ chipScan ].yMap[ yToScan ];
             if ( readFloatingOrState( pin, rowBeingScanned ) == probe ) {
                 found = rowBeingScanned;
 
@@ -3849,7 +3855,7 @@ int scanRows( int pin ) {
 
             // analogRead(ADC0_PIN);
 
-            rowBeingScanned = ch[ chipScan2 ].xMap[ xToScan ];
+            rowBeingScanned = globalState.connections.chipStates[ chipScan2 ].xMap[ xToScan ];
             //   Serial.print("rowBeingScanned: ");
             //     Serial.println(rowBeingScanned);
             //     Serial.print("chipScan2: ");

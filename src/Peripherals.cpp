@@ -7,6 +7,7 @@
 #include "LEDs.h"
 
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 
 #include "hardware/adc.h"
@@ -883,6 +884,9 @@ void setTopRail( float value, int save, int saveEEPROM ) {
         jumperlessConfig.dacs.top_rail = value;
         railVoltage[ 0 ] = value; // Keep legacy variable in sync
         configChanged = true;
+        
+        // Update globalState for YAML persistence
+        globalState.setRailVoltage(true, value);  // true = top rail
     }
     if ( saveEEPROM ) {
 
@@ -909,6 +913,9 @@ void setBotRail( float value, int save, int saveEEPROM ) {
         jumperlessConfig.dacs.bottom_rail = value;
         railVoltage[ 1 ] = value; // Keep legacy variable in sync
         configChanged = true;
+        
+        // Update globalState for YAML persistence
+        globalState.setRailVoltage(false, value);  // false = bottom rail
     }
     if ( saveEEPROM ) {
 
@@ -966,6 +973,10 @@ void setDac0voltage( float voltage, int save, int saveEEPROM,
 
     dacOutput[ 0 ] = voltage;
     // }
+    
+    // Update globalState for YAML persistence
+    jumperlessConfig.dacs.dac_0 = voltage;
+    globalState.setDacVoltage(0, voltage);
 
     if ( saveEEPROM ) {
 
@@ -1008,6 +1019,10 @@ void setDac1voltage( float voltage, int save, int saveEEPROM,
 
     dacOutput[ 1 ] = voltage;
     //  }
+    
+    // Update globalState for YAML persistence
+    jumperlessConfig.dacs.dac_1 = voltage;
+    globalState.setDacVoltage(1, voltage);
 
     if ( saveEEPROM ) {
 
@@ -1057,7 +1072,7 @@ void erattaClearGPIO( int gpio ) {
         // check free y connections on chip L
         for ( int i = 0; i < 8; i++ ) {
 
-            if ( ch[ 11 ].yStatus[ i ] == -1 ) {
+            if ( globalState.connections.chipStates[ 11 ].yStatus[ i ] == -1 ) {
                 freeYL = i;
                 break;
             }
@@ -1184,28 +1199,28 @@ void chooseShownReadings( void ) {
 
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
-        if ( path[ i ].node1 == ADC0 || path[ i ].node2 == ADC0 ) {
-            showADCreadings[ 0 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC0 || globalState.connections.paths[ i ].node2 == ADC0 ) {
+            showADCreadings[ 0 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC1 || path[ i ].node2 == ADC1 ) {
-            showADCreadings[ 1 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC1 || globalState.connections.paths[ i ].node2 == ADC1 ) {
+            showADCreadings[ 1 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC2 || path[ i ].node2 == ADC2 ) {
-            showADCreadings[ 2 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC2 || globalState.connections.paths[ i ].node2 == ADC2 ) {
+            showADCreadings[ 2 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC3 || path[ i ].node2 == ADC3 ) {
-            showADCreadings[ 3 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC3 || globalState.connections.paths[ i ].node2 == ADC3 ) {
+            showADCreadings[ 3 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC4 || path[ i ].node2 == ADC4 ) {
-            showADCreadings[ 4 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC4 || globalState.connections.paths[ i ].node2 == ADC4 ) {
+            showADCreadings[ 4 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ISENSE_PLUS || path[ i ].node1 == ISENSE_PLUS ||
-             path[ i ].node2 == ISENSE_MINUS || path[ i ].node2 == ISENSE_MINUS ) {
+        if ( globalState.connections.paths[ i ].node1 == ISENSE_PLUS || globalState.connections.paths[ i ].node1 == ISENSE_PLUS ||
+             globalState.connections.paths[ i ].node2 == ISENSE_MINUS || globalState.connections.paths[ i ].node2 == ISENSE_MINUS ) {
             // Serial.println(showReadings);
 
             inaConnected = 1;
@@ -1452,7 +1467,7 @@ void showLEDmeasurements( void ) {
             netColors[ showADCreadings[ i ] ] = unpackRgb( color );
             adcReadingColors[ i ] = color;
 
-            net[ showADCreadings[ i ] ].color = unpackRgb( color );
+            globalState.connections.nets[ showADCreadings[ i ] ].color = unpackRgb( color );
             // drawWires(showADCreadings[0]);
             // showLEDsCore2 = 2;
         }

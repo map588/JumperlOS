@@ -5,6 +5,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "Menus.h"
 #include "NetManager.h"
 #include "Peripherals.h"
@@ -598,31 +599,31 @@ void drawWires(int net) {
       int bothOnBB = 0;
       int whichIsLarger = 0;
 
-      if (path[i].duplicate == 1) {
+      if (globalState.connections.paths[i].duplicate == 1) {
         continue;
       }
 
-      if (path[i].node1 != -1 && path[i].node2 != -1 &&
-          path[i].node1 != path[i].node2) {
-        if ((path[i].node1 <= 60 &&
-             path[i].node2 <= 60)) { //|| (path[i].node1 >= 110 &&
-          // path[i].node1 <= 113) || (path[i].node2 >= 110 && path[i].node2 <=
+      if (globalState.connections.paths[i].node1 != -1 && globalState.connections.paths[i].node2 != -1 &&
+          globalState.connections.paths[i].node1 != globalState.connections.paths[i].node2) {
+        if ((globalState.connections.paths[i].node1 <= 60 &&
+             globalState.connections.paths[i].node2 <= 60)) { //|| (globalState.connections.paths[i].node1 >= 110 &&
+          // globalState.connections.paths[i].node1 <= 113) || (globalState.connections.paths[i].node2 >= 110 && globalState.connections.paths[i].node2 <=
           // 113)) {
           bothOnBB = 1;
-          if (path[i].node1 > 0 && path[i].node1 < 30 && path[i].node2 > 0 &&
-              path[i].node2 <= 30) {
+          if (globalState.connections.paths[i].node1 > 0 && globalState.connections.paths[i].node1 < 30 && globalState.connections.paths[i].node2 > 0 &&
+              globalState.connections.paths[i].node2 <= 30) {
             bothOnTop = 1;
             sameLevel = 1;
-            if (path[i].node1 > path[i].node2) {
+            if (globalState.connections.paths[i].node1 > globalState.connections.paths[i].node2) {
               whichIsLarger = 1;
             } else {
               whichIsLarger = 2;
             }
-          } else if (path[i].node1 > 30 && path[i].node1 <= 60 &&
-                     path[i].node2 > 30 && path[i].node2 <= 60) {
+          } else if (globalState.connections.paths[i].node1 > 30 && globalState.connections.paths[i].node1 <= 60 &&
+                     globalState.connections.paths[i].node2 > 30 && globalState.connections.paths[i].node2 <= 60) {
             bothOnBottom = 1;
             sameLevel = 1;
-            if (path[i].node1 > path[i].node2) {
+            if (globalState.connections.paths[i].node1 > globalState.connections.paths[i].node2) {
               whichIsLarger = 1;
             } else {
               whichIsLarger = 2;
@@ -630,16 +631,16 @@ void drawWires(int net) {
           }
         } else {
           // Serial.println("else ");
-          // Serial.print("path[");
+          // Serial.print("globalState.connections.paths[");
           // Serial.print(i);
           // Serial.print("].net = ");
-          // Serial.print(path[i].net);
+          // Serial.print(globalState.connections.paths[i].net);
 
-          lightUpNet(path[i].net);
+          lightUpNet(globalState.connections.paths[i].net);
         }
 
-        // if (sameLevel == 0 && ((path[i].node1 >= 110 && path[i].node1 <= 113)
-        // || (path[i].node2 >= 110 && path[i].node2 <= 113)))
+        // if (sameLevel == 0 && ((globalState.connections.paths[i].node1 >= 110 && globalState.connections.paths[i].node1 <= 113)
+        // || (globalState.connections.paths[i].node2 >= 110 && globalState.connections.paths[i].node2 <= 113)))
         // {
         //   sameLevel = 1;
 
@@ -650,13 +651,13 @@ void drawWires(int net) {
           int first = 0;
           int last = 0;
           if (whichIsLarger == 1) {
-            range = path[i].node1 - path[i].node2;
-            first = path[i].node2;
-            last = path[i].node1;
+            range = globalState.connections.paths[i].node1 - globalState.connections.paths[i].node2;
+            first = globalState.connections.paths[i].node2;
+            last = globalState.connections.paths[i].node1;
           } else {
-            range = path[i].node2 - path[i].node1;
-            first = path[i].node1;
-            last = path[i].node2;
+            range = globalState.connections.paths[i].node2 - globalState.connections.paths[i].node1;
+            first = globalState.connections.paths[i].node1;
+            last = globalState.connections.paths[i].node2;
           }
 
           // Serial.print("\nfirst = ");
@@ -666,7 +667,7 @@ void drawWires(int net) {
           // Serial.print("range = ");
           // Serial.println(range);
           // Serial.print("net = ");
-          // Serial.println(path[i].net);
+          // Serial.println(globalState.connections.paths[i].net);
 
           int inside = 0;
           int largestFillIndex = 0;
@@ -675,10 +676,10 @@ void drawWires(int net) {
             // Serial.print("j = ");
             // Serial.println(j);
             for (int w = 0; w < 5; w++) {
-              if ((wireStatus[j][w] == path[i].net || wireStatus[j][w] == 0) &&
+              if ((wireStatus[j][w] == globalState.connections.paths[i].net || wireStatus[j][w] == 0) &&
                   w >= largestFillIndex) {
 
-                // wireStatus[j][w] = path[i].net;
+                // wireStatus[j][w] = globalState.connections.paths[i].net;
                 if (w > largestFillIndex) {
                   largestFillIndex = w;
                 }
@@ -702,11 +703,11 @@ void drawWires(int net) {
             if (j == first || j == last) {
               for (int k = largestFillIndex; k < 5; k++) {
 
-                wireStatus[j][k] = path[i].net;
-                // wireStatus[j][largestFillIndex] = path[i].net;
+                wireStatus[j][k] = globalState.connections.paths[i].net;
+                // wireStatus[j][largestFillIndex] = globalState.connections.paths[i].net;
               }
             } else {
-              wireStatus[j][largestFillIndex] = path[i].net;
+              wireStatus[j][largestFillIndex] = globalState.connections.paths[i].net;
             }
           }
 
@@ -720,27 +721,27 @@ void drawWires(int net) {
         } else {
           for (int j = 0; j < 5; j++) {
 
-            if (path[i].node1 > 0 && path[i].node1 <= 60) {
-              if (wireStatus[path[i].node1][j] == 0) {
-                wireStatus[path[i].node1][j] = path[i].net;
+            if (globalState.connections.paths[i].node1 > 0 && globalState.connections.paths[i].node1 <= 60) {
+              if (wireStatus[globalState.connections.paths[i].node1][j] == 0) {
+                wireStatus[globalState.connections.paths[i].node1][j] = globalState.connections.paths[i].net;
               }
 
-              // Serial.print("path[i].node1 = ");
-              // Serial.println(path[i].node1);
+              // Serial.print("globalState.connections.paths[i].node1 = ");
+              // Serial.println(globalState.connections.paths[i].node1);
             }
-            if (path[i].node2 > 0 && path[i].node2 <= 60) {
-              if (wireStatus[path[i].node2][j] == 0) {
-                wireStatus[path[i].node2][j] = path[i].net;
+            if (globalState.connections.paths[i].node2 > 0 && globalState.connections.paths[i].node2 <= 60) {
+              if (wireStatus[globalState.connections.paths[i].node2][j] == 0) {
+                wireStatus[globalState.connections.paths[i].node2][j] = globalState.connections.paths[i].net;
               }
-              // Serial.print("path[i].node2 = ");
-              // Serial.println(path[i].node2);
+              // Serial.print("globalState.connections.paths[i].node2 = ");
+              // Serial.println(globalState.connections.paths[i].node2);
             }
           }
-          // lightUpNet(path[i].net);
+          // lightUpNet(globalState.connections.paths[i].net);
         }
       } else {
 
-        lightUpNet(path[i].net);
+        lightUpNet(globalState.connections.paths[i].net);
       }
     }
     for (int i = 0; i <= 60; i++) {
@@ -1454,24 +1455,24 @@ void showRowAnimation(int index, int net) {
   if (jumperlessConfig.display.lines_wires == 0 ||
       numberOfShownNets > MAX_NETS_FOR_WIRES) {
     for (int i = 0; i < numberOfPaths && i < MAX_BRIDGES; i++) {
-      if (path[i].net == actualNet) {
-        if (path[i].skip == true) {
+      if (globalState.connections.paths[i].net == actualNet) {
+        if (globalState.connections.paths[i].skip == true) {
           continue;
         }
 
-        if (path[i].node1 > 0 && path[i].node1 <= 60 &&
-            path[i].node1 != probeHighlight) {
+        if (globalState.connections.paths[i].node1 > 0 && globalState.connections.paths[i].node1 <= 60 &&
+            globalState.connections.paths[i].node1 != probeHighlight) {
           for (int j = 0; j < 5; j++) {
 
-            b.printRawRow(0b00010000 >> j, path[i].node1 - 1, frameColors[j],
+            b.printRawRow(0b00010000 >> j, globalState.connections.paths[i].node1 - 1, frameColors[j],
                           0xfffffe, 4);
           }
         }
-        if (path[i].node2 > 0 && path[i].node2 <= 60 &&
-            path[i].node2 != probeHighlight) {
+        if (globalState.connections.paths[i].node2 > 0 && globalState.connections.paths[i].node2 <= 60 &&
+            globalState.connections.paths[i].node2 != probeHighlight) {
           for (int j = 0; j < 5; j++) {
 
-            b.printRawRow(0b00010000 >> j, path[i].node2 - 1, frameColors[j],
+            b.printRawRow(0b00010000 >> j, globalState.connections.paths[i].node2 - 1, frameColors[j],
                           0xfffffe, 4);
           }
         }
@@ -1501,15 +1502,15 @@ void showRowAnimation(int index, int net) {
   }
 
   for (int i = 0; i < numberOfPaths && i < MAX_BRIDGES; i++) {
-    //     if (path[i].skip == true) {
+    //     if (globalState.connections.paths[i].skip == true) {
     //   continue;
     // }
-    if (path[i].net == actualNet) {
+    if (globalState.connections.paths[i].net == actualNet) {
 
-      if (path[i].node1 > NANO_D0 && path[i].node1 <= NANO_GND_1) {
+      if (globalState.connections.paths[i].node1 > NANO_D0 && globalState.connections.paths[i].node1 <= NANO_GND_1) {
         for (int j = 0; j < 35; j++) {
-          if (bbPixelToNodesMapV5[j][0] == path[i].node1) {
-            int brightness = (brightenedNode == path[i].node1)
+          if (bbPixelToNodesMapV5[j][0] == globalState.connections.paths[i].node1) {
+            int brightness = (brightenedNode == globalState.connections.paths[i].node1)
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
@@ -1517,10 +1518,10 @@ void showRowAnimation(int index, int net) {
           }
         }
       }
-      if (path[i].node2 > NANO_D0 && path[i].node2 <= NANO_GND_1) {
+      if (globalState.connections.paths[i].node2 > NANO_D0 && globalState.connections.paths[i].node2 <= NANO_GND_1) {
         for (int j = 0; j < 35; j++) {
-          if (bbPixelToNodesMapV5[j][0] == path[i].node2) {
-            int brightness = (brightenedNode == path[i].node2)
+          if (bbPixelToNodesMapV5[j][0] == globalState.connections.paths[i].node2) {
+            int brightness = (brightenedNode == globalState.connections.paths[i].node2)
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],

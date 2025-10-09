@@ -3,6 +3,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
@@ -107,7 +108,7 @@ int encoderNetHighlight( int print, int mode, int divider ) {
                 currentHighlightedNode = 0;
             }
             currentHighlightedNode++;
-            if ( highlightedNet >= 0 && highlightedNet < numberOfNets && net[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
+            if ( highlightedNet >= 0 && highlightedNet < numberOfNets && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
                 currentHighlightedNode = 0;
                 highlightedNet++;
                 if ( highlightedNet > numberOfNets - 1 ) {
@@ -117,9 +118,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
                 }
                 brightenedNet = highlightedNet;
                 if ( highlightedNet >= 0 && highlightedNet < numberOfNets ) {
-                    brightenedNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
-                    if ( highlightedNet != 0 && net[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
-                        returnNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
+                    brightenedNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
+                    if ( highlightedNet != 0 && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
+                        returnNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
                     }
                 } else {
                     brightenedNode = -1;
@@ -138,9 +139,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
             brightenedNet = highlightedNet;
 
             if ( highlightedNet >= 0 && highlightedNet < numberOfNets ) {
-                brightenedNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
-                if ( highlightedNet != 0 && net[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
-                    returnNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
+                brightenedNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
+                if ( highlightedNet != 0 && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
+                    returnNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
                 }
             } else {
 
@@ -175,7 +176,7 @@ int encoderNetHighlight( int print, int mode, int divider ) {
                     currentHighlightedNode = 0;
                 }
                 currentHighlightedNode = MAX_NODES - 1;
-                while ( highlightedNet >= 0 && highlightedNet < numberOfNets && net[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
+                while ( highlightedNet >= 0 && highlightedNet < numberOfNets && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
                     currentHighlightedNode--;
                     if ( currentHighlightedNode < 0 ) {
                         highlightedNet--;
@@ -189,9 +190,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
             }
             brightenedNet = highlightedNet;
             if ( highlightedNet >= 0 && highlightedNet < numberOfNets ) {
-                brightenedNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
-                if ( highlightedNet != 0 && net[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
-                    returnNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
+                brightenedNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
+                if ( highlightedNet != 0 && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
+                    returnNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
                 }
             } else {
                 brightenedNode = -1;
@@ -280,9 +281,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
 
                 // Check if current scrolledRow has any connections
                 for ( int i = 0; i < numberOfPaths; i++ ) {
-                    if ( path[ i ].node1 == scrolledRow || path[ i ].node2 == scrolledRow ) {
+                    if ( globalState.connections.paths[ i ].node1 == scrolledRow || globalState.connections.paths[ i ].node2 == scrolledRow ) {
                         foundConnection = true;
-                        connectedNet = path[ i ].net;
+                        connectedNet = globalState.connections.paths[ i ].net;
                         break;
                     }
                 }
@@ -325,9 +326,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
 
                 // Check if current scrolledRow has any connections
                 for ( int i = 0; i < numberOfPaths; i++ ) {
-                    if ( path[ i ].node1 == scrolledRow || path[ i ].node2 == scrolledRow ) {
+                    if ( globalState.connections.paths[ i ].node1 == scrolledRow || globalState.connections.paths[ i ].node2 == scrolledRow ) {
                         foundConnection = true;
-                        connectedNet = path[ i ].net;
+                        connectedNet = globalState.connections.paths[ i ].net;
                         break;
                     }
                 }
@@ -392,14 +393,14 @@ int brightenNet( int node, int addBrightness ) {
 
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
-        if ( node == path[ i ].node1 || node == path[ i ].node2 && path[ i ].duplicate == 0 ) {
+        if ( node == globalState.connections.paths[ i ].node1 || node == globalState.connections.paths[ i ].node2 && globalState.connections.paths[ i ].duplicate == 0 ) {
             /// if (brightenedNet != i) {
-            brightenedNet = path[ i ].net;
+            brightenedNet = globalState.connections.paths[ i ].net;
             brightenedNode = node;
             // Serial.print("\n\n\rbrightenedNet: ");
             // Serial.println(brightenedNet);
             // Serial.print("net ");
-            // Serial.print(path[i].net);
+            // Serial.print(globalState.connections.paths[i].net);
             if ( brightenedNet == 1 ) {
                 brightenedRail = 1;
                 // lightUpRail(-1, 1, 1, addBrightness);
@@ -470,9 +471,9 @@ int warnNet( int node ) {
 
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
-        if ( node == path[ i ].node1 || node == path[ i ].node2 ) {
+        if ( node == globalState.connections.paths[ i ].node1 || node == globalState.connections.paths[ i ].node2 ) {
             /// if (brightenedNet != i) {
-            warningNet = path[ i ].net;
+            warningNet = globalState.connections.paths[ i ].net;
 
             // Serial.print("warningNet = ");
             // Serial.println(warningNet);

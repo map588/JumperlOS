@@ -10,6 +10,7 @@
 #include "oled.h"
 #include <cstring>
 #include <time.h>
+#include "TermControl.h"
 
 // External references
 extern class oled oled;
@@ -1394,6 +1395,7 @@ void FileManager::run( ) {
     if ( !shouldExitForREPL ) {
         // Exit Jumperless interactive mode (normal file manager exit)
         Serial.write( 0x0F );
+        termInInteractiveMode = 0;
         Serial.flush( );
         delay( 10 ); // Give system time to switch modes
     }
@@ -1414,7 +1416,8 @@ void FileManager::run( ) {
 void FileManager::initInteractiveMode( ) {
     // Enter Jumperless interactive mode
     Serial.write( 0x0E );
-    Serial.flush( );
+    termInInteractiveMode = 1;
+        Serial.flush( );
     delay( 10 ); // Give system time to switch modes
 
     // Show cursor by default - only hide during drawing
@@ -2236,6 +2239,7 @@ String launchEkilo( const char* filename, bool replMode ) {
 
     // Restore interactive mode if using Serial
     Serial.write( 0x0E ); // turn on interactive mode
+    termInInteractiveMode = 1;
     Serial.flush( );
 
     // Return appropriate content based on mode
@@ -2354,6 +2358,7 @@ String filesystemAppPythonScriptsREPL( ) {
         Serial.flush( );
         // Ensure interactive mode is enabled for main menu
         Serial.write( 0x0E );
+        termInInteractiveMode = 1;
         Serial.flush( );
     } else {
         // Normal exit - restore screen state
@@ -3132,6 +3137,7 @@ String launchInlineEkilo( const String& initial_content ) {
 
     // Restore interactive mode if using Serial
     Serial.write( 0x0E ); // turn on interactive mode
+    termInInteractiveMode = 1;
     Serial.flush( );
 
     return result;

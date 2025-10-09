@@ -5,6 +5,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "Menus.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
@@ -72,9 +73,11 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   clearAllNTCC();
   //core1busy = true;
   // return;
-  openNodeFile(netSlot, 0);
+  
+  // NEW: Load bridges from globalState instead of node files
+  loadBridgesFromState();
 #ifdef DEBUG_REFRESH
-      Serial.print("refreshConnections openNodeFile = ");
+      Serial.print("refreshConnections loadBridgesFromState = ");
       Serial.println(millis() - start);
 #endif
 
@@ -177,8 +180,9 @@ void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
 unsigned long start2 = millis();
   clearAllNTCC();
   //core1busy = true;
-  openNodeFile(netSlot, 1);
-
+  
+  // NEW: Load bridges from globalState instead of local files
+  loadBridgesFromState();
 
   getNodesToConnect();
 #ifdef DEBUG_REFRESH
@@ -377,7 +381,8 @@ void connectNodes(int node1, int node2) {
     return;
   }
 
-  addBridgeToNodeFile(node1, node2, netSlot, 0);
+  addBridgeToState(node1, node2);
+  saveStateToSlot();  // Save immediately
 
   refreshConnections();
   waitCore2();
@@ -385,7 +390,8 @@ void connectNodes(int node1, int node2) {
 }
 
 void disconnectNodes(int node1, int node2) {
-  removeBridgeFromNodeFile(node1, node2, netSlot, 0);
+  removeBridgeFromState(node1, node2);
+  saveStateToSlot();  // Save immediately
   refreshConnections();
   waitCore2();
 }
@@ -422,12 +428,10 @@ float measureVoltage(int adcNumber, int node, bool checkForFloating) {
     return 0.0;
   }
 
-  // removeBridgeFromNodeFile(adcDefine, -1, netSlot, 0);
-
-  // delay(2);
-  //waitCore2();
-  removeBridgeFromNodeFile(adcDefine, -1, netSlot, 1);
-  addBridgeToNodeFile(node, adcDefine, netSlot, 1);
+  // Temporary measurement connections - no need to save
+  // Remove any existing ADC connections, then add the new one
+  removeBridgeFromState(adcDefine, -1);  // Remove all connections to this ADC
+  addBridgeToState(node, adcDefine);
   refreshLocalConnections(1 , 0, 0);
   waitCore2();
   //refreshBlind(-1);
@@ -451,7 +455,8 @@ float measureVoltage(int adcNumber, int node, bool checkForFloating) {
     }
     waitCore2();
   }
-  removeBridgeFromNodeFile(node, adcDefine, netSlot, 1);
+  // Clean up temporary measurement connection
+  removeBridgeFromState(node, adcDefine);
   refreshLocalConnections(0, 0, 0);
   //refreshBlind();
   waitCore2();
@@ -475,7 +480,7 @@ bool checkFloating(int node) {
 
   case 1 ... 93: {
     for (int i = 0; i < 4; i++) {
-      if (ch[11].xStatus[i + 4] == -1) {
+      if (globalState.connections.chipStates[11].xStatus[i + 4] == -1) {
         gpioNumber = RP_GPIO_1 + i;
         break;
       }
@@ -485,11 +490,11 @@ bool checkFloating(int node) {
 
   // case 70 ... 120: {
   //   for (int i = 0; i < 12; i++) {
-  //     if (ch[8].xMap[i] == node) {
+  //     if (globalState.connections.chipStates[8].xMap[i] == node) {
   //       gpioNumber = RP_UART_RX;
   //       break;
   //     }
-  //     if (ch[9].xMap[i] == node) {
+  //     if (globalState.connections.chipStates[9].xMap[i] == node) {
   //       gpioNumber = RP_UART_TX;
   //       break;
   //     }
@@ -544,8 +549,8 @@ bool checkFloating(int node) {
   // Serial.print("gpioPin = ");
   // Serial.println(gpioPin);
 
-  // removeBridgeFromNodeFile(gpioNumber, -1, netSlot, 1);
-  addBridgeToNodeFile(node, gpioNumber, netSlot, 1);
+  // Temporary GPIO connection for floating check - no need to save
+  addBridgeToState(node, gpioNumber);
   refreshLocalConnections(0, 0, 0); 
   //refreshBlind(0, 0, 0);
   waitCore2();
@@ -555,7 +560,7 @@ bool checkFloating(int node) {
   // Serial.print("floating = ");
   // Serial.println(floating);
 
-removeBridgeFromNodeFile(node, gpioNumber, netSlot, 1);
+removeBridgeFromState(node, gpioNumber);
 refreshLocalConnections(0, 0, 0);
 waitCore2();
 
@@ -628,7 +633,8 @@ void connectGPIO(int gpioNumber, int node) {
     gpioNumber = RP_GPIO_8;
     break;
   }
-  addBridgeToNodeFile(gpioNumber, node, netSlot, 0);
+  addBridgeToState(gpioNumber, node);
+  saveStateToSlot();  // Save immediately
   refreshConnections();
 }
 

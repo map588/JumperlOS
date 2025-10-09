@@ -165,7 +165,8 @@ void setup( ) {
     
 
     initDAC( );
-
+    // Serial.println("DAC initialized");
+    // Serial.flush();
 
     pinMode( PROBE_PIN, OUTPUT_8MA );
     pinMode( BUTTON_PIN, INPUT_PULLDOWN );
@@ -178,7 +179,8 @@ void setup( ) {
 
     initINA219( );
 
-   
+    // Serial.println("INA219 initialized");
+    // Serial.flush();
 
     delayMicroseconds( 100 );
 
@@ -190,54 +192,61 @@ void setup( ) {
         // delayMicroseconds(1);
     }
     startupTimers[ 3 ] = millis( );
+    // Serial.println("Core2 initialized");
+    // Serial.flush();
    
     routableBufferPower( 1, 0 );
     startupTimers[ 4 ] = millis( );
-
+    // Serial.println("Routable buffer power initialized");
+    // Serial.flush();
     if (jumperlessConfig.serial_1.async_passthrough == true) {
         AsyncPassthrough::begin(115200);
     }
 
     drawAnimatedImage( 0 );
     startupAnimationFinished = 1;
-    
+    // Serial.println("Startup animation finished");
+    // Serial.flush();
     clearAllNTCC( );
 
     startupTimers[ 5 ] = millis( );
-
+    // Serial.println("NTCC initialized");
+    // Serial.flush(); 
     delayMicroseconds( 100 );
     initArduino( );
-
+    // Serial.println("Arduino initialized");
+    // Serial.flush();
     // delay(100);
     initMenu( );
     startupTimers[ 6 ] = millis( );
     initADC( );
     startupTimers[ 7 ] = millis( );
-
+    // Serial.println("ADC initialized");
+    // Serial.flush();
 
     getNothingTouched( );
 
     checkProbeCurrentZero();
     startupTimers[ 8 ] = millis( );
-    createSlots( -1, 0 );
+    //createSlots( -1, 0 );
+    // Serial.println("Slots created");
+    // Serial.flush();
+    // Note: YAML slot files are now created on-demand in States.cpp when first accessed
+    
     initializeNetColorTracking( );   // Initialize net color tracking after slots are
                                      // created
     initializeValidationTracking( ); // Initialize validation tracking
     startupTimers[ 9 ] = millis( );
-
+    // Serial.println("Net color tracking initialized");
+    // Serial.flush();
     //  setupLogicAnalyzer();
 
-    // Send initial interactive mode command based on terminal_line_buffering setting
-    if (jumperlessConfig.display.terminal_line_buffering == 1) {
-        Serial.write(0x0E);  // Turn ON interactive mode
-    } else {
-        Serial.write(0x0F);  // Turn OFF interactive mode
-    }
-    Serial.flush();
+
 
     tuiGlue.setSerial(&USBSer3);
     tuiGlue.openOnDemand();
-
+    // Serial.println("TuiGlue initialized");
+    // Serial.flush();
 }
 
 unsigned long startupCore2timers[ 10 ];
@@ -357,6 +366,10 @@ String currentCommandLine = "";
 void loop( ) {
 
 menu:
+    
+    // Serial.print("firstLoop = ");
+    // Serial.println(firstLoop);
+    // Serial.flush();
     if ( firstLoop == 1 ) {
 
         if ( firstStart == true || autoCalibrationNeeded == true ) {
@@ -371,7 +384,7 @@ menu:
         firstLoop = 2;
 
         // Serial.println("--------------------------------");
-        loadChangedNetColorsFromFile( netSlot, 0 );
+        //loadChangedNetColorsFromFile( netSlot, 0 );
 
         // routableBufferPower(1, 1);
         if ( attract == 1 ) {
@@ -386,15 +399,21 @@ menu:
     }
 
     if ( firstLoop == 2 ) {
+        // Serial.println("initializing oled");
+        // Serial.flush();
 
         if ( jumperlessConfig.top_oled.connect_on_boot == 1 ) {
             // Serial.println("Initializing OLED");
             oled.init( );
         }
+        // Serial.println("oled initialized");
+        // Serial.flush();
+
 
        // runApp(-1, "jdi MIPdisplay");
 
         firstLoop = 0;
+ 
 #if SETUP_LOGIC_ANALYZER_ON_BOOT == 1
         goto setupla;
 #endif
@@ -419,7 +438,28 @@ menu:
         routableBufferPower( 1, 1 );
     }
 
+    // Serial.print("clearing highlighting");
+    // Serial.flush();
+
     clearHighlighting( );
+
+    // Serial.print("clearHighlighting");
+    // Serial.flush();
+
+    if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1) {
+        Serial.write(0x0E);  // Turn ON interactive mode
+        Serial.print( "Turning on interactive mode\n\r" );
+        Serial.flush();
+        termInInteractiveMode = 1;
+    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0) {
+        Serial.write(0x0F);  // Turn OFF interactive mode
+        Serial.print( "Turning off interactive mode\n\r" );
+        Serial.flush();
+        termInInteractiveMode = 0;
+    }
+    // Serial.print("termInInteractiveMode = ");
+    // Serial.println(termInInteractiveMode);
+    // Serial.flush();
 
     if ( dontShowMenu == 0 ) {
         forceprintmenu:
@@ -554,6 +594,36 @@ menu:
 
 
 dontshowmenu:
+
+
+        // Auto-save dirty state after 1 second of inactivity
+        if (globalState.isDirty()) {
+            unsigned long timeSinceModified = millis() - globalState.getLastModifiedTime();
+            if (timeSinceModified > 500) {  // 1 second delay after last modification
+                String errorMsg;
+                SlotManager& mgr = SlotManager::getInstance();
+                
+                // Ensure we're using the current slot (sync with netSlot)
+                mgr.syncFromGlobalNetSlot();
+                
+                // writeSlotFile will handle core synchronization
+                if (mgr.saveSlot(netSlot, errorMsg)) {
+                    // Successfully auto-saved - clearDirty is called in saveSlot
+                    // Serial.print("✓ Auto-saved slot ");
+                    // Serial.print(netSlot);
+                    // Serial.print(" (");
+                    // Serial.print(globalState.connections.numBridges);
+                    // Serial.println(" connections)");
+                } else {
+                    // Don't clear dirty on failure - retry on next loop
+                    Serial.print("✗ Auto-save failed (slot ");
+                    Serial.print(netSlot);
+                    Serial.print("): ");
+                    Serial.println(errorMsg);
+                }
+            }
+        }
+        
 
     connectFromArduino = '\0';
     firstConnection = -1;
@@ -1259,6 +1329,15 @@ float wavegen_frequency = 1000.0f;
                     startIdx = commaIdx + 1;
                 }
                 
+                // Apply connections to hardware if any were added
+                if (connectionsAdded > 0) {
+                    Serial.println("\n\r─── Applying to Hardware ───");
+                    Serial.print("Refreshing connections... ");
+                    state.markDirty();  // Mark for auto-save
+                    refreshConnections(-1);  // Apply to hardware
+                    Serial.println("✓ Done");
+                }
+                
                 // Display current state
                 Serial.println("\n\r─── Current State ───");
                 Serial.println("Connections: " + String(state.connections.numBridges));
@@ -1270,7 +1349,7 @@ float wavegen_frequency = 1000.0f;
                     for (int i = 0; i < state.connections.numBridges; i++) {
                         int n1 = state.connections.bridges[i][0];
                         int n2 = state.connections.bridges[i][1];
-                        int dup = state.connections.bridgeDuplicates[i];
+                        int dup = state.connections.bridges[i][2];
                         Serial.print("  " + String(i+1) + ". ");
                         Serial.print(String(n1) + "-" + String(n2));
                         if (dup > 1) {
@@ -1280,13 +1359,13 @@ float wavegen_frequency = 1000.0f;
                     }
                 }
                 
-                // Test JSON serialization
-                Serial.println("\n\r─── Testing JSON Serialization ───");
-                String jsonOutput;
-                if (state.toJSON(jsonOutput, true)) {
-                    Serial.println("JSON output :");
+                // Test YAML serialization
+                Serial.println("\n\r─── Testing YAML Serialization ───");
+                String yamlOutput;
+                if (state.toYAML(yamlOutput)) {
+                    Serial.println("YAML output:");
  
-                        Serial.println(jsonOutput);
+                        Serial.println(yamlOutput);
                     
                     
                     // Test saving to slot 7 (test slot)
@@ -1294,7 +1373,7 @@ float wavegen_frequency = 1000.0f;
                     Serial.print("Saving to slot 7... ");
                     if (mgr.saveSlot(7, errorMsg)) {
                         Serial.println("✓ Success");
-                        Serial.println("  File: /slots/slot7.json");
+                        Serial.println("  File: /slots/slot7.yaml");
                         
                         // Test loading it back
                         Serial.print("Loading from slot 7... ");
@@ -1494,6 +1573,7 @@ float wavegen_frequency = 1000.0f;
 
         runApp( -1, (char*)"File Manager" );
         Serial.write( 0x0F );
+        termInInteractiveMode = 0;
         Serial.flush( );
         break;
     }
@@ -1527,6 +1607,7 @@ float wavegen_frequency = 1000.0f;
             jumperlessConfig.top_oled.show_in_terminal = 0;
         }
         configChanged = true;
+      
         break;
     }
 
@@ -1606,6 +1687,7 @@ float wavegen_frequency = 1000.0f;
 
         refreshConnections( -1, 1, 1 );
         Serial.write( 0x0F );
+        termInInteractiveMode = 0;
         Serial.flush( );
         // printAllConnectableNodes();
         break;
@@ -1647,7 +1729,7 @@ float wavegen_frequency = 1000.0f;
         break;
     }
     case '&': { //!  &
-        loadChangedNetColorsFromFile( netSlot, 0 );
+        //loadChangedNetColorsFromFile( netSlot, 0 );
         goto dontshowmenu;
         break;
         int node1 = -1;
@@ -2209,6 +2291,43 @@ float wavegen_frequency = 1000.0f;
     case '!':
         printNodeFile( netSlot, 0, 0, 0, true );
         break;
+    
+    case 'Y': {  //! Y - Print current YAML state
+        Serial.println("\n\r╭────────────────────────────────────╮");
+        Serial.println("│      Current YAML State (RAM)     │");
+        Serial.println("╰────────────────────────────────────╯\n\r");
+        
+        Serial.print("Active Slot: ");
+        Serial.println(netSlot);
+        Serial.print("Dirty Flag: ");
+        Serial.println(globalState.isDirty() ? "YES (will auto-save)" : "NO (saved)");
+        
+        if (globalState.isDirty()) {
+            unsigned long timeSince = millis() - globalState.getLastModifiedTime();
+            Serial.print("Time since last change: ");
+            Serial.print(timeSince / 1000);
+            Serial.println(" seconds");
+        }
+        
+        Serial.println("\n\r─── YAML Output ───\n\r");
+        
+        String yamlOutput;
+        if (globalState.toYAML(yamlOutput)) {
+            Serial.println(yamlOutput);
+        } else {
+            Serial.println("✗ Failed to generate YAML");
+        }
+        
+        Serial.println("\n\r─── Memory Usage ───");
+        Serial.print("Connections: ");
+        Serial.println(globalState.connections.numBridges);
+        Serial.print("State RAM: ~");
+        Serial.print(globalState.estimateRAMUsage());
+        Serial.println(" bytes");
+        
+        Serial.println("\n\r");
+        break;
+    }
 
     case 'o': {
         // probeActive = 1;
@@ -2241,9 +2360,24 @@ float wavegen_frequency = 1000.0f;
     loadfile:
         loadingFile = 1;
         
+        // Load YAML state from slot file into globalState
+        String loadError;
+        SlotManager& mgr = SlotManager::getInstance();
+        if (!mgr.loadSlot(netSlot, loadError)) {
+            if (debugFP) {
+                Serial.print("Warning: Failed to load slot ");
+                Serial.print(netSlot);
+                Serial.print(": ");
+                Serial.println(loadError);
+                Serial.println("Starting with empty slot");
+            }
+            // Empty slot is OK - just start fresh
+            mgr.clearActiveSlot();
+        }
+        
         if ( slotChanged == 1 ) {
             // clearChangedNetColors(0);
-            loadChangedNetColorsFromFile( netSlot, 0 );
+            //loadChangedNetColorsFromFile( netSlot, 0 );
         
         }
 
@@ -2408,7 +2542,8 @@ unsigned long uartTaskTimer = 0;
 void loop1( ) {
 
     while ( pauseCore2 == true ) {
-        tight_loop_contents( );
+        tight_loop_contents();
+       // replyWithSerialInfo( );
     }
 
     // Only call logic analyzer if it's enabled and there's USB activity
@@ -2655,6 +2790,8 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
         } else {
             rotaryEncoderStuff( );
         }
+        
+
         schedulerTimer = micros( );
         core2busy = false;
 
