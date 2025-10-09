@@ -1,7 +1,19 @@
+# [Docs site](https://jumperless-docs.readthedocs.io/en/latest/)
+
+This repo is currently the `develop` branch of the [Jumperless V5 firmware](https://github.com/Architeuthis-Flux/JumperlessV5/tree/main/RP23V50firmware) where I'm gonna try out new crazy nonsense without having to worry about screwing up everyone's Jumperlesses.
+
+The idea is to finally refactor the code now that I have a sense of all the things it should do. The current firmware is a Ship of Theseus that can trace an unbroken line from [breadWare](https://github.com/Architeuthis-Flux/breadWare) > [OG Jumperless](https://github.com/Architeuthis-Flux/Jumperless) > [Jumperless V5](https://github.com/Architeuthis-Flux/JumperlessV5) and has picked up a lot of weird design patterns along the way. So hopefully we can get it to a place where how it works isn't just all in my head and someone else could look at the code and kinda understand what's going on and hopefully contribute.
+
+I won't push code that's *totally* broken, so if you want to help test stuff out, load this firmware and let me know what sucks about it on [Discord](https://discord.gg/bvacV7r3FP). I'm not gonna bother with doing releases for now so you can just download the last build that got spat out from PlatformIO here (put in link to firmware.uf2)
+
+
+
 # Getting Started
 ![guideNoHighlight](https://github.com/user-attachments/assets/dda9717f-4d94-4421-b145-e08cfc68a900)
 
 You probably want to install the [app](https://github.com/Architeuthis-Flux/JumperlessV5/blob/7ea0effd664215c4f7f4894d67472feb57d75df0/RP23V50firmware/docs/APP.md) first, to get the latest firmware.
+
+
 # Here's a super-quick rundown of the how to use the thing:
 
 ## The Probe
