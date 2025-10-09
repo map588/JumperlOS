@@ -48,6 +48,7 @@ KevinC@ppucc.io
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
 #include "PersistentStuff.h"
+#include "States.h"  // New state management system
 #include "Probing.h"
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
@@ -57,14 +58,17 @@ KevinC@ppucc.io
 #include <hardware/adc.h>
 #include "AsyncPassthrough.h"
 #include "user_functions.h"
-#include "CoreBusyFlags.h"
+#include "externVars.h"
 #include "TuiGlue.h"
 #include "TermControl.h"
 
 #include "WaveGen.h"  // New async wavegen
-
+#include "externVars.h"
 
 bread b;
+
+//Tui UI/UX System
+TuiGlue tuiGlue;
 
 // Global async waveform generator
 WaveGen wavegen;
@@ -105,7 +109,7 @@ unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 50;
 
 
-const char firmwareVersion[] = "5.4.0.0"; //! remember to update this
+const char firmwareVersion[] = "5.3.2.4"; //! remember to update this
 
 bool newConfigOptions = false;            //! set to true with new config options //!
                                           
@@ -231,8 +235,8 @@ void setup( ) {
     }
     Serial.flush();
 
-
-    TuiGlue::openOnDemand();
+    tuiGlue.setSerial(&USBSer3);
+    tuiGlue.openOnDemand();
 
 }
 
@@ -587,7 +591,8 @@ busyPrintTime = millis( );
 
         busyTimers[ 0 ] = micros( );
 
-        TuiGlue::loop();
+        tuiGlue.loop();
+        
         busyTimers[ 1 ] = micros( );
 
 // int lastProbeButtonResult = 0; //checking that the probe button is working
@@ -1197,6 +1202,150 @@ float wavegen_frequency = 1000.0f;
 
         goto dontshowmenu;
         break;
+
+    case 'J': { //! J - Test new States system (e.g., "J 1-2" or "J 1-5,10-20")
+        
+        Serial.println("\n\r╭────────────────────────────────────╮");
+        Serial.println("│   States System Test (J command)  │");
+        Serial.println("╰────────────────────────────────────╯\n\r");
+        
+        // Get the SlotManager instance
+        SlotManager& mgr = SlotManager::getInstance();
+        JumperlessState& state = mgr.getActiveState();
+        
+        // Parse the command line (skip first character 'J')
+        String commandLine = currentCommandLine;
+        if (commandLine.length() > 1) {
+            commandLine = commandLine.substring(1);  // Remove 'J'
+            commandLine.trim();
+            
+            if (commandLine.length() > 0) {
+                Serial.println("Parsing connections: " + commandLine);
+                
+                // Parse connections (format: "1-2" or "1-5,10-20,15-30")
+                int startIdx = 0;
+                int connectionsAdded = 0;
+                String errorMsg;
+                
+                while (startIdx < (int)commandLine.length()) {
+                    int commaIdx = commandLine.indexOf(',', startIdx);
+                    if (commaIdx == -1) {
+                        commaIdx = commandLine.length();
+                    }
+                    
+                    String conn = commandLine.substring(startIdx, commaIdx);
+                    conn.trim();
+                    
+                    if (conn.length() > 0) {
+                        int dashIdx = conn.indexOf('-');
+                        if (dashIdx != -1) {
+                            int node1 = conn.substring(0, dashIdx).toInt();
+                            int node2 = conn.substring(dashIdx + 1).toInt();
+                            
+                            Serial.print("  Adding connection: " + String(node1) + "-" + String(node2) + "... ");
+                            
+                            if (state.addConnection(node1, node2, errorMsg)) {
+                                Serial.println("✓ Success");
+                                connectionsAdded++;
+                            } else {
+                                Serial.println("✗ Failed");
+                                Serial.println("    Error: " + errorMsg);
+                            }
+                        } else {
+                            Serial.println("  Invalid format: " + conn + " (should be N1-N2)");
+                        }
+                    }
+                    
+                    startIdx = commaIdx + 1;
+                }
+                
+                // Display current state
+                Serial.println("\n\r─── Current State ───");
+                Serial.println("Connections: " + String(state.connections.numBridges));
+                Serial.println("Active Slot: " + String(mgr.getActiveSlot()));
+                
+                // List all connections
+                if (state.connections.numBridges > 0) {
+                    Serial.println("\n\rConnections in state:");
+                    for (int i = 0; i < state.connections.numBridges; i++) {
+                        int n1 = state.connections.bridges[i][0];
+                        int n2 = state.connections.bridges[i][1];
+                        int dup = state.connections.bridgeDuplicates[i];
+                        Serial.print("  " + String(i+1) + ". ");
+                        Serial.print(String(n1) + "-" + String(n2));
+                        if (dup > 1) {
+                            Serial.print(" (x" + String(dup) + " duplicates)");
+                        }
+                        Serial.println();
+                    }
+                }
+                
+                // Test JSON serialization
+                Serial.println("\n\r─── Testing JSON Serialization ───");
+                String jsonOutput;
+                if (state.toJSON(jsonOutput, true)) {
+                    Serial.println("JSON output :");
+ 
+                        Serial.println(jsonOutput);
+                    
+                    
+                    // Test saving to slot 7 (test slot)
+                    Serial.println("\n\r─── Testing Slot Save ───");
+                    Serial.print("Saving to slot 7... ");
+                    if (mgr.saveSlot(7, errorMsg)) {
+                        Serial.println("✓ Success");
+                        Serial.println("  File: /slots/slot7.json");
+                        
+                        // Test loading it back
+                        Serial.print("Loading from slot 7... ");
+                        if (mgr.loadSlot(7, errorMsg)) {
+                            Serial.println("✓ Success");
+                            Serial.println("  Loaded " + String(mgr.getActiveState().connections.numBridges) + " connections");
+                        } else {
+                            Serial.println("✗ Failed");
+                            Serial.println("  Error: " + errorMsg);
+                        }
+                    } else {
+                        Serial.println("✗ Failed");
+                        Serial.println("  Error: " + errorMsg);
+                    }
+                } else {
+                    Serial.println("Failed to serialize to JSON");
+                }
+                
+                // RAM usage estimate
+                Serial.println("\n\r─── Memory Usage ───");
+                Serial.println("Active state RAM: ~" + String(mgr.getActiveStateRAMUsage()) + " bytes");
+                Serial.println("State object size: ~" + String(state.estimateRAMUsage()) + " bytes");
+                
+                Serial.println("\n\r─── Test Complete ───");
+                
+            } else {
+                Serial.println("No connections specified!");
+                Serial.println("Usage: J 1-2  or  J 1-5,10-20,15-30");
+            }
+        } else {
+            // No arguments - show help
+            Serial.println("States System Test Command");
+            Serial.println("\n\rUsage:");
+            Serial.println("  J 1-2              - Add connection 1-2");
+            Serial.println("  J 1-5,10-20        - Add multiple connections");
+            Serial.println("  J 1-5,1-5,1-5      - Add duplicates (increments count)");
+            Serial.println("\n\rFeatures:");
+            Serial.println("  • Validates connections");
+            Serial.println("  • Tracks duplicate counts");
+            Serial.println("  • JSON serialization");
+            Serial.println("  • Save/load from slots");
+            Serial.println("  • Undo/redo history");
+            Serial.println("\n\rExample:");
+            Serial.println("  J 1-5              - Creates connection 1-5");
+            Serial.println("  J TOP_RAIL-10      - Connects top rail to row 10");
+            Serial.println("  J GND-32           - Connects ground to row 32");
+        }
+        
+        goto dontshowmenu;
+        break;
+    }
 
     case 'U': { //! U - Enable USB Mass Storage drive\n
 
