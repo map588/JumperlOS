@@ -632,12 +632,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 if ( print == 1 ) {
                     Serial.print( "Top Rail  " );
 
-                    Serial.print( railVoltage[ 0 ] );
+                    Serial.print( globalState.power.topRail );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "Top Rail\n%0.2f V", (float)railVoltage[ 0 ] );
+                    sprintf( oledString, "Top Rail\n%0.2f V", (float)globalState.power.topRail );
 
                     //oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -652,12 +652,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 if ( print == 1 ) {
                     Serial.print( "Bottom Rail  " );
 
-                    Serial.print( railVoltage[ 1 ] );
+                    Serial.print( globalState.power.bottomRail );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "Bottom Rail\n%0.2f V", (float)railVoltage[ 1 ] );
+                    sprintf( oledString, "Bottom Rail\n%0.2f V", (float)globalState.power.bottomRail );
 
                     //oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -673,12 +673,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 DACcolorOverride1 = 0x000000;
                 if ( print == 1 ) {
                     Serial.print( "DAC 0  " );
-                    Serial.print( dacOutput[ 0 ] );
+                    Serial.print( globalState.power.dac0 );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "DAC 0\n%0.2f V", (float)dacOutput[ 0 ] );
+                    sprintf( oledString, "DAC 0\n%0.2f V", (float)globalState.power.dac0 );
 
                     //  oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -694,12 +694,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 DACcolorOverride1 = -2;
                 if ( print == 1 ) {
                     Serial.print( "DAC 1  " );
-                    Serial.print( dacOutput[ 1 ] );
+                    Serial.print( globalState.power.dac1 );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "DAC 1\n%0.2f V", (float)dacOutput[ 1 ] );
+                    sprintf( oledString, "DAC 1\n%0.2f V", (float)globalState.power.dac1 );
 
                     //oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -1209,7 +1209,7 @@ int checkForReadingChanges( void ) {
 
     // Check for rail connections (nets 1, 2, 3)
     if ( showReadingNet == 2 ) { // Top Rail
-        float currentRailVoltage = railVoltage[ 0 ];
+        float currentRailVoltage = globalState.power.topRail;
 
         // Check if change is significant (>0.05V dead zone)
         if ( fabs( currentRailVoltage - prevRailVoltage ) > 0.05 ) {
@@ -1223,7 +1223,7 @@ int checkForReadingChanges( void ) {
             displayUpdated = true;
         }
     } else if ( showReadingNet == 3 ) { // Bottom Rail
-        float currentRailVoltage = railVoltage[ 1 ];
+        float currentRailVoltage = globalState.power.bottomRail;
 
         // Check if change is significant (>0.05V dead zone)
         if ( fabs( currentRailVoltage - prevRailVoltage ) > 0.05 ) {

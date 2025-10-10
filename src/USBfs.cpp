@@ -336,7 +336,7 @@ void setUSBDebug(bool enable) {
 }
 
 String readSlotFileContent(int slot) {
-    String filename = "nodeFileSlot" + String(slot) + ".txt";
+    String filename = "/slots/slot" + String(slot) + ".yaml";
     String content = "";
     
     // Use core synchronization to prevent flash access conflicts
@@ -345,11 +345,22 @@ String readSlotFileContent(int slot) {
     }
     core1busy = true;
     
+    // Try YAML file first (new format)
     if (FatFS.exists(filename)) {
         File slotFile = FatFS.open(filename, "r");
         if (slotFile) {
             content = slotFile.readString();
             slotFile.close();
+        }
+    } else {
+        // Fall back to legacy .txt format if YAML doesn't exist
+        String legacyFilename = "nodeFileSlot" + String(slot) + ".txt";
+        if (FatFS.exists(legacyFilename)) {
+            File slotFile = FatFS.open(legacyFilename, "r");
+            if (slotFile) {
+                content = slotFile.readString();
+                slotFile.close();
+            }
         }
     }
     
@@ -379,9 +390,16 @@ void validateAllSlots(bool verbose) {
     int total_connections = 0;
     
     for (int i = 0; i < 8; i++) { // Assuming 8 slots (0-7)
-        String filename = "nodeFileSlot" + String(i) + ".txt";
+        String filename = "/slots/slot" + String(i) + ".yaml";
         
-        if (!FatFS.exists(filename)) {
+        // Check for YAML file first, fall back to legacy .txt
+        bool fileExists = FatFS.exists(filename);
+        if (!fileExists) {
+            filename = "nodeFileSlot" + String(i) + ".txt";
+            fileExists = FatFS.exists(filename);
+        }
+        
+        if (!fileExists) {
             if (usb_debug_enabled && verbose) Serial.println("  Slot " + String(i) + ": File does not exist");
             continue;
         }

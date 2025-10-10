@@ -72,6 +72,9 @@ extern int switchPosition;
 extern int lastSwitchPositions[3];
 
 
+int probeMode(int setOrClear = 1, int firstConnection = -1);
+
+
 
 float measureMode(int updateSpeed = 150);
 void checkPads(void);
@@ -92,7 +95,7 @@ int longShortPress(int pressLength = 500);
 int selectFromLastFound(void);
 int checkLastFound(int);
 void clearLastFound(void);
-int probeMode(int setOrClear = 1, int firstConnection = -1);
+
 int checkProbeButton(void);
 int checkProbeDoubleClick(unsigned long timeout, int waitForRelease = 0);
 int readFloatingOrState (int pin = 0, int row = 0);

@@ -666,9 +666,9 @@ void printSlots(int fileNo) {
           Serial.print("        <--- current slot");
         }
 
-        Serial.print("\n\rnodeFileSlot");
+        Serial.print("\n\r/slots/slot");
         Serial.print(i);
-        Serial.print(".txt\n\r");
+        Serial.print(".yaml\n\r");
         Serial.print("\n\rf ");
         printNodeFile(i, 0, 0, 0, false);
         Serial.print("\n\n\r");
@@ -676,9 +676,9 @@ void printSlots(int fileNo) {
     }
   } else {
 
-    Serial.print("\n\rnodeFileSlot");
+    Serial.print("\n\r/slots/slot");
     Serial.print(fileNo - '0');
-    Serial.print(".txt\n\r");
+    Serial.print(".yaml\n\r");
 
     Serial.print("\n\rf ");
 

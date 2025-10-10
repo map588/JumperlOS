@@ -47,21 +47,23 @@ int openFileThreadSafe(int openTypeEnum, int slot = 0, int flashOrLocal = 0);
 void createLocalNodeFile(int slot = 0);
 void saveLocalNodeFile(int slot = 0);
 
-// General-purpose nodeFileString backup/restore functions
+// General-purpose nodeFileString backup/restore functions (DEPRECATED - use state backup below)
 void storeNodeFileBackup(void);
 void restoreNodeFileBackup(void);
 void restoreAndSaveNodeFileBackup(void);
 void clearNodeFileBackup(void);
 bool hasNodeFileBackup(void);
 bool hasNodeFileChanges(void);
-const char* getNodeFileBackup(void);   
+const char* getNodeFileBackup(void);
+
+// Note: State backup functions have been moved to States.h/States.cpp   
 void writeMenuTree(void);
 void createSlots(int slot = -1,  int overwrite = 0);
 void inputNodeFileList(int addRotaryConnections = 0);
 //this just opens the file, takes out all the bullshit, and then populates the newBridge array
 void parseWokwiFileToNodeFile();
 void changeWokwiDefinesToJumperless ();
-void writeToNodeFile(int slot = 0, int flashOrLocal = 0);
+
 int removeBridgeFromNodeFile(int node1, int node2 = -1, int slot = 0, int flashOrLocal = 0, int onlyCheck = 0);
 int addBridgeToNodeFile(int node1, int node2, int slot = 0, int flashOrLocal = 0, int allowDuplicates = 1); //returns 1 if duplicate was found
 void savePreformattedNodeFile (int source = 0, int slot = 0, int keepEncoder = 1);
@@ -78,7 +80,8 @@ void readStringFromSerial(int source = 0, int addRemove = 0);
 int parseStringToNode(int source = 0);
 
 int getSlotLength(int slot, int flashOrLocal = 0);
-void openNodeFile(int slot = 0, int flashOrLocal = 0);
+void openNodeFile(int slot = 0, int flashOrLocal = 0); // DEPRECATED - use loadSlotIntoState()
+void loadSlotIntoState(int slot); // NEW: Load slot into globalState using SlotManager
 
 void splitStringToFields();
 

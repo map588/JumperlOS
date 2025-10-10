@@ -662,7 +662,7 @@ restartProbingNoPrint:
                         }
 
                         if ( gpioIndex != -1 ) {
-                            if ( jumperlessConfig.gpio.direction[ gpioIndex ] == 0 ) {
+                            if ( globalState.config.gpioDirection[ gpioIndex ] == 0 ) {
                                 Serial.print( " (output)  connected" );
                             } else {
                                 Serial.print( " (input)  connected" );
@@ -1693,8 +1693,9 @@ int chooseGPIOinputOutput( int gpioChosen ) {
             switch ( reading ) {
             case 9 ... 29: {
                 gpioState[ gpioChosen - 1 ] = 4;
-                if ( jumperlessConfig.gpio.direction[ gpioChosen - 1 ] == 0 ) {
-                    jumperlessConfig.gpio.direction[ gpioChosen - 1 ] = 1;
+                if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 0 ) {
+                    globalState.config.gpioDirection[ gpioChosen - 1 ] = 1;
+                    globalState.markDirty();
                     configChanged = true;
                 }
                 settingOption = 4;
@@ -1702,8 +1703,9 @@ int chooseGPIOinputOutput( int gpioChosen ) {
             }
             case 35 ... 59: {
                 gpioState[ gpioChosen - 1 ] = 0;
-                if ( jumperlessConfig.gpio.direction[ gpioChosen - 1 ] == 1 ) {
-                    jumperlessConfig.gpio.direction[ gpioChosen - 1 ] = 0;
+                if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 1 ) {
+                    globalState.config.gpioDirection[ gpioChosen - 1 ] = 0;
+                    globalState.markDirty();
                     configChanged = true;
                 }
                 settingOption = 0;
@@ -1933,8 +1935,8 @@ int chooseGPIO( int skipInputOutput ) {
             chooseGPIOinputOutput( gpioChosen );
         } else if ( outIn == 1 ) {
             gpioState[ gpioDef[ gpioChosen ][ 2 ] ] = 0;
-            // if (jumperlessConfig.gpio.direction[gpioChosen - 1] == 0) {
-            jumperlessConfig.gpio.direction[ gpioChosen ] = 1;
+            // if (globalState.config.gpioDirection[gpioChosen - 1] == 0) {
+            globalState.config.gpioDirection[ gpioChosen ] = 1;
             updateStateFromGPIOConfig( );
             // gpioState[gpioChosen] = 4;
             // updateGPIOConfigFromState();
@@ -1943,8 +1945,8 @@ int chooseGPIO( int skipInputOutput ) {
             //  }
         } else if ( outIn == 0 ) {
             gpioState[ gpioDef[ gpioChosen ][ 2 ] ] = 4;
-            // if (jumperlessConfig.gpio.direction[gpioChosen - 1] == 1) {
-            jumperlessConfig.gpio.direction[ gpioChosen ] = 0;
+            // if (globalState.config.gpioDirection[gpioChosen - 1] == 1) {
+            globalState.config.gpioDirection[ gpioChosen ] = 0;
             updateStateFromGPIOConfig( );
             // gpioState[gpioChosen] = 0;
             // updateGPIOConfigFromState();
@@ -2294,7 +2296,7 @@ float checkProbeCurrent( void ) {
     int bs = 0;
     int div = 1;
 
-    float lastDac = dacOutput[ 0 ];
+    float lastDac = globalState.power.dac0;
 
     float current = 0.0;
     
@@ -2466,7 +2468,7 @@ void routableBufferPower( int offOn, int flash, int force ) {
             setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0 , 1);
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false;  // Already refreshed by state functions
             }
@@ -2474,7 +2476,7 @@ void routableBufferPower( int offOn, int flash, int force ) {
             setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1);
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false;  // Already refreshed by state functions
             }
@@ -2488,7 +2490,7 @@ void routableBufferPower( int offOn, int flash, int force ) {
         // No need to distinguish flash vs local - state system handles it
         if ( probePowerDAC == 0 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1);
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -2500,7 +2502,7 @@ void routableBufferPower( int offOn, int flash, int force ) {
             }
         } else if ( probePowerDAC == 1 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1);
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -3216,45 +3218,11 @@ void checkPads( void ) {
         checkingPads = 0;
         return;
     }
-    // Serial.print("probeReading: ");
-    // Serial.println(probeReading);
-    // Serial.print("numberOfGoodReadings: ");
-    // Serial.println(numberOfGoodReadings);
-    // Serial.flush();
-    // //   checkingPads = 0;
-    //   padNoTouch++;
 
-    //   if (millis() - padTimeout > padTimeoutLength) {
-    //     padTimeout = millis();
-    //     lastReadRaw = 0;
-    //   }
-    //   return;
-    // }
-    // Serial.print("probeReading: ");
-    // Serial.println(probeReading);
-    // Serial.print("padNoTouch: ");
-    // Serial.println(padNoTouch);
     padNoTouch = 0;
 
-    /* clang-format off */
-  // int probeRowMap[103] = {
 
-  //     -1,        1,         2,        3,        4,        5,        6,        7,       8,
-  //      9,       10,        11,       12,       13,       14,       15,       16,
-  //     17,       18,        19,       20,       21,       22,       23,       24,
-  //     25,       26,        27,       28,       29,       30,       TOP_RAIL,       TOP_RAIL_GND,
-  //     BOTTOM_RAIL,       BOTTOM_RAIL_GND,      31,       32,       33,       34,       35,       36,
-  //     37,       38,       39,       40,        41,       42,       43,       44,       45,
-  //     46,       47,       48,       49,        50,       51,       52,       53,       54,
-  //     55,       56,       57,       58,        59,       60,       NANO_D1,       NANO_D0,       NANO_RESET_1,
-  //     GND,       NANO_D2,       NANO_D3,       NANO_D4,       NANO_D5,       NANO_D6,       NANO_D7,       NANO_D8,
-  //     NANO_D9,	      NANO_D10,	      NANO_D11,	      NANO_D12,	      NANO_D13,	      NANO_3V3,	      NANO_AREF,	      NANO_A0,
-  //     NANO_A1,	      NANO_A2,	      NANO_A3,	      NANO_A4,	      NANO_A5,	      NANO_A6,	      NANO_A7,	      NANO_5V,
-  //     NANO_RESET_0,	      GND,	      NANO_VIN,	      LOGO_PAD_BOTTOM,	      LOGO_PAD_TOP,	      GPIO_PAD,	      DAC_PAD,
-  //     ADC_PAD,	      BUILDING_PAD_TOP,	      BUILDING_PAD_BOTTOM, -1, 
-  // };
 
-    /* clang-format on */
     // probeReading = probeRowMap[map(probeReading, 30, 4050, 101, 0)];
     probeReading = probeRowMap[ map( probeReading, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 ) ];
     // stopProbe();

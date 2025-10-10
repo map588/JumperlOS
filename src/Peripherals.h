@@ -32,8 +32,6 @@ extern uint32_t adcReadingColors[8];
 extern float adcReadingRanges[8][2];
 
 extern float adcRange[8][2];
-extern float dacOutput[2];
-extern float railVoltage[2];
 extern uint8_t gpioState[10];
 extern uint8_t gpioReading[10];
 extern int gpioNet[10];

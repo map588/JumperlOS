@@ -195,22 +195,28 @@ void writeMenuTree(void) {
 }
 
 void createLocalNodeFile(int slot) {
+  // MIGRATED: Now loads slot into globalState via SlotManager
+  loadSlotIntoState(slot);
+}
 
-  openFileThreadSafe(aplus, slot);
-
-  nodeFileString.clear();
-  nodeFileString.read(nodeFile);
-  nodeFile.close();
-  core1busy = false;
-  // Serial.println(nodeFileString);
-  nodeFileString.replace(" ", "");
-  nodeFileString.replace(" ", "");
-  nodeFileString.replace("{", "");
-  nodeFileString.replace("}", "");
-  nodeFileString.prefix("{ ");
-  nodeFileString.concat(" } ");
-
-  Serial.println(nodeFileString);
+void loadSlotIntoState(int slot) {
+  // NEW: Modern replacement for openNodeFile() / createLocalNodeFile()
+  // Loads a slot file directly into globalState using SlotManager
+  SlotManager& mgr = SlotManager::getInstance();
+  String errorMsg;
+  
+  if (!mgr.loadSlot(slot, errorMsg)) {
+    if (debugFP) {
+      Serial.println("Error loading slot " + String(slot) + ": " + errorMsg);
+    }
+    // Clear state on error
+    globalState.clearAllConnections();
+  } else {
+    if (debugFP) {
+      Serial.println("✓ Loaded slot " + String(slot) + " into globalState (" + 
+                    String(globalState.connections.numBridges) + " connections)");
+    }
+  }
 }
 
 void clearNodeFileString() { nodeFileString.clear(); }
@@ -385,174 +391,96 @@ bool saveStateToSlot(int slot) {
 }
 
 void saveLocalNodeFile(int slot) {
-  // Serial.println("saving local node file");
-  // Serial.print("nodeFileString = ");
-  // Serial.println(nodeFileString);
-
-  long count = 0;
-
-  openFileThreadSafe(w, slot);
-  nodeFileString.replace(" ", "");
-  // nodeFileString.replace(" ", "");
-  nodeFileString.replace("{", "");
-  nodeFileString.replace("}", "");
-  nodeFileString.prefix("{ ");
-  nodeFileString.concat(" } ");
-  // Serial.println("nodeFileString");
-  // delay(3);
-
-  nodeFileString.printTo(nodeFile);
-  //nodeFileString.printTo(Serial);
-
-
-  nodeFile.close();
-  core1busy = false;
-  storeNodeFileBackup();
-  markSlotAsModified(slot); // Mark slot as needing re-validation
-  // Serial.println("\n\n\rsaved local node file");
+  // DEPRECATED: This function is replaced by saveStateToSlot()
+  // Redirecting to new YAML-based state system
+  if (debugFP) {
+    Serial.println("saveLocalNodeFile() is deprecated, using saveStateToSlot() instead");
+  }
+  
+  saveStateToSlot(slot);
 }
 
-//==============================================================================
-// General-purpose nodeFileString backup/restore functions
-// These can be used from anywhere to temporarily save and restore nodeFileString state
-//==============================================================================
-
-void storeNodeFileBackup(void) {
-    // Store the current nodeFileString state in backup buffer
-    
-    // If nodeFileString is empty, load from current slot first
-    if (nodeFileString.isEmpty()) {
-        createLocalNodeFile(netSlot);
-    }
-    
-    // Store the current state in our backup buffer
-    if (nodeFileString.length() < sizeof(nodeFileStringBackup)) {
-        strcpy(nodeFileStringBackup, nodeFileString.c_str());
-        nodeFileBackupStored = true;
-    } else {
-        // If string is too long, just mark as not stored
-        nodeFileBackupStored = false;
-    }
-}
-
-void restoreNodeFileBackup(void) {
-    // Restore the nodeFileString from backup buffer
-    if (nodeFileBackupStored) {
-        nodeFileString.clear();
-        nodeFileString.concat(nodeFileStringBackup);
-        
-        // Optionally save the restored state back to the current slot
-        // saveLocalNodeFile(netSlot);
-        
-        // Clear the backup since we've restored it
-        nodeFileBackupStored = false;
-    }
-}
-
-void restoreAndSaveNodeFileBackup(void) {
-    // Restore the nodeFileString from backup and save to slot
-    if (nodeFileBackupStored) {
-        nodeFileString.clear();
-        nodeFileString.concat(nodeFileStringBackup);
-        
-        // Save the restored state back to the current slot
-        saveLocalNodeFile(netSlot);
-        
-        // Clear the backup since we've restored it
-        nodeFileBackupStored = false;
-    }
-}
-
-void clearNodeFileBackup(void) {
-    // Clear the backup buffer
-    nodeFileBackupStored = false;
-    memset(nodeFileStringBackup, 0, sizeof(nodeFileStringBackup));
-}
-
-bool hasNodeFileBackup(void) {
-    // Check if we have a backup stored
-    return nodeFileBackupStored;
-}
-
-bool hasNodeFileChanges(void) {
-    // Check if current nodeFileString differs from backup
-    if (!nodeFileBackupStored) {
-        return false; // No backup to compare against
-    }
-    
-    // Compare current state with backup
-    return (strcmp(nodeFileString.c_str(), nodeFileStringBackup) != 0);
-}
-
-const char* getNodeFileBackup(void) {
-    // Get read-only access to the backup buffer
-    return nodeFileBackupStored ? nodeFileStringBackup : nullptr;
-}
 
 void createSlots(int slot, int overwrite) {
+  // Create slots directory if it doesn't exist
+  if (!FatFS.exists("/slots")) {
+    if (FatFS.mkdir("/slots")) {
+      if (debugFP) {
+        Serial.println("Created /slots/ directory");
+      }
+    } else {
+      if (debugFP) {
+        Serial.println("Failed to create /slots/ directory");
+      }
+      return;
+    }
+  }
 
-  // FatFS.open("nodeFileSlot0.txt", "r");
+  // Create python_scripts directory if it doesn't exist
+  if (!FatFS.exists("/python_scripts")) {
+    if (FatFS.mkdir("/python_scripts")) {
+      if (debugFP) {
+        Serial.println("Created /python_scripts/ directory");
+      }
+    } else {
+      if (debugFP) {
+        Serial.println("Failed to create /python_scripts/ directory");
+      }
+    }
+  }
+
+  // Create empty history.txt file if it doesn't exist
+  if (!FatFS.exists("/python_scripts/history.txt")) {
+    File historyFile = FatFS.open("/python_scripts/history.txt", "w");
+    if (historyFile) {
+      historyFile.close();
+      if (debugFP) {
+        Serial.println("Created empty /history.txt file");
+      }
+    } else {
+      if (debugFP) {
+        Serial.println("Failed to create /history.txt file");
+      }
+    }
+  }
+
+  // Use SlotManager to create YAML slot files
+  SlotManager& mgr = SlotManager::getInstance();
+  
   if (slot == -1) {
-    // Create python_scripts directory if it doesn't exist
-    if (!FatFS.exists("/python_scripts")) {
-      if (FatFS.mkdir("/python_scripts")) {
-        if (debugFP) {
-          Serial.println("Created /python_scripts/ directory");
-        }
-      } else {
-        if (debugFP) {
-          Serial.println("Failed to create /python_scripts/ directory");
-        }
-      }
-    }
-
-    // Create empty history.txt file if it doesn't exist
-    if (!FatFS.exists("/python_scripts/history.txt")) {
-      File historyFile = FatFS.open("/python_scripts/history.txt", "w");
-      if (historyFile) {
-        historyFile.close();
-        if (debugFP) {
-          Serial.println("Created empty /history.txt file");
-        }
-      } else {
-        if (debugFP) {
-          Serial.println("Failed to create /history.txt file");
-        }
-      }
-    }
-
+    // Create all slots
     for (int i = 0; i < NUM_SLOTS; i++) {
-      int index = 0;
-      // while (core2busy == true) {
-      //   // Serial.println("waiting for core2 to finish");
-      // }
-      // core1busy = true;s
-      // nodeFile = FatFS.open("nodeFileSlot" + String(i) + ".txt", "w");
+      String yamlPath = "/slots/slot" + String(i) + ".yaml";
+      
       if (overwrite == 1) {
-        openFileThreadSafe(w, i);
+        // Overwrite: always create/clear the slot
+        if (debugFP) {
+          Serial.println("Creating/clearing slot " + String(i));
+        }
+        mgr.ensureSlotExists(i);
       } else {
-        if (FatFS.exists("nodeFileSlot" + String(i) + ".txt")) {
-          continue;
+        // Don't overwrite: only create if doesn't exist
+        if (!FatFS.exists(yamlPath.c_str())) {
+          if (debugFP) {
+            Serial.println("Creating new slot " + String(i));
+          }
+          mgr.ensureSlotExists(i);
         } else {
-          openFileThreadSafe(w, i);
+          if (debugFP) {
+            Serial.println("Slot " + String(i) + " already exists, skipping");
+          }
         }
       }
-      nodeFile.print("{} ");
-
-      nodeFile.close();
-      core1busy = false;
-      refreshPaths();
     }
   } else {
-
-    openFileThreadSafe(w, slot);
-
-    nodeFile.print("{} ");
-
-    nodeFile.close();
-    core1busy = false;
-    refreshPaths();
+    // Create single slot
+    if (debugFP) {
+      Serial.println("Creating slot " + String(slot));
+    }
+    mgr.ensureSlotExists(slot);
   }
+  
+  refreshPaths();
 }
 
 void createConfigFile(int overwrite) {
@@ -815,23 +743,25 @@ void inputNodeFileList(int addRotaryConnections) {
 
 void saveCurrentSlotToSlot(int slotFrom, int slotTo, int flashOrLocalfrom,
                            int flashOrLocalTo) {
-  // while (core2busy == true) {
-  //   // Serial.println("waiting for core2 to finish");
-  // }
-  // core1busy = true;
-  openFileThreadSafe(r, slotFrom);
-  // nodeFile = FatFS.open("nodeFileSlot" + String(slotFrom) + ".txt", "r");
-  nodeFileString.clear();
-  nodeFileString.read(nodeFile);
-  nodeFile.close();
-
-  // nodeFile = FatFS.open("nodeFileSlot" + String(slotTo) + ".txt", "w");
-  openFileThreadSafe(w, slotTo);
-  nodeFileString.printTo(nodeFile);
-  nodeFile.close();
-  markSlotAsModified(slotTo); // Mark destination slot as needing re-validation
-  core1busy = false;
-  // refreshPaths();
+  // MIGRATED: Now uses SlotManager with YAML state system
+  SlotManager& mgr = SlotManager::getInstance();
+  String errorMsg;
+  
+  // Load source slot into globalState
+  if (!mgr.loadSlot(slotFrom, errorMsg)) {
+    Serial.println("Error loading slot " + String(slotFrom) + ": " + errorMsg);
+    return;
+  }
+  
+  // Save globalState to destination slot
+  if (!mgr.saveSlot(slotTo, errorMsg)) {
+    Serial.println("Error saving to slot " + String(slotTo) + ": " + errorMsg);
+    return;
+  }
+  
+  // Update active slot tracking
+  netSlot = slotTo;
+  mgr.setActiveSlot(slotTo);
 }
 
 void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
@@ -1099,37 +1029,42 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
 
 
 void clearNodeFile(int slot, int flashOrLocal) {
-  if (flashOrLocal == 0) {
-    openFileThreadSafe(w, slot);
-    // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
-    nodeFile.print("{");
-    if (jumperlessConfig.serial_1.lock_connection == 1) {
-      nodeFile.print("116-70, 117-71, ");
-    }
-    if (jumperlessConfig.top_oled.lock_connection == 1) {
-      nodeFile.print(jumperlessConfig.top_oled.sda_row);
-      nodeFile.print("-");
-      nodeFile.print(jumperlessConfig.top_oled.gpio_sda);
-      nodeFile.print(", ");
-      nodeFile.print(jumperlessConfig.top_oled.scl_row);
-      nodeFile.print("-");
-      nodeFile.print(jumperlessConfig.top_oled.gpio_scl);
-      nodeFile.print(", ");
-    }
-    nodeFile.print("} ");
-
-    nodeFile.close();
-    markSlotAsModified(slot); // Mark slot as needing re-validation
-
-    clearChangedNetColors();
-    removeNetColorFile(slot); // Remove the file and clear tracking bit
-  } else {
-    nodeFileString.clear();
-    clearChangedNetColors();
-    setSlotHasNetColors(slot, false); // Clear tracking bit for cache-only mode
-    currentColorSlotColorsString.clear();
+  // MIGRATED: Now uses globalState and SlotManager
+  
+  // Clear all connections in globalState
+  globalState.clearAllConnections();
+  
+  // Re-add locked connections if configured
+  String errorMsg;
+  
+  if (jumperlessConfig.serial_1.lock_connection == 1) {
+    // Add UART locked connections (116-70, 117-71)
+    globalState.addConnection(116, 70, errorMsg);
+    globalState.addConnection(117, 71, errorMsg);
   }
   
+  if (jumperlessConfig.top_oled.lock_connection == 1) {
+    // Add OLED locked connections
+    globalState.addConnection(jumperlessConfig.top_oled.sda_row, 
+                             jumperlessConfig.top_oled.gpio_sda, errorMsg);
+    globalState.addConnection(jumperlessConfig.top_oled.scl_row, 
+                             jumperlessConfig.top_oled.gpio_scl, errorMsg);
+  }
+  
+  if (flashOrLocal == 0) {
+    // Save the cleared state to the slot
+    SlotManager& mgr = SlotManager::getInstance();
+    mgr.saveSlot(slot, errorMsg);
+  }
+  
+  // Clear net colors
+  clearChangedNetColors();
+  if (flashOrLocal == 0) {
+    removeNetColorFile(slot);
+  } else {
+    setSlotHasNetColors(slot, false);
+    currentColorSlotColorsString.clear();
+  }
 }
 
 String slicedLines[130];
@@ -1993,59 +1928,7 @@ bool isSlotFileEmpty(int slot) {
   return isSlotFileEmpty(content);
 }
 
- void writeToNodeFile(int slot, int flashOrLocal) {
 
-//   /// core1busy = true;
-
-//   // nodeFileString.printTo(Serial);
-//   // nodeFile = FatFS.open("nodeFile" + String(slot) + ".txt", "w");
-//   openFileThreadSafe(w, slot);
-
-//   if (!nodeFile) {
-//     if (debugFP)
-//       Serial.println("Failed to open nodeFile");
-//     return;
-//   } else {
-//     if (debugFP)
-//       Serial.println("\n\rrecreated nodeFile.txt\n\n\rloading bridges from "
-//                      "wokwi.txt\n\r");
-//   }
-//   nodeFile.print("{\n\r");
-//   for (int i = 0; i < numConnsJson; i++) {
-//     if (connectionsW[i][0] == "-1" && connectionsW[i][1] != "-1") {
-//       // lightUpNode(connectionsW[i][0].toInt());
-//       continue;
-//     }
-//     if (connectionsW[0][1] == "-1" && connectionsW[0][0] != "-1") {
-// //       // lightUpNode(connectionsW[i][1].toInt());
-// //       continue;
-//      }
-//     if (connectionsW[i][0] == connectionsW[i][1]) {
-//       // lightUpNode(connectionsW[i][0].toInt());
-//       continue;
-//     }
-
-//     nodeFile.print(connectionsW[i][0]);
-//     nodeFile.print("-");
-//     nodeFile.print(connectionsW[i][1]);
-//     nodeFile.print(",\n\r");
-//   }
-//   nodeFile.print("\n\r}\n\r");
-
-//   if (debugFP) {
-//     Serial.println("wrote to nodeFile.txt");
-
-//     Serial.println("nodeFile.txt contents:");
-//     nodeFile.seek(0);
-
-//     while (nodeFile.available()) {
-//       Serial.write(nodeFile.read());
-//     }
-//     Serial.println("\n\r");
-//   }
-//   nodeFile.close();
-//   core1busy = false;
- }
 
 void openNodeFile(int slot, int flashOrLocal) {
   timeToFP = millis();
@@ -2845,7 +2728,7 @@ int disconnectedNode() {
   return lastRemovedNodes[lastIndex++];
 }
 
-int loadChangedNetColorsFromFile(int slot, int flashOrLocal) {
+int loadChangedNetColorsFromFile(int slot, int flashOrLocal) { //TODO: use the new states system and parse colors from the same yaml file
   // debugFP = 1;
   if (flashOrLocal == 1) {
     // Loading from an in-memory string is not implemented for colors in this
@@ -3054,13 +2937,13 @@ void printAllChangedNetColorFiles(void) {
     // Only check slots that have colors according to our tracking variable
     if (slotHasNetColors(i)) {
       foundAnyColors = true;
-      Serial.println("Slot " + String(i) + ":");
+    //  Serial.println("Slot " + String(i) + ":");
       printChangedNetColorFile(i, 0);
     }
   }
   
   if (!foundAnyColors) {
-    Serial.println("No slots have net color overrides.");
+   // Serial.println("No slots have net color overrides.");
   }
 }
 
@@ -3080,7 +2963,7 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
           "Printing cached net colors (currentColorSlotColorsString):");
     }
     if (currentColorSlotColorsString.isEmpty()) {
-      Serial.println("[Cache is empty or not yet loaded]");
+    //  Serial.println("[Cache is empty or not yet loaded]");
     } else {
       Serial.print(currentColorSlotColorsString);
       if (!currentColorSlotColorsString.endsWith(
@@ -3095,7 +2978,7 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
   // flashOrLocal == 0, print from file
   // Fast check: if slot has no colors according to our tracking variable, skip file operations
   if (!slotHasNetColors(slot)) {
-    Serial.println("Slot " + String(slot) + " has no net color overrides.");
+    // Serial.println("Slot " + String(slot) + " has no net color overrides.");
     return 1; // Success - no colors is valid
   }
 

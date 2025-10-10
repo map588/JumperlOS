@@ -130,19 +130,17 @@ namespace {
       const String B = tuiNetHelpers::toLabel(ep.to);
       if (ep.status != tuiNetHelpers::OK) { st.errors++; TUI::log(String("  Error: ") + ep.message); continue; }
 
-      int rc = removeBridgeFromNodeFile((int)ep.from, (int)ep.to, netSlot, 0, 0);
-      if (rc == 0) {
-        int rc2 = removeBridgeFromNodeFile((int)ep.to, (int)ep.from, netSlot, 0, 0);
-        if (rc2 > 0) rc = rc2; else if (rc2 < 0 && rc == 0) rc = rc2;
+      // Try removing bridge using new state system
+      bool removed = removeBridgeFromState((int)ep.from, (int)ep.to, false);
+      if (!removed) {
+        // Try reversed order if first attempt failed
+        removed = removeBridgeFromState((int)ep.to, (int)ep.from, false);
       }
-      if (rc > 0) {
-        st.applied++; TUI::log(String("  - Removed ") + A + "-" + B + " (" + rc + " match)");
-      }
-      else if (rc == 0) {
+      
+      if (removed) {
+        st.applied++; TUI::log(String("  - Removed ") + A + "-" + B);
+      } else {
         st.notfound++; TUI::log(String("  ! Not found: ") + A + "-" + B);
-      }
-      else {
-        st.failed++;  TUI::log(String("  ! Remove failed for ") + A + "-" + B + " (rc=" + rc + ")");
       }
     }
 
@@ -476,11 +474,11 @@ void TuiGlue::checkUSBconnection() {
 void TuiGlue::activate() {
   if (!m_modelBuilt) init();
 
-  if (m_serial == &USBSer3) {
-    uint32_t t0 = millis();
-    while (!USBSer3.dtr() && (millis() - t0 < 1200)) { delay(10); }
-    m_lastDTR = USBSer3.dtr();
-  }
+  // if (m_serial == &USBSer3) {
+  //   uint32_t t0 = millis();
+  //   while (!USBSer3.dtr() && (millis() - t0 < 1200)) { delay(10); }
+  //   m_lastDTR = USBSer3.dtr();
+  // }
 
   m_serial->print("\r\n");
   m_serial->flush();

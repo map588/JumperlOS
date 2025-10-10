@@ -1519,7 +1519,7 @@ void calibrateDacs( void ) {
                 // dacCalibration[0][i] = reading;
             }
             setDacByNumber( d, 0.0, 0 );
-            // setDacByNumber(d, d < 2 ? dacOutput[d] : railVoltage[d - 2], 0);
+            // Old code (replaced with globalState.power): setDacByNumber(d, d < 2 ? dacOutput[d] : railVoltage[d - 2], 0);
         }
     }
     unsigned long timeout = millis( );

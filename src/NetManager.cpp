@@ -1226,18 +1226,18 @@ void listNets(int liveUpdate)
                     spaces = Serial.print("0 V       ");
                     break;
                   case 2:
-                    spaces = Serial.printf("%-.2f V", railVoltage[0]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.topRail);
 
                     break;
                   case 3:
-                    spaces = Serial.printf("%-.2f V", railVoltage[1]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.bottomRail);
 
                     break;
                   case 4:
-                    spaces = Serial.printf("%-.2f V", dacOutput[0]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.dac0);
                     break;
                   case 5:
-                    spaces = Serial.printf("%-.2f V", dacOutput[1]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.dac1);
                     break;
                   }
 
@@ -1519,22 +1519,22 @@ void listSpecialNets() {
         spaces += Serial.print("0V");
         break;
       case 2:
-        spaces += Serial.print(railVoltage[0]);
+        spaces += Serial.print(globalState.power.topRail);
         spaces += Serial.print("V");
         break;
       case 3:
-        spaces += Serial.print(railVoltage[1]);
+        spaces += Serial.print(globalState.power.bottomRail);
         spaces += Serial.print("V");
         break;
       case 4:
-        spaces += Serial.print(dacOutput[0]);
+        spaces += Serial.print(globalState.power.dac0);
         spaces += Serial.print("V");
         break;
       case 5:
-        spaces += Serial.print(dacOutput[1]);
+        spaces += Serial.print(globalState.power.dac1);
         // for (int i = 0; i < 32; i++)
         // {
-        //     uint32_t dacMask = dacOutput[1];
+        //     uint32_t dacMask = globalState.power.dac1;
         //     Serial.println(dacMask, BIN);
         // }
         spaces += Serial.print("V");

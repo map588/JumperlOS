@@ -39,8 +39,6 @@ bool isRotaryEncoderInitialized(void);
 void printRotaryEncoderStatus(void);
 
 
-void slotManager(void); 
-
 
 
 

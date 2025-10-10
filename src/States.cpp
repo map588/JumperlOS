@@ -4,14 +4,19 @@
 #include "NetManager.h"
 #include "FileParsing.h"
 #include "Commands.h"
+#include "Peripherals.h"
 #include "config.h"
 #include <string.h>
 #include <FatFS.h>
+#include <hardware/gpio.h>
 
 extern struct config jumperlessConfig;
 extern volatile bool core1busy;
 extern volatile bool core2busy;
 extern int netSlot;  // Global slot number (defined in RotaryEncoder.cpp)
+extern const int gpioDef[10][3];  // GPIO pin definitions (defined in Peripherals.h)
+extern uint8_t gpioState[10];  // GPIO state for animations (defined in Peripherals.cpp)
+extern bool debugFP;  // Debug flag for file parsing (defined in FileParsing.cpp)
 
 // Global singleton - THE single source of truth for all Jumperless state
 JumperlessState globalState;
@@ -278,7 +283,9 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
     if (!isConnectionAllowed(node1, node2, errorMsg)) {
         return false;
     }
-    
+    // Serial.println("Adding connection: " + String(node1) + " - " + String(node2));
+    // Serial.println("numBridges: " + String(connections.numBridges));
+    // Serial.flush();
     // Check for duplicate - if it exists, increment the duplicate count instead
     for (int i = 0; i < connections.numBridges; i++) {
         if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
@@ -465,6 +472,67 @@ int JumperlessState::getGpioPull(int gpio) const {
     return 0;  // default to pull-down
 }
 
+void JumperlessState::setGpioPwmFrequency(int gpio, float frequency) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPwmFrequency[gpio] = frequency;
+        markDirty();
+    }
+}
+
+float JumperlessState::getGpioPwmFrequency(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPwmFrequency[gpio];
+    }
+    return 1.0f;  // default frequency
+}
+
+void JumperlessState::setGpioPwmDutyCycle(int gpio, float dutyCycle) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPwmDutyCycle[gpio] = dutyCycle;
+        markDirty();
+    }
+}
+
+float JumperlessState::getGpioPwmDutyCycle(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPwmDutyCycle[gpio];
+    }
+    return 0.5f;  // default 50% duty cycle
+}
+
+void JumperlessState::setGpioPwmEnabled(int gpio, bool enabled) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPwmEnabled[gpio] = enabled;
+        markDirty();
+    }
+}
+
+bool JumperlessState::getGpioPwmEnabled(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPwmEnabled[gpio];
+    }
+    return false;  // default disabled
+}
+
+// UART
+void JumperlessState::setUartTxFunction(int function) {
+    config.uartTxFunction = function;
+    markDirty();
+}
+
+int JumperlessState::getUartTxFunction() const {
+    return config.uartTxFunction;
+}
+
+void JumperlessState::setUartRxFunction(int function) {
+    config.uartRxFunction = function;
+    markDirty();
+}
+
+int JumperlessState::getUartRxFunction() const {
+    return config.uartRxFunction;
+}
+
 // Display
 void JumperlessState::setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name) {
     display.setNetColor(netNum, color, raw, name);
@@ -568,8 +636,8 @@ bool JumperlessState::toYAML(String& output) const {
     output = "";
     
     // Header
-    output += "version: " + String(version) + "\n\r";
-    output += "sourceOfTruth: " + String(config.sourceOfTruth == BRIDGES_PRIMARY ? "bridges" : "nets") + "\n\r\n\r";
+    output += "version: " + String(version) + "\n";
+    output += "sourceOfTruth: " + String(config.sourceOfTruth == BRIDGES_PRIMARY ? "bridges" : "nets") + "\n\n";
     
     // Bridges section
     serializeBridges(output);
@@ -675,13 +743,13 @@ void JumperlessState::serializeBridges(String& output) const {
         return;  // Don't output empty bridges section
     }
     
-    output += "bridges:\n\r";
+    output += "bridges:\n";
     for (int i = 0; i < connections.numBridges; i++) {
         output += "  - {n1: " + String(connections.bridges[i][0]) + 
                   ", n2: " + String(connections.bridges[i][1]) + 
-                  ", dup: " + String(connections.bridges[i][2]) + "}\n\r";
+                  ", dup: " + String(connections.bridges[i][2]) + "}\n";
     }
-    output += "\n\r";
+    output += "\n";
 }
 
 bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorMsg) {
@@ -796,11 +864,11 @@ bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg)
 }
 
 void JumperlessState::serializePower(String& output) const {
-    output += "power:\n\r";
-    output += "  topRail: " + String(power.topRail, 2) + "\n\r";
-    output += "  bottomRail: " + String(power.bottomRail, 2) + "\n\r";
-    output += "  dac0: " + String(power.dac0, 2) + "\n\r";
-    output += "  dac1: " + String(power.dac1, 2) + "\n\r\n\r";
+    output += "power:\n";
+    output += "  topRail: " + String(power.topRail, 2) + "\n";
+    output += "  bottomRail: " + String(power.bottomRail, 2) + "\n";
+    output += "  dac0: " + String(power.dac0, 2) + "\n";
+    output += "  dac1: " + String(power.dac1, 2) + "\n\n";
 }
 
 bool JumperlessState::deserializePower(const char* yamlContent, String& errorMsg) {
@@ -836,20 +904,20 @@ bool JumperlessState::deserializePower(const char* yamlContent, String& errorMsg
 }
 
 void JumperlessState::serializeConfig(String& output) const {
-    output += "config:\n\r";
+    output += "config:\n";
     output += "  routing: {stackPaths: " + String(config.stackPaths) + 
               ", stackRails: " + String(config.stackRails) + 
               ", stackDacs: " + String(config.stackDacs) + 
-              ", railPriority: " + String(config.railPriority) + "}\n\r";
+              ", railPriority: " + String(config.railPriority) + "}\n";
     
     // GPIO direction array
-    output += "  gpio:\n\r";
+    output += "  gpio:\n";
     output += "    direction: [";
     for (int i = 0; i < 10; i++) {
         output += String(config.gpioDirection[i]);
         if (i < 9) output += ",";
     }
-    output += "]\n\r";
+    output += "]\n";
     
     // GPIO pulls array
     output += "    pulls: [";
@@ -857,13 +925,37 @@ void JumperlessState::serializeConfig(String& output) const {
         output += String(config.gpioPulls[i]);
         if (i < 9) output += ",";
     }
-    output += "]\n\r";
+    output += "]\n";
+    
+    // PWM frequency array
+    output += "    pwmFrequency: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPwmFrequency[i], 2);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // PWM duty cycle array
+    output += "    pwmDutyCycle: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPwmDutyCycle[i], 3);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // PWM enabled array
+    output += "    pwmEnabled: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPwmEnabled[i] ? "true" : "false");
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
     
     // UART and OLED
     output += "  uart: {txFunction: " + String(config.uartTxFunction) + 
-              ", rxFunction: " + String(config.uartRxFunction) + "}\n\r";
+              ", rxFunction: " + String(config.uartRxFunction) + "}\n";
     output += "  oled: {connected: " + String(config.oledConnected ? "true" : "false") + 
-              ", lockConnection: " + String(config.oledLockConnection ? "true" : "false") + "}\n\r";
+              ", lockConnection: " + String(config.oledLockConnection ? "true" : "false") + "}\n";
 }
 
 bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMsg) {
@@ -936,6 +1028,60 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
                 String val = arrayStr.substring(pos, commaIdx);
                 val.trim();
                 config.gpioPulls[idx++] = val.toInt();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse PWM frequency array
+    else if (line.startsWith("pwmFrequency:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPwmFrequency[idx++] = val.toFloat();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse PWM duty cycle array
+    else if (line.startsWith("pwmDutyCycle:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPwmDutyCycle[idx++] = val.toFloat();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse PWM enabled array
+    else if (line.startsWith("pwmEnabled:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPwmEnabled[idx++] = (val == "true");
                 pos = commaIdx + 1;
             }
         }
@@ -1044,12 +1190,87 @@ bool JumperlessState::fromLegacyNodeFile(const String& nodeFileContent, String& 
 }
 
 // ============================================================================
+// Helper function to apply loaded state to hardware
+// ============================================================================
+
+/**
+ * @brief Apply the current globalState to all hardware peripherals
+ * 
+ * This function is called after loading a slot to ensure that:
+ * - DAC voltages match the loaded power state
+ * - GPIO directions and pull resistors match the loaded config
+ * - All hardware reflects the state loaded from the file
+ */
+void applyStateToHardware() {
+    // Apply power settings (DACs and rails)
+    // Note: Pass save=0 to avoid updating globalState (it's already loaded)
+    //       and saveEEPROM=0 to avoid writing to EEPROM
+    setRailsAndDACs(0);  // This applies topRail, bottomRail, dac0, dac1 from globalState
+    
+    // Apply GPIO configurations from globalState to hardware
+    for (int i = 0; i < 10; i++) {
+        uint8_t gpio_pin = gpioDef[i][0];
+        
+        // Apply direction to hardware
+        if (globalState.config.gpioDirection[i] == 0) {
+            gpio_set_dir(gpio_pin, true);  // output
+        } else {
+            gpio_set_dir(gpio_pin, false);  // input
+        }
+        
+        // Apply pull resistors to hardware and update gpioState for animations
+        switch (globalState.config.gpioPulls[i]) {
+            case 0: // pulldown
+                gpio_set_pulls(gpio_pin, false, true);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 4;  // input with pulldown
+                }
+                break;
+            case 1: // pullup
+                gpio_set_pulls(gpio_pin, true, false);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 3;  // input with pullup
+                }
+                break;
+            case 2: // no pull
+                gpio_set_pulls(gpio_pin, false, false);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 2;  // input with no pull
+                }
+                break;
+            case 3: // bus keeper
+                gpio_set_pulls(gpio_pin, true, true);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 7;  // bus keeper mode
+                }
+                break;
+            default:
+                gpio_set_pulls(gpio_pin, false, false);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 2;  // input with no pull
+                }
+                break;
+        }
+        
+        // Set initial output state for output pins
+        if (globalState.config.gpioDirection[i] == 0) {
+            gpio_put(gpio_pin, gpioState[i]);
+        }
+    }
+    
+    if (debugFP) {
+        Serial.println("✓ Applied state to hardware (power, GPIO)");
+    }
+}
+
+// ============================================================================
 // SlotManager Implementation
 // ============================================================================
 
 SlotManager::SlotManager() 
     : activeState(globalState), activeSlotNumber(0), historySize(STATE_HISTORY_SIZE), 
-      historyHead(0), historyCount(0), historyPosition(0) {
+      historyHead(0), historyCount(0), historyPosition(0),
+      previewModeActive(false), previewSlotNumber(-1), originalSlotNumber(-1) {
     // Always initialize to slot 0, sync with netSlot on first use
     netSlot = 0;  // Ensure global is also 0
     initHistory();
@@ -1115,13 +1336,13 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
     String content;
     String filename = getSlotFilename(slotNum);
 
-    Serial.println("Loading slot " + String(slotNum) + " from " + filename);
-    Serial.flush();
+    // Serial.println("Loading slot " + String(slotNum) + " from " + filename);
+    // Serial.flush();
     
     // Try loading YAML slot file
     if (FatFS.exists(filename.c_str())) {
-        Serial.println("  File exists, reading...");
-        Serial.flush();
+        // Serial.println("  File exists, reading...");
+        // Serial.flush();
         
         if (!readSlotFile(slotNum, content, errorMsg)) {
             Serial.println("  Read failed: " + errorMsg);
@@ -1129,8 +1350,8 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
             return false;
         }
         
-        Serial.println("  Parsing YAML...");
-        Serial.flush();
+        // Serial.println("  Parsing YAML...");
+        // Serial.flush();
         
         if (!activeState.fromYAML(content, errorMsg)) {
             errorMsg = "Failed to parse YAML slot " + String(slotNum) + ": " + errorMsg;
@@ -1139,8 +1360,18 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
             return false;
         }
         
-        Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
-        Serial.flush();
+        // Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
+        // Serial.flush();
+        
+        // Apply loaded state to hardware (power, GPIO, etc.)
+        // BUT skip hardware application if we're in preview mode (just viewing, not applying)
+        if (!previewModeActive) {
+            applyStateToHardware();
+        } else {
+            if (debugFP) {
+                Serial.println("  (Preview mode - hardware not modified)");
+            }
+        }
         
         activeSlotNumber = slotNum;
         netSlot = slotNum;  // Sync global slot tracker
@@ -1148,18 +1379,15 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
     }
     
     // Slot file doesn't exist - start with empty state
-    Serial.println("  File doesn't exist, creating empty slot");
-    Serial.flush();
+    // Serial.println("  File doesn't exist, using empty slot");
+    // Serial.flush();
     
     activeState.clear();
     activeSlotNumber = slotNum;
     netSlot = slotNum;  // Sync global slot tracker
     
-    // Create empty YAML file for this slot
-    if (!ensureSlotExists(slotNum)) {
-        // Failed to create file, but we can still continue with RAM-only state
-        errorMsg = "Warning: Could not create slot file, using RAM only";
-    }
+    // DON'T create the file yet - only create when something is saved
+    // This prevents crashes from creating large objects on the stack
     
     return true;
 }
@@ -1175,8 +1403,8 @@ bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
     
     // Ensure /slots directory exists (create on-demand)
     if (!FatFS.exists("/slots")) {
-        Serial.println("  Creating /slots directory");
-        Serial.flush();
+        // Serial.println("  Creating /slots directory");
+        // Serial.flush();
         if (!FatFS.mkdir("/slots")) {
             errorMsg = "Failed to create /slots directory";
             return false;
@@ -1241,11 +1469,11 @@ bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
         }
     }
     
-    // Also delete legacy format if it exists
-    String legacyFilename = getLegacySlotFilename(slotNum);
-    if (FatFS.exists(legacyFilename.c_str())) {
-        FatFS.remove(legacyFilename.c_str());
-    }
+    // // Also delete legacy format if it exists
+    // String legacyFilename = getLegacySlotFilename(slotNum);
+    // if (FatFS.exists(legacyFilename.c_str())) {
+    //     FatFS.remove(legacyFilename.c_str());
+    // }
     
     // If this was the active slot, clear it
     if (activeSlotNumber == slotNum) {
@@ -1282,12 +1510,12 @@ bool SlotManager::ensureSlotExists(int slotNum) {
         return true;
     }
     
-    // Create empty slot
-    JumperlessState emptyState;
+    // Create empty slot by serializing the current globalState
+    // This avoids creating a large JumperlessState on the stack
     String errorMsg;
-    
     String yamlContent;
-    if (!emptyState.toYAML(yamlContent)) {
+    
+    if (!globalState.toYAML(yamlContent)) {
         return false;
     }
     
@@ -1465,11 +1693,11 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
         return false;
     }
     
-    // Load legacy config from global config (voltages, etc.)
-    newState.setDacVoltage(0, jumperlessConfig.dacs.dac_0);
-    newState.setDacVoltage(1, jumperlessConfig.dacs.dac_1);
-    newState.setRailVoltage(true, jumperlessConfig.dacs.top_rail);
-    newState.setRailVoltage(false, jumperlessConfig.dacs.bottom_rail);
+    // Set default voltages for migrated old slot files (voltages no longer in config)
+    newState.setDacVoltage(0, 3.3);  // Default DAC0 voltage
+    newState.setDacVoltage(1, 0.0);  // Default DAC1 voltage
+    newState.setRailVoltage(true, 0.0);   // Default top rail voltage
+    newState.setRailVoltage(false, 0.0);  // Default bottom rail voltage
     newState.setPathStacking(jumperlessConfig.routing.stack_paths, 
                              jumperlessConfig.routing.stack_rails,
                              jumperlessConfig.routing.stack_dacs);
@@ -1610,5 +1838,221 @@ size_t SlotManager::getActiveStateRAMUsage() const {
     total += activeState.estimateRAMUsage();
     total += historySize * sizeof(JumperlessState);
     return total;
+}
+
+// ============================================================================
+// Preview Mode - Load slots without applying to hardware
+// Just tracks which slot to return to when done (no state copying!)
+// ============================================================================
+
+bool SlotManager::enterPreviewMode(int slotToPreview, String& errorMsg) {
+    if (slotToPreview < 0 || slotToPreview >= NUM_SLOTS) {
+        errorMsg = "Invalid slot number: " + String(slotToPreview);
+        return false;
+    }
+    
+    // Remember which slot we're currently on (to return to it later)
+    if (!previewModeActive) {
+        originalSlotNumber = activeSlotNumber;
+        // Save original rail voltage settings
+        originalRailVoltages[0] = activeState.power.topRail;
+        originalRailVoltages[1] = activeState.power.bottomRail;
+    }
+    
+    String filename = getSlotFilename(slotToPreview);
+    
+    // Check if slot file exists
+    if (FatFS.exists(filename.c_str())) {
+        // Slot exists - load it normally
+        if (!loadSlot(slotToPreview, errorMsg)) {
+            return false;
+        }
+    } else {
+        // Slot doesn't exist - just show empty state (DON'T create file!)
+        activeState.clear();
+        activeSlotNumber = slotToPreview;
+        netSlot = slotToPreview;
+    }
+    
+    // activeState.power is now the single source of truth
+    
+    // Mark that we're in preview mode
+    previewModeActive = true;
+    previewSlotNumber = slotToPreview;
+    
+    return true;
+}
+
+void SlotManager::clearPreviewMode() {
+    // Just clear the preview flag without loading anything
+    // Used when user selects a slot from menu - we want to keep the previewed state
+    // and let the normal load path handle it
+    if (previewModeActive) {
+        previewModeActive = false;
+        previewSlotNumber = -1;
+        originalSlotNumber = -1;
+    }
+}
+
+bool SlotManager::exitPreview(bool applyPreview, String& errorMsg) {
+    if (!previewModeActive) {
+        errorMsg = "Not in preview mode";
+        return false;
+    }
+    
+    if (applyPreview) {
+        // User wants to keep the previewed slot
+        // If the slot file doesn't exist yet, create it now
+        String filename = getSlotFilename(previewSlotNumber);
+        if (!FatFS.exists(filename.c_str())) {
+            // Slot was empty during preview - save it now
+            if (!saveSlot(previewSlotNumber, errorMsg)) {
+                previewModeActive = false;
+                previewSlotNumber = -1;
+                originalSlotNumber = -1;
+                return false;
+            }
+        }
+        
+        // Exit preview mode and apply the previewed state to hardware
+        previewModeActive = false;
+        previewSlotNumber = -1;
+        originalSlotNumber = -1;
+        
+        // Now apply the previewed state to hardware (power, GPIO, etc.)
+        applyStateToHardware();
+        
+        // activeSlotNumber and netSlot are already set to the previewed slot
+        return true;
+    } else {
+        // User wants to cancel - restore original slot AND rail voltages
+        previewModeActive = false;
+        previewSlotNumber = -1;
+        
+        // Restore original rail voltage settings
+        activeState.power.topRail = originalRailVoltages[0];
+        activeState.power.bottomRail = originalRailVoltages[1];
+        
+        // Load the original slot back
+        int slotToRestore = originalSlotNumber;
+        originalSlotNumber = -1;
+        
+        return loadSlot(slotToRestore, errorMsg);
+    }
+}
+
+// ============================================================================
+// State Backup/Restore Functions (for MicroPython entry/exit, undo, etc.)
+// Uses compressed YAML format - only stores actual connections, not empty array slots
+// ============================================================================
+
+static String* stateBackupYamlPtr = nullptr;
+static bool stateBackupStored = false;
+
+void storeStateBackup(void) {
+    // Store a compressed YAML snapshot of the current globalState
+    // This only includes actual connections, not empty array slots
+    if (stateBackupYamlPtr == nullptr) {
+        stateBackupYamlPtr = new String();
+    }
+    
+    *stateBackupYamlPtr = "";
+    
+    // Serialize current state to compressed YAML
+    if (!globalState.toYAML(*stateBackupYamlPtr)) {
+        Serial.println("Warning: Failed to serialize state backup");
+        stateBackupStored = false;
+        return;
+    }
+    
+    stateBackupStored = true;
+}
+
+void restoreStateBackup(bool autoSave) {
+    // Restore globalState from compressed YAML backup
+    if (stateBackupStored && stateBackupYamlPtr != nullptr && stateBackupYamlPtr->length() > 0) {
+        String errorMsg;
+        
+        if (!globalState.fromYAML(*stateBackupYamlPtr, errorMsg)) {
+            Serial.println("✗ Error restoring state backup: " + errorMsg);
+            return;
+        }
+        
+        if (autoSave) {
+            SlotManager& mgr = SlotManager::getInstance();
+            String err;
+            mgr.saveSlot(netSlot, err);
+        }
+    }
+}
+
+void restoreAndSaveStateBackup(void) {
+    // Restore and immediately save to current slot
+    restoreStateBackup(true);
+}
+
+void clearStateBackup(void) {
+    // Clear the backup
+    stateBackupStored = false;
+    if (stateBackupYamlPtr != nullptr) {
+        *stateBackupYamlPtr = "";
+        delete stateBackupYamlPtr;
+        stateBackupYamlPtr = nullptr;
+    }
+}
+
+bool hasStateBackup(void) {
+    return stateBackupStored && (stateBackupYamlPtr != nullptr) && (stateBackupYamlPtr->length() > 0);
+}
+
+bool hasStateChanges(void) {
+    // Compare current state with backup by serializing and comparing YAML
+    if (!hasStateBackup()) {
+        return false;  // No backup means no changes to compare against
+    }
+    
+    String currentYaml;
+    if (!globalState.toYAML(currentYaml)) {
+        return false;  // Can't compare if serialization fails
+    }
+    
+    // Compare YAML representations (ignores whitespace differences in serialization)
+    // For more robust comparison, we could deserialize and compare connection counts
+    return (currentYaml != *stateBackupYamlPtr);
+}
+
+size_t getStateBackupSize(void) {
+    // Return the size of the backup in bytes (for diagnostics/debugging)
+    if (!hasStateBackup()) {
+        return 0;
+    }
+    
+    return stateBackupYamlPtr->length();
+}
+
+void printStateBackupInfo(void) {
+    // Print diagnostic information about state backup memory usage
+    Serial.println("\n╔═══════════════════════════════╗");
+    Serial.println("║  State Backup Memory Info     ║");
+    Serial.println("╚═══════════════════════════════╝");
+    
+    if (!hasStateBackup()) {
+        Serial.println("  No backup stored");
+        return;
+    }
+    
+    size_t backupSize = stateBackupYamlPtr->length();
+    size_t fullStateSize = sizeof(JumperlessState);
+    size_t savings = fullStateSize - backupSize;
+    float savingsPercent = (float)savings / fullStateSize * 100.0f;
+    
+    Serial.println("  Connections: " + String(globalState.connections.numBridges));
+    Serial.println("  Nets:        " + String(globalState.connections.numNets));
+    Serial.println("");
+    Serial.println("  Compressed YAML: " + String(backupSize) + " bytes");
+    Serial.println("  Full state:      " + String(fullStateSize) + " bytes");
+    Serial.println("  Memory saved:    " + String(savings) + " bytes (" + String(savingsPercent, 1) + "%)");
+    
+    Serial.println("═══════════════════════════════\n");
 }
 

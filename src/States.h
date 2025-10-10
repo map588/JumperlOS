@@ -152,7 +152,7 @@ struct ConfigState {
     
     // UART configuration
     int uartTxFunction;  // 0 = tx, 1 = rx, 2 = gpio_in, 3 = gpio_out
-    int uartRxFunction;
+    int uartRxFunction;  // 0 = tx, 1 = rx, 2 = gpio_in, 3 = gpio_out
     
     // OLED state
     bool oledConnected;
@@ -208,6 +208,18 @@ public:
     int getGpioDirection(int gpio) const;
     void setGpioPull(int gpio, int pull);
     int getGpioPull(int gpio) const;
+    void setGpioPwmFrequency(int gpio, float frequency);
+    float getGpioPwmFrequency(int gpio) const;
+    void setGpioPwmDutyCycle(int gpio, float dutyCycle);
+    float getGpioPwmDutyCycle(int gpio) const;
+    void setGpioPwmEnabled(int gpio, bool enabled);
+    bool getGpioPwmEnabled(int gpio) const;
+    
+    // UART
+    void setUartTxFunction(int function);
+    int getUartTxFunction() const;
+    void setUartRxFunction(int function);
+    int getUartRxFunction() const;
     
     // Display
     void setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name);
@@ -283,6 +295,15 @@ public:
     bool deleteSlot(int slotNum, String& errorMsg);
     void clearActiveSlot();
     
+    // Preview mode - loads slot into globalState without applying to hardware
+    // Just tracks which slot we should return to when done
+    bool enterPreviewMode(int slotToPreview, String& errorMsg);
+    bool isPreviewMode() const { return previewModeActive; }
+    int getPreviewedSlotNumber() const { return previewSlotNumber; }
+    int getOriginalSlotNumber() const { return originalSlotNumber; }
+    void clearPreviewMode();  // Clear preview flag without loading anything
+    bool exitPreview(bool applyPreview, String& errorMsg);  // Exit preview, optionally applying or reverting
+    
     // Slot tracking synchronization
     void setActiveSlot(int slotNum);  // Sets activeSlotNumber and syncs with global netSlot
     void syncFromGlobalNetSlot();     // Updates activeSlotNumber from netSlot (for external changes)
@@ -315,6 +336,12 @@ private:
     // State storage - reference to globalState (no duplication!)
     JumperlessState& activeState;
     int activeSlotNumber;
+    
+    // Preview mode state
+    bool previewModeActive;
+    int previewSlotNumber;       // Which slot we're previewing
+    int originalSlotNumber;      // Which slot to return to when done
+    float originalRailVoltages[2]; // Save rail voltages (topRail, bottomRail) during preview
     
     // History buffer (circular buffer for undo/redo)
     JumperlessState* historyBuffer;
@@ -359,6 +386,26 @@ namespace StateHelpers {
     inline bool saveSlot(int slot) { String err; return SlotManager::getInstance().saveSlot(slot, err); }
     inline bool loadSlot(int slot) { String err; return SlotManager::getInstance().loadSlot(slot, err); }
 }
+
+// ============================================================================
+// Hardware Application Function
+// ============================================================================
+
+void applyStateToHardware(void);  // Apply globalState settings to hardware (DACs, GPIO, etc.)
+
+// ============================================================================
+// State Backup/Restore Functions (for MicroPython entry/exit, undo, etc.)
+// Uses compressed YAML format - only stores actual connections, not empty array slots
+// ============================================================================
+
+void storeStateBackup(void);                    // Store compressed YAML snapshot of globalState
+void restoreStateBackup(bool autoSave = false); // Restore from backup (optionally save to slot)
+void restoreAndSaveStateBackup(void);           // Restore and immediately save to current slot
+void clearStateBackup(void);                    // Clear the backup
+bool hasStateBackup(void);                      // Check if backup exists
+bool hasStateChanges(void);                     // Compare current state with backup
+size_t getStateBackupSize(void);                // Get backup size in bytes (for diagnostics)
+void printStateBackupInfo(void);                // Print detailed memory usage statistics
 
 #endif // STATES_H
 

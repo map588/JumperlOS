@@ -366,11 +366,8 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "revision") == 0) jumperlessConfig.hardware.revision = parseInt(value);
             else if (strcmp(key, "probe_revision") == 0) jumperlessConfig.hardware.probe_revision = parseInt(value);
         } else if (strcmp(section, "dacs") == 0) {
-            if (strcmp(key, "top_rail") == 0) jumperlessConfig.dacs.top_rail = parseFloat(value);
-            else if (strcmp(key, "bottom_rail") == 0) jumperlessConfig.dacs.bottom_rail = parseFloat(value);
-            else if (strcmp(key, "dac_0") == 0) jumperlessConfig.dacs.dac_0 = parseFloat(value);
-            else if (strcmp(key, "dac_1") == 0) jumperlessConfig.dacs.dac_1 = parseFloat(value);
-            else if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
+            // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
+            if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
             else if (strcmp(key, "set_rails_on_boot") == 0) jumperlessConfig.dacs.set_rails_on_boot = parseBool(value);
             else if (strcmp(key, "probe_power_dac") == 0) jumperlessConfig.dacs.probe_power_dac = parseInt(value);
             else if (strcmp(key, "limit_max") == 0) jumperlessConfig.dacs.limit_max = parseFloat(value);
@@ -435,14 +432,6 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "dump_leds") == 0) jumperlessConfig.display.dump_leds = parseSerialPort(value);
             else if (strcmp(key, "dump_format") == 0) jumperlessConfig.display.dump_format = parseDumpFormat(value);
             else if (strcmp(key, "terminal_line_buffering") == 0) jumperlessConfig.display.terminal_line_buffering = parseBool(value);
-        } else if (strcmp(section, "gpio") == 0) {
-            if (strcmp(key, "direction") == 0) parseCommaSeparatedInts(value, jumperlessConfig.gpio.direction, 10);
-            else if (strcmp(key, "pulls") == 0) parseCommaSeparatedInts(value, jumperlessConfig.gpio.pulls, 10);
-            else if (strcmp(key, "pwm_frequency") == 0) parseCommaSeparatedFloats(value, jumperlessConfig.gpio.pwm_frequency, 10);
-            else if (strcmp(key, "pwm_duty_cycle") == 0) parseCommaSeparatedFloats(value, jumperlessConfig.gpio.pwm_duty_cycle, 10);
-            else if (strcmp(key, "pwm_enabled") == 0) parseCommaSeparatedBools(value, jumperlessConfig.gpio.pwm_enabled, 10);
-            else if (strcmp(key, "uart_tx_function") == 0) jumperlessConfig.gpio.uart_tx_function = parseArbitraryFunction(value);
-            else if (strcmp(key, "uart_rx_function") == 0) jumperlessConfig.gpio.uart_rx_function = parseArbitraryFunction(value);
         } else if (strcmp(section, "serial_1") == 0) {
             if (strcmp(key, "function") == 0) jumperlessConfig.serial_1.function = parseUartFunction(value);
             else if (strcmp(key, "baud_rate") == 0) jumperlessConfig.serial_1.baud_rate = parseInt(value);
@@ -544,7 +533,6 @@ void updateConfigFromFile(const char* filename) {
             jumperlessConfig.calibration = savedConfig.calibration;
             jumperlessConfig.logo_pads = savedConfig.logo_pads;
             jumperlessConfig.display = savedConfig.display;
-            jumperlessConfig.gpio = savedConfig.gpio;
             jumperlessConfig.serial_1 = savedConfig.serial_1;
             jumperlessConfig.serial_2 = savedConfig.serial_2;
             jumperlessConfig.top_oled = savedConfig.top_oled;
@@ -593,7 +581,6 @@ void updateConfigFromFile(const char* filename) {
         jumperlessConfig.calibration = savedConfig.calibration;
         jumperlessConfig.logo_pads = savedConfig.logo_pads;
         jumperlessConfig.display = savedConfig.display;
-        jumperlessConfig.gpio = savedConfig.gpio;
         jumperlessConfig.serial_1 = savedConfig.serial_1;
         jumperlessConfig.serial_2 = savedConfig.serial_2;
         jumperlessConfig.top_oled = savedConfig.top_oled;
@@ -631,12 +618,8 @@ void saveConfigToFile(const char* filename) {
     file.print("probe_revision = "); file.print(jumperlessConfig.hardware.probe_revision); file.println(";");
     file.println();
 
-    // Write DAC settings section
+    // Write DAC settings section (voltage state moved to globalState.power in YAML files)
     file.println("[dacs]");
-    file.print("top_rail = "); file.print(jumperlessConfig.dacs.top_rail); file.println(";");
-    file.print("bottom_rail = "); file.print(jumperlessConfig.dacs.bottom_rail); file.println(";");
-    file.print("dac_0 = "); file.print(jumperlessConfig.dacs.dac_0); file.println(";");
-    file.print("dac_1 = "); file.print(jumperlessConfig.dacs.dac_1); file.println(";");
     file.print("set_dacs_on_boot = "); file.print(jumperlessConfig.dacs.set_dacs_on_boot ? 1:0); file.println(";");
     file.print("set_rails_on_boot = "); file.print(jumperlessConfig.dacs.set_rails_on_boot ? 1:0); file.println(";");
     file.print("probe_power_dac = "); file.print(jumperlessConfig.dacs.probe_power_dac == 0 ? 0 : 1); file.println(";");
@@ -713,25 +696,6 @@ void saveConfigToFile(const char* filename) {
     file.print("dump_leds = "); file.print(jumperlessConfig.display.dump_leds); file.println(";");
     file.print("dump_format = "); file.print(jumperlessConfig.display.dump_format); file.println(";");
     file.print("terminal_line_buffering = "); file.print(jumperlessConfig.display.terminal_line_buffering); file.println(";");
-    file.println();
-
-    // Write GPIO section
-    file.println("[gpio]");
-    file.print("direction = ");
-    for (int i = 0; i < 10; i++) {
-        if (i > 0) file.print(",");
-        file.print(jumperlessConfig.gpio.direction[i]);
-    }
-    file.println(";");
-    file.print("pulls = ");
-    for (int i = 0; i < 10; i++) {
-        if (i > 0) file.print(",");
-        file.print(jumperlessConfig.gpio.pulls[i]);
-    }
-    file.println(";");
-
-    file.print("uart_tx_function = "); file.print(jumperlessConfig.gpio.uart_tx_function); file.println(";");
-    file.print("uart_rx_function = "); file.print(jumperlessConfig.gpio.uart_rx_function); file.println(";");
     file.println();
 
     // Write serial section
@@ -818,10 +782,9 @@ int parseSectionName(const char* sectionName) {
     else if (strcmp(sectionName, "calibration") == 0) return 4;
     else if (strcmp(sectionName, "logo_pads") == 0) return 5;
     else if (strcmp(sectionName, "display") == 0) return 6;
-    else if (strcmp(sectionName, "gpio") == 0) return 7;
-    else if (strcmp(sectionName, "serial_1") == 0) return 8;
-    else if (strcmp(sectionName, "serial_2") == 0) return 9;
-    else if (strcmp(sectionName, "top_oled") == 0) return 10;
+    else if (strcmp(sectionName, "serial_1") == 0) return 7;
+    else if (strcmp(sectionName, "serial_2") == 0) return 8;
+    else if (strcmp(sectionName, "top_oled") == 0) return 9;
     return -1;
 }
 
@@ -863,14 +826,7 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
     if (section == -1 || section == 1) {
         Serial.print("\n`[dacs] ");
         if (pasteable == false) Serial.println();
-        Serial.print("top_rail = "); Serial.print(jumperlessConfig.dacs.top_rail); Serial.println(";");
-        if (pasteable == true) Serial.print("`[dacs] ");
-        Serial.print("bottom_rail = "); Serial.print(jumperlessConfig.dacs.bottom_rail); Serial.println(";");
-        if (pasteable == true) Serial.print("`[dacs] ");
-        Serial.print("dac_0 = "); Serial.print(jumperlessConfig.dacs.dac_0); Serial.println(";");
-        if (pasteable == true) Serial.print("`[dacs] ");
-        Serial.print("dac_1 = "); Serial.print(jumperlessConfig.dacs.dac_1); Serial.println(";");
-        if (pasteable == true) Serial.print("`[dacs] ");
+        // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
         Serial.print("set_dacs_on_boot = "); Serial.print(getStringFromTable(jumperlessConfig.dacs.set_dacs_on_boot, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[dacs] ");
         Serial.print("set_rails_on_boot = "); Serial.print(getStringFromTable(jumperlessConfig.dacs.set_rails_on_boot, boolTable)); Serial.println(";");
@@ -1009,31 +965,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("terminal_line_buffering = "); Serial.print(jumperlessConfig.display.terminal_line_buffering); Serial.println(";");
     }
     cycleTerminalColor();
-    // Print GPIO section
-    if (section == -1 || section == 7) {
-        Serial.print("\n`[gpio] ");
-        if (pasteable == false) Serial.println();
-        Serial.print("direction = ");
-        for (int i = 0; i < 10; i++) {
-            if (i > 0) Serial.print(",");
-            Serial.print(jumperlessConfig.gpio.direction[i]);
-        }
-        Serial.println(";");
-        if (pasteable == true) Serial.print("`[gpio] ");
-        Serial.print("pulls = ");
-        for (int i = 0; i < 10; i++) {
-            if (i > 0) Serial.print(",");
-            Serial.print(jumperlessConfig.gpio.pulls[i]);
-        }
-        Serial.println(";");
-        if (pasteable == true) Serial.print("`[gpio] ");
-        Serial.print("uart_tx_function = "); Serial.print(getStringFromTable(jumperlessConfig.gpio.uart_tx_function, arbitraryFunctionTable)); Serial.println(";");
-        if (pasteable == true) Serial.print("`[gpio] ");
-        Serial.print("uart_rx_function = "); Serial.print(getStringFromTable(jumperlessConfig.gpio.uart_rx_function, arbitraryFunctionTable)); Serial.println(";");
-    }
-    cycleTerminalColor();
     // Print serial_1 section
-    if (section == -1 || section == 8) {
+    if (section == -1 || section == 7) {
         Serial.print("\n`[serial_1] ");
         if (pasteable == false) Serial.println();
         Serial.print("function = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.function, uartFunctionTable)); Serial.println(";");
@@ -1052,7 +985,7 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
     }
     cycleTerminalColor();
     // Print serial_2 section
-    if (section == -1 || section == 9) {
+    if (section == -1 || section == 8) {
         Serial.print("\n`[serial_2] ");
         if (pasteable == false) Serial.println();
         Serial.print("function = "); Serial.print(getStringFromTable(jumperlessConfig.serial_2.function, uartFunctionTable)); Serial.println(";");
@@ -1838,10 +1771,10 @@ bool dacChange = false;
     }
    // configChanged = true;
    readSettingsFromConfig();
-//    Serial.println(railVoltage[0]);
-//    Serial.println(railVoltage[1]);
-//    Serial.println(dacOutput[0]);
-//    Serial.println(dacOutput[1]);
+//    Serial.println(globalState.power.topRail);
+//    Serial.println(globalState.power.bottomRail);
+//    Serial.println(globalState.power.dac0);
+//    Serial.println(globalState.power.dac1);
     setRailsAndDACs(0);
     showLEDsCore2 = -1;
 }
@@ -1864,11 +1797,8 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "probe_revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.probe_revision);
     }
     else if (strcmp(section, "dacs") == 0) {
-        if (strcmp(key, "top_rail") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.top_rail);
-        else if (strcmp(key, "bottom_rail") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.bottom_rail);
-        else if (strcmp(key, "dac_0") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.dac_0);
-        else if (strcmp(key, "dac_1") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.dac_1);
-        else if (strcmp(key, "set_dacs_on_boot") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.set_dacs_on_boot);
+        // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
+        if (strcmp(key, "set_dacs_on_boot") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.set_dacs_on_boot);
         else if (strcmp(key, "set_rails_on_boot") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.set_rails_on_boot);
         else if (strcmp(key, "probe_power_dac") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.probe_power_dac);
         else if (strcmp(key, "limit_max") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.limit_max);
@@ -1934,30 +1864,6 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "dump_format") == 0) sprintf(oldValue, "%d", jumperlessConfig.display.dump_format);
         else if (strcmp(key, "terminal_line_buffering") == 0) sprintf(oldValue, "%d", jumperlessConfig.display.terminal_line_buffering);
     }
-    else if (strcmp(section, "gpio") == 0) {
-        if (strcmp(key, "direction") == 0) {
-            char temp[128] = {0};
-                for (int i = 0; i < 10; i++) {
-                if (i > 0) strcat(temp, ",");
-                char num[4];
-                sprintf(num, "%d", jumperlessConfig.gpio.direction[i]);
-                strcat(temp, num);
-            }
-            strcpy(oldValue, temp);
-        }
-        else if (strcmp(key, "pulls") == 0) {
-            char temp[128] = {0};
-            for (int i = 0; i < 10; i++) {
-                if (i > 0) strcat(temp, ",");
-                char num[4];
-                sprintf(num, "%d", jumperlessConfig.gpio.pulls[i]);
-                strcat(temp, num);
-            }
-            strcpy(oldValue, temp);
-        }
-        else if (strcmp(key, "uart_tx_function") == 0) sprintf(oldValue, "%d", jumperlessConfig.gpio.uart_tx_function);
-        else if (strcmp(key, "uart_rx_function") == 0) sprintf(oldValue, "%d", jumperlessConfig.gpio.uart_rx_function);
-    }
     else if (strcmp(section, "serial_1") == 0) {
         if (strcmp(key, "function") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.function);
         else if (strcmp(key, "baud_rate") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.baud_rate);
@@ -1999,11 +1905,8 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "probe_revision") == 0) jumperlessConfig.hardware.probe_revision = parseInt(value);
     }
     else if (strcmp(section, "dacs") == 0) {
-        if (strcmp(key, "top_rail") == 0) jumperlessConfig.dacs.top_rail = parseFloat(value);
-        else if (strcmp(key, "bottom_rail") == 0) jumperlessConfig.dacs.bottom_rail = parseFloat(value);
-        else if (strcmp(key, "dac_0") == 0) jumperlessConfig.dacs.dac_0 = parseFloat(value);
-        else if (strcmp(key, "dac_1") == 0) jumperlessConfig.dacs.dac_1 = parseFloat(value);
-        else if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
+        // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
+        if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
         else if (strcmp(key, "set_rails_on_boot") == 0) jumperlessConfig.dacs.set_rails_on_boot = parseBool(value);
         else if (strcmp(key, "probe_power_dac") == 0) jumperlessConfig.dacs.probe_power_dac = parseInt(value);
         else if (strcmp(key, "limit_max") == 0) jumperlessConfig.dacs.limit_max = parseFloat(value);
@@ -2069,25 +1972,6 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "dump_leds") == 0) jumperlessConfig.display.dump_leds = parseSerialPort(value);
         else if (strcmp(key, "dump_format") == 0) jumperlessConfig.display.dump_format = parseDumpFormat(value);
         else if (strcmp(key, "terminal_line_buffering") == 0) jumperlessConfig.display.terminal_line_buffering = parseBool(value);
-    }
-    else if (strcmp(section, "gpio") == 0) {
-        if (strcmp(key, "direction") == 0) {
-            parseCommaSeparatedInts(value, jumperlessConfig.gpio.direction, 10);
-        }
-        else if (strcmp(key, "pulls") == 0) {
-            parseCommaSeparatedInts(value, jumperlessConfig.gpio.pulls, 10);
-        }
-        else if (strcmp(key, "pwm_frequency") == 0) {
-            parseCommaSeparatedFloats(value, jumperlessConfig.gpio.pwm_frequency, 10);
-        }
-        else if (strcmp(key, "pwm_duty_cycle") == 0) {
-            parseCommaSeparatedFloats(value, jumperlessConfig.gpio.pwm_duty_cycle, 10);
-        }
-        else if (strcmp(key, "pwm_enabled") == 0) {
-            parseCommaSeparatedBools(value, jumperlessConfig.gpio.pwm_enabled, 10);
-        }
-        else if (strcmp(key, "uart_tx_function") == 0) jumperlessConfig.gpio.uart_tx_function = parseArbitraryFunction(value);
-        else if (strcmp(key, "uart_rx_function") == 0) jumperlessConfig.gpio.uart_rx_function = parseArbitraryFunction(value);
     }
     else if (strcmp(section, "serial_1") == 0) {
         if (strcmp(key, "function") == 0) jumperlessConfig.serial_1.function = parseUartFunction(value);

@@ -1808,67 +1808,105 @@ void printColorName(int hue) {
     }
   }
 
-int saveRawColors(int slot) {
 
-  // // if (savedLEDcolors[slot][LED_COUNT] == 0xFFFFFF) // put this to say it was
-  // // already saved
-  // // {
-  // return 0;
-  // // }
 
-  // if (slot == -1) {
-  //   slot = netSlot;
-  // }
-
-  // for (int i = 0; i < 300; i++) {
-  //   if (i >= slotLEDpositions[0] && i <= slotLEDpositions[NUM_SLOTS - 1]) {
-  //     // savedLEDcolors[slot][i] = slotSelectionColors[1];
-  //     //  Serial.print(i);
-  //     //  Serial.print("\t");
-
-  //     continue;
-  //   }
-  //   savedLEDcolors[slot][i] = leds.getPixelColor(i);
-  // }
-  // savedLEDcolors[slot][LED_COUNT] = 0xAAAAAA;
-  return 0;
-  }
-
-void refreshSavedColors(int slot) {
-  // if (slot == -1) {
-  //   for (int i = 0; i < NUM_SLOTS; i++) {
-  //     savedLEDcolors[i][LED_COUNT] = 0x000000;
-  //   }
-  // } else {
-  //   savedLEDcolors[slot][LED_COUNT] = 0x000000;
-  // }
-  }
-
-void showSavedColors(int slot) {
+void previewSlotColors(int slot, bool showVoltages) {
+  // NEW: Preview a slot using SlotManager - just loads into globalState
+  // No state copying needed! Just track which slot to return to
   if (slot == -1) {
     slot = netSlot;
-    }
-
-
+  }
+  
+  SlotManager& mgr = SlotManager::getInstance();
+  String errorMsg;
+  
+  // Enter preview mode - loads slot directly into globalState
+  if (!mgr.enterPreviewMode(slot, errorMsg)) {
+    Serial.println("Error previewing slot " + String(slot) + ": " + errorMsg);
+    return;
+  }
+  
+  // Now globalState has the preview slot loaded
+  // globalState.power is already updated by enterPreviewMode()
+  
+  // Compute paths and colors (but don't apply to hardware)
   clearAllNTCC();
-  openNodeFile(slot, 0);
-  // printNodeFile(slot, 0);
-  // clearLEDs();
-  clearLEDsExceptRails();
-  getNodesToConnect();
-  bridgesToPaths();
-  // leds.clear();
-  clearLEDsExceptRails();
+  
+  loadBridgesFromState();  // Copy bridges from globalState to newBridge[] array
+  getNodesToConnect();     // Process newBridge[] array into nets
+  bridgesToPaths();        // Computes paths from nets
+  clearLEDs();  // Clear everything including rails
+  // Prepare colors and light up LEDs (but don't call leds.show() - core2stuff does that)
   checkChangedNetColors(-1);
   assignNetColors();
-
-  // saveRawColors(slot);
-
-
-
-  showLEDsCore2 = -1;
-  // leds.show();
+  lightUpRail();  // Set rail LED colors based on globalState.power
+  
+  // Display voltage info if requested
+  if (showVoltages) {
+    Serial.println("\n╔════════════════════════════════╗");
+    Serial.println("║  Slot " + String(slot) + " Preview (not applied)  ║");
+    Serial.println("╚════════════════════════════════╝");
+    Serial.println("  Connections: " + String(globalState.connections.numBridges));
+    Serial.println("  Top Rail:    " + String(globalState.power.topRail, 2) + "V");
+    Serial.println("  Bottom Rail: " + String(globalState.power.bottomRail, 2) + "V");
+    Serial.println("  DAC 0:       " + String(globalState.power.dac0, 2) + "V");
+    Serial.println("  DAC 1:       " + String(globalState.power.dac1, 2) + "V");
+    Serial.println("════════════════════════════════\n");
   }
+  
+  // Trigger LED update - core2stuff will call showNets() and leds.show()
+  showLEDsCore2 = 1;
+  
+  // NOTE: We stay in preview mode! Call exitPreview() to commit or cancel
+}
+
+void applyPreviewedSlot() {
+  // Helper to apply the previewed slot and refresh hardware
+  SlotManager& mgr = SlotManager::getInstance();
+  String errorMsg;
+  
+  if (!mgr.isPreviewMode()) {
+    Serial.println("Not in preview mode");
+    return;
+  }
+  
+  // Exit preview with apply=true (keeps the current slot)
+  if (mgr.exitPreview(true, errorMsg)) {
+    // Now apply to hardware
+    refreshConnections();
+    //Serial.println("✓ Applied slot " + String(netSlot));
+  } else {
+    Serial.println("Error applying preview: " + errorMsg);
+  }
+}
+
+void cancelPreview() {
+  // Helper to cancel preview and return to original slot
+  SlotManager& mgr = SlotManager::getInstance();
+  String errorMsg;
+  
+  if (!mgr.isPreviewMode()) {
+    Serial.println("Not in preview mode");
+    return;
+  }
+  
+  int originalSlot = mgr.getOriginalSlotNumber();
+  
+  // Exit preview with apply=false (restores original slot)
+  if (mgr.exitPreview(false, errorMsg)) {
+    // Refresh to show original slot
+    clearAllNTCC();
+    clearLEDsExceptRails();
+    getNodesToConnect();
+    bridgesToPaths();
+    clearLEDsExceptRails();
+    assignNetColors();
+    showLEDsCore2 = -1;
+    Serial.println("✓ Cancelled preview, returned to slot " + String(originalSlot));
+  } else {
+    Serial.println("Error cancelling preview: " + errorMsg);
+  }
+}
 
 void clearChangedNetColors(int saveToFile) {
   for (int i = 0; i < MAX_NETS; i++) {
@@ -2124,16 +2162,15 @@ void assignNetColors(int preview) {
             netColors[i] = unpackRgb(railNetColors[1]);
             globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
-            // Serial.print("railVoltage[0]: ");
-            // Serial.println(railVoltage[0]);
+            // Serial.print("topRail: ");
+            // Serial.println(globalState.power.topRail);
             // Serial.print("map: ");
-            // Serial.println(map((int)(railVoltage[0]*10), -80, 80, 0, 59));
+            // Serial.println(map((int)(globalState.power.topRail*10), -80, 80, 0, 59));
             // Serial.print("hue: ");
             // Serial.println(netHsv.h);
             break;
           case 3:
-            // railColor = logoColors8vSelect[map((long)(railVoltage[1] * 10), -80, 80,
-            //                                    0, 59)];
+            // railColor = logoColors8vSelect[map((long)(globalState.power.bottomRail * 10), -80, 80, 0, 59)];
             // netColors[i] = unpackRgb(railColor);
             // globalState.connections.nets[i].color = netColors[i];
             netColors[i] = unpackRgb(railNetColors[2]);
@@ -2142,14 +2179,14 @@ void assignNetColors(int preview) {
             break;
           case 4:
             railColor =
-              logoColors8vSelect[map((long)(dacOutput[0] * 10), -80, 80, 0, 59)];
+              logoColors8vSelect[map((long)(globalState.power.dac0 * 10), -80, 80, 0, 59)];
             netColors[i] = unpackRgb(railColor);
             globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
             break;
           case 5:
             railColor =
-              logoColors8vSelect[map((long)(dacOutput[1] * 10), -80, 80, 0, 59)];
+              logoColors8vSelect[map((long)(globalState.power.dac1 * 10), -80, 80, 0, 59)];
             netColors[i] = unpackRgb(railColor);
             globalState.connections.nets[i].color = netColors[i];
             specialNetColors[i] = netColors[i];
@@ -3807,26 +3844,27 @@ void lightUpRail(int logo, int rail, int onOff, int brightness2,
             // color = scaleBrightness(color, brightness2);
             if (j % 2 == 0) { //only the top and bottom rails 
               int powerRail = j / 2;
+              float currentRailVoltage = (powerRail == 0) ? globalState.power.topRail : globalState.power.bottomRail;
 
-              if (railVoltage[powerRail] < 0.0) { //flipped when the voltage is negative
-                if ((i == 24 - (abs((int)(railVoltage[powerRail] * 5)))) && (abs((int)railVoltage[powerRail]) <= 5.0)) {
+              if (currentRailVoltage < 0.0) { //flipped when the voltage is negative
+                if ((i == 24 - (abs((int)(currentRailVoltage * 5)))) && (abs((int)currentRailVoltage) <= 5.0)) {
 
                   leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dotColor, 250));
 
-                  } else if (i == 49 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                  } else if (i == 49 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) >= 5.0)) {
 
                     leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dangerDot, 280));
 
 
-                    } else if (i > 24 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) < 5.0)) {
+                    } else if (i > 24 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) < 5.0)) {
 
                       leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][3], scaleScale(0)));
 
-                      } else if (i > 49 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                      } else if (i > 49 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) >= 5.0)) {
 
                         leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][2], scaleScale(30)));
 
-                        } else if (i < 49 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                        } else if (i < 49 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) >= 5.0)) {
 
                           leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][3], scaleScale(0)));
 
@@ -3838,22 +3876,22 @@ void lightUpRail(int logo, int rail, int onOff, int brightness2,
 
 
 
-                } else if ((i == abs((int)((railVoltage[powerRail] - 0.1) * 5))) && (abs((int)railVoltage[powerRail]) <= 5.0)) {
+                } else if ((i == abs((int)((currentRailVoltage - 0.1) * 5))) && (abs((int)currentRailVoltage) <= 5.0)) {
 
                   leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dotColor, scaleScale(250)));
 
-                  } else if ((i == (abs((int)((railVoltage[powerRail] - 5.1) * 5)))) && (abs((int)railVoltage[powerRail]) >= 5.0)) {
+                  } else if ((i == (abs((int)((currentRailVoltage - 5.1) * 5)))) && (abs((int)currentRailVoltage) >= 5.0)) {
 
                     leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dangerDot, scaleScale(280)));
 
-                    } else if (i < abs((int)(((railVoltage[powerRail] + 0.1) * 5) - 1)) && (abs((int)railVoltage[powerRail]) < 5.0)) {
+                    } else if (i < abs((int)(((currentRailVoltage + 0.1) * 5) - 1)) && (abs((int)currentRailVoltage) < 5.0)) {
 
                       leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][3], scaleScale(15)));
 
-                      } else if (i < (abs((int)(((railVoltage[powerRail] - 4.9) * 5) - 1))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                      } else if (i < (abs((int)(((currentRailVoltage - 4.9) * 5) - 1))) && (abs(currentRailVoltage) >= 5.0)) {
 
                         leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][2], scaleScale(30)));
-                        } else if (i > (abs((int)(((railVoltage[powerRail] - 4.9) * 5) - 1))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                        } else if (i > (abs((int)(((currentRailVoltage - 4.9) * 5) - 1))) && (abs(currentRailVoltage) >= 5.0)) {
 
                           leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][3], scaleScale(15)));
 
@@ -3870,26 +3908,27 @@ void lightUpRail(int logo, int rail, int onOff, int brightness2,
             // Serial.println(brightness2);
             if (j % 2 == 0) { //only the top and bottom rails 
               int powerRail = j / 2;
+              float currentRailVoltage = (powerRail == 0) ? globalState.power.topRail : globalState.power.bottomRail;
 
-              if (railVoltage[powerRail] < -0.1) { //flipped when the voltage is negative
-                if ((i == 25 - (abs((int)(railVoltage[powerRail] * 5)))) && (abs((int)railVoltage[powerRail]) < 5.0)) {
+              if (currentRailVoltage < -0.1) { //flipped when the voltage is negative
+                if ((i == 25 - (abs((int)(currentRailVoltage * 5)))) && (abs((int)currentRailVoltage) < 5.0)) {
 
                   leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(negDot, 250));
 
-                  } else if (i == 50 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                  } else if (i == 50 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) >= 5.0)) {
 
                     leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dangerDot, 250));
 
 
-                    } else if (i > 25 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) < 5.0)) {
+                    } else if (i > 25 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) < 5.0)) {
 
                       leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][4], scaleScale(-20)));
 
-                      } else if (i > 50 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                      } else if (i > 50 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) >= 5.0)) {
 
                         leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][2], scaleScale(-30)));
 
-                        } else if (i < 50 - (abs((int)((railVoltage[powerRail] * 5)))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                        } else if (i < 50 - (abs((int)((currentRailVoltage * 5)))) && (abs(currentRailVoltage) >= 5.0)) {
 
                           leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][4], scaleScale(-20)));
 
@@ -3901,23 +3940,23 @@ void lightUpRail(int logo, int rail, int onOff, int brightness2,
 
 
 
-                } else if ((i == abs((int)((railVoltage[powerRail] - 0.1) * 5))) && (abs((int)railVoltage[powerRail]) < 5.0)) {
+                } else if ((i == abs((int)((currentRailVoltage - 0.1) * 5))) && (abs((int)currentRailVoltage) < 5.0)) {
 
                   leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dotColor, scaleScale(150)));
 
-                  } else if ((i == (abs((int)((railVoltage[powerRail] - 5.1) * 5)))) && (abs((int)railVoltage[powerRail]) >= 5.0)) {
+                  } else if ((i == (abs((int)((currentRailVoltage - 5.1) * 5)))) && (abs((int)currentRailVoltage) >= 5.0)) {
 
                     leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(dangerDot, scaleScale(250)));
 
-                    } else if (i < abs((int)(((railVoltage[powerRail] + 0.1) * 5) - 1)) && (abs((int)railVoltage[powerRail]) < 5.0)) {
+                    } else if (i < abs((int)(((currentRailVoltage + 0.1) * 5) - 1)) && (abs((int)currentRailVoltage) < 5.0)) {
 
                       leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][1], scaleScale(-20)));
 
-                      } else if (i < (abs((int)(((railVoltage[powerRail] - 4.9) * 5) - 1))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                      } else if (i < (abs((int)(((currentRailVoltage - 4.9) * 5) - 1))) && (abs(currentRailVoltage) >= 5.0)) {
 
                         leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][2], scaleScale(-30)));
 
-                        } else if (i > (abs((int)(((railVoltage[powerRail] - 4.9) * 5) - 1))) && (abs(railVoltage[powerRail]) >= 5.0)) {
+                        } else if (i > (abs((int)(((currentRailVoltage - 4.9) * 5) - 1))) && (abs(currentRailVoltage) >= 5.0)) {
 
                           leds.setPixelColor(railsToPixelMap[j][i], scaleBrightness(railColorsV5[j][1], scaleScale(-20)));
 
