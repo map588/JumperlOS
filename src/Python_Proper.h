@@ -68,6 +68,7 @@ struct REPLEditor {
   int last_displayed_lines = 0;      // Track how many lines we last displayed
   bool just_loaded_from_history = false; // Flag to track when we just loaded from history
   String last_displayed_content = "";    // Track the last content we displayed
+  unsigned long escape_start_time = 0;   // Timestamp when ESC was pressed
 
   // Centralized cursor position management
   struct CursorPosition {

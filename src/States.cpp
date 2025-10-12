@@ -5,6 +5,8 @@
 #include "FileParsing.h"
 #include "Commands.h"
 #include "Peripherals.h"
+#include "PersistentStuff.h"
+#include "EkiloEditor.h"
 #include "config.h"
 #include <string.h>
 #include <FatFS.h>
@@ -17,6 +19,14 @@ extern int netSlot;  // Global slot number (defined in RotaryEncoder.cpp)
 extern const int gpioDef[10][3];  // GPIO pin definitions (defined in Peripherals.h)
 extern uint8_t gpioState[10];  // GPIO state for animations (defined in Peripherals.cpp)
 extern bool debugFP;  // Debug flag for file parsing (defined in FileParsing.cpp)
+
+// Forward declarations for YAML parsing helpers
+int parseNodeName(const String& nodeName);
+String nodeValueToString(int nodeValue);
+uint32_t parseColorValue(const String& colorStr, bool& success);
+String colorValueToName(uint32_t color);
+bool parseBoolean(const String& val, bool& success);
+String booleanToString(bool value);
 
 // Global singleton - THE single source of truth for all Jumperless state
 JumperlessState globalState;
@@ -267,6 +277,27 @@ void JumperlessState::clear() {
     lastModifiedTime = 0;
 }
 
+void JumperlessState::markDirty() {
+    if (!dirty && debugWaitLoopTiming) {
+        Serial.printf("DEBUG: State marked dirty at %lu ms\n", millis());
+        // Print stack trace to help debug what's causing spurious dirty marks
+        Serial.println("DEBUG: markDirty() called from:");
+        // Print return address to help identify caller
+        void* caller = __builtin_return_address(0);
+        Serial.printf("  Caller address: %p\n", caller);
+    }
+    dirty = true;
+    lastModifiedTime = millis();
+}
+
+void JumperlessState::clearDirty() {
+    if (dirty && debugWaitLoopTiming) {
+        Serial.printf("DEBUG: State cleared dirty at %lu ms (was dirty for %lu ms)\n", 
+                     millis(), millis() - lastModifiedTime);
+    }
+    dirty = false;
+}
+
 // Connection management
 bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int duplicates) {
     // Validate nodes
@@ -286,12 +317,18 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
     // Serial.println("Adding connection: " + String(node1) + " - " + String(node2));
     // Serial.println("numBridges: " + String(connections.numBridges));
     // Serial.flush();
-    // Check for duplicate - if it exists, increment the duplicate count instead
+    // Check for duplicate - if it exists, update the duplicate count
     for (int i = 0; i < connections.numBridges; i++) {
         if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
             (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
-            // Connection exists - increment duplicates
-            connections.bridges[i][2]++;
+            // Connection exists - update duplicates based on parameter
+            if (duplicates >= 0) {
+                // Specific duplicate count provided - replace the value
+                connections.bridges[i][2] = duplicates;
+            } else {
+                // No duplicate count specified - increment existing count
+                connections.bridges[i][2]++;
+            }
             connections.invalidateCache(config.autoRefreshOnChange);
             markDirty();
             return true;
@@ -702,27 +739,43 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
         }
         // Parse section content
         else if (line.startsWith("- {") || line.startsWith("-{")) {
+            // Try to parse line even if incomplete (missing closing brace)
+            // The deserializer will extract whatever fields it can find
+            
             // Bridge or net entry
             if (currentSection == "bridges") {
-                if (!deserializeBridges(line.c_str(), errorMsg)) {
-            return false;
-        }
+                String tempError;
+                if (!deserializeBridges(line.c_str(), tempError)) {
+                    // Skip invalid lines in preview mode - don't fail entire parse
+                    // This allows partially edited files to still work
+                    lineStart = lineEnd + 1;
+                    continue;
+                }
             } else if (currentSection == "nets") {
-                if (!deserializeNets(line.c_str(), errorMsg)) {
-                    return false;
+                String tempError;
+                if (!deserializeNets(line.c_str(), tempError)) {
+                    // Skip invalid lines in preview mode
+                    lineStart = lineEnd + 1;
+                    continue;
                 }
             }
         }
         else if (currentSection == "power") {
-            if (!deserializePower(line.c_str(), errorMsg)) {
-            return false;
+            String tempError;
+            if (!deserializePower(line.c_str(), tempError)) {
+                // Skip invalid power lines - don't fail entire parse
+                lineStart = lineEnd + 1;
+                continue;
+            }
         }
-    }
         else if (currentSection == "config") {
-            if (!deserializeConfig(line.c_str(), errorMsg)) {
-            return false;
+            String tempError;
+            if (!deserializeConfig(line.c_str(), tempError)) {
+                // Skip invalid config lines - don't fail entire parse
+                lineStart = lineEnd + 1;
+                continue;
+            }
         }
-    }
     
         lineStart = lineEnd + 1;
     }
@@ -745,48 +798,103 @@ void JumperlessState::serializeBridges(String& output) const {
     
     output += "bridges:\n";
     for (int i = 0; i < connections.numBridges; i++) {
-        output += "  - {n1: " + String(connections.bridges[i][0]) + 
-                  ", n2: " + String(connections.bridges[i][1]) + 
+        // Use node names instead of raw numbers for readability
+        String n1Name = nodeValueToString(connections.bridges[i][0]);
+        String n2Name = nodeValueToString(connections.bridges[i][1]);
+        
+        output += "  - {n1: " + n1Name + 
+                  ", n2: " + n2Name + 
                   ", dup: " + String(connections.bridges[i][2]) + "}\n";
     }
     output += "\n";
 }
 
 bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorMsg) {
-    // Parse bridge entry: - {n1: 1, n2: 5, dup: 2}
+    // Parse bridge entry: - {n1: TOP_RAIL, n2: NANO_D5, dup: 2}
+    // Also accepts: - {n1: 101, n2: 75, dup: 2}
+    // Tolerant of incomplete lines for live editing
     String line = String(yamlContent);
     line.trim();
     
-    // Extract values
+    // Validate line has opening brace at minimum
+    if (line.indexOf('{') == -1) {
+        errorMsg = "Missing opening brace in bridge entry";
+        return false;
+    }
+    
+    // Extract values (tolerant of incomplete/missing fields)
     int n1 = -1, n2 = -1, dup = -1;
     
+    // Parse n1 field
     int n1Idx = line.indexOf("n1:");
     if (n1Idx >= 0) {
+        // Find delimiter: comma, closing brace, or end of line
         int commaIdx = line.indexOf(',', n1Idx);
-        String val = line.substring(n1Idx + 3, commaIdx);
-        val.trim();
-        n1 = val.toInt();
+        int braceIdx = line.indexOf('}', n1Idx);
+        int endIdx = line.length();
+        
+        // Use the first valid delimiter found
+        if (commaIdx > n1Idx + 3 && (braceIdx == -1 || commaIdx < braceIdx)) {
+            endIdx = commaIdx;
+        } else if (braceIdx > n1Idx + 3) {
+            endIdx = braceIdx;
+        }
+        
+        if (endIdx > n1Idx + 3) {
+            String val = line.substring(n1Idx + 3, endIdx);
+            val.trim();
+            
+            // Only parse if we have actual content
+            if (val.length() > 0) {
+                n1 = parseNodeName(val);
+            }
+        }
     }
     
+    // Parse n2 field
     int n2Idx = line.indexOf("n2:");
     if (n2Idx >= 0) {
+        // Find delimiter: comma, closing brace, or end of line
         int commaIdx = line.indexOf(',', n2Idx);
-        if (commaIdx == -1) commaIdx = line.indexOf('}', n2Idx);
-        String val = line.substring(n2Idx + 3, commaIdx);
-        val.trim();
-        n2 = val.toInt();
+        int braceIdx = line.indexOf('}', n2Idx);
+        int endIdx = line.length();
+        
+        // Use the first valid delimiter found
+        if (commaIdx > n2Idx + 3 && (braceIdx == -1 || commaIdx < braceIdx)) {
+            endIdx = commaIdx;
+        } else if (braceIdx > n2Idx + 3) {
+            endIdx = braceIdx;
+        }
+        
+        if (endIdx > n2Idx + 3) {
+            String val = line.substring(n2Idx + 3, endIdx);
+            val.trim();
+            
+            // Only parse if we have actual content
+            if (val.length() > 0) {
+                n2 = parseNodeName(val);
+            }
+        }
     }
     
+    // Parse dup field (optional)
     int dupIdx = line.indexOf("dup:");
     if (dupIdx >= 0) {
-        int endIdx = line.indexOf('}', dupIdx);
-        String val = line.substring(dupIdx + 4, endIdx);
-        val.trim();
-        dup = val.toInt();
+        int braceIdx = line.indexOf('}', dupIdx);
+        int endIdx = (braceIdx > dupIdx + 4) ? braceIdx : line.length();
+        
+        if (endIdx > dupIdx + 4) {
+            String val = line.substring(dupIdx + 4, endIdx);
+            val.trim();
+            if (val.length() > 0) {
+                dup = val.toInt();
+            }
+        }
     }
     
+    // Only add connection if we have both nodes
     if (n1 < 0 || n2 < 0) {
-        errorMsg = "Invalid bridge format: " + line;
+        errorMsg = "Incomplete bridge (missing n1 or n2): " + line;
         return false;
     }
     
@@ -794,36 +902,162 @@ bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorM
 }
 
 void JumperlessState::serializeNets(String& output) const {
-    // Only serialize nets with custom colors or names
-    bool hasCustomNets = false;
-    for (int i = 0; i < display.numCustomColors; i++) {
-        hasCustomNets = true;
-        break;
+    // Serialize ALL computed nets with full metadata
+    // This allows users to edit colors and see what nets exist
+    
+    // ARCHITECTURE NOTE: We use globalState.connections.nets[] which is where
+    // all net computation is now done. The old global net[] array is deprecated.
+    // The nets are computed by getNodesToConnect() which populates globalState.
+    // This approach is optimal because:
+    //   1. Nets are computed once on load, not repeatedly on save
+    //   2. We reuse the existing optimized net computation code
+    //   3. Serialization is fast (just reading already-computed data)
+    
+    // Use the state's nets (access globalState since this is a const method)
+    JumperlessState& state = const_cast<JumperlessState&>(globalState);
+    
+    // Count the number of active nets (since numNets might not be set by NetManager)
+    // Scan through nets array to find the highest numbered net
+    int maxNetNumber = 0;
+    for (int i = 1; i < MAX_NETS; i++) {
+        if (state.connections.nets[i].number > 0 && state.connections.nets[i].nodes[0] != 0) {
+            maxNetNumber = i;
+        }
     }
     
-    if (!hasCustomNets) {
-        return;  // Don't output empty nets section
+    // Update numNets for the state
+    state.connections.numNets = maxNetNumber + 1;
+    
+    // If no nets were found, nothing to serialize
+    if (maxNetNumber == 0) {
+        return;  // Don't output anything for empty nets section
     }
     
-    output += "nets:\n\r";
-    for (int i = 0; i < display.numCustomColors; i++) {
-        const DisplayState::NetColorEntry& entry = display.customColors[i];
-        output += "  - {num: " + String(entry.netNumber) + 
-                  ", name: \"" + String(entry.colorName) + "\"" +
-                  ", color: 0x" + String(entry.rawColor, HEX) + "}\n\r";
+    output += "nets:\n";
+    
+    // Animation order for detecting animated nets
+    extern int animationOrder[26];
+    
+    for (int i = 1; i <= maxNetNumber; i++) {  // Start at 1, skip net 0
+        if (state.connections.nets[i].number == 0 || state.connections.nets[i].nodes[0] == 0) {
+            continue;  // Skip empty nets
+        }
+        
+        // Count nodes in this net
+        int nodeCount = 0;
+        for (int j = 0; j < MAX_NODES && state.connections.nets[i].nodes[j] != 0; j++) {
+            nodeCount++;
+        }
+        
+        // Skip nets with only one node
+        if (nodeCount <= 1) {
+            continue;
+        }
+        
+        // Collect node list for this net (using SHORT names)
+        String nodesList = "[";
+        bool firstNode = true;
+        for (int j = 0; j < MAX_NODES && state.connections.nets[i].nodes[j] != 0; j++) {
+            if (!firstNode) nodesList += ", ";
+            // Use short name (0 = short, 1 = long)
+            const char* shortName = definesToChar(state.connections.nets[i].nodes[j], 0);
+            if (shortName && strlen(shortName) > 0) {
+                nodesList += String(shortName);
+            } else {
+                nodesList += String(state.connections.nets[i].nodes[j]);
+            }
+            firstNode = false;
+        }
+        nodesList += "]";
+        
+        // Get color information
+        String colorName = "";
+        bool userAssigned = false;
+        bool animated = false;
+        uint32_t netColor = 0;
+        
+        // Check if this net has a custom color
+        for (int j = 0; j < display.numCustomColors; j++) {
+            if (display.customColors[j].netNumber == state.connections.nets[i].number) {
+                colorName = String(display.customColors[j].colorName);
+                colorName.trim();
+                netColor = display.customColors[j].rawColor;
+                userAssigned = true;  // Custom colors are user-assigned
+                break;
+            }
+        }
+        
+        // If no custom color, get the auto-generated color
+        if (colorName.length() == 0) {
+            // Use the net's assigned color
+            rgbColor netRgb = state.connections.nets[i].color;
+            netColor = packRgb(netRgb.r, netRgb.g, netRgb.b);
+            colorName = colorValueToName(netColor);
+        }
+        
+        // Check if net is animated (check if any of its nodes are in the animation order)
+        for (int j = 0; j < 26; j++) {
+            for (int k = 0; k < MAX_NODES && state.connections.nets[i].nodes[k] != 0; k++) {
+                if (state.connections.nets[i].nodes[k] == animationOrder[j]) {
+                    animated = true;
+                    break;
+                }
+            }
+            if (animated) break;
+        }
+        
+        // Build the output line with required fields first
+        output += "  - {num: " + String(state.connections.nets[i].number);
+        output += ", nodes: " + nodesList;
+        
+        // Only print color if not animated
+        if (!animated) {
+            output += ", color: " + colorName;
+        }
+        
+        // Optional fields at the end (only if not default)
+        
+        // Check if name is auto-generated "Net X" format
+        String netName = String(state.connections.nets[i].name);
+        netName.trim();
+        bool isAutoGeneratedName = false;
+        if (netName.startsWith("Net ") && netName.length() < 10) {
+            // Likely auto-generated like "Net 6", "Net 12", etc.
+            isAutoGeneratedName = true;
+        }
+        
+        // Only print name if it's not auto-generated
+        if (!isAutoGeneratedName && netName.length() > 0 && state.connections.nets[i].name[0] != '\0') {
+            output += ", name: \"" + netName + "\"";
+        }
+        
+        // Only print user flag if true
+        if (userAssigned) {
+            output += ", user: true";
+        }
+        
+        // Only print anim flag if true
+        if (animated) {
+            output += ", anim: true";
+        }
+        
+        output += "}\n";
     }
-    output += "\n\r";
+    output += "\n";
 }
 
 bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg) {
-    // Parse net entry: - {num: 6, name: "Signal A", color: 0xFF0000}
+    // Parse net entry: - {num: 6, nodes: [TOP_RAIL, NANO_D5], color: red, user: true, anim: false, name: "Power"}
     String line = String(yamlContent);
     line.trim();
     
     int netNum = -1;
     String netName = "";
-    uint32_t rawColor = 0;
+    String colorStr = "";
+    bool userAssigned = false;
+    bool animated = false;
     
+    // Parse num field
     int numIdx = line.indexOf("num:");
     if (numIdx >= 0) {
         int commaIdx = line.indexOf(',', numIdx);
@@ -832,6 +1066,42 @@ bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg)
         netNum = val.toInt();
     }
     
+    // Parse nodes field (we don't use this for loading, just for reference)
+    // The bridges define the actual connections
+    
+    // Parse color field (can be name or hex)
+    int colorIdx = line.indexOf("color:");
+    if (colorIdx >= 0) {
+        int endIdx = line.indexOf(',', colorIdx);
+        if (endIdx == -1) endIdx = line.indexOf('}', colorIdx);
+        String val = line.substring(colorIdx + 6, endIdx);
+        val.trim();
+        colorStr = val;
+    }
+    
+    // Parse user field
+    int userIdx = line.indexOf("user:");
+    if (userIdx >= 0) {
+        int endIdx = line.indexOf(',', userIdx);
+        if (endIdx == -1) endIdx = line.indexOf('}', userIdx);
+        String val = line.substring(userIdx + 5, endIdx);
+        val.trim();
+        bool parseSuccess;
+        userAssigned = parseBoolean(val, parseSuccess);
+    }
+    
+    // Parse anim field
+    int animIdx = line.indexOf("anim:");
+    if (animIdx >= 0) {
+        int endIdx = line.indexOf(',', animIdx);
+        if (endIdx == -1) endIdx = line.indexOf('}', animIdx);
+        String val = line.substring(animIdx + 5, endIdx);
+        val.trim();
+        bool parseSuccess;
+        animated = parseBoolean(val, parseSuccess);
+    }
+    
+    // Parse name field (optional)
     int nameIdx = line.indexOf("name:");
     if (nameIdx >= 0) {
         int startQuote = line.indexOf('"', nameIdx);
@@ -841,23 +1111,26 @@ bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg)
         }
     }
     
-    int colorIdx = line.indexOf("color:");
-    if (colorIdx >= 0) {
-        int endIdx = line.indexOf('}', colorIdx);
-        if (endIdx == -1) endIdx = line.length();
-        String val = line.substring(colorIdx + 6, endIdx);
-        val.trim();
-        if (val.startsWith("0x") || val.startsWith("0X")) {
-            rawColor = strtoul(val.c_str() + 2, NULL, 16);
-        }
-    }
-    
-    if (netNum >= 0) {
+    // Only store color if it was user-assigned
+    // Auto-generated colors will be recomputed
+    if (netNum >= 0 && userAssigned && colorStr.length() > 0) {
+        bool parseSuccess;
+        uint32_t rawColor = parseColorValue(colorStr, parseSuccess);
+        
+        if (parseSuccess) {
             rgbColor color;
-        color.r = (rawColor >> 16) & 0xFF;
-        color.g = (rawColor >> 8) & 0xFF;
-        color.b = rawColor & 0xFF;
-        display.setNetColor(netNum, color, rawColor, netName.c_str());
+            color.r = (rawColor >> 16) & 0xFF;
+            color.g = (rawColor >> 8) & 0xFF;
+            color.b = rawColor & 0xFF;
+            
+            // Use color name if available, otherwise use parsed name
+            String colorName = colorValueToName(rawColor);
+            if (netName.length() > 0) {
+                colorName = netName;
+            }
+            
+            display.setNetColor(netNum, color, rawColor, colorName.c_str());
+        }
     }
     
     return true;
@@ -912,7 +1185,7 @@ void JumperlessState::serializeConfig(String& output) const {
     
     // GPIO direction array
     output += "  gpio:\n";
-    output += "    direction: [";
+    output += "    direction:    [";
     for (int i = 0; i < 10; i++) {
         output += String(config.gpioDirection[i]);
         if (i < 9) output += ",";
@@ -920,7 +1193,7 @@ void JumperlessState::serializeConfig(String& output) const {
     output += "]\n";
     
     // GPIO pulls array
-    output += "    pulls: [";
+    output += "    pulls:        [";
     for (int i = 0; i < 10; i++) {
         output += String(config.gpioPulls[i]);
         if (i < 9) output += ",";
@@ -938,15 +1211,15 @@ void JumperlessState::serializeConfig(String& output) const {
     // PWM duty cycle array
     output += "    pwmDutyCycle: [";
     for (int i = 0; i < 10; i++) {
-        output += String(config.gpioPwmDutyCycle[i], 3);
+        output += String(config.gpioPwmDutyCycle[i], 2);
         if (i < 9) output += ",";
     }
     output += "]\n";
     
     // PWM enabled array
-    output += "    pwmEnabled: [";
+    output += "    pwmEnabled:   [";
     for (int i = 0; i < 10; i++) {
-        output += String(config.gpioPwmEnabled[i] ? "true" : "false");
+        output += String(config.gpioPwmEnabled[i] ? "1" : "0");
         if (i < 9) output += ",";
     }
     output += "]\n";
@@ -1081,7 +1354,8 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
                 if (commaIdx == -1) commaIdx = arrayStr.length();
                 String val = arrayStr.substring(pos, commaIdx);
                 val.trim();
-                config.gpioPwmEnabled[idx++] = (val == "true");
+                bool parseSuccess;
+                config.gpioPwmEnabled[idx++] = parseBoolean(val, parseSuccess);
                 pos = commaIdx + 1;
             }
         }
@@ -1111,7 +1385,8 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
             int commaIdx = line.indexOf(',', connectedIdx);
             String val = line.substring(connectedIdx + 10, commaIdx);
             val.trim();
-            config.oledConnected = (val == "true");
+            bool parseSuccess;
+            config.oledConnected = parseBoolean(val, parseSuccess);
         }
         
         int lockIdx = line.indexOf("lockConnection:");
@@ -1119,11 +1394,181 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
             int endIdx = line.indexOf('}', lockIdx);
             String val = line.substring(lockIdx + 15, endIdx);
             val.trim();
-            config.oledLockConnection = (val == "true");
+            bool parseSuccess;
+            config.oledLockConnection = parseBoolean(val, parseSuccess);
         }
     }
     
     return true;
+}
+
+// ============================================================================
+// YAML Parsing Helpers - Handle Aliases and Variations
+// ============================================================================
+
+/**
+ * @brief Parse node name with alias support
+ * Accepts variations like: TOP_RAIL, topRail, t_rAiL, 101
+ * Returns the defined integer value or -1 if not found
+ */
+int parseNodeName(const String& nodeName) {
+    String normalized = nodeName;
+    normalized.trim();
+    normalized.toUpperCase();
+    normalized.replace(" ", "_");
+    
+    // Try to parse as integer first
+    if (normalized.length() > 0 && (isdigit(normalized.charAt(0)) || normalized.charAt(0) == '-')) {
+        int val = normalized.toInt();
+        if (val >= 0 && val <= 200) {  // Valid node range
+            return val;
+        }
+    }
+    
+    // Search through nano defines
+    extern const DefineInfo nanoDefines[];
+    // Count elements in nanoDefines - it has 35 elements based on the defNanoToCharShort array
+    const int numNanoDefines = 35;
+    for (int i = 0; i < numNanoDefines; i++) {
+        String longName = String(nanoDefines[i].longName);
+        String shortName = String(nanoDefines[i].shortName);
+        longName.toUpperCase();
+        shortName.toUpperCase();
+        
+        if (normalized == longName || normalized == shortName) {
+            return nanoDefines[i].defineValue;
+        }
+    }
+    
+    // Search through special defines
+    extern const DefineInfo specialDefines[];
+    // Count elements in specialDefines - it has 49 elements based on the defSpecialToCharShort array
+    const int numSpecialDefines = 49;
+    for (int i = 0; i < numSpecialDefines; i++) {
+        String longName = String(specialDefines[i].longName);
+        String shortName = String(specialDefines[i].shortName);
+        longName.toUpperCase();
+        shortName.toUpperCase();
+        
+        if (normalized == longName || normalized == shortName) {
+            return specialDefines[i].defineValue;
+        }
+    }
+    
+    // Handle common variations not in the arrays
+    if (normalized == "TOPRAIL" || normalized == "T_R" || normalized == "TOP_R") return TOP_RAIL;
+    if (normalized == "BOTTOMRAIL" || normalized == "BOTRAIL" || normalized == "B_R" || normalized == "BOT_R") return BOTTOM_RAIL;
+    if (normalized == "GROUND") return GND;
+    if (normalized == "3V3" || normalized == "3.3V") return SUPPLY_3V3;
+    if (normalized == "5V" || normalized == "+5V") return SUPPLY_5V;
+    
+    return -1;  // Not found
+}
+
+/**
+ * @brief Convert node value back to canonical string name
+ * Returns the long form name (e.g., TOP_RAIL)
+ */
+String nodeValueToString(int nodeValue) {
+    // Use the existing definesToChar function to get the long name
+    const char* name = definesToChar(nodeValue, 1);  // 1 = long name
+    if (name != nullptr && strlen(name) > 0) {
+        String result = String(name);
+        result.trim();
+        return result;
+    }
+    
+    // Fallback to number if name not found
+    return String(nodeValue);
+}
+
+/**
+ * @brief Parse color value from name or hex
+ * Accepts: "red", "0xFF0000", "16711680"
+ * Returns uint32_t color value
+ */
+uint32_t parseColorValue(const String& colorStr, bool& success) {
+    String normalized = colorStr;
+    normalized.trim();
+    normalized.toLowerCase();
+    
+    success = true;
+    
+    // Try hex format first
+    if (normalized.startsWith("0x")) {
+        return strtoul(normalized.c_str() + 2, NULL, 16);
+    }
+    
+    // Try decimal number
+    if (normalized.length() > 0 && isdigit(normalized.charAt(0))) {
+        return normalized.toInt();
+    }
+    
+    // Search through named colors
+    int numColors = sizeof(namedColors) / sizeof(namedColors[0]);
+    for (int i = 0; i < numColors; i++) {
+        String colorName = String(namedColors[i].name);
+        colorName.trim();
+        colorName.toLowerCase();
+        
+        if (normalized == colorName) {
+            return namedColors[i].dimColor;  // Use dimColor for LED display
+        }
+    }
+    
+    // Not found
+    success = false;
+    return 0x000000;
+}
+
+/**
+ * @brief Get color name from value
+ * Returns the canonical name from namedColors[]
+ */
+String colorValueToName(uint32_t color) {
+    // Use existing colorToName function
+    char* name = colorToName(color, -1);
+    if (name != nullptr) {
+        String result = String(name);
+        result.trim();
+        return result;
+    }
+    return "0x" + String(color, HEX);
+}
+
+/**
+ * @brief Parse boolean with aliases
+ * Accepts: true/false, 1/0, on/off, yes/no, enabled/disabled
+ */
+bool parseBoolean(const String& val, bool& success) {
+    String normalized = val;
+    normalized.trim();
+    normalized.toLowerCase();
+    
+    success = true;
+    
+    // True values
+    if (normalized == "true" || normalized == "1" || normalized == "on" || 
+        normalized == "yes" || normalized == "enabled") {
+        return true;
+    }
+    
+    // False values
+    if (normalized == "false" || normalized == "0" || normalized == "off" || 
+        normalized == "no" || normalized == "disabled") {
+        return false;
+    }
+    
+    // Invalid
+    success = false;
+    return false;
+}
+
+/**
+ * @brief Convert boolean to canonical string
+ */
+String booleanToString(bool value) {
+    return value ? "true" : "false";
 }
 
 // ============================================================================
@@ -1312,6 +1757,35 @@ String SlotManager::getJSONSlotFilename(int slotNum) const {
     return "/slots/slot" + String(slotNum) + ".json";
 }
 
+// Helper function to extract slot number from filename
+// Returns -1 if not a slot file
+static int extractSlotNumberFromFilename(const char* filename) {
+    if (!filename) return -1;
+    
+    // Check if filename matches pattern "/slots/slotN.yaml"
+    String fname(filename);
+    if (!fname.startsWith("/slots/slot") || !fname.endsWith(".yaml")) {
+        return -1;
+    }
+    
+    // Extract number between "slot" and ".yaml"
+    int slotStart = fname.indexOf("slot") + 4;
+    int yamlStart = fname.indexOf(".yaml");
+    if (slotStart < 4 || yamlStart <= slotStart) {
+        return -1;
+    }
+    
+    String numStr = fname.substring(slotStart, yamlStart);
+    int slotNum = numStr.toInt();
+    
+    // Validate it's a valid slot number
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+        return -1;
+    }
+    
+    return slotNum;
+}
+
 bool SlotManager::slotExists(int slotNum) const {
     if (slotNum < 0 || slotNum >= NUM_SLOTS) {
         return false;
@@ -1363,13 +1837,21 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
         // Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
         // Serial.flush();
         
-        // Apply loaded state to hardware (power, GPIO, etc.)
-        // BUT skip hardware application if we're in preview mode (just viewing, not applying)
+        // Compute nets from bridges and commit to hardware
+        // refreshLocalConnections does: loadBridgesFromState, getNodesToConnect, 
+        // bridgesToPaths, commitPaths, sendPaths, and LED updates
+        extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
+        refreshConnections(-1, 1, 0);  // Update connections, show LEDs, clean commit
+        
+        // In normal mode (not preview), also apply DAC/GPIO settings
         if (!previewModeActive) {
-            applyStateToHardware();
+            applyStateToHardware();  // Apply power rails and GPIO configs
+            if (debugFP) {
+                Serial.println("  ✓ Applied state to hardware (connections, LEDs, power, GPIO)");
+            }
         } else {
             if (debugFP) {
-                Serial.println("  (Preview mode - hardware not modified)");
+                Serial.println("  ✓ Preview mode - connections and LEDs updated (power/GPIO unchanged)");
             }
         }
         
@@ -1526,6 +2008,16 @@ bool SlotManager::ensureSlotExists(int slotNum) {
 bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
     String filename = getSlotFilename(slotNum);
     
+    extern bool mscModeEnabled;
+    if (mscModeEnabled && debugUSB) {
+        Serial.print("USB: readSlotFile() called for slot ");
+        Serial.print(slotNum);
+        Serial.print(" (");
+        Serial.print(filename);
+        Serial.println(")");
+        Serial.flush();
+    }
+    
     // Detect which core we're running on and synchronize appropriately
     uint coreNum = get_core_num();
     
@@ -1554,9 +2046,26 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         core2busy = true;
     }
     
+    if (mscModeEnabled && debugUSB) {
+        Serial.println("USB: Core sync acquired, attempting to open file...");
+        Serial.flush();
+    }
+    
+    // CRITICAL: In USB mode, add extra delay before opening
+    // NOTE: We don't sync here because we already synced before f_stat in the caller.
+    // Multiple rapid disk_ioctl(CTRL_SYNC) calls cause crashes.
+    if (mscModeEnabled && debugUSB) {
+        delay(50);
+    }
+    
     File file = FatFS.open(filename.c_str(), "r");
     if (!file) {
         errorMsg = "Failed to open slot file: " + filename;
+        if (mscModeEnabled && debugUSB) {
+            Serial.print("USB: ✗ Failed to open file: ");
+            Serial.println(errorMsg);
+            Serial.flush();
+        }
         if (coreNum == 0) {
             core1busy = false;
         } else {
@@ -1565,12 +2074,43 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         return false;
     }
     
+    if (mscModeEnabled && debugUSB) {
+        Serial.println("USB: File opened successfully, reading content...");
+        Serial.flush();
+    }
+    
     content = "";
-    while (file.available()) {
-        content += (char)file.read();
+    size_t bytesRead = 0;
+    const size_t maxBytes = 65536;  // 64KB safety limit
+    
+    while (file.available() && bytesRead < maxBytes) {
+        int c = file.read();
+        if (c >= 0) {
+            content += (char)c;
+            bytesRead++;
+        } else {
+            // Read error
+            if (mscModeEnabled && debugUSB) {
+                Serial.println("USB: ⚠ Read error during file read");
+                Serial.flush();
+            }
+            break;
+        }
+    }
+    
+    if (mscModeEnabled && debugUSB) {
+        Serial.print("USB: Read ");
+        Serial.print(bytesRead);
+        Serial.println(" bytes, closing file...");
+        Serial.flush();
     }
     
     file.close();
+    
+    if (mscModeEnabled && debugUSB) {
+        Serial.println("USB: File closed successfully");
+        Serial.flush();
+    }
     
     if (coreNum == 0) {
         core1busy = false;
@@ -2054,5 +2594,491 @@ void printStateBackupInfo(void) {
     Serial.println("  Memory saved:    " + String(savings) + " bytes (" + String(savingsPercent, 1) + "%)");
     
     Serial.println("═══════════════════════════════\n");
+}
+
+/**
+ * @brief Service method for auto-saving dirty state
+ * 
+ * This handles automatic state persistence after modifications.
+ * Called periodically by the ServiceManager in the main loop.
+ * 
+ * IMPORTANT USB BEHAVIOR:
+ * - When USB is mounted: Allows READ operations (for live file monitoring)
+ *                        Blocks WRITE operations (host has exclusive write access)
+ * - When USB is not mounted: Normal operation (both read and write)
+ * 
+ * This enables live updates when host edits files while preventing corruption.
+ */
+ServiceStatus SlotManager::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    extern bool usbMountedByHost;
+    extern bool usbFilesystemBusy;
+    extern bool mscModeEnabled;
+    extern bool debugUSB;
+    
+    // ============================================================================
+    // FAST PATH: Early exit when there's absolutely nothing to do
+    // This makes the common case extremely fast (< 1 microsecond)
+    // ============================================================================
+    
+    // Check if we have any work to do (ordered by likelihood)
+    bool hasDirtyState = activeState.isDirty();
+    bool hasEditorOpen = (ekilo_get_currently_editing_file() != nullptr);
+    bool inPreviewMode = previewModeActive;
+    bool usbModeActive = mscModeEnabled;  // Need to monitor files when USB mode is active
+    
+    // FAST EXIT: If nothing is dirty, no editor is open, not in preview mode, and USB mode is off
+    // We need to keep monitoring when USB is active for external file changes from host
+    if (!hasDirtyState && !hasEditorOpen && !inPreviewMode && !usbModeActive) {
+        return ServiceStatus::IDLE;  // Ultra-fast return for the common case
+    }
+    
+    // Debug output (only when we're actually doing work)
+    static unsigned long lastServiceDebug = 0;
+    if (mscModeEnabled && debugUSB && (millis() - lastServiceDebug > 2000)) {
+        Serial.println("◆ SlotManager::service() - active work detected");
+        Serial.flush();
+        lastServiceDebug = millis();
+    }
+    
+    // Mark that we're about to do filesystem operations (if we're doing file work)
+    // This prevents host from mounting mid-operation via driveReady callback
+    if (hasEditorOpen || usbModeActive) {
+        usbFilesystemBusy = true;
+    }
+    
+    static unsigned long lastFileCheckTime = 0;
+    static unsigned long lastFileModTime = 0;
+    static int lastEditingSlotNumber = -1;  // Track which slot is being edited
+    
+    // Get editor state once at the start (used by multiple sections below)
+    const char* currentlyEditing = hasEditorOpen ? ekilo_get_currently_editing_file() : nullptr;
+    int editingSlotNumber = extractSlotNumberFromFilename(currentlyEditing);
+    
+    // ============================================================================
+    // PREVIEW MODE MANAGEMENT: Only run if editor is open or already in preview mode
+    // ============================================================================
+    if (hasEditorOpen || inPreviewMode) {
+        
+        // Handle preview mode state transitions
+        if (editingSlotNumber >= 0) {
+            // A slot file is being edited
+            if (!previewModeActive) {
+                // Enter preview mode
+                Serial.print("Slot ");
+                Serial.print(editingSlotNumber);
+                Serial.println(" opened in editor - entering preview mode");
+                
+                String errorMsg;
+                if (enterPreviewMode(editingSlotNumber, errorMsg)) {
+                    lastEditingSlotNumber = editingSlotNumber;
+                    lastFileModTime = 0;  // Reset to trigger initial load
+                } else {
+                    Serial.print("Failed to enter preview mode: ");
+                    Serial.println(errorMsg);
+                }
+            }
+        } else {
+            // No slot file is being edited
+            if (previewModeActive && lastEditingSlotNumber >= 0) {
+                // Exit preview mode (user closed editor without applying)
+                Serial.print("Editor closed - exiting preview mode for slot ");
+                Serial.println(lastEditingSlotNumber);
+                
+                String errorMsg;
+                exitPreview(false, errorMsg);  // Don't apply changes
+                lastEditingSlotNumber = -1;
+                lastFileModTime = 0;  // Reset for next edit
+            }
+        }
+    }
+    
+    // ============================================================================
+    // FILE MONITORING: Only check files if editor is open, in preview mode, or USB mode is active
+    // This is the most expensive operation, so we skip it when not needed
+    // ============================================================================
+    unsigned long timeSinceLastFileCheck = millis() - lastFileCheckTime;
+    
+    // OPTIMIZATION: Only monitor files when we have a reason to:
+    // - Editor is open (internal editing)
+    // - Preview mode is active (viewing changes)
+    // - USB mode is active (host may be editing files externally)
+    // This avoids ~60 f_stat() calls per minute during normal standalone operation
+    bool shouldMonitorFiles = (hasEditorOpen || inPreviewMode || usbModeActive);
+    
+    if (mscModeEnabled && debugUSB && shouldMonitorFiles && timeSinceLastFileCheck > 5000) {
+        Serial.print("USB: ⚠ File check interval: ");
+        Serial.print(timeSinceLastFileCheck);
+        Serial.println("ms (should be ~1000ms)");
+        Serial.flush();
+    }
+    
+    if (shouldMonitorFiles && timeSinceLastFileCheck > 1000) {
+        lastFileCheckTime = millis();
+        
+        if (mscModeEnabled && debugUSB) {
+            Serial.println("USB: ▶ File check cycle starting");
+            Serial.flush();
+        }
+        
+        // Determine which slot to monitor
+        int slotToMonitor = netSlot;
+        bool useEditorBuffer = false;
+        
+        if (mscModeEnabled && debugUSB) {
+            Serial.print("USB:   netSlot=");
+            Serial.print(netSlot);
+            Serial.print(", activeSlotNumber=");
+            Serial.print(activeSlotNumber);
+            Serial.print(", previewMode=");
+            Serial.println(previewModeActive ? "true" : "false");
+            Serial.flush();
+        }
+        
+        if (previewModeActive && editingSlotNumber >= 0) {
+            // In preview mode - monitor the editor buffer or file
+            slotToMonitor = editingSlotNumber;
+            useEditorBuffer = (currentlyEditing != nullptr);  // Use buffer if editor is open
+        } else if (!activeState.isDirty() && activeSlotNumber >= 0) {
+            // Normal mode - monitor active slot file if no unsaved changes
+            slotToMonitor = activeSlotNumber;
+            useEditorBuffer = false;
+        }
+        
+        if (mscModeEnabled && debugUSB) {
+            Serial.print("USB:   Monitoring slot ");
+            Serial.print(slotToMonitor);
+            Serial.print(", useEditorBuffer=");
+            Serial.println(useEditorBuffer ? "true" : "false");
+            Serial.flush();
+        }
+        
+        if (slotToMonitor >= 0) {
+            static String lastBufferContent = "";  // Track last buffer content
+            static unsigned long lastReloadTime = 0;  // Debounce reload operations
+            static bool reloadInProgress = false;  // Prevent concurrent reloads
+            const unsigned long RELOAD_COOLDOWN = 500; // Wait 500ms between reloads
+            bool contentChanged = false;
+            String newContent;
+            
+            // CRITICAL: If a reload is already in progress, skip this cycle
+            // This prevents cascading reloads that can cause crashes
+            if (reloadInProgress) {
+                if (mscModeEnabled && debugUSB && (millis() - lastReloadTime > 5000)) {
+                    Serial.println("USB: ⚠ Reload still in progress after 5s - forcing reset");
+                    reloadInProgress = false;  // Force reset after timeout
+                }
+                return ServiceStatus::BUSY;
+            }
+            
+            if (useEditorBuffer) {
+                // Get content directly from editor buffer (unsaved changes)
+                extern String ekilo_get_current_buffer_content();
+                newContent = ekilo_get_current_buffer_content();
+                
+                // Check if buffer content changed
+                if (newContent != lastBufferContent) {
+                    contentChanged = true;
+                    lastBufferContent = newContent;
+                }
+            } else {
+                // Get file modification time (saved changes)
+                if (mscModeEnabled && debugUSB) {
+                    Serial.println("USB:   Getting filename for slot...");
+                    Serial.flush();
+                }
+                
+                String filename = getSlotFilename(slotToMonitor);
+                
+                if (mscModeEnabled && debugUSB) {
+                    Serial.print("USB:   Filename: ");
+                    Serial.println(filename);
+                    Serial.println("USB:   Checking f_stat (no sync yet to avoid filesystem strain)...");
+                    Serial.flush();
+                }
+                
+                // OPTIMIZATION: Check file mod time WITHOUT syncing first
+                // We only sync if we detect a change. This dramatically reduces
+                // disk_ioctl(CTRL_SYNC) calls from ~60/minute to only when files change.
+                // Excessive SYNC calls cause filesystem crashes after many operations.
+                
+                fatfs::FILINFO fno;
+                memset(&fno, 0, sizeof(fno));  // Zero out structure for safety
+                
+                fatfs::FRESULT stat_result = fatfs::f_stat(filename.c_str(), &fno);
+                
+                if (mscModeEnabled && debugUSB) {
+                    Serial.print("USB:   f_stat returned: ");
+                    Serial.println(stat_result);
+                    Serial.flush();
+                }
+                
+                if (stat_result == fatfs::FR_OK) {
+                    unsigned long fileModTime = ((unsigned long)fno.fdate << 16) | fno.ftime;
+                    
+                    if (lastFileModTime == 0) {
+                        // First time - just record the time
+                        lastFileModTime = fileModTime;
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.print("USB: Initial mod time for ");
+                            Serial.print(filename);
+                            Serial.print(" = ");
+                            Serial.println(fileModTime, HEX);
+                        }
+                    } else if (fileModTime != lastFileModTime) {
+                        // Potential change detected! Try to sync and re-check to confirm
+                        // BUT: disk_ioctl(CTRL_SYNC) can crash after many operations in USB mode
+                        // So we make it optional - if it fails, we still proceed with the reload
+                        
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.println("USB: Potential file change detected - attempting sync...");
+                            Serial.flush();
+                        }
+                        
+                        delay(150);  // Let host finish writing
+                        
+                        // Track sync failures to avoid repeated crashes
+                        static int consecutiveSyncFailures = 0;
+                        const int MAX_SYNC_FAILURES = 3;
+                        bool syncSucceeded = false;
+                        
+                        // Only attempt sync if we haven't had too many recent failures
+                        if (consecutiveSyncFailures < MAX_SYNC_FAILURES) {
+                            // Attempt sync with basic error detection
+                            // Note: disk_ioctl may crash instead of returning error, but we try
+                            fatfs::DRESULT sync_result = fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
+                            
+                            if (sync_result == fatfs::RES_OK) {
+                                __sync_synchronize();  // Memory barrier
+                                syncSucceeded = true;
+                                consecutiveSyncFailures = 0;  // Reset on success
+                                
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.println("USB: Sync succeeded");
+                                    Serial.flush();
+                                }
+                            } else {
+                                consecutiveSyncFailures++;
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.print("USB: ⚠ Sync failed with code ");
+                                    Serial.print(sync_result);
+                                    Serial.print(" (failure #");
+                                    Serial.print(consecutiveSyncFailures);
+                                    Serial.println(")");
+                                    Serial.flush();
+                                }
+                            }
+                        } else {
+                            if (mscModeEnabled && debugUSB) {
+                                Serial.println("USB: ⚠ Skipping sync (too many recent failures)");
+                                Serial.flush();
+                            }
+                        }
+                        
+                        // Re-check file mod time (even if sync failed)
+                        memset(&fno, 0, sizeof(fno));
+                        stat_result = fatfs::f_stat(filename.c_str(), &fno);
+                        
+                        if (stat_result == fatfs::FR_OK) {
+                            unsigned long confirmedModTime = ((unsigned long)fno.fdate << 16) | fno.ftime;
+                            
+                            if (confirmedModTime != lastFileModTime) {
+                                // Change confirmed! Proceed with reload even if sync failed
+                                contentChanged = true;
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.print("USB: File change confirmed");
+                                    if (!syncSucceeded) {
+                                        Serial.print(" (without sync)");
+                                    }
+                                    Serial.print("! ");
+                                    Serial.print(filename);
+                                    Serial.print(" old=");
+                                    Serial.print(lastFileModTime, HEX);
+                                    Serial.print(" new=");
+                                    Serial.println(confirmedModTime, HEX);
+                                }
+                                lastFileModTime = confirmedModTime;
+                                lastBufferContent = "";  // Clear buffer cache
+                            } else {
+                                // False alarm - mod time returned to original
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.println("USB: False alarm - file unchanged");
+                                }
+                            }
+                        } else {
+                            if (mscModeEnabled && debugUSB) {
+                                Serial.print("USB: Re-check f_stat failed: ");
+                                Serial.println(stat_result);
+                            }
+                        }
+                    }
+                    // If fileModTime == lastFileModTime, no change, no sync needed
+                } else {
+                    // File stat failed - might be mid-write by host
+                    if (mscModeEnabled && debugUSB) {
+                        Serial.print("USB: f_stat failed with error ");
+                        Serial.print(stat_result);
+                        Serial.println(" - file might be locked by host, will retry");
+                    }
+                    // Don't mark as changed, just skip this check cycle
+                    contentChanged = false;
+                }
+            }
+            
+            // Reload if content changed AND we're past the cooldown period
+            if (contentChanged && (millis() - lastReloadTime > RELOAD_COOLDOWN)) {
+                // Mark reload as in progress to prevent concurrent operations
+                reloadInProgress = true;
+                lastReloadTime = millis();
+                String errorMsg;
+                
+                if (mscModeEnabled && debugUSB) {
+                    Serial.println("USB: Starting file reload...");
+                }
+                
+                if (useEditorBuffer && newContent.length() > 0) {
+                    // Parse YAML directly from editor buffer
+                    if (activeState.fromYAML(newContent, errorMsg)) {
+                        // Compute nets and refresh hardware
+                        extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
+                        refreshConnections(-1, 1, 0);
+                        lastStatus = ServiceStatus::BUSY;
+                        
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.println("USB: ✓ Buffer reload complete");
+                        }
+                    } else {
+                        // Parse error - don't spam, just skip this update
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.print("USB: ✗ Parse error: ");
+                            Serial.println(errorMsg);
+                        }
+                        lastStatus = ServiceStatus::IDLE;
+                    }
+                } else {
+                    // Load from disk (normal file change or save)
+                    // Add small delay to ensure host has finished writing
+                    if (mscModeEnabled && debugUSB) {
+                        Serial.println("USB: About to reload file - delaying 100ms for host write completion");
+                        Serial.flush();
+                        delay(100);  // Give host time to finish write
+                        // NOTE: We already called disk_ioctl(CTRL_SYNC) before f_stat above,
+                        // so we don't need to sync again here. Calling it twice in quick succession
+                        // causes crashes during the second reload.
+                        Serial.println("USB: Calling loadSlot()...");
+                        Serial.flush();
+                    }
+                    
+                    // Defensive: Check slot number is valid before attempting load
+                    if (slotToMonitor < 0 || slotToMonitor >= NUM_SLOTS) {
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.print("USB: ✗ Invalid slot number: ");
+                            Serial.println(slotToMonitor);
+                        }
+                        lastStatus = ServiceStatus::ERROR;
+                    } else if (loadSlot(slotToMonitor, errorMsg)) {
+                        if (!previewModeActive) {
+                            Serial.print("✓ Slot ");
+                            Serial.print(slotToMonitor);
+                            Serial.println(" reloaded from disk");
+                        }
+                        lastStatus = ServiceStatus::BUSY;
+                        
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.println("USB: ✓ File reload complete");
+                            Serial.flush();
+                        }
+                    } else {
+                        if (!previewModeActive || mscModeEnabled) {
+                            Serial.print("✗ Failed to reload slot: ");
+                            Serial.println(errorMsg);
+                            Serial.flush();
+                        }
+                        lastStatus = ServiceStatus::ERROR;
+                        
+                        // Reset file mod time on error to force retry next cycle
+                        lastFileModTime = 0;
+                    }
+                }
+                
+                // Clear reload in progress flag
+                reloadInProgress = false;
+                
+            } else if (contentChanged && (millis() - lastReloadTime <= RELOAD_COOLDOWN)) {
+                // Change detected but we're in cooldown period
+                if (mscModeEnabled && debugUSB) {
+                    Serial.println("USB: Change detected but in cooldown period - will reload next cycle");
+                }
+            }
+        }
+    }
+    
+    // ============================================================================
+    // AUTO-SAVE: Only runs if state is dirty and USB is not mounted
+    // This section was already optimized with the early exit check above
+    // ============================================================================
+    if (hasDirtyState && !usbMountedByHost) {
+        unsigned long timeSinceModified = millis() - activeState.getLastModifiedTime();
+        if (timeSinceModified > 1000) {  // 2 second delay after last modification
+            if (debugWaitLoopTiming) {
+                Serial.printf("DEBUG: Auto-save triggered (dirty for %lu ms)\n", timeSinceModified);
+            }
+            
+            String errorMsg;
+            
+            // Ensure we're using the current slot (sync with netSlot)
+            syncFromGlobalNetSlot();
+            
+            // saveSlot will handle core synchronization and clearDirty
+            if (saveSlot(activeSlotNumber, errorMsg)) {
+                // Successfully auto-saved
+                lastStatus = ServiceStatus::BUSY;
+                if (debugWaitLoopTiming) {
+                    Serial.printf("DEBUG: Auto-save completed\n");
+                }
+                
+                // Update file mod time after save
+                String filename = getSlotFilename(activeSlotNumber);
+                fatfs::FILINFO fno;
+                if (fatfs::f_stat(filename.c_str(), &fno) == fatfs::FR_OK) {
+                    lastFileModTime = ((unsigned long)fno.fdate << 16) | fno.ftime;
+                }
+            } else {
+                // Don't clear dirty on failure - retry on next loop
+                Serial.print("✗ Auto-save failed (slot ");
+                Serial.print(activeSlotNumber);
+                Serial.print("): ");
+                Serial.println(errorMsg);
+                lastStatus = ServiceStatus::ERROR;
+            }
+        }
+    } else if (hasDirtyState && usbMountedByHost) {
+        // Dirty state exists but can't save while USB is mounted
+        // This is normal - we'll save when USB is unmounted
+        if (debugWaitLoopTiming) {
+            static unsigned long lastUsbBlockMsg = 0;
+            if (millis() - lastUsbBlockMsg > 5000) {  // Print every 5 seconds
+                Serial.println("DEBUG: Auto-save blocked - USB mounted by host");
+                lastUsbBlockMsg = millis();
+            }
+        }
+    }
+    
+    // Clear busy flag to allow host mounting if requested (only if we set it)
+    if (hasEditorOpen || usbModeActive) {
+        usbFilesystemBusy = false;
+    }
+    
+    if (mscModeEnabled && debugUSB) {
+        static unsigned long lastServiceCompleteDebug = 0;
+        if (millis() - lastServiceCompleteDebug > 5000) {
+            Serial.println("◆ SlotManager::service() completed normally");
+            Serial.flush();
+            lastServiceCompleteDebug = millis();
+        }
+    }
+    
+    return lastStatus;
 }
 

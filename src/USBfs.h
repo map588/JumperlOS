@@ -25,6 +25,8 @@
 
 
 extern bool mscModeEnabled;
+extern bool usbMountedByHost;   // True when host has mounted - device MUST NOT access filesystem
+extern bool usbFilesystemBusy;  // True when device is accessing filesystem - host must wait
 
 // USB debug mode control
 extern bool usb_debug_enabled;

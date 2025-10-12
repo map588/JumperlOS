@@ -18,6 +18,9 @@ extern class oled oled;
 // eKilo editor integration
 #include "EkiloEditor.h"
 
+// States integration for slot file preview
+#include "States.h"
+
 // Global flag to signal return to main menu after editing
 static bool returnToMainMenu = false;
 
@@ -1098,6 +1101,10 @@ void FileManager::run( ) {
             running = false;
             break;
         }
+        
+        // Call SlotManager service for file change detection
+        // This ensures slot files update immediately when we return from editor
+        SlotManager::getInstance().service();
 
         // Process any pending OLED updates
         processOLEDUpdate( );
@@ -1138,13 +1145,13 @@ void FileManager::run( ) {
             lastEncoderButtonState = encoderButtonState;
         }
 
-        // Check if input is blocked (except Ctrl+Q)
+        // Check if input is blocked (except Ctrl+Q and ESC)
         char input = 0;
         if ( Serial.available( ) ) {
             char c = Serial.peek( ); // Look at next character without reading it
 
-            // Allow Ctrl+Q through even during input blocking
-            if ( c == 17 || !isInputBlocked( ) ) { // Ctrl+Q or not blocked
+            // Allow Ctrl+Q and ESC through even during input blocking
+            if ( c == 17 || c == 27 || !isInputBlocked( ) ) { // Ctrl+Q, ESC, or not blocked
                 input = Serial.read( );
                 lastInputTime = micros( ); // Record input time for any serial input
                 scheduleOLEDUpdate( );     // Schedule OLED update for any input
@@ -1305,7 +1312,13 @@ void FileManager::run( ) {
             break;
         }
 
-        case 27: { // Escape sequence (arrow keys)
+        case 27: { // ESC key or escape sequence (arrow keys)
+            // Wait briefly to see if this is an escape sequence or standalone ESC
+
+            if ( Serial.available( ) == 0 ) {
+            delayMicroseconds( 5000 ); // 5ms delay to wait for escape sequence
+            }
+            
             if ( Serial.available( ) ) {
                 char seq1 = Serial.read( );
                 if ( seq1 == '[' && Serial.available( ) ) {
@@ -1317,6 +1330,32 @@ void FileManager::run( ) {
                     case 'B':
                         moveSelection( 1 );
                         break; // Down arrow
+                    }
+                } else {
+                    // Not a recognized escape sequence, treat as standalone ESC
+                    if ( currentPath == "/" ) {
+                        // At root - exit file manager
+                        closeAllFiles( );
+                        running = false;
+                    } else {
+                        // Not at root - go up a directory
+                        if ( goUp( ) ) {
+                            drawInterface( );     // Redraw entire interface
+                            blockInputBriefly( ); // Block input after interface refresh
+                        }
+                    }
+                }
+            } else {
+                // No data following ESC - standalone ESC key press
+                if ( currentPath == "/" ) {
+                    // At root - exit file manager
+                    closeAllFiles( );
+                    running = false;
+                } else {
+                    // Not at root - go up a directory
+                    if ( goUp( ) ) {
+                        drawInterface( );     // Redraw entire interface
+                        blockInputBriefly( ); // Block input after interface refresh
                     }
                 }
             }
@@ -2038,6 +2077,11 @@ void filesystemApp( bool waitForEnter ) {
     // Close any open files before exiting file manager
     closeAllFiles( );
 
+    // Restore normal font if we were using small fonts
+    if ( oled.oledConnected ) {
+        oled.restoreNormalFont( );
+    }
+
     // Restore original screen state with all scrollback intact
     restoreScreenState( &Serial );
 
@@ -2349,6 +2393,11 @@ String filesystemAppPythonScriptsREPL( ) {
 
     // Close any open files before exiting REPL mode file manager
     closeAllFiles( );
+
+    // Restore normal font if we were using small fonts
+    if ( oled.oledConnected ) {
+        oled.restoreNormalFont( );
+    }
 
     // If we exited because REPL was launched, don't restore screen state
     // as the REPL has already modified the display
@@ -3100,19 +3149,23 @@ void FileManager::blockInputBriefly( ) {
 
 void FileManager::clearBufferedInput( bool allowCtrlQ ) {
     char ctrlQFound = 0;
+    char escFound = 0;
     while ( Serial.available( ) ) {
         char c = Serial.read( );
-        // Save Ctrl+Q if we want to allow it
+        // Save Ctrl+Q and ESC if we want to allow them
         if ( allowCtrlQ && c == 17 ) { // Ctrl+Q
             ctrlQFound = c;
         }
+        if ( c == 27 ) { // ESC
+            escFound = c;
+        }
     }
 
-    // Put Ctrl+Q back by sending it to Serial - this is a simple approach
+    // Put Ctrl+Q and ESC back by sending them to Serial - this is a simple approach
     // In practice, the main loop will need to handle this specially
-    if ( ctrlQFound != 0 ) {
+    if ( ctrlQFound != 0 || escFound != 0 ) {
         // We can't easily put it back, so we'll handle this in isInputBlocked()
-        // by allowing Ctrl+Q to pass through even during blocking
+        // by allowing Ctrl+Q and ESC to pass through even during blocking
     }
 }
 

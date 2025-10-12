@@ -19,6 +19,10 @@ extern String currentCommandLine;
 extern volatile bool netsUpdated;
 void createConfigFile(int overwrite = 0);
 
+// DEPRECATED: Net colors are now persisted in YAML state files (States.cpp)
+// The changedNetColors[] array is still used at runtime, but persistence
+// is handled by the JumperlessState YAML serialization system.
+// These functions remain for potential legacy file migration only.
 int saveChangedNetColorsToFile(int slot = 0, int flashOrLocal = 0);
 int loadChangedNetColorsFromFile(int slot = 0, int flashOrLocal = 0);
 int printChangedNetColorFile(int slot = 0, int flashOrLocal = 0);

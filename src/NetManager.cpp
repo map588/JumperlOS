@@ -1408,7 +1408,8 @@ void listNets(int liveUpdate)
               }
             }
           if (millis() - startTime > 100) {
-            if (checkProbeButton() != 0) {
+            // Use state-based check in loop (doesn't consume event)
+            if (checkProbeButtonState() != 0) {
               blockProbeButton = 500;
               blockProbeButtonTimer = millis();
               liveUpdate = 0;

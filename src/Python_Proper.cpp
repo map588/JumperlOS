@@ -10,6 +10,7 @@
 #include "AsyncPassthrough.h"
 #include "TermControl.h"
 #include "LEDs.h"
+#include "SyntaxHighlighting.h"
 
 extern "C" {
 #include "py/gc.h"
@@ -553,6 +554,27 @@ void processMicroPythonInput(Stream *stream) {
       editor.first_run = false;
     }
 
+    // Check for standalone ESC timeout (if ESC was pressed but no '[' followed within 10ms)
+    if (editor.escape_state == 1 && (millis() - editor.escape_start_time) > 10) {
+      // Standalone ESC detected - interrupt and quit REPL
+      editor.escape_state = 0; // Reset escape state
+      
+      global_mp_stream->println("^["); // Show ESC was pressed
+      
+      // Set interrupt flag for script execution
+      mp_interrupt_requested = true;
+      
+      // Exit REPL
+      changeTerminalColor(replColors[4], true, global_mp_stream);
+      global_mp_stream->println("KeyboardInterrupt (ESC)");
+      global_mp_stream->println("Exiting REPL...");
+      changeTerminalColor(replColors[1], true, global_mp_stream);
+      stopMicroPythonREPL();
+      
+      editor.reset();
+      return;
+    }
+
     // Check for available input
     if (global_mp_stream->available()) {
       int c = global_mp_stream->read();
@@ -562,6 +584,7 @@ void processMicroPythonInput(Stream *stream) {
       // Handle escape sequences for arrow keys
       if (editor.escape_state == 0 && c == 27) { // ESC
         editor.escape_state = 1;
+        editor.escape_start_time = millis(); // Record when ESC was pressed
         return;
       } else if (editor.escape_state == 1 && c == 91) { // [
         editor.escape_state = 2;
@@ -655,8 +678,7 @@ void processMicroPythonInput(Stream *stream) {
           return;
         }
       } else if (editor.escape_state > 0) {
-        // We're in the middle of an escape sequence but got an unexpected
-        // character
+        // We're in the middle of an escape sequence but got an unexpected character
         editor.escape_state = 0; // Reset escape state
         // Don't process this character as regular input
         return;

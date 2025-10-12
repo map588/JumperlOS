@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include "JumperlessDefines.h"
+#include "JumperlOS.h"
 #include "MatrixState.h"
 #include "LEDs.h"
 #include "CH446Q.h"
@@ -226,9 +227,9 @@ public:
     bool getNetColor(int netNum, rgbColor& color, uint32_t& raw, char* name) const;
     
     // Dirty flag management (for lazy writes)
-    void markDirty() { dirty = true; lastModifiedTime = millis(); }
+    void markDirty();
     bool isDirty() const { return dirty; }
-    void clearDirty() { dirty = false; }
+    void clearDirty();
     unsigned long getLastModifiedTime() const { return lastModifiedTime; }
     
     // Validation
@@ -273,7 +274,7 @@ private:
  * @brief Manages slot files and active state
  * Singleton pattern - use SlotManager::getInstance()
  */
-class SlotManager {
+class SlotManager : public Service {
 public:
     // Get singleton instance
     static SlotManager& getInstance();
@@ -281,6 +282,11 @@ public:
     // Prevent copying
     SlotManager(const SlotManager&) = delete;
     SlotManager& operator=(const SlotManager&) = delete;
+    
+    // Service interface
+    ServiceStatus service() override;
+    const char* getName() const override { return "States"; }
+    ServicePriority getPriority() const override { return ServicePriority::HIGH; }
     
     // Active state access
     JumperlessState& getActiveState();

@@ -49,6 +49,7 @@ struct config {
         bool logo_pads = false;
         bool logic_analyzer = true; 
         int  arduino = 0;
+        bool  usb_mass_storage = false;
     } debug;
 
     struct routing {
@@ -124,7 +125,7 @@ struct config {
 
         
         struct serial_2 {
-            int function = 0; // 0 = off
+            int function = 3; // 0 = off 3 = USB MSC enabled
             int baud_rate = 115200;
             int print_passthrough = 0;
             int connect_on_boot = 0;

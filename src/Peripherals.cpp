@@ -30,6 +30,51 @@
 
 #include "MCP4728.h"  // New library
 
+// ============================================================================
+// Peripherals Class Implementation
+// ============================================================================
+
+// Static member initialization
+Peripherals* Peripherals::instance = nullptr;
+
+Peripherals& Peripherals::getInstance() {
+    if (instance == nullptr) {
+        instance = new Peripherals();
+    }
+    return *instance;
+}
+
+Peripherals::Peripherals() {
+    // Initialize defaults
+    gpioToggleFrequency = 250; // ms
+}
+
+/**
+ * @brief Main service method for peripherals system
+ * 
+ * This is called each loop iteration and handles:
+ * - Measurement display (if enabled)
+ */
+ServiceStatus Peripherals::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Show measurements if enabled
+    if (showReadings >= 1) {
+        showMeasurements(16, 0, 0);
+        lastStatus = ServiceStatus::BUSY;
+    }
+    showLEDmeasurements();
+    
+    return lastStatus;
+}
+
+// Backward compatibility - create references to singleton members
+unsigned long& gpioToggleFrequency = Peripherals::getInstance().gpioToggleFrequency;
+int& showReadings = Peripherals::getInstance().showReadings;
+
+// ============================================================================
+// Existing Functions
+// ============================================================================
 
 int i2cSpeed = 400000;
 
@@ -76,8 +121,6 @@ uint8_t gpioReading[ 10 ] = {
 int gpioNet[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
 int revisionNumber = 0;
-
-int showReadings = 0;
 
 float adcReadings[ 8 ] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -878,8 +921,10 @@ void setTopRail( float value, int save, int saveEEPROM ) {
     digitalWrite( LDAC, HIGH );
     mcp.setChannelValue( MCP4728_CHANNEL_C, dacValue );
     digitalWrite( LDAC, LOW );
+    
+    // Update globalState for YAML persistence (single source of truth)
+    // ONLY update when save == 1 to avoid spurious dirty marks
     if ( save ) {
-        // Update globalState for YAML persistence (single source of truth)
         globalState.setRailVoltage(true, value);  // true = top rail
         //configChanged = true;
     }
@@ -961,7 +1006,10 @@ void setDac0voltage( float voltage, int save, int saveEEPROM,
     digitalWrite( LDAC, LOW );
     
     // Update globalState for YAML persistence (single source of truth)
-    globalState.setDacVoltage(0, voltage);
+    // ONLY update state if save == 1 to avoid marking state dirty unnecessarily
+    if ( save ) {
+        globalState.setDacVoltage(0, voltage);
+    }
 
     if ( saveEEPROM && false) {
         saveVoltages( globalState.power.topRail, globalState.power.bottomRail, 
@@ -1002,7 +1050,10 @@ void setDac1voltage( float voltage, int save, int saveEEPROM,
     digitalWrite( LDAC, LOW );
     
     // Update globalState for YAML persistence (single source of truth)
-    globalState.setDacVoltage(1, voltage);
+    // ONLY update state if save == 1 to avoid marking state dirty unnecessarily
+    if ( save ) {
+        globalState.setDacVoltage(1, voltage);
+    }
 
     if ( saveEEPROM && false) {
         saveVoltages( globalState.power.topRail, globalState.power.bottomRail, 
@@ -1240,8 +1291,6 @@ int handleHighlights( int probeReading ) {
     return probeReading;
 }
 
-unsigned long gpioToggleFrequency = 250; // ms
-
 int highlightInteractable[ 10 ] = { RP_GPIO_0, RP_GPIO_1, RP_GPIO_2,
                                     RP_GPIO_3, RP_GPIO_4, RP_GPIO_5,
                                     RP_GPIO_6, RP_GPIO_7, RP_GPIO_8 };
@@ -1399,6 +1448,7 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
 float railSpread = 17.88;
 
 void showLEDmeasurements( void ) {
+    //return;
 
     for ( int i = 0; i < 8; i++ ) {
         int samples = 16;
@@ -1617,7 +1667,7 @@ uint32_t measurementToColor( float measurement, float min, float max ) {
     return color;
 }
 
-void showMeasurements( int samples, int printOrBB, int oneShot ) {
+void Peripherals::showMeasurements( int samples, int printOrBB, int oneShot ) {
     unsigned long startMillis = millis( );
     int printInterval = 150;
     static unsigned long lastPrintTime = 0;

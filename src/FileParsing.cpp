@@ -2728,7 +2728,11 @@ int disconnectedNode() {
   return lastRemovedNodes[lastIndex++];
 }
 
-int loadChangedNetColorsFromFile(int slot, int flashOrLocal) { //TODO: use the new states system and parse colors from the same yaml file
+// DEPRECATED: This function is no longer used. Net colors are now persisted
+// in the YAML state files (via States.cpp). The changedNetColors[] array
+// is still used at runtime, but persistence is handled by the YAML system.
+// This function remains for potential legacy file migration only.
+int loadChangedNetColorsFromFile(int slot, int flashOrLocal) {
   // debugFP = 1;
   if (flashOrLocal == 1) {
     // Loading from an in-memory string is not implemented for colors in this
@@ -2930,6 +2934,8 @@ return 0;
   return 1; // Indicate success
 }
 
+// DEPRECATED: Net colors are now persisted in YAML state files.
+// This function remains for debugging/migration purposes only.
 void printAllChangedNetColorFiles(void) {
   bool foundAnyColors = false;
   
@@ -3034,6 +3040,8 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
 }
 
 int saveChangedNetColorsToFile(int slot, int flashOrLocal) {
+  // DEPRECATED: Net colors are now persisted via YAML state system (States.cpp)
+  // This code path should not be executed in normal operation.
   // Serialize ::changedNetColors into a temporary string first
   createSafeString(tempColorDataString,
                    1500); // Matches currentColorSlotColorsString size

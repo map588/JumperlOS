@@ -9,6 +9,7 @@
 #include "oled.h"
 #include "RotaryEncoder.h"
 #include "JumperlessDefines.h"
+#include "States.h"  // For SlotManager service calls
 #include <time.h>
 
 // External references
@@ -16,6 +17,9 @@ extern class oled oled;
 
 // Global editor state
 static EditorConfig E;
+
+// Track currently open file for external monitoring (e.g., SlotManager preview mode)
+static char* g_currently_editing_file = nullptr;
 
 // Key definitions
 #define KEY_NULL 0
@@ -311,6 +315,33 @@ void ekilo_emergency_cleanup() {
     E.filename = nullptr;
     
     ekilo_set_status_message("Emergency cleanup completed - editor reset");
+}
+
+// External monitoring - get currently editing file
+const char* ekilo_get_currently_editing_file() {
+    return g_currently_editing_file;
+}
+
+// External monitoring - get current buffer content for live preview
+String ekilo_get_current_buffer_content() {
+    if (E.numrows == 0) {
+        return String("");
+    }
+    
+    // Build string from all rows
+    String content;
+    content.reserve(E.numrows * 80);  // Pre-allocate reasonable size
+    
+    for (int i = 0; i < E.numrows; i++) {
+        if (E.row[i].chars) {
+            content += String(E.row[i].chars);
+        }
+        if (i < E.numrows - 1) {
+            content += '\n';  // Add newline between rows
+        }
+    }
+    
+    return content;
 }
 
 // Arduino-compatible key reading
@@ -927,6 +958,10 @@ int ekilo_open(const char* filename) {
         return -1;
     }
     
+    // Update global tracking for external monitoring
+    free(g_currently_editing_file);
+    g_currently_editing_file = strdup(filename);
+    
     ekilo_select_syntax_highlight(filename);
     
     // Re-open file for reading
@@ -1332,6 +1367,24 @@ void ekilo_process_keypress() {
             ekilo_insert_newline();
             break;
             
+        case ESC:
+            // ESC exits menu mode if in menu, otherwise quits editor without saving
+            if (E.in_menu_mode) {
+                // Exit menu mode with ESC
+                E.in_menu_mode = false;
+                if (E.numrows > 0) {
+                    E.cy = E.numrows - 1; // Go to last line
+                    E.cx = E.row[E.cy].size; // Go to end of line
+                }
+                ekilo_set_status_message("Menu mode cancelled");
+                ekilo_schedule_oled_update();
+                E.screen_dirty = true;
+            } else {
+                // Not in menu mode - quit editor immediately without saving
+                E.should_quit = 1;
+            }
+            break;
+            
         case CTRL_Q:
             if (E.dirty && quit_times > 0) {
                 ekilo_set_status_message("WARNING!!! File has unsaved changes. "
@@ -1424,18 +1477,8 @@ void ekilo_process_keypress() {
             break;
             
         case CTRL_L:
-        case ESC:
-            if (E.in_menu_mode) {
-                // Exit menu mode with ESC
-                E.in_menu_mode = false;
-                if (E.numrows > 0) {
-                    E.cy = E.numrows - 1; // Go to last line
-                    E.cx = E.row[E.cy].size; // Go to end of line
-                }
-                ekilo_set_status_message("Menu mode cancelled");
-                ekilo_schedule_oled_update();
-                E.screen_dirty = true;
-            }
+            // Refresh screen
+            E.screen_dirty = true;
             break;
             
         default:
@@ -2010,9 +2053,11 @@ int ekilo_main(const char* filename) {
     // Initial OLED update
     ekilo_schedule_oled_update();
     
-    // Memory monitoring
+    // Memory monitoring and service calls
     unsigned long last_memory_check = millis();
+    unsigned long last_service_call = millis();
     const unsigned long MEMORY_CHECK_INTERVAL = 5000; // Check every 5 seconds
+    const unsigned long SERVICE_CALL_INTERVAL = 100;   // Call services every 100ms for responsiveness
     
     while (!E.should_quit) {
         // Periodic memory monitoring
@@ -2025,6 +2070,13 @@ int ekilo_main(const char* filename) {
         //     }
         //     last_memory_check = current_time;
         // }
+        
+        // Call SlotManager service periodically for file change detection
+        unsigned long current_time = millis();
+        if (current_time - last_service_call > SERVICE_CALL_INTERVAL) {
+            SlotManager::getInstance().service();
+            last_service_call = current_time;
+        }
         
         // Process any pending OLED updates
         //ekilo_process_oled_update();
@@ -2045,12 +2097,19 @@ int ekilo_main(const char* filename) {
     // Check if Ctrl+P was pressed (save and launch REPL)
     int result = E.should_launch_repl ? 2 : 0; // 2 = launch REPL, 0 = normal exit
     
+    // Restore normal font before exiting
+    oled.restoreNormalFont();
+    
     // Cleanup
     for (int i = 0; i < E.numrows; i++) {
         ekilo_free_row(&E.row[i]);
     }
     free(E.row);
     free(E.filename);
+    
+    // Clear global tracking
+    free(g_currently_editing_file);
+    g_currently_editing_file = nullptr;
     
     return result;
 }
@@ -2144,8 +2203,19 @@ String ekilo_main_repl(const char* filename) {
     // Initial OLED update
     ekilo_schedule_oled_update();
     
+    // Service call timing
+    unsigned long last_service_call = millis();
+    const unsigned long SERVICE_CALL_INTERVAL = 100;   // Call services every 100ms for responsiveness
+    
     // Editor loop with REPL positioning
     while (!E.should_quit) {
+        // Call SlotManager service periodically for file change detection
+        unsigned long current_time = millis();
+        if (current_time - last_service_call > SERVICE_CALL_INTERVAL) {
+            SlotManager::getInstance().service();
+            last_service_call = current_time;
+        }
+        
         // Process any pending OLED updates
 
         ekilo_process_keypress();
@@ -2173,12 +2243,19 @@ String ekilo_main_repl(const char* filename) {
         savedContent = "[LAUNCH_REPL]" + savedContent;
     }
     
+    // Restore normal font before exiting
+    oled.restoreNormalFont();
+    
     // Cleanup
     for (int i = 0; i < E.numrows; i++) {
         ekilo_free_row(&E.row[i]);
     }
     free(E.row);
     free(E.filename);
+    
+    // Clear global tracking
+    free(g_currently_editing_file);
+    g_currently_editing_file = nullptr;
     
     ekilo_cleanup_repl_mode();
     

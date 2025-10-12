@@ -26,7 +26,64 @@
 
 #include "Highlighting.h"
 
-int inClickMenu = 0;
+// ============================================================================
+// Menus Class Implementation
+// ============================================================================
+
+// Static member initialization
+Menus* Menus::instance = nullptr;
+
+Menus& Menus::getInstance() {
+    if (instance == nullptr) {
+        instance = new Menus();
+    }
+    return *instance;
+}
+
+Menus::Menus() {
+    // Initialize defaults
+}
+
+/**
+ * @brief Main service method for menu system
+ * 
+ * This is called each loop iteration and handles:
+ * - Click menu detection
+ * - Menu rendering when active
+ */
+ServiceStatus Menus::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Check if menu is active
+    if (inClickMenu != 0) {
+        lastStatus = ServiceStatus::BLOCKING;
+        return lastStatus;
+    }
+    
+    // Check for menu activation (delegated to clickMenu)
+    int menuResult = clickMenu();
+    if (menuResult >= 0) {
+        lastStatus = ServiceStatus::BLOCKING;
+    }
+    
+    return lastStatus;
+}
+
+// Backward compatibility - create references to singleton members
+int& inClickMenu = Menus::getInstance().inClickMenu;
+int& defconDisplay = Menus::getInstance().defconDisplay;
+int& selectingRotaryNode = Menus::getInstance().selectingRotaryNode;
+int& menuState = Menus::getInstance().menuState;
+int& menuPosition = Menus::getInstance().menuPosition;
+int& menuScroll = Menus::getInstance().menuScroll;
+int& menuScrollTarget = Menus::getInstance().menuScrollTarget;
+int& menuScrollMax = Menus::getInstance().menuScrollMax;
+int& menuPositionMax = Menus::getInstance().menuPositionMax;
+int& menuPositionMin = Menus::getInstance().menuPositionMin;
+
+// ============================================================================
+// Existing Functions
+// ============================================================================
 
 int menuRead = 0;
 int menuLength = 0;
@@ -323,7 +380,7 @@ char chosenOptions[ 20 ][ 40 ];
 
 int previousMenuSelection[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
-int clickMenu( int menuType, int menuOption, int extraOptions ) {
+int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
     if ( menuLineIndex < 2 ) {
         // b.clear();
         b.print( "No menu file", 0x0f0400, 0xFFFFFF, 0, -1, 0 );
@@ -350,7 +407,8 @@ int clickMenu( int menuType, int menuOption, int extraOptions ) {
         returnedMenuPosition = getMenuSelection( );
         while ( returnedMenuPosition == -1 && Serial.available( ) == 0 && arduinoInReset == 0 ) {
             // delayMicroseconds(5000);
-            if ( checkProbeButton( ) == 1 ) {
+            // Use state-based check in loop (doesn't consume event)
+            if ( checkProbeButtonState( ) == 1 ) {
                 Serial.println( "Probe button pressed" );
                 return -3;
             }
@@ -735,12 +793,15 @@ int getMenuSelection( void ) {
 
                 oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
             } else if ( actions[ menuPosition ] == 6 ) {
-                // Map highlightedOption directly to FontFamily enum (now sequential)
-                FontFamily previewFont = oled.getFontFamily( menuLines[ menuPosition ] );
-
-                // Show font preview with both sizes
-                oled.clearPrintShow( menuLines[ menuPosition ], 2, previewFont, true, true, true, -1, -1 );
-                // oled.clearPrintShow("Preview", 2, previewFont, false, true, true, -1, -1);
+                // Font preview - display at native size (1x) using the specific font
+                int fontIndex = oled.setFont( menuLines[ menuPosition ], 0 );
+                if ( fontIndex >= 0 ) {
+                    // Display the font name at its native size (textSize=1)
+                    oled.clearPrintShow( menuLines[ menuPosition ], 2, true, true, true, -1, -1 );
+                } else {
+                    // Fallback if font not found
+                    oled.clearPrintShow( menuLines[ menuPosition ], 2, true, true, true, -1, -1 );
+                }
             } else {
                 // Serial.println(menuLines[menuPosition-1]);
                 Serial.println( " " );
@@ -885,12 +946,15 @@ int getMenuSelection( void ) {
 
                 oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
             } else if ( actions[ menuPosition ] == 6 ) {
-                // Map highlightedOption directly to FontFamily enum (now sequential)
-                FontFamily previewFont = oled.getFontFamily( menuLines[ menuPosition ] );
-
-                // Show font preview with both sizes
-                oled.clearPrintShow( menuLines[ menuPosition ], 2, previewFont, true, true, true, -1, -1 );
-                // oled.clearPrintShow("Preview", 2, previewFont, false, true, true, -1, -1);
+                // Font preview - display at native size (1x) using the specific font
+                int fontIndex = oled.setFont( menuLines[ menuPosition ], 0 );
+                if ( fontIndex >= 0 ) {
+                    // Display the font name at its native size (textSize=1)
+                    oled.clearPrintShow( menuLines[ menuPosition ], 1, true, true, true, -1, -1 );
+                } else {
+                    // Fallback if font not found
+                    oled.clearPrintShow( menuLines[ menuPosition ], 2, true, true, true, -1, -1 );
+                }
             } else {
                 // Serial.println(menuLines[menuPosition-1]);
                 Serial.println( " " );
@@ -1300,6 +1364,13 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
 
         if ( encoderButtonState == HELD || Serial.available( ) > 0 ) {
             b.clear( );
+            SlotManager& mgr = SlotManager::getInstance( );
+            if ( mgr.isPreviewMode( ) ) {
+                String errorMsg;
+                mgr.exitPreview( false, errorMsg ); // Cancel preview
+            }
+
+            showLEDsCore2 = 1;
             return -1;
         }
         if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
@@ -2540,7 +2611,6 @@ actionCategories getActionCategory( void ) {
     return NOCATEGORY;
 }
 
-int defconDisplay = -1;
 int doMenuAction( int menuPosition, int selection ) {
 
     populateAction( );
@@ -2727,10 +2797,14 @@ int doMenuAction( int menuPosition, int selection ) {
                 // saveCurrentSlotToSlot(netSlot, currentAction.from[0]);
 
                 netSlot = currentAction.from[ 0 ];
-                slotChanged = 1;
-                //  refreshConnections(-1);
+                String errorMsg;
+                SlotManager::getInstance( ).exitPreview(true, errorMsg);
+
+                SlotManager::getInstance( ).setActiveSlot( netSlot );
+                //slotChanged = 1;
+                  refreshConnections(-1);
                 //  chooseShownReadings();
-                printAllChangedNetColorFiles( );
+               // printAllChangedNetColorFiles( );
             }
             // netSlot = currentAction.from[0];
             return currentAction.from[ 0 ];
@@ -3116,63 +3190,39 @@ int doMenuAction( int menuPosition, int selection ) {
                 jumperlessConfig.top_oled.enabled = 0;
             }
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Font" ) != -1 ) {
-            // Map the menu selection to FontFamily value for config
-            FontFamily selectedFamily;
-            int configFontValue;
-
-            if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Jokermn" ) != -1 ) {
-                selectedFamily = FONT_JOKERMAN;
-                configFontValue = 1;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Eurostl" ) != -1 ) {
-                selectedFamily = FONT_EUROSTILE;
-                configFontValue = 0;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "ComicSns" ) != -1 ) {
-                selectedFamily = FONT_COMIC_SANS;
-                configFontValue = 2;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Courier" ) != -1 ) {
-                selectedFamily = FONT_COURIER_NEW;
-                configFontValue = 3;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Science" ) != -1 ) {
-                selectedFamily = FONT_NEW_SCIENCE_MEDIUM;
-                configFontValue = 4;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "SciExt" ) != -1 ) {
-                selectedFamily = FONT_NEW_SCIENCE_MEDIUM_EXTENDED;
-                configFontValue = 5;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "AndlMno" ) != -1 ) {
-                selectedFamily = FONT_ANDALE_MONO;
-                configFontValue = 6;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "FreMno" ) != -1 ) {
-                selectedFamily = FONT_FREE_MONO;
-                configFontValue = 7;
-            } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Iosevka" ) != -1 ) {
-                selectedFamily = FONT_IOSEVKA_LIGHT;
-                configFontValue = 8;
-                // } else if (menuLines[currentAction.previousMenuPositions[2]].indexOf("IosevkaRg") != -1) {
-                //   selectedFamily = FONT_IOSEVKA_REGULAR;
-                //   configFontValue = 9;
-                //   } else if (menuLines[currentAction.previousMenuPositions[2]].indexOf("IosevkaMd") != -1) {
-                //     selectedFamily = FONT_IOSEVKA_MEDIUM;
-                //     configFontValue = 10;
-                //     } else if (menuLines[currentAction.previousMenuPositions[2]].indexOf("IosevkaBd") != -1) {
-                //       selectedFamily = FONT_IOSEVKA_SEMI_BOLD;
-                //       configFontValue = 11;
-            }
-
-            // Set the font family (smart selection will choose appropriate size)
-            // oled.setFontForSize(selectedFamily, 1);
-            oled.setFont( (FontFamily)selectedFamily );
-
-            // Update config with FontFamily value
+            // Use the font name directly from menu
+            String fontMenuName = menuLines[ currentAction.previousMenuPositions[ 2 ] ];
+            
+            // Set the font by name (this will search fontList)
+            int fontIndex = oled.setFont( fontMenuName, 0 );
+            
+            // Map font name to simplified config value (0-14)
+            int configFontValue = 0; // Default to Eurostile
+            if ( fontMenuName.indexOf( "Eurostl" ) != -1 ) configFontValue = 0;
+            else if ( fontMenuName.indexOf( "Jokermn" ) != -1 ) configFontValue = 1;
+            else if ( fontMenuName.indexOf( "ComicSns" ) != -1 ) configFontValue = 2;
+            else if ( fontMenuName.indexOf( "Courier" ) != -1 ) configFontValue = 3;
+            else if ( fontMenuName.indexOf( "Science" ) != -1 && fontMenuName.indexOf( "Ext" ) == -1 ) configFontValue = 4;
+            else if ( fontMenuName.indexOf( "SciExt" ) != -1 ) configFontValue = 5;
+            else if ( fontMenuName.indexOf( "AndlMno" ) != -1 ) configFontValue = 6;
+            else if ( fontMenuName.indexOf( "FreMno" ) != -1 ) configFontValue = 7;
+            else if ( fontMenuName.indexOf( "BerkMono" ) != -1 ) configFontValue = 8;
+            else if ( fontMenuName.indexOf( "BerkUni" ) != -1 ) configFontValue = 9;
+            else if ( fontMenuName.indexOf( "Pragmtsm" ) != -1 ) configFontValue = 10;
+            else if ( fontMenuName.indexOf( "IosevkaR" ) != -1 ) configFontValue = 11;
+            else if ( fontMenuName.indexOf( "IosevkaM" ) != -1 ) configFontValue = 12;
+            else if ( fontMenuName.indexOf( "IosevkaL" ) != -1 ) configFontValue = 13;
+            else if ( fontMenuName.indexOf( "IosevkaT" ) != -1 ) configFontValue = 14;
+            
+            // Update config with simplified font value
             jumperlessConfig.top_oled.font = configFontValue;
             configChanged = true;
 
-            // oled.clearPrintShow("Font Set:", 1, selectedFamily, true, true, true, 5, 8);
-            // delay(1000);
-            // oled.clearPrintShow("Preview Text", 2, selectedFamily, true, true, true, 5, 8);
-
             Serial.print( "Font set to: " );
-
-            Serial.println( oled.getFontName( selectedFamily ) );
+            Serial.print( fontMenuName );
+            Serial.print( " (config value " );
+            Serial.print( configFontValue );
+            Serial.println( ")" );
 
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Show in Term" ) != -1 ) {
             if ( jumperlessConfig.top_oled.show_in_terminal == 1 ) {

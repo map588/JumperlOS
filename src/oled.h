@@ -6,45 +6,37 @@
 #include "Arduino.h"
 #include "Wire.h"
 #include <vector>
+// Core fonts - small and large sizes for auto-fallback
 #include "fonts/Eurostile8pt7b.h"
 #include "fonts/Eurostile12pt7b.h"
-
 #include "fonts/Jokerman8pt7b.h"
 #include "fonts/Jokerman12pt7b.h"
-
 #include "fonts/Comic_Sans8pt7b.h"
 #include "fonts/Comic_Sans12pt7b.h"
-
 #include "fonts/Courier_New8pt7b.h"
 #include "fonts/Courier_New12pt7b.h"
-
 #include "fonts/new_science_medium8pt7b.h"
 #include "fonts/new_science_medium12pt7b.h"
-
 #include "fonts/new_science_medium_extended8pt7b.h"
 #include "fonts/new_science_medium_extended12pt7b.h"
-
-#include "fonts/IosevkaSS08_Light8pt7b.h"
-#include "fonts/IosevkaSS08_Light12pt7b.h"
-
-
-#include "fonts/IosevkaSS08_Regular11pt7b.h"
-
-
-#include "fonts/IosevkaSS08_Medium11pt7b.h"
-
-#include "fonts/IosevkaSS08_SemiBold11pt7b.h"
-
-// Monospaced fonts for text highlighting
 #include "fonts/ANDALEMO5pt7b.h"
-#include "fonts/ANDALEMO6pt7b.h"
 #include "fonts/FreeMono4pt7b.h"
 #include "fonts/FreeMono5pt7b.h"
+
+// New fonts - small and large sizes
+#include "fonts/BerkeleyMono8pt7b.h"    
+#include "fonts/BerkeleyMono12pt7b.h"
+#include "fonts/Pragmatism8pt7b.h"
+#include "fonts/Pragmatism12pt7b.h"
+#include "fonts/IosevkaSS08_Regular9pt7b.h"
+#include "fonts/IosevkaSS08_Regular11pt7b.h"
 
 // Small fonts for file manager and detailed displays (4-5pt for better readability)
 #include "fonts/ubuntu5pt7b.h"
 #include "fonts/DotGothic16_Regular4pt7b.h"
-#include "fonts/Jokerman4pt7b.h"
+#include "fonts/IosevkaSS08_Light5pt7b.h"
+#include "fonts/Pragmatism5pt7b.h"
+#include "fonts/EnvyCodeRNerdFont_Regular5pt7b.h"
 
 //#include "fonts/JumperlessLowerc12pt7b.h"
 
@@ -71,11 +63,9 @@ enum FontFamily {
     FONT_NEW_SCIENCE_MEDIUM_EXTENDED = 5,
     FONT_ANDALE_MONO = 6,
     FONT_FREE_MONO = 7,
-    FONT_IOSEVKA_LIGHT = 10,
-    FONT_IOSEVKA_REGULAR = 9,
-    FONT_IOSEVKA_MEDIUM = 8,
-    FONT_IOSEVKA_SEMI_BOLD = 11
-
+    FONT_IOSEVKA_REGULAR = 8,
+    FONT_BERKELEY_MONO = 9,
+    FONT_PRAGMATISM = 10
 };
 
 // Small font enumeration for file manager and detailed displays
@@ -84,11 +74,15 @@ enum SmallFont {
     SMALL_FONT_DOTGOTHIC = 1,
     SMALL_FONT_JOKERMAN = 2,
     SMALL_FONT_ANDALE_MONO = 3,
-    SMALL_FONT_IOSEVKA_LIGHT = 4,
-    SMALL_FONT_IOSEVKA_REGULAR = 5,
-    SMALL_FONT_IOSEVKA_MEDIUM = 6,
-    SMALL_FONT_IOSEVKA_SEMI_BOLD = 7
+    SMALL_FONT_IOSEVKA_REGULAR = 4,
+    SMALL_FONT_IOSEVKA_5PT = 5,
+    SMALL_FONT_PRAGMATISM_5PT = 6,
+    SMALL_FONT_FREEMONO_5PT = 7,
+    SMALL_FONT_ENVYCODE_5PT = 8
 };
+
+// Default small font for file manager and detailed displays
+#define DEFAULT_SMALL_FONT SMALL_FONT_PRAGMATISM_5PT
 
 // Positioning mode enum for simplified positioning system
 enum PositionMode {
@@ -240,6 +234,7 @@ public:
     
     // Small font state tracking
     const GFXfont* previousFont = nullptr;
+    FontFamily previousFontFamily = FONT_EUROSTILE;
     SmallFont currentSmallFont = SMALL_FONT_UBUNTU;
     bool usingSmallFont = false;
     
@@ -258,6 +253,7 @@ void oledExample(void);
 int initOLED(void);
 int oledTest(int sdaRow = NANO_D2, int sclRow = NANO_D3, int sdaPin = 26, int sclPin = 27, int leaveConnections = 1);
 void testOLEDSmallFonts(void);
+FontFamily mapConfigValueToFontFamily(int configValue);
 
 // Bitmap data
 extern const unsigned char jogo255[];
@@ -307,6 +303,7 @@ struct FontMetrics {
 // Font list
 extern struct font fontList[];
 extern int numFonts;
+extern int configValueToFontIndex[];
 
 // Global instance
 extern class oled oled;

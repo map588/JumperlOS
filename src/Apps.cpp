@@ -427,7 +427,8 @@ void customApp(void) {
   int lastProbedRow = 0;
 
   Serial.println("Click the probe button to exit\n\n\n\r");
-  while (checkProbeButton() == 0) {
+  // Use state-based button check in loop (doesn't consume events)
+  while (checkProbeButtonState() == 0) {
     if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
     probeRow = justReadProbe();
     if (probeRow != -1) {

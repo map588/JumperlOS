@@ -2007,11 +2007,12 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "font") == 0) {
             jumperlessConfig.top_oled.font = parseFont(value);
             
-            // Convert config value directly to FontFamily (now sequential)
-            FontFamily fontFamily = (FontFamily)jumperlessConfig.top_oled.font;
-            
-            // Set font using the new smart font system (default to size 1)
-            oled.setFontForSize(fontFamily, 1);
+            // Apply font from config value
+            if (jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= 10) {
+                extern int configValueToFontIndex[];
+                int fontIndex = configValueToFontIndex[jumperlessConfig.top_oled.font];
+                oled.setFont(fontIndex);
+            }
             oled.show();
         }
     }

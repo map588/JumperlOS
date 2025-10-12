@@ -41,6 +41,8 @@ debugFlags:
   bool temp_debugNTCC2 = debugNTCC2;
   bool temp_debugLEDs = debugLEDs;
   bool temp_debugLA = debugLA;
+  bool temp_debugWaitLoopTiming = debugWaitLoopTiming;
+  bool temp_debugUSB = debugUSB;
   int temp_showProbeCurrent = showProbeCurrent;
   int temp_passthrough = jumperlessConfig.serial_1.print_passthrough;
   bool temp_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
@@ -51,6 +53,8 @@ debugFlags:
   bool orig_debugNTCC2 = debugNTCC2;
   bool orig_debugLEDs = debugLEDs;
   bool orig_debugLA = debugLA;
+  bool orig_debugWaitLoopTiming = debugWaitLoopTiming;
+  bool orig_debugUSB = debugUSB;
   int orig_showProbeCurrent = showProbeCurrent;
   int orig_passthrough = jumperlessConfig.serial_1.print_passthrough;
   bool orig_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
@@ -90,6 +94,11 @@ debugFlags:
     Serial.print("\n\rl. logic analyzer debug       =    "); Serial.print(temp_debugLA); lines_printed++; cycleTerminalColor();
  
     Serial.print("\n\rj. logic analyzer debug menu  >    "); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rw. wait loop timing debug     =    "); Serial.print(temp_debugWaitLoopTiming); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rb. USB mass storage debug     =    "); Serial.print(temp_debugUSB); lines_printed++; cycleTerminalColor();
+
     Serial.print("\n\r\n\r\n\r"); lines_printed += 2;
     Serial.flush();
   };
@@ -118,6 +127,8 @@ debugFlags:
         if (temp_debugLEDs != orig_debugLEDs) debugFlagSet(5);
         if (temp_debugLA != orig_debugLA) debugFlagSet(6);
         if (temp_showProbeCurrent != orig_showProbeCurrent) debugFlagSet(7);
+        if (temp_debugWaitLoopTiming != orig_debugWaitLoopTiming) debugFlagSet(14);
+        if (temp_debugUSB != orig_debugUSB) debugFlagSet(15);
         if (temp_passthrough != orig_passthrough) {
           int cur = jumperlessConfig.serial_1.print_passthrough;
           int safety = 0;
@@ -201,6 +212,8 @@ debugFlags:
       temp_debugNTCC2 = false;
       temp_debugLEDs = false;
       temp_debugLA = false;
+      temp_debugWaitLoopTiming = false;
+      temp_debugUSB = false;
       temp_showProbeCurrent = 0;
       last_bulk_cmd = 0;
     } else if (sel == 'z' || sel == 'Z') {
@@ -210,6 +223,8 @@ debugFlags:
       temp_debugNTCC2 = true;
       temp_debugLEDs = true;
       temp_debugLA = true;
+      temp_debugWaitLoopTiming = true;
+      temp_debugUSB = true;
       temp_showProbeCurrent = 1;
       last_bulk_cmd = 9;
     } else if (sel == 'u' || sel == 'U') {
@@ -222,6 +237,8 @@ debugFlags:
     else if (sel == 'h' || sel == 'H') { temp_debugNTCC2 = !temp_debugNTCC2; last_bulk_cmd = -1; }
     else if (sel == 'e' || sel == 'E') { temp_debugLEDs = !temp_debugLEDs; last_bulk_cmd = -1; }
     else if (sel == 'l' || sel == 'L') { temp_debugLA = !temp_debugLA; last_bulk_cmd = -1; }
+    else if (sel == 'w' || sel == 'W') { temp_debugWaitLoopTiming = !temp_debugWaitLoopTiming; last_bulk_cmd = -1; }
+    else if (sel == 'b' || sel == 'B') { temp_debugUSB = !temp_debugUSB; last_bulk_cmd = -1; }
     else if (sel == 'p' || sel == 'P') { temp_asyncPassthrough = !temp_asyncPassthrough; last_bulk_cmd = -1; }
     else if (sel == 's' || sel == 'S') { temp_showProbeCurrent = temp_showProbeCurrent ? 0 : 1; last_bulk_cmd = -1; }
     else {
@@ -231,7 +248,8 @@ debugFlags:
     // If a recognized toggle occurred above, redraw and continue loop
     if (sel == 'x' || sel == 'X' || sel == 'z' || sel == 'Z' || sel == 'u' || sel == 'U' ||
         sel == 'f' || sel == 'F' || sel == 'n' || sel == 'N' || sel == 'c' || sel == 'C' ||
-        sel == 'h' || sel == 'H' || sel == 'e' || sel == 'E' || sel == 'l' || sel == 'L' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S') {
+        sel == 'h' || sel == 'H' || sel == 'e' || sel == 'E' || sel == 'l' || sel == 'L' || 
+        sel == 'w' || sel == 'W' || sel == 'b' || sel == 'B' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S') {
       Serial.printf("\033[%dA", lines);
       for (int i = 0; i < lines; i++) { Serial.print("\033[2K\r\n\r"); }
       Serial.printf("\033[%dA", lines);

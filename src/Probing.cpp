@@ -2,6 +2,7 @@
 #include "CH446Q.h"
 #include "FileParsing.h"
 #include "JumperlessDefines.h"
+#include "JumperlOS.h"
 #include "LEDs.h"
 #include "MatrixState.h"
 #include "States.h"
@@ -28,52 +29,558 @@
 #include "oled.h"
 #include "externVars.h"
 
-int debugProbing = 0;
+// Button timing constants
+#define BUTTON_SETTLE_US 22
+#define BUTTON_SETTLE_SHORT_US 4
 
-volatile unsigned long blockProbing = 0;
-volatile unsigned long blockProbingTimer = 0;
+// ============================================================================
+// ProbeButton Implementation (class declared in Probing.h)
+// High-frequency button checking service for instant response
+// ============================================================================
 
-volatile unsigned long blockProbeButton = 0;
-volatile unsigned long blockProbeButtonTimer = 0;
+// Static member initialization
+ProbeButton* ProbeButton::instance = nullptr;
 
-int probePowerDAC = 0;
-int lastProbePowerDAC = 0;
-bool probePowerDACChanged = 0;
+ProbeButton& ProbeButton::getInstance() {
+    if (instance == nullptr) {
+        instance = new ProbeButton();
+    }
+    return *instance;
+}
 
-int switchPosition = 1;
-int lastSwitchPositions[ 3 ] = { 1, 1, 1 };
+ProbeButton::ProbeButton() {
+    // Initialize button state
+}
 
-int showProbeCurrent = 0;
+/**
+ * @brief High-frequency service method - checks button hardware with new blocking behavior
+ * 
+ * New behavior:
+ * 1. Checks hardware frequently (respects rate limiting)
+ * 2. When press detected: blocks subsequent presses for blockDurationMs (default 1s)
+ * 3. Block clears when: button released OR block timer expires
+ * 4. Quick successive clicks register (each release clears block)
+ * 5. Holding button registers once (block prevents re-trigger)
+ * 6. Tracks continuous hold time and sets CONNECT_HELD/REMOVE_HELD flags
+ */
+ServiceStatus ProbeButton::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Rate limiting - only check hardware at specified interval
+    unsigned long now = millis();
+    if (now - lastCheckTime < checkIntervalMs) {
+        return lastStatus;  // Not time to check yet
+    }
+    lastCheckTime = now;
+    
+    // ALWAYS read hardware state
+    int newState = checkProbeButtonHardware();
 
-volatile bool bufferPowerConnected = 0;
+    // Serial.print(newState);
+    // Serial.print(" ");
+    // Serial.println(currentButtonState);
+    // Serial.flush();
+    
+    // ========================================================================
+    // BUTTON RELEASED - Clear state with debounce protection
+    // ========================================================================
+    if (newState == 0) {
+        // Button released!
+        if (currentButtonState != 0) {
+            lastButtonState = currentButtonState;
+            currentButtonState = 0;
+            buttonChanged = true;
+            lastStatus = ServiceStatus::BUSY;
+        }
+        
+        // Clear hold state immediately
+        connectHeld = false;
+        removeHeld = false;
+        connectHoldTime = 0;
+        removeHoldTime = 0;
+        pressStartTime = 0;
+        
+        // CRITICAL: Only clear block if minimum block time has elapsed
+        // This prevents button bounce from causing rapid re-triggering
+        if (isBlocked && blockStartTime > 0) {
+            unsigned long blockElapsed = now - blockStartTime;
+            if (blockElapsed >= minimumBlockMs) {
+                // Minimum block time elapsed, safe to clear for next press
+                isBlocked = false;
+                blockStartTime = 0;
+                blockProbeButton = 0;
+                blockProbeButtonTimer = 0;
+            }
+            // else: Keep block active to prevent bounce re-trigger
+        } else {
+            // Not blocked, clear everything
+            blockProbeButton = 0;
+            blockProbeButtonTimer = 0;
+        }
+        
+        return lastStatus;
+    }
+    
+    // ========================================================================
+    // BUTTON PRESSED - Handle blocking, press detection, and hold tracking
+    // ========================================================================
+    
+    // Check if block timer has expired
+    if (isBlocked && (now - blockStartTime >= blockDurationMs)) {
+        isBlocked = false;
+        blockStartTime = 0;
+    }
+    
+    // Detect state changes
+    bool stateChanged = (newState != currentButtonState);
+    
+    if (stateChanged) {
+        lastButtonState = currentButtonState;
+        currentButtonState = newState;
+        buttonChanged = true;
+        lastStatus = ServiceStatus::BUSY;
+    } else {
+        buttonChanged = false;
+    }
+    
+    // ========================================================================
+    // PRESS DETECTION - Register press event if not blocked
+    // ========================================================================
+    if (!isBlocked) {
+        // Register a press event when:
+        // 1. Transitioning from RELEASED (0) to any PRESSED (1 or 2)
+        // 2. Switching between different button types (1↔2)
+        if (stateChanged && newState > 0 && 
+            (lastButtonState == 0 || (lastButtonState > 0 && lastButtonState != newState))) {
+            
+            buttonPress = newState;
+            
+            // Start block period
+            isBlocked = true;
+            blockStartTime = now;
+            pressStartTime = now;
+            
+            // Set old global blocking variables for backward compatibility
+            blockProbeButton = blockDurationMs;
+            blockProbeButtonTimer = now;
+            
+            lastStatus = ServiceStatus::BUSY;
+        }
+    }
+    
+    // ========================================================================
+    // HOLD TRACKING - Update continuous hold time and flags
+    // ========================================================================
+    if (currentButtonState > 0 && pressStartTime > 0) {
+        unsigned long holdDuration = now - pressStartTime;
+        
+        if (currentButtonState == 2) {
+            // Connect button (2)
+            connectHoldTime = holdDuration;
+            
+            // Set hold flag if threshold reached
+            if (!connectHeld && holdDuration >= connectHoldThresholdMs) {
+                connectHeld = true;
+                lastStatus = ServiceStatus::BUSY;
+            }
+        } else if (currentButtonState == 1) {
+            // Remove button (1)
+            removeHoldTime = holdDuration;
+            
+            // Set hold flag if threshold reached
+            if (!removeHeld && holdDuration >= removeHoldThresholdMs) {
+                removeHeld = true;
+                lastStatus = ServiceStatus::BUSY;
+            }
+        }
+    }
+    
+    return lastStatus;
+}
+
+/**
+ * @brief Get button press event (consumes the event)
+ */
+int ProbeButton::getButtonPress() {
+    int press = buttonPress;
+    buttonPress = 0;  // Clear after reading
+    return press;
+}
+
+/**
+ * @brief Direct hardware button check - fast and non-blocking
+ * 
+ * @return 0 = neither pressed, 1 = remove button, 2 = connect button
+ * 
+ * NOTE: Blocking logic is now handled at the service() level
+ */
+int ProbeButton::checkProbeButtonHardware(void) {
+    extern struct config jumperlessConfig;
+    
+    // Wait if LEDs are being updated
+    while (showingProbeLEDs == 1) {
+        // Spin wait - LEDs are fast
+    }
+    
+    core1busy = true;
+    checkingButton = 1;
+    
+    int buttonState = 0;
+    int buttonState2 = 0;
+    int buttonState3 = 0;
+    int returnState = 0;
+    
+    gpio_function_t lastProbeButtonFunction = gpio_get_function(PROBE_LED_PIN);
+    
+    // Get pin references from Probing singleton
+    Probing& p = Probing::getInstance();
+    
+    // Button reading sequence with proper timing
+    gpio_set_dir(BUTTON_PIN, false);
+    gpio_set_function(PROBE_LED_PIN, GPIO_FUNC_SIO);
+    gpio_disable_pulls(PROBE_LED_PIN);
+    gpio_set_dir(PROBE_LED_PIN, false);
+    delayMicroseconds(BUTTON_SETTLE_US);
+    
+    gpio_set_dir(PROBE_PIN, true);
+    gpio_put(PROBE_PIN, true);
+    gpio_set_pulls(BUTTON_PIN, false, true);
+    gpio_set_input_enabled(BUTTON_PIN, true);
+    buttonState = gpio_get(BUTTON_PIN);
+    gpio_set_input_enabled(BUTTON_PIN, false);
+    
+    delayMicroseconds(BUTTON_SETTLE_US);
+    
+    gpio_set_pulls(BUTTON_PIN, true, false);
+    gpio_set_input_enabled(BUTTON_PIN, true);
+    delayMicroseconds(BUTTON_SETTLE_US);
+    buttonState2 = gpio_get(BUTTON_PIN);
+    gpio_set_input_enabled(BUTTON_PIN, false);
+    
+    delayMicroseconds(BUTTON_SETTLE_US);
+    
+    gpio_set_pulls(BUTTON_PIN, false, false);
+    delayMicroseconds(BUTTON_SETTLE_US);
+    
+    gpio_set_dir(BUTTON_PIN, true);
+    gpio_put(BUTTON_PIN, false);
+    delayMicroseconds(BUTTON_SETTLE_SHORT_US);
+    
+    gpio_set_dir(BUTTON_PIN, false);
+    gpio_set_pulls(BUTTON_PIN, false, true);
+    gpio_set_input_enabled(BUTTON_PIN, true);
+    buttonState3 = gpio_get(BUTTON_PIN);
+    gpio_set_input_enabled(BUTTON_PIN, false);
+    
+    gpio_set_pulls(BUTTON_PIN, false, false);
+    gpio_set_function(PROBE_LED_PIN, lastProbeButtonFunction);
+    
+    checkingButton = 0;
+    core1busy = false;
+    
+    // Determine button state (handles probe revision)
+    if (buttonState == 1 && buttonState2 == 1 && buttonState3 == 1) {
+        returnState = (jumperlessConfig.hardware.probe_revision >= 4) ? 2 : 1;
+    } else if (buttonState == 0 && buttonState2 == 0 && buttonState3 == 0) {
+        returnState = (jumperlessConfig.hardware.probe_revision >= 4) ? 1 : 2;
+    }
+    
+    return returnState;
+}
+
+// Global reference for clean syntax
+ProbeButton& probeButton = ProbeButton::getInstance();
+
+// ============================================================================
+// Probing Class Implementation
+// ============================================================================
+
+// Static member initialization
+Probing* Probing::instance = nullptr;
+
+Probing& Probing::getInstance() {
+    if (instance == nullptr) {
+        instance = new Probing();
+    }
+    return *instance;
+}
+
+Probing::Probing() {
+    // Initialize probe row maps
+    int probeRowMapInit[108] = {
+        -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, TOP_RAIL, GND,
+        BOTTOM_RAIL, GND, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+        NANO_D1, NANO_D0, NANO_RESET_1, GND, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12,
+        NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,NANO_5V, NANO_RESET_0, GND, NANO_VIN,
+        LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1
+    };
+    
+    int probeRowMapByPadInit[108] = {
+        -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, TOP_RAIL, TOP_RAIL_GND,
+        BOTTOM_RAIL, BOTTOM_RAIL_GND, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+        NANO_D1, NANO_D0, NANO_RESET_1, NANO_GND_1, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12,
+        NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,NANO_5V, NANO_RESET_0, NANO_GND_0, NANO_VIN,
+        LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1
+    };
+    
+    memcpy(probeRowMap, probeRowMapInit, sizeof(probeRowMap));
+    memcpy(probeRowMapByPad, probeRowMapByPadInit, sizeof(probeRowMapByPad));
+    
+    // Initialize other defaults
+    switchPosition = 1;
+    lastSwitchPositions[0] = 1;
+    lastSwitchPositions[1] = 1;
+    lastSwitchPositions[2] = 1;
+}
+
+/**
+ * @brief Handle probe button actions and toggle logic
+ * 
+ * This is called from service() and handles all the probe button
+ * interactions, toggle logic, and probe mode triggering.
+ */
+void Probing::handleProbeButtonActions() {
+    extern unsigned long startupTimers[];
+    extern int probeToggle(void);  // Defined in Peripherals.cpp
+    extern class ProbeButton& probeButton;  // High-frequency button service
+    
+    // Handle probe toggle when brightenedNet is active
+    if (brightenedNet > 0) {
+        int probeToggleResult = probeToggle();
+        if (probeToggleResult >= 0 && brightenedNet > 0) {
+            blockProbeButton = gpioToggleFrequency;
+            blockProbeButtonTimer = millis();
+        } else if (probeToggleResult == -5) {
+            if (firstConnection > 0) {
+                if (warningNet == brightenedNet && warningTimeout > 0) {
+                    // Trigger probe clear mode
+                    warningTimeout = 0;
+                    connectOrClearProbe = 0;
+                    showProbeLEDs = 2;
+                    probingTimer = millis();
+                    startupTimers[0] = millis();
+                    
+                    // Run probe mode directly instead of goto (it handles button state internally)
+                    probeMode(0, firstConnection);
+                    highlighting.clearHighlighting();
+                    
+                } else {
+                    highlighting.warnNet(firstConnection);
+                    warningTimeout = 3800;
+                    warningTimer = millis();
+                }
+            }
+            blockProbeButton = 800;
+            blockProbeButtonTimer = millis();
+        } else if (probeToggleResult == -3 || probeToggleResult == -2) {
+            blockProbeButton = 800;
+            blockProbeButtonTimer = millis();
+        } else if (probeToggleResult == -4) {
+            firstConnection = -1;
+            blockProbeButton = 800;
+            blockProbeButtonTimer = millis();
+        }
+    } else {
+        firstConnection = -1;
+    }
+    
+    // Check for button press events from high-frequency ProbeButton service
+    int buttonPress = probeButton.getButtonPress();
+    
+    if (buttonPress != 0) {
+        // Button was pressed - stored state changed
+        lastProbeButton = buttonPress;
+        
+        if (buttonPress == 2) {
+            // Connect button pressed - trigger probe connect mode
+            connectOrClearProbe = 1;
+            showProbeLEDs = 1;
+            probingTimer = millis();
+            brightenedNet = 0;
+            core1passthrough = 0;
+            
+            // Run probe mode directly (it handles button blocking/clearing internally)
+            probeMode(1, firstConnection);
+            highlighting.clearHighlighting();
+            
+        } else if (buttonPress == 1) {
+            // Remove button pressed - trigger probe clear mode
+            startupTimers[0] = millis();
+            connectOrClearProbe = 0;
+            showProbeLEDs = 2;
+            probingTimer = millis();
+            brightenedNet = 0;
+            core1passthrough = 0;
+            
+            // Run probe mode directly (it handles button blocking/clearing internally)
+            probeMode(0, firstConnection);
+            highlighting.clearHighlighting();
+        }
+    }
+}
+
+// ============================================================================
+// ProbeSwitch Service Implementation - LOW priority
+// ============================================================================
+
+ProbeSwitch* ProbeSwitch::instance = nullptr;
+
+ProbeSwitch& ProbeSwitch::getInstance() {
+    if (instance == nullptr) {
+        instance = new ProbeSwitch();
+    }
+    return *instance;
+}
+
+/**
+ * @brief Service method for probe switch checking
+ * Checks the 3-position switch state.
+ * LOW priority - not time-critical, can run infrequently.
+ */
+ServiceStatus ProbeSwitch::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Check switch position (cheap: digital read)
+    Probing::getInstance().checkSwitchPosition();
+    
+    return lastStatus;
+}
+
+// ============================================================================
+// ProbePads Service Implementation - LOW priority
+// ============================================================================
+
+ProbePads* ProbePads::instance = nullptr;
+
+ProbePads& ProbePads::getInstance() {
+    if (instance == nullptr) {
+        instance = new ProbePads();
+    }
+    return *instance;
+}
+
+/**
+ * @brief Service method for pad checking
+ * Does expensive ADC pad reading.
+ * LOW priority - expensive and not time-critical.
+ * Rate-limited to 20Hz (every 50ms) to reduce overhead.
+ */
+ServiceStatus ProbePads::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Rate limit to 20Hz (every 50ms) - pad checking is expensive
+    unsigned long now = millis();
+    if (now - lastCheckTime < 50) {
+        return lastStatus;  // Skip this iteration
+    }
+    lastCheckTime = now;
+    
+    // Check pads (expensive: multiple ADC readings)
+    Probing::getInstance().checkPads();
+    lastStatus = ServiceStatus::BUSY;
+    
+    return lastStatus;
+}
+
+// ============================================================================
+// Probing Service Implementation - HIGH priority
+// ============================================================================
+
+/**
+ * @brief Main service method for probing system
+ * 
+ * This is called each loop iteration and handles:
+ * - Reading probe position (HIGH priority - responsive)
+ * - Probe button actions and toggle logic
+ * 
+ * OPTIMIZATION: Expensive operations (checkPads, checkSwitchPosition) are now
+ * handled by separate LOW priority services, keeping this service fast.
+ */
+ServiceStatus Probing::service() {
+    // Update last status for base class tracking
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Check if probe menu is active (blocking)
+    if (sfProbeMenu != 0 || inPadMenu != 0) {
+        lastStatus = ServiceStatus::BLOCKING;
+        return lastStatus;
+    }
+    
+    // Rate limiting for probe reading
+    // Run probe check every ~10ms (100Hz) for responsive probing
+    static unsigned long lastProbeCheckTime = 0;
+    unsigned long now = millis();
+    bool shouldCheckProbe = (now - lastProbeCheckTime >= 10);  // 10ms = 100Hz
+    
+    int probeReading = lastProbeReading;  // Use cached value by default
+    
+    if (shouldCheckProbe) {
+        lastProbeCheckTime = now;
+        
+        // Read probe position (moderately expensive: ADC + mapping)
+        probeReading = justReadProbe(true);
+        lastProbeReading = probeReading;
+        
+        // If we did any work, mark as BUSY
+        if (probeReading > 0) {
+            lastStatus = ServiceStatus::BUSY;
+        }
+    }
+    
+    // Handle probe button actions and toggle logic (always run - critical for UX)
+    handleProbeButtonActions();
+    
+    return lastStatus;
+}
+
+// Global service references
+ProbeSwitch& probeSwitch = ProbeSwitch::getInstance();
+ProbePads& probePads = ProbePads::getInstance();
+
+// Backward compatibility - create references to singleton members
+volatile int& sfProbeMenu = Probing::getInstance().sfProbeMenu;
+unsigned long& probingTimer = Probing::getInstance().probingTimer;
+int& probePin = Probing::getInstance().probePin;
+int& buttonPin = Probing::getInstance().buttonPin;
+volatile unsigned long& blockProbeButton = Probing::getInstance().blockProbeButton;
+volatile unsigned long& blockProbeButtonTimer = Probing::getInstance().blockProbeButtonTimer;
+volatile int& connectOrClearProbe = Probing::getInstance().connectOrClearProbe;
+int& node1or2 = Probing::getInstance().node1or2;
+int& probeHighlight = Probing::getInstance().probeHighlight;
+volatile int& removeFade = Probing::getInstance().removeFade;
+volatile bool& bufferPowerConnected = Probing::getInstance().bufferPowerConnected;
+int& debugProbing = Probing::getInstance().debugProbing;
+volatile int& showingProbeLEDs = Probing::getInstance().showingProbeLEDs;
+int& switchPosition = Probing::getInstance().switchPosition;
+int& probePowerDAC = Probing::getInstance().probePowerDAC;
+int& lastProbePowerDAC = Probing::getInstance().lastProbePowerDAC;
+bool& probePowerDACChanged = Probing::getInstance().probePowerDACChanged;
+int& showProbeCurrent = Probing::getInstance().showProbeCurrent;
+
+// Additional references for global access
+volatile int& inPadMenu = Probing::getInstance().inPadMenu;
+volatile int& checkingButton = Probing::getInstance().checkingButton;
+int& lastProbeLEDs = Probing::getInstance().lastProbeLEDs;
+
+// Export probe maps as references
+int (&probeRowMap)[108] = Probing::getInstance().probeRowMap;
+int (&probeRowMapByPad)[108] = Probing::getInstance().probeRowMapByPad;
+
+// Export pad settings
+int (&logoTopSetting)[2] = Probing::getInstance().logoTopSetting;
+int (&logoBottomSetting)[2] = Probing::getInstance().logoBottomSetting;
+int (&buildingTopSetting)[2] = Probing::getInstance().buildingTopSetting;
+int (&buildingBottomSetting)[2] = Probing::getInstance().buildingBottomSetting;
+
+// ============================================================================
+// Legacy Global Variables (not moved to class yet)
+// ============================================================================
 
 #define SPACE_FROM_LEFT 6
-
-/* clang-format off */
-
-int probeRowMap[108] = {
-    -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, TOP_RAIL, GND,
-    BOTTOM_RAIL, GND, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
-    NANO_D1, NANO_D0, NANO_RESET_1, GND, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12,
-    NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,NANO_5V, NANO_RESET_0, GND, NANO_VIN,
-    LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1
-  };
-
-  int probeRowMapByPad[108] = {
-    -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, TOP_RAIL, TOP_RAIL_GND,
-    BOTTOM_RAIL, BOTTOM_RAIL_GND, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
-    NANO_D1, NANO_D0, NANO_RESET_1, NANO_GND_1, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12,
-    NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,NANO_5V, NANO_RESET_0, NANO_GND_0, NANO_VIN,
-    LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1
-  };
-
-/* clang-format on */
 
 int lastReadRaw = 0;
 
 int probeHalfPeriodus = 20;
-
-unsigned long probingTimer = 0;
 
 unsigned long probeTimeout = 0;
 
@@ -82,27 +589,15 @@ int connectedRows[ 32 ] = { -1 };
 
 int nodesToConnect[ 2 ] = { -1, -1 };
 
-int node1or2 = 0;
-
-int probePin = 10;
-int buttonPin = 9;
-
 unsigned long probeButtonTimer = 0;
 
 int voltageSelection = SUPPLY_3V3;
 int voltageChosen = 0;
-volatile int connectOrClearProbe = 0;
 
-volatile int inPadMenu = 0;
 int rainbowList[ 13 ][ 3 ] = {
     { 40, 50, 80 }, { 88, 33, 70 }, { 30, 15, 45 }, { 8, 27, 45 }, { 45, 18, 19 }, { 35, 42, 5 }, { 02, 45, 35 }, { 18, 25, 45 }, { 40, 12, 45 }, { 10, 32, 45 }, { 18, 5, 43 }, { 45, 28, 13 }, { 8, 12, 8 } };
 
-// int nextIsSupply = 0;
-// int nextIsGnd = 0;
-// int justCleared = 1;
-
 int checkingPads = 0;
-int probeHighlight = -1;
 
 int justAttached = 0;
 uint32_t deleteFade[ 13 ] = { 0x371f16, 0x28160b, 0x191307, 0x141005, 0x0f0901,
@@ -112,11 +607,16 @@ uint32_t deleteFadeSides[ 13 ] = { 0x030003, 0x020002, 0x010001, 0x000000, 0x000
                                    0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
                                    0x000000, 0x000000, 0x000000 };
 int fadeIndex = 0;
-volatile int removeFade = 0;
 
-int probeMode( int setOrClear, int firstConnection ) {
+int Probing::probeMode( int setOrClear, int firstConnection ) {
 
     // clearColorOverrides(1, 1, 0);
+
+    // Block button and clear any pre-existing state to prevent double-detection
+    blockProbeButton = 3000;
+    blockProbeButtonTimer = millis();
+    probeButton.clearButtonState();  // Clear the button state that triggered entry
+
 
     if ( firstConnection > 0 ) {
         // Serial.print("firstConnection: ");
@@ -301,6 +801,9 @@ restartProbingNoPrint:
     while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 6200 &&
             encoderButtonState == IDLE ) {
         delayMicroseconds( 500 );
+        
+        // Keep critical services (like ProbeButton) running during blocking probeMode
+        jOS.serviceCritical();
 
         connectedRowsIndex = 0;
 
@@ -326,9 +829,7 @@ restartProbingNoPrint:
         }
 
         if ( row[ 0 ] == -1 ) {
-
-          tuiGlue.loop();
-          
+          //tuiGlue.loop();
         }
         // Serial.println(row[0]);
 
@@ -970,14 +1471,26 @@ restartProbingNoPrint:
     // showLEDsCore2 = -1;
     oled.showJogo32h( );
 
+    // Wait for button to be released before exiting
+    // This prevents the press that triggered probeMode from being detected again
+    // while (probeButton.getButtonState() != 0) {
+    //     delay(10);  // Wait for user to release button
+    // }
+    
+    // Clear any residual button state and block for safety
+    probeButton.clearButtonState();
+    blockProbeButton = 1000;  // Extra 100ms safety margin
+    blockProbeButtonTimer = millis();
+
     return 1;
 }
 
 volatile int measureModeActive = 0;
 
-float measureMode( int updateSpeed ) {
+float Probing::measureMode( int updateSpeed ) {
     measureModeActive = 1;
-    while ( checkProbeButton( ) != 0 ) {
+    // Wait for button release (use state-based check, doesn't consume event)
+    while ( checkProbeButtonState( ) != 0 ) {
         delay( 1 );
     }
     //   removeBridgeFromNodeFile(ROUTABLE_BUFFER_IN, -1, netSlot, 1);
@@ -986,7 +1499,8 @@ float measureMode( int updateSpeed ) {
 
     // refreshLocalConnections();
     float measurement = 0.0;
-    while ( checkProbeButton( ) == 0 ) {
+    // Loop until button pressed (use state-based check, doesn't consume event)
+    while ( checkProbeButtonState( ) == 0 ) {
         measurement = ( readAdc( 7, 16 ) * ( 16.0 / 4090 ) ) - 8.0;
         if ( measurement > -0.05 && measurement < 0.05 ) {
             measurement = 0.0;
@@ -1019,7 +1533,6 @@ float measureMode( int updateSpeed ) {
 }
 
 unsigned long blinkTimer = 0;
-volatile int sfProbeMenu = 0;
 
 uint32_t sfOptionColors[ 12 ] = {
     0x09000a,
@@ -1036,7 +1549,7 @@ uint32_t sfOptionColors[ 12 ] = {
     0x070006,
 };
 
-int selectSFprobeMenu( int function ) {
+int Probing::selectSFprobeMenu( int function ) {
 
     if ( checkingPads == 1 ) {
         // inPadMenu = 0;
@@ -1244,12 +1757,7 @@ int selectSFprobeMenu( int function ) {
     return function;
 }
 
-int logoTopSetting[ 2 ] = { -1, -1 }; //{function, settingOption}
-int logoBottomSetting[ 2 ] = { -1, -1 };
-int buildingTopSetting[ 2 ] = { -1, -1 };
-int buildingBottomSetting[ 2 ] = { -1, -1 };
-
-int attachPadsToSettings( int pad ) {
+int Probing::attachPadsToSettings( int pad ) {
     int function = -1;
     int functionSetting = -1; // 0 = DAC, 1 = ADC, 2 = GPIO
     int settingOption =
@@ -1462,28 +1970,33 @@ int attachPadsToSettings( int pad ) {
     return function;
 }
 
-int delayWithButton( int delayTime ) {
+int Probing::delayWithButton( int delayTime ) {
+    // Rewritten to use state-based API (doesn't consume button events)
+    // This allows button presses to propagate to outer probe mode logic
     unsigned long skipTimer = millis( );
+    int lastSeenState = 0;
+    
     while ( millis( ) - skipTimer < delayTime ) {
-        int reading = checkProbeButton( );
-        if ( reading == 1 ) {
-            // Serial.print("skipped 1 ");
-            // Serial.println(millis() - skipTimer);
-
-            return 1;
-        } else if ( reading == 2 ) {
-            // Serial.print("skipped 2 ");
-            // Serial.println(millis() - skipTimer);
-            return 2;
+        // Check CURRENT state without consuming events
+        int currentState = probeButton.getButtonState();
+        
+        // Detect button press (transition from 0 to pressed)
+        if (currentState != 0 && lastSeenState == 0) {
+            // Button just pressed - return which button it was
+            // Serial.print("delayWithButton detected press: ");
+            // Serial.println(currentState);
+            return currentState;
         }
+        
+        lastSeenState = currentState;
         delayMicroseconds( 100 );
     }
-    // Serial.print("skipped 0 ");
-    // Serial.println(millis() - skipTimer);
+    
+    // Timeout - no button pressed
     return 0;
 }
 
-int chooseDAC( int justPickOne ) {
+int Probing::chooseDAC( int justPickOne ) {
     int function = -1;
     // b.clear();
     clearLEDsExceptRails( );
@@ -1553,7 +2066,7 @@ int chooseDAC( int justPickOne ) {
 
     return function;
 }
-int chooseADC( void ) {
+int Probing::chooseADC( void ) {
     int function = -1;
     // b.clear();
 
@@ -1673,7 +2186,7 @@ int chooseADC( void ) {
     return function;
 }
 
-int chooseGPIOinputOutput( int gpioChosen ) {
+int Probing::chooseGPIOinputOutput( int gpioChosen ) {
     int settingOption = -1;
 
     b.print( "Input", sfOptionColors[ gpioChosen + 1 % 7 ], 0xFFFFFF, 1, 0, 3 );
@@ -1686,7 +2199,9 @@ int chooseGPIOinputOutput( int gpioChosen ) {
     // Serial.println(gpioChosen);
 
     // delay(100);
-
+    
+    // Loop until option selected or button pressed to exit
+    // longShortPress now uses state-based API, won't consume events
     while ( settingOption == -1 && longShortPress( 500 ) != 1 ) {
         int reading = justReadProbe( );
         if ( reading != -1 ) {
@@ -1724,7 +2239,7 @@ int chooseGPIOinputOutput( int gpioChosen ) {
     return settingOption;
 }
 
-int chooseGPIO( int skipInputOutput ) {
+int Probing::chooseGPIO( int skipInputOutput ) {
     int function = -1;
 
     b.clear( );
@@ -1795,7 +2310,9 @@ int chooseGPIO( int skipInputOutput ) {
     // delayWithButton(300);
     //  return 0;
     int outIn = 2;
-    while ( selected == -1 && checkProbeButton( ) == 0 ) {
+    // Loop until GPIO selected or button pressed to exit
+    // Use state-based check - doesn't consume events
+    while ( selected == -1 && checkProbeButtonState( ) == 0 ) {
         int reading = justReadProbe( );
         if ( reading != -1 ) {
             switch ( reading ) {
@@ -1940,7 +2457,7 @@ int chooseGPIO( int skipInputOutput ) {
             updateStateFromGPIOConfig( );
             // gpioState[gpioChosen] = 4;
             // updateGPIOConfigFromState();
-            configChanged = true;
+            //configChanged = true;
             // printGPIOState();
             //  }
         } else if ( outIn == 0 ) {
@@ -1950,7 +2467,7 @@ int chooseGPIO( int skipInputOutput ) {
             updateStateFromGPIOConfig( );
             // gpioState[gpioChosen] = 0;
             // updateGPIOConfigFromState();
-            configChanged = true;
+            //configChanged = true;
             // printGPIOState();
             //}
         }
@@ -1972,7 +2489,7 @@ int chooseGPIO( int skipInputOutput ) {
     return function;
 }
 
-float voltageSelect( int fiveOrEight ) {
+float Probing::voltageSelect( int fiveOrEight ) {
     float voltageProbe = 0.0;
     uint32_t color = 0x000000;
 
@@ -2056,7 +2573,8 @@ float voltageSelect( int fiveOrEight ) {
                 showLEDsCore2 = -2;
                 delay( 10 );
             }
-            if ( checkProbeButton( ) > 0 || vSelected == 10 ) {
+            // Check button state to exit voltage selection (state-based, doesn't consume event)
+            if ( checkProbeButtonState( ) > 0 || vSelected == 10 ) {
                 // Serial.println("button\n\r");
 
                 rawSpecialNetColors[ 4 ] = color;
@@ -2074,7 +2592,7 @@ float voltageSelect( int fiveOrEight ) {
                     Serial.println( "encoder button\n\r" );
                     delay( 500 );
                 }
-                // if (checkProbeButton() == 2) {
+                // if (checkProbeButtonState() == 2) {
                 //   vSelected = 10;
                 // }
                 vSelected = 1;
@@ -2173,7 +2691,8 @@ float voltageSelect( int fiveOrEight ) {
                 // delay(10);
             }
 
-            if ( checkProbeButton( ) > 0 || vSelected == 10 ) {
+            // Check button state to exit voltage selection (state-based, doesn't consume event)
+            if ( checkProbeButtonState( ) > 0 || vSelected == 10 ) {
                 Serial.println( " " );
 
                 rawSpecialNetColors[ 4 ] = color;
@@ -2202,7 +2721,7 @@ float voltageSelect( int fiveOrEight ) {
     return 0.0;
 }
 
-int checkSwitchPosition( ) { // 0 = measure, 1 = select
+int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 
     // Debounce/glitch filter and timing: only sample at a fixed interval.
     static bool have_previous_read = false;
@@ -2289,7 +2808,7 @@ int checkSwitchPosition( ) { // 0 = measure, 1 = select
 }
 
 
-float checkProbeCurrent( void ) {
+float Probing::checkProbeCurrent( void ) {
     // showProbeLEDs = 10;
     // probeLEDs.setPixelColor( 0, 0x010101 );
     // probeLEDs.show( );
@@ -2362,7 +2881,7 @@ float checkProbeCurrent( void ) {
     return current;
 }
 
-float checkProbeCurrentZero( void ) {
+float Probing::checkProbeCurrentZero( void ) {
 
     showProbeLEDs = 10;
     probeLEDs.setPixelColor( 0, 0x000000 );
@@ -2407,7 +2926,7 @@ float checkProbeCurrentZero( void ) {
     return current;
 }
 
-void routableBufferPower( int offOn, int flash, int force ) {
+void Probing::routableBufferPower( int offOn, int flash, int force ) {
     int flashOrLocal;
 
     if ( flash == 1 ) {
@@ -2550,520 +3069,6 @@ void routableBufferPower( int offOn, int flash, int force ) {
     probePowerDACChanged = false;
 }
 
-int selectFromLastFound( void ) {
-
-    rawOtherColors[ 1 ] = 0x0010ff;
-
-    blinkTimer = 0;
-    int selected = 0;
-    int selectionConfirmed = 0;
-    int selected2 = connectedRows[ selected ];
-    Serial.print( "\n\r" );
-    Serial.print( "      multiple nodes found\n\n\r" );
-    Serial.print( "  short press = cycle through nodes\n\r" );
-    Serial.print( "  long press  = select\n\r" );
-
-    Serial.print( "\n\r " );
-    for ( int i = 0; i < connectedRowsIndex; i++ ) {
-
-        printNodeOrName( connectedRows[ i ] );
-        if ( i < connectedRowsIndex - 1 ) {
-            Serial.print( ", " );
-        }
-    }
-    Serial.print( "\n\n\r" );
-    delay( 10 );
-
-    uint32_t previousColor[ 10 ];
-
-    for ( int i = 0; i < connectedRowsIndex; i++ ) {
-        previousColor[ i ] = leds.getPixelColor( nodesToPixelMap[ connectedRows[ i ] ] );
-    }
-    int lastSelected = -1;
-
-    while ( selectionConfirmed == 0 ) {
-        probeTimeout = millis( );
-        // if (millis() - blinkTimer > 100)
-        // {
-        if ( lastSelected != selected && selectionConfirmed == 0 ) {
-            for ( int i = 0; i < connectedRowsIndex; i++ ) {
-                if ( i == selected ) {
-                    leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ],
-                                        rainbowList[ 1 ][ 0 ], rainbowList[ 1 ][ 1 ],
-                                        rainbowList[ 1 ][ 2 ] );
-                } else {
-                    // uint32_t previousColor =
-                    // leds.getPixelColor(nodesToPixelMap[connectedRows[i]]);
-                    if ( previousColor[ i ] != 0 ) {
-                        int r = ( previousColor[ i ] >> 16 ) & 0xFF;
-                        int g = ( previousColor[ i ] >> 8 ) & 0xFF;
-                        int b = ( previousColor[ i ] >> 0 ) & 0xFF;
-                        leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ], ( r / 4 ) + 5,
-                                            ( g / 4 ) + 5, ( b / 4 ) + 5 );
-                    } else {
-
-                        leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ],
-                                            rainbowList[ 1 ][ 0 ] / 8, rainbowList[ 1 ][ 1 ] / 8,
-                                            rainbowList[ 1 ][ 2 ] / 8 );
-                    }
-                }
-            }
-            lastSelected = selected;
-
-            Serial.print( " \r" );
-            // Serial.print("");
-            printNodeOrName( connectedRows[ selected ] );
-            Serial.print( "  " );
-        }
-        // leds.show();
-        showLEDsCore2 = 2;
-        blinkTimer = millis( );
-        //  }
-        delay( 30 );
-        int longShort = longShortPress( );
-        delay( 5 );
-        if ( longShort == 1 ) {
-            selectionConfirmed = 1;
-            // for (int i = 0; i < connectedRowsIndex; i++)
-            // {
-            //     if (i == selected)
-            //     // if (0)
-            //     {
-            //         leds.setPixelColor(nodesToPixelMap[connectedRows[i]],
-            //         rainbowList[rainbowIndex][0], rainbowList[rainbowIndex][1],
-            //         rainbowList[rainbowIndex][2]);
-            //     }
-            //     else
-            //     {
-            //         leds.setPixelColor(nodesToPixelMap[connectedRows[i]], 0, 0, 0);
-            //     }
-            // }
-            // showLEDsCore2 = 1;
-            // selected = lastFound[node1or2][selected];
-            //  clearLastFound();
-
-            // delay(500);
-            selected2 = connectedRows[ selected ];
-            // return selected2;
-            break;
-        } else if ( longShort == 0 ) {
-
-            selected++;
-            blinkTimer = 0;
-
-            if ( selected >= connectedRowsIndex ) {
-
-                selected = 0;
-            }
-            // delay(100);
-        }
-        delay( 15 );
-        //  }
-        //}
-
-        // showLEDsCore2 = 1;
-    }
-    selected2 = connectedRows[ selected ];
-
-    for ( int i = 0; i < connectedRowsIndex; i++ ) {
-        if ( i == selected ) {
-            leds.setPixelColor( nodesToPixelMap[ connectedRows[ selected ] ],
-                                rainbowList[ 0 ][ 0 ], rainbowList[ 0 ][ 1 ],
-                                rainbowList[ 0 ][ 2 ] );
-        } else if ( previousColor[ i ] != 0 ) {
-
-            int r = ( previousColor[ i ] >> 16 ) & 0xFF;
-            int g = ( previousColor[ i ] >> 8 ) & 0xFF;
-            int b = ( previousColor[ i ] >> 0 ) & 0xFF;
-            leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ], r, g, b );
-        } else {
-
-            leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ], 0, 0, 0 );
-        }
-    }
-
-    // leds.setPixelColor(nodesToPixelMap[selected2], rainbowList[0][0],
-    // rainbowList[0][1], rainbowList[0][2]); leds.show(); showLEDsCore2 = 1;
-    probeButtonTimer = millis( );
-    // connectedRowsIndex = 0;
-    // justSelectedConnectedNodes = 1;
-    return selected2;
-}
-
-int longShortPress( int pressLength ) {
-    int longShort = 0;
-    unsigned long clickTimer = 0;
-
-    clickTimer = millis( );
-    int buttonState = checkProbeButton( );
-    if ( buttonState > 0 ) {
-
-        while ( millis( ) - clickTimer < pressLength ) {
-            if ( checkProbeButton( ) == 0 ) {
-                // Serial.print("buttonState: ");
-                // Serial.println(buttonState);
-                return buttonState;
-            }
-            delay( 5 );
-        }
-    } else {
-        return -1;
-    }
-    // Serial.print("buttonState: ");
-    // Serial.println(buttonState);
-    return buttonState;
-}
-
-int countLED = 0;
-volatile int checkingButton = 0;
-int lastProbeButtonState = 0;
-#define BUTTON_SETTLE_US 22
-#define BUTTON_SETTLE_SHORT_US 4
-//// @brief checks the probe button and returns the state of the button, it's blocking but fast
-/// @return 0 = neither pressed, 1 = remove button, 2 = connect button
-int checkProbeButton( void ) {
-
-    // return 0;
-
-    // unsigned long timeStart = micros();
-
-
-
-    int buttonState = 0;
-    int buttonState2 = 0;
-    int buttonState3 = 0;
-    checkingButton = 1;
-
-    int returnState = 0;
-    gpio_function_t lastProbeButtonFunction = gpio_get_function( 2 );
-
-    // what we're doing here is tricking the Neopixel library into letting us use
-    // its pin to read the 2 buttons on the probe without it stopping
-
-    while ( showingProbeLEDs == 1 ) {
-
-        // while (showingProbeLEDs == 1) {
-        //   tight_loop_contents();
-        //   }
-        //return 0;
-        // delay(10);
-    }
-    // waitCore2();
-    // // setDac0voltage(3.33, 1, 1);
-
-    core1busy = true;
-
-    // pinMode(BUTTON_PIN, INPUT);
-    gpio_set_dir( BUTTON_PIN, false );
-
-    gpio_set_function( PROBE_LED_PIN, GPIO_FUNC_SIO );
-
-    gpio_disable_pulls( PROBE_LED_PIN );
-
-    gpio_set_dir( PROBE_LED_PIN, false );
-
-    delayMicroseconds( BUTTON_SETTLE_US );
-
-    // pinMode(PROBE_PIN, OUTPUT_12MA);
-    gpio_set_dir( PROBE_PIN, true );
-
-    // digitalWrite(PROBE_PIN, HIGH);
-    gpio_put( PROBE_PIN, true );
-
-    gpio_set_pulls( BUTTON_PIN, false, true );
-
-    gpio_set_input_enabled( BUTTON_PIN, true ); // rp2350 errata hack: setting it to input
-    // right before reading and back fixes it
-    buttonState = gpio_get( BUTTON_PIN );
-
-    gpio_set_input_enabled( BUTTON_PIN, false );
-
-    delayMicroseconds( BUTTON_SETTLE_US );
-
-    gpio_set_pulls( BUTTON_PIN, true, false );
-    gpio_set_input_enabled( BUTTON_PIN, true );
-
-    delayMicroseconds( BUTTON_SETTLE_US ); // pinMode(BUTTON_PIN, INPUT_PULLDOWN);
-
-    buttonState2 = gpio_get( BUTTON_PIN );
-
-    gpio_set_input_enabled( BUTTON_PIN, false );
-    // delayMicroseconds(BUTTON_SETTLE_SHORT_US);
-
-    delayMicroseconds( BUTTON_SETTLE_US );
-
-    gpio_set_pulls( BUTTON_PIN, false, false );
-
-    delayMicroseconds( BUTTON_SETTLE_US );
-
-    // pinMode(BUTTON_PIN, OUTPUT_8MA);
-    gpio_set_dir( BUTTON_PIN, true );
-
-    // digitalWrite(BUTTON_PIN, LOW);
-    gpio_put( BUTTON_PIN, false );
-
-    delayMicroseconds( BUTTON_SETTLE_SHORT_US );
-
-    // pinMode(BUTTON_PIN, INPUT);
-    gpio_set_dir( BUTTON_PIN, false );
-
-    gpio_set_pulls( BUTTON_PIN, false, true );
-
-    gpio_set_input_enabled( BUTTON_PIN, true );
-
-    buttonState3 = gpio_get( BUTTON_PIN );
-
-    gpio_set_input_enabled( BUTTON_PIN, false );
-
-    gpio_set_pulls( BUTTON_PIN, false, false );
-
-    gpio_set_function( PROBE_LED_PIN, lastProbeButtonFunction );
-
-    checkingButton = 0;
-    core1busy = false;
-    // delayMicroseconds(500);
-    // probeLEDs.show();
-
-    // // Check if button is physically not being pressed (both states are not triggered)
-    // bool buttonNotPressed = (buttonState != 1 || buttonState2 != 1 || buttonState3 != 1) &&
-    //   (buttonState != 0 || buttonState2 != 0 || buttonState3 != 0);
-
-    // // If button is not pressed and blockProbeButton is active, clear it
-    // if (buttonNotPressed && blockProbeButton != 0) {
-    //   blockProbeButton = 0;
-    //   }
-
-      // Check if button is physically not being pressed (both states are not triggered)
-  bool buttonNotPressed = (buttonState != 1 || buttonState2 != 1 || buttonState3 != 1) &&
-  (buttonState != 0 || buttonState2 != 0 || buttonState3 != 0);
-
-// If button is not pressed and blockProbeButton is active, clear it
-if (buttonNotPressed && blockProbeButton != 0) {
-  blockProbeButton = 0;
-  }
-
-// If blockProbeButton is active, ignore button press and return 0
-if (blockProbeButton != 0) {
-  // Still check timer-based clearing as a fallback
-  if (millis() - blockProbeButtonTimer > blockProbeButton) {
-    blockProbeButton = 0;
-    } else {
-      returnState = 0;
-    return 0;
-    }
-  }
-
-    if ( buttonState == 1 && buttonState2 == 1 &&
-         buttonState3 == 1 ) { // disconnect Button
-
-        // unsigned long timeEnd = micros();
-        // Serial.print("checkProbeButton time: ");
-        // Serial.println(timeEnd - timeStart);
-        // Serial.flush();
-
-        if ( jumperlessConfig.hardware.probe_revision >= 4 ) {
-            //clear blockProbeButton if it's not the same as the last state
-
-            
-            returnState = 2;
-        } else {
-            //clear blockProbeButton if it's not the same as the last state
-
-            returnState = 1;
-        }
-        // return 1;
-    } else if ( buttonState == 0 && buttonState2 == 0 &&
-                buttonState3 == 0 ) { // connect Button
-
-        if ( jumperlessConfig.hardware.probe_revision >= 4 ) {
-       
-            returnState = 1;
-        } else {
-
-            returnState = 2;
-        }
-        // return 2;
-    }
-
-
-// if (returnState != lastProbeButtonState) {
-//     blockProbeButton = 0;
-// }
-
-
-
-
-      //   // If blockProbeButton is active, ignore button press and return 0
-      //   if ( blockProbeButton != 0 ) {
-      //     // Still check timer-based clearing as a fallback
-      //     if ( millis( ) - blockProbeButtonTimer > blockProbeButton ) {
-      //       Serial.println("blockProbeButton cleared");
-      //       Serial.flush();
-      //         blockProbeButton = 0;
-             
-      //     } else {
-      //       // if (returnState != lastProbeButtonState && returnState != 0) {
-      //       //     blockProbeButton = 0;
-      //       // }
-      //         Serial.println("blockProbeButton not cleared");
-      //         Serial.flush();
-      //         returnState = 0;
-      //     }
-      // }
-
-
-    //lastProbeButtonState = 0;
-    //   Serial.print("buttonState ");
-    // Serial.println(buttonState);
-    // Serial.print("buttonState2 ");
-    // Serial.println(buttonState2);
-    // Serial.println(" ");
-
-    lastProbeButtonState = returnState;
-
-
-    return returnState;
-}
-
-int readFloatingOrState( int pin, int rowBeingScanned ) { // this is the old probe reading code
-    // return 0;
-    enum measuredState state = unknownState;
-    // enum measuredState state2 = floating;
-
-    int readingPullup = 0;
-    int readingPullup2 = 0;
-    int readingPullup3 = 0;
-
-    int readingPulldown = 0;
-    int readingPulldown2 = 0;
-    int readingPulldown3 = 0;
-
-    // pinMode(pin, INPUT_PULLUP);
-
-    if ( rowBeingScanned != -1 ) {
-
-        analogWrite( PROBE_PIN, 128 );
-
-        while ( 1 ) // this is the silliest way to align to the falling edge of the
-                    // probe PWM signal
-        {
-            if ( gpio_get( PROBE_PIN ) != 0 ) {
-                if ( gpio_get( PROBE_PIN ) == 0 ) {
-                    break;
-                }
-            }
-        }
-    }
-
-    delayMicroseconds( ( probeHalfPeriodus * 5 ) + ( probeHalfPeriodus / 2 ) );
-
-    readingPullup = digitalRead( pin );
-    delayMicroseconds( probeHalfPeriodus * 3 );
-    readingPullup2 = digitalRead( pin );
-    delayMicroseconds( probeHalfPeriodus * 1 );
-    readingPullup3 = digitalRead( pin );
-
-    // pinMode(pin, INPUT_PULLDOWN);
-
-    if ( rowBeingScanned != -1 ) {
-        while ( 1 ) // this is the silliest way to align to the falling edge of the
-                    // probe PWM signal
-        {
-            if ( gpio_get( PROBE_PIN ) != 0 ) {
-                if ( gpio_get( PROBE_PIN ) == 0 ) {
-                    break;
-                }
-            }
-        }
-    }
-
-    delayMicroseconds( ( probeHalfPeriodus * 5 ) + ( probeHalfPeriodus / 2 ) );
-
-    readingPulldown = digitalRead( pin );
-    delayMicroseconds( probeHalfPeriodus * 3 );
-    readingPulldown2 = digitalRead( pin );
-    delayMicroseconds( probeHalfPeriodus * 1 );
-    readingPulldown3 = digitalRead( pin );
-
-    // if (readingPullup == 0 && readingPullup2 == 1 && readingPullup3 == 0 &&
-    // readingPulldown == 1 && readingPulldown2 == 0 && readingPulldown3 == 1)
-    // {
-    //     state = probe;
-    // }
-
-    if ( ( readingPullup != readingPullup2 || readingPullup2 != readingPullup3 ) &&
-         ( readingPulldown != readingPulldown2 ||
-           readingPulldown2 != readingPulldown3 ) &&
-         rowBeingScanned != -1 ) {
-        state = probe;
-
-        // if (readingPulldown != readingPulldown2 || readingPulldown2 !=
-        // readingPulldown3)
-        // {
-        //     state = probe;
-
-        // } else
-        // {
-        //     Serial.print("!");
-        // }
-    } else {
-
-        if ( readingPullup2 == 1 && readingPulldown2 == 0 ) {
-
-            state = floating;
-        } else if ( readingPullup2 == 1 && readingPulldown2 == 1 ) {
-            //              Serial.print(readingPullup);
-            // // Serial.print(readingPullup2);
-            // // Serial.print(readingPullup3);
-            // // //Serial.print(" ");
-            //  Serial.print(readingPulldown);
-            // // Serial.print(readingPulldown2);
-            // // Serial.print(readingPulldown3);
-            //  Serial.print("\n\r");
-
-            state = high;
-        } else if ( readingPullup2 == 0 && readingPulldown2 == 0 ) {
-            //  Serial.print(readingPullup);
-            // // Serial.print(readingPullup2);
-            // // Serial.print(readingPullup3);
-            // // //Serial.print(" ");
-            //  Serial.print(readingPulldown);
-            // // Serial.print(readingPulldown2);
-            // // Serial.print(readingPulldown3);
-            //  Serial.print("\n\r");
-            state = low;
-        } else if ( readingPullup == 0 && readingPulldown == 1 ) {
-            // Serial.print("shorted");
-        }
-    }
-
-    // Serial.print("\n");
-    // showLEDsCore2 = 1;
-    // leds.show();
-    // delayMicroseconds(100);
-
-    return state;
-}
-
-void startProbe( long probeSpeed ) {
-
-    // pinMode(PROBE_PIN, OUTPUT_4MA);
-    // // pinMode(BUTTON_PIN, INPUT_PULLDOWN);
-    // // pinMode(ADC0_PIN, INPUT);
-    // digitalWrite(PROBE_PIN, HIGH);
-}
-
-void stopProbe( ) {
-    // pinMode(PROBE_PIN, INPUT);
-    // pinMode(BUTTON_PIN, INPUT);
-}
-
-int checkLastFound( int found ) {
-    int found2 = 0;
-    return found2;
-}
-
-void clearLastFound( ) {}
 
 int probeADCmap[ 102 ];
 
@@ -3100,7 +3105,7 @@ int mapFrom = 15;
 
 int nothingTouchedSamples[ 16 ] = { 0 };
 
-int getNothingTouched( int samples ) {
+int Probing::getNothingTouched( int samples ) {
 
     startProbe( );
     int rejects = 0;
@@ -3186,7 +3191,7 @@ unsigned long padNoTouch = 0;
 int lastPadTouchedTime = 0;
 int samePadCount = 0;
 
-void checkPads( void ) {
+void Probing::checkPads( void ) {
     // startProbe();
     checkingPads = 1;
 
@@ -3344,7 +3349,7 @@ void checkPads( void ) {
 float longRunningAverage = 0.0;
 int longRunningAverageDamping = 10;
 
-int readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
+int Probing::readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
     // nothingTouchedReading = 165;
     // lastReadRaw = 0;
 
@@ -3483,11 +3488,17 @@ int lastRowProbed = -1;
 unsigned long lastDuplicateTime = millis( );
 int lastDuplicateRead = 0;
 
-int justReadProbe( bool allowDuplicates, int rawPad ) {
+int Probing::justReadProbe( bool allowDuplicates, int rawPad ) {
 
-    if ( blockProbing > 0 ) {
-        return -1;
+    // Check if probing is blocked and if the block timer has expired
+    if ( blockProbing > 0 && ( millis() - blockProbingTimer < blockProbing ) ) {
+        return -1;  // Still blocked
     }
+    // Block expired, clear it
+    if ( blockProbing > 0 ) {
+        blockProbing = 0;
+    }
+    
     int probeRead = readProbeRaw( 0, allowDuplicates );
 
     if ( probeRead <= 0 ) {
@@ -3555,15 +3566,20 @@ int justReadProbe( bool allowDuplicates, int rawPad ) {
 }
 /// @brief returns the row probed plus checks for button presses, or -1 if nothing
 /// @return -16 connect, -18 remove, -19 encoder up, -17 encoder down, -10 encoder pressed
-int readProbe( ) {
+int Probing::readProbe( ) {
     int found = -1;
     // connectedRows[0] = -1;
     unsigned long buttonCheck = 0;
     // if (checkProbeButton() == 1) {
     //   return -18;
     // }
+    // Check if probing is blocked and if the block timer has expired
+    if ( blockProbing > 0 && ( millis() - blockProbingTimer < blockProbing ) ) {
+        return -1;  // Still blocked
+    }
+    // Block expired, clear it
     if ( blockProbing > 0 ) {
-        return -1;
+        blockProbing = 0;
     }
 
     int probeRead = readProbeRaw( );
@@ -3596,19 +3612,13 @@ int readProbe( ) {
         }
 
         // buttonCheck = millis();
-        if ( millis( ) - buttonCheck > 20 ) {
-            buttonCheck = millis( );
+       // Check button state (blocking is handled by ProbeButton service)
             int buttonState = checkProbeButton( );
             if ( buttonState == 1 ) {
-                blockProbeButton = 3000;
-                blockProbeButtonTimer = millis( );
                 return -18;
             } else if ( buttonState == 2 ) {
-                blockProbeButton = 3000;
-                blockProbeButtonTimer = millis( );
                 return -16;
             }
-        }
 
         // delayMicroseconds(200);
 
@@ -3683,7 +3693,554 @@ int readProbe( ) {
     // return probeRowMap[rowProbed];
 }
 
-int scanRows( int pin ) {
+int hsvProbe = 0;
+int hsvProbe2 = 0;
+unsigned long probeRainbowTimer = 0;
+
+void Probing::probeLEDhandler( void ) {
+
+    // core2busy = true;
+    //  pinMode(2, OUTPUT);
+    //  pinMode(9, INPUT);
+    showingProbeLEDs = 1;
+    // if (showProbeLEDs != 0) {
+    //         Serial.print("showProbeLEDs = ");
+    // Serial.println(showProbeLEDs);
+    // }
+    switch ( showProbeLEDs ) {
+    case 1:
+        if ( connectOrClearProbe == 1 && node1or2 == 1 ) {
+            probeLEDs.setPixelColor( 0, 0x0f0fc6 ); // connect bright
+        } else {
+            probeLEDs.setPixelColor( 0, 0x000032 ); // connect
+        }
+        // probeLEDs[0].setColorCode(0x000011);
+        //  Serial.println(showProbeLEDs);
+        //   probeLEDs.show();
+        // showProbeLEDs = 0;
+        break;
+    case 2: {
+
+        // if (connectOrClearProbe == 0) {
+        //  Serial.print("removeFade = ");
+        //  Serial.println(removeFade);
+        switch ( removeFade ) {
+        case 0:
+            probeLEDs.setPixelColor( 0, 0x280000 ); // remove
+            break;
+        case 1:
+            probeLEDs.setPixelColor( 0, 0x330101 ); // remove
+            break;
+        case 2:
+            probeLEDs.setPixelColor( 0, 0x3c0202 ); // remove
+            break;
+        case 3:
+            probeLEDs.setPixelColor( 0, 0x450303 ); // remove
+            break;
+        case 4:
+            probeLEDs.setPixelColor( 0, 0x4e0404 ); // remove
+            break;
+        case 5:
+            probeLEDs.setPixelColor( 0, 0x570505 ); // remove
+            break;
+        case 6:
+            probeLEDs.setPixelColor( 0, 0x600707 ); // remove
+            break;
+        case 7:
+            probeLEDs.setPixelColor( 0, 0x690909 ); // remove
+            break;
+        case 8:
+            probeLEDs.setPixelColor( 0, 0x820a0a ); // remove
+            break;
+        case 9:
+            probeLEDs.setPixelColor( 0, 0xab1010 ); // remove
+            break;
+        case 10:
+            probeLEDs.setPixelColor( 0, 0xff1a1a ); // remove
+            break;
+        default:
+            probeLEDs.setPixelColor( 0, 0x280000 ); // remove
+            break;
+        }
+        // } else {
+        //   probeLEDs.setPixelColor(0, 0x360000); // remove
+        // }
+        // probeLEDs.setPixelColor(0, 0x360000); // remove
+        // probeLEDs[0].setColorCode(0x110000);
+        // probeLEDs.show();
+        //  Serial.println(showProbeLEDs);
+        showProbeLEDs = 0;
+        break;
+    }
+    case 3:
+        probeLEDs.setPixelColor( 0, 0x003600 ); // measure
+        // probeLEDs[0].setColorCode(0x001100);
+        //  probeLEDs.show();
+        //  Serial.println(showProbeLEDs);
+        break;
+    case 4:
+
+        probeLEDs.setPixelColor( 0, 0x170c17 ); // select idle
+        // probeLEDs[0].setColorCode(0x110011);
+        //  probeLEDs.show();
+        //  Serial.println(showProbeLEDs);
+        break;
+    case 5:
+        probeLEDs.setPixelColor( 0, 0x111111 ); // all
+        // probeLEDs[0].setColorCode(0x111111);
+        //  Serial.println(showProbeLEDs);
+        break;
+    case 6:
+        probeLEDs.setPixelColor( 0, 0x0c190c ); // measure dim
+        break;
+    case 7: {
+        // hsvProbe++;
+        if ( hsvProbe > 255 ) {
+            hsvProbe = 0;
+            hsvProbe2 -= 8;
+            if ( hsvProbe2 < 15 ) {
+                hsvProbe2 = 255;
+            }
+        }
+        hsvColor probeColor;
+        probeColor.h = hsvProbe;
+        probeColor.s = hsvProbe2;
+        probeColor.v = 25;
+
+        uint32_t colorp = packRgb( HsvToRgb( probeColor ) );
+        probeLEDs.setPixelColor( 0, colorp ); // select idle dim
+        break;
+    }
+    case 8:
+        probeLEDs.setPixelColor( 0, 0xffffff ); // max
+        showProbeLEDs = 9;
+        while ( showProbeLEDs == 9 ) {
+            probeLEDs.show( );
+            delayMicroseconds( 100 );
+            // Serial.println("max");
+        }
+        showProbeLEDs = 0;
+        // Serial.println("max");
+        break;
+
+    case 10:
+        probeLEDs.setPixelColor( 0, 0x000000 ); // off
+        showProbeLEDs = 0;
+        break;
+    default:
+        break;
+    }
+    lastProbeLEDs = showProbeLEDs;
+
+    probeLEDs.show( );
+    showingProbeLEDs = 0;
+}
+
+// highlightNets function moved to Highlighting.cpp
+
+// Double click detector state machine
+
+// C wrapper functions for MicroPython module
+extern "C" int jl_probe_button_nonblocking( void ) {
+    // checkProbeButton() is already non-blocking, so just call it directly
+    // Returns: 0=NONE, 1=REMOVE(rear), 2=CONNECT(front)
+    return checkProbeButton( );
+}
+
+extern "C" int jl_probe_button_blocking( void ) {
+    // Loop until any button is pressed
+    // Returns: 1=REMOVE(rear), 2=CONNECT(front) (never returns 0)
+    int button_state = 0;
+    while ( button_state == 0 ) {
+        mp_hal_check_interrupt( );
+
+        // Check if interrupt was requested and return special value
+        if ( mp_interrupt_requested ) {
+            mp_interrupt_requested = false; // Clear the flag
+            return -999;                    // Special return value indicating interrupt
+        }
+
+        button_state = checkProbeButton( );
+        if ( button_state != 0 ) {
+            return button_state;
+        }
+        delay( 1 ); // Small delay to prevent busy-waiting
+    }
+    return button_state; // This should never be reached, but just in case
+}
+
+
+
+
+
+
+//!legacy functions from OG probing
+
+
+int Probing::selectFromLastFound( void ) {
+
+    rawOtherColors[ 1 ] = 0x0010ff;
+
+    blinkTimer = 0;
+    int selected = 0;
+    int selectionConfirmed = 0;
+    int selected2 = connectedRows[ selected ];
+    Serial.print( "\n\r" );
+    Serial.print( "      multiple nodes found\n\n\r" );
+    Serial.print( "  short press = cycle through nodes\n\r" );
+    Serial.print( "  long press  = select\n\r" );
+
+    Serial.print( "\n\r " );
+    for ( int i = 0; i < connectedRowsIndex; i++ ) {
+
+        printNodeOrName( connectedRows[ i ] );
+        if ( i < connectedRowsIndex - 1 ) {
+            Serial.print( ", " );
+        }
+    }
+    Serial.print( "\n\n\r" );
+    delay( 10 );
+
+    uint32_t previousColor[ 10 ];
+
+    for ( int i = 0; i < connectedRowsIndex; i++ ) {
+        previousColor[ i ] = leds.getPixelColor( nodesToPixelMap[ connectedRows[ i ] ] );
+    }
+    int lastSelected = -1;
+
+    while ( selectionConfirmed == 0 ) {
+        probeTimeout = millis( );
+        // if (millis() - blinkTimer > 100)
+        // {
+        if ( lastSelected != selected && selectionConfirmed == 0 ) {
+            for ( int i = 0; i < connectedRowsIndex; i++ ) {
+                if ( i == selected ) {
+                    leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ],
+                                        rainbowList[ 1 ][ 0 ], rainbowList[ 1 ][ 1 ],
+                                        rainbowList[ 1 ][ 2 ] );
+                } else {
+                    // uint32_t previousColor =
+                    // leds.getPixelColor(nodesToPixelMap[connectedRows[i]]);
+                    if ( previousColor[ i ] != 0 ) {
+                        int r = ( previousColor[ i ] >> 16 ) & 0xFF;
+                        int g = ( previousColor[ i ] >> 8 ) & 0xFF;
+                        int b = ( previousColor[ i ] >> 0 ) & 0xFF;
+                        leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ], ( r / 4 ) + 5,
+                                            ( g / 4 ) + 5, ( b / 4 ) + 5 );
+                    } else {
+
+                        leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ],
+                                            rainbowList[ 1 ][ 0 ] / 8, rainbowList[ 1 ][ 1 ] / 8,
+                                            rainbowList[ 1 ][ 2 ] / 8 );
+                    }
+                }
+            }
+            lastSelected = selected;
+
+            Serial.print( " \r" );
+            // Serial.print("");
+            printNodeOrName( connectedRows[ selected ] );
+            Serial.print( "  " );
+        }
+        // leds.show();
+        showLEDsCore2 = 2;
+        blinkTimer = millis( );
+        //  }
+        delay( 30 );
+        int longShort = longShortPress( );
+        delay( 5 );
+        if ( longShort == 1 ) {
+            selectionConfirmed = 1;
+            // for (int i = 0; i < connectedRowsIndex; i++)
+            // {
+            //     if (i == selected)
+            //     // if (0)
+            //     {
+            //         leds.setPixelColor(nodesToPixelMap[connectedRows[i]],
+            //         rainbowList[rainbowIndex][0], rainbowList[rainbowIndex][1],
+            //         rainbowList[rainbowIndex][2]);
+            //     }
+            //     else
+            //     {
+            //         leds.setPixelColor(nodesToPixelMap[connectedRows[i]], 0, 0, 0);
+            //     }
+            // }
+            // showLEDsCore2 = 1;
+            // selected = lastFound[node1or2][selected];
+            //  clearLastFound();
+
+            // delay(500);
+            selected2 = connectedRows[ selected ];
+            // return selected2;
+            break;
+        } else if ( longShort == 0 ) {
+
+            selected++;
+            blinkTimer = 0;
+
+            if ( selected >= connectedRowsIndex ) {
+
+                selected = 0;
+            }
+            // delay(100);
+        }
+        delay( 15 );
+        //  }
+        //}
+
+        // showLEDsCore2 = 1;
+    }
+    selected2 = connectedRows[ selected ];
+
+    for ( int i = 0; i < connectedRowsIndex; i++ ) {
+        if ( i == selected ) {
+            leds.setPixelColor( nodesToPixelMap[ connectedRows[ selected ] ],
+                                rainbowList[ 0 ][ 0 ], rainbowList[ 0 ][ 1 ],
+                                rainbowList[ 0 ][ 2 ] );
+        } else if ( previousColor[ i ] != 0 ) {
+
+            int r = ( previousColor[ i ] >> 16 ) & 0xFF;
+            int g = ( previousColor[ i ] >> 8 ) & 0xFF;
+            int b = ( previousColor[ i ] >> 0 ) & 0xFF;
+            leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ], r, g, b );
+        } else {
+
+            leds.setPixelColor( nodesToPixelMap[ connectedRows[ i ] ], 0, 0, 0 );
+        }
+    }
+
+    // leds.setPixelColor(nodesToPixelMap[selected2], rainbowList[0][0],
+    // rainbowList[0][1], rainbowList[0][2]); leds.show(); showLEDsCore2 = 1;
+    probeButtonTimer = millis( );
+    // connectedRowsIndex = 0;
+    // justSelectedConnectedNodes = 1;
+    return selected2;
+}
+
+int Probing::longShortPress( int pressLength ) {
+    // Rewritten to use state-based API (doesn't consume button events)
+    // Returns: -1 = no press, 1 = short remove press, 2 = short connect press, 
+    //          3 = long remove press, 4 = long connect press
+    
+    unsigned long clickTimer = millis();
+    
+    // Wait for initial button press (check state, don't consume event)
+    int initialState = probeButton.getButtonState();
+    if (initialState == 0) {
+        return -1; // No button currently pressed
+    }
+    
+    // Button is pressed - track which button it was
+    int whichButton = initialState; // 1=remove, 2=connect
+    
+    // Wait to see if it's held for pressLength duration
+    while (millis() - clickTimer < pressLength) {
+        int currentState = probeButton.getButtonState();
+        
+        // If button released before timeout, it's a short press
+        if (currentState == 0) {
+            // Serial.print("Short press detected: ");
+            // Serial.println(whichButton);
+            return whichButton; // Return 1 or 2 for short press
+        }
+        
+        delay(5);
+    }
+    
+    // Button held for full duration - it's a long press
+    // Return 3 for long remove, 4 for long connect
+    int longPressCode = (whichButton == 1) ? 3 : 4;
+    // Serial.print("Long press detected: ");
+    // Serial.println(longPressCode);
+    
+    // Wait for button release to avoid repeated detection
+    while (probeButton.getButtonState() != 0) {
+        delay(5);
+    }
+    
+    return longPressCode;
+}
+
+int countLED = 0;
+int lastProbeButtonState = 0;
+
+/// @brief Checks for button press EVENTS (event-based, consumes event)
+/// Use this when you want to detect a button press once and have it consumed.
+/// For use in loops where you continuously check, use checkProbeButtonState() instead.
+/// Now delegates to high-frequency ProbeButton service for instant response
+/// @return 0 = neither pressed, 1 = remove button, 2 = connect button
+int Probing::checkProbeButton( void ) {
+    // Check for button press EVENTS, not current state
+    // This prevents detecting the same press multiple times
+    // Note: getButtonPress() consumes the event, so it only returns non-zero once per press
+    int press = probeButton.getButtonPress();
+    
+    // If we got a press event, return it
+    if (press != 0) {
+        return press;
+    }
+    
+    // Otherwise check if we're in a blocking period (prevents rapid re-checking)
+    if (blockProbeButton > 0 && (millis() - blockProbeButtonTimer < blockProbeButton)) {
+        return 0;  // Still blocked, no button state
+    }
+    
+    // No press event and not blocked
+    return 0;
+}
+
+/// @brief Checks CURRENT button state (state-based, doesn't consume events)
+/// Use this in loops where you continuously check button state.
+/// This won't consume button press events, allowing them to propagate to outer logic.
+/// @return 0 = neither pressed, 1 = remove button, 2 = connect button
+int Probing::checkProbeButtonState( void ) {
+    // Simply return the current hardware state without consuming events
+    // This allows the event to propagate to other parts of the code
+    return probeButton.getButtonState();
+}
+
+int Probing::readFloatingOrState( int pin, int rowBeingScanned ) { // this is the old probe reading code
+    // return 0;
+    enum measuredState state = unknownState;
+    // enum measuredState state2 = floating;
+
+    int readingPullup = 0;
+    int readingPullup2 = 0;
+    int readingPullup3 = 0;
+
+    int readingPulldown = 0;
+    int readingPulldown2 = 0;
+    int readingPulldown3 = 0;
+
+    // pinMode(pin, INPUT_PULLUP);
+
+    if ( rowBeingScanned != -1 ) {
+
+        analogWrite( PROBE_PIN, 128 );
+
+        while ( 1 ) // this is the silliest way to align to the falling edge of the
+                    // probe PWM signal
+        {
+            if ( gpio_get( PROBE_PIN ) != 0 ) {
+                if ( gpio_get( PROBE_PIN ) == 0 ) {
+                    break;
+                }
+            }
+        }
+    }
+
+    delayMicroseconds( ( probeHalfPeriodus * 5 ) + ( probeHalfPeriodus / 2 ) );
+
+    readingPullup = digitalRead( pin );
+    delayMicroseconds( probeHalfPeriodus * 3 );
+    readingPullup2 = digitalRead( pin );
+    delayMicroseconds( probeHalfPeriodus * 1 );
+    readingPullup3 = digitalRead( pin );
+
+    // pinMode(pin, INPUT_PULLDOWN);
+
+    if ( rowBeingScanned != -1 ) {
+        while ( 1 ) // this is the silliest way to align to the falling edge of the
+                    // probe PWM signal
+        {
+            if ( gpio_get( PROBE_PIN ) != 0 ) {
+                if ( gpio_get( PROBE_PIN ) == 0 ) {
+                    break;
+                }
+            }
+        }
+    }
+
+    delayMicroseconds( ( probeHalfPeriodus * 5 ) + ( probeHalfPeriodus / 2 ) );
+
+    readingPulldown = digitalRead( pin );
+    delayMicroseconds( probeHalfPeriodus * 3 );
+    readingPulldown2 = digitalRead( pin );
+    delayMicroseconds( probeHalfPeriodus * 1 );
+    readingPulldown3 = digitalRead( pin );
+
+    // if (readingPullup == 0 && readingPullup2 == 1 && readingPullup3 == 0 &&
+    // readingPulldown == 1 && readingPulldown2 == 0 && readingPulldown3 == 1)
+    // {
+    //     state = probe;
+    // }
+
+    if ( ( readingPullup != readingPullup2 || readingPullup2 != readingPullup3 ) &&
+         ( readingPulldown != readingPulldown2 ||
+           readingPulldown2 != readingPulldown3 ) &&
+         rowBeingScanned != -1 ) {
+        state = probe;
+
+        // if (readingPulldown != readingPulldown2 || readingPulldown2 !=
+        // readingPulldown3)
+        // {
+        //     state = probe;
+
+        // } else
+        // {
+        //     Serial.print("!");
+        // }
+    } else {
+
+        if ( readingPullup2 == 1 && readingPulldown2 == 0 ) {
+
+            state = floating;
+        } else if ( readingPullup2 == 1 && readingPulldown2 == 1 ) {
+            //              Serial.print(readingPullup);
+            // // Serial.print(readingPullup2);
+            // // Serial.print(readingPullup3);
+            // // //Serial.print(" ");
+            //  Serial.print(readingPulldown);
+            // // Serial.print(readingPulldown2);
+            // // Serial.print(readingPulldown3);
+            //  Serial.print("\n\r");
+
+            state = high;
+        } else if ( readingPullup2 == 0 && readingPulldown2 == 0 ) {
+            //  Serial.print(readingPullup);
+            // // Serial.print(readingPullup2);
+            // // Serial.print(readingPullup3);
+            // // //Serial.print(" ");
+            //  Serial.print(readingPulldown);
+            // // Serial.print(readingPulldown2);
+            // // Serial.print(readingPulldown3);
+            //  Serial.print("\n\r");
+            state = low;
+        } else if ( readingPullup == 0 && readingPulldown == 1 ) {
+            // Serial.print("shorted");
+        }
+    }
+
+    // Serial.print("\n");
+    // showLEDsCore2 = 1;
+    // leds.show();
+    // delayMicroseconds(100);
+
+    return state;
+}
+
+void Probing::startProbe( long probeSpeed ) {
+
+    // pinMode(PROBE_PIN, OUTPUT_4MA);
+    // // pinMode(BUTTON_PIN, INPUT_PULLDOWN);
+    // // pinMode(ADC0_PIN, INPUT);
+    // digitalWrite(PROBE_PIN, HIGH);
+}
+
+void Probing::stopProbe( ) {
+    // pinMode(PROBE_PIN, INPUT);
+    // pinMode(BUTTON_PIN, INPUT);
+}
+
+int Probing::checkLastFound( int found ) {
+    int found2 = 0;
+    return found2;
+}
+
+void Probing::clearLastFound( ) {}
+
+
+int Probing::scanRows( int pin ) {
     // return readProbe();
     return 0;
     int found = -1;
@@ -3879,7 +4436,7 @@ int scanRows( int pin ) {
     // return 0;
 }
 
-int readRails( int pin ) {
+int Probing::readRails( int pin ) {
     int state = -1;
 
     // Serial.print("adc0 \t");
@@ -3892,182 +4449,4 @@ int readRails( int pin ) {
     // Serial.println(adcReadings[3]);
 
     return state;
-}
-int hsvProbe = 0;
-int hsvProbe2 = 0;
-unsigned long probeRainbowTimer = 0;
-
-int lastProbeLEDs = -1;
-volatile int showingProbeLEDs = 0;
-
-void probeLEDhandler( void ) {
-
-    // core2busy = true;
-    //  pinMode(2, OUTPUT);
-    //  pinMode(9, INPUT);
-    showingProbeLEDs = 1;
-    // if (showProbeLEDs != 0) {
-    //         Serial.print("showProbeLEDs = ");
-    // Serial.println(showProbeLEDs);
-    // }
-    switch ( showProbeLEDs ) {
-    case 1:
-        if ( connectOrClearProbe == 1 && node1or2 == 1 ) {
-            probeLEDs.setPixelColor( 0, 0x0f0fc6 ); // connect bright
-        } else {
-            probeLEDs.setPixelColor( 0, 0x000032 ); // connect
-        }
-        // probeLEDs[0].setColorCode(0x000011);
-        //  Serial.println(showProbeLEDs);
-        //   probeLEDs.show();
-        // showProbeLEDs = 0;
-        break;
-    case 2: {
-
-        // if (connectOrClearProbe == 0) {
-        //  Serial.print("removeFade = ");
-        //  Serial.println(removeFade);
-        switch ( removeFade ) {
-        case 0:
-            probeLEDs.setPixelColor( 0, 0x280000 ); // remove
-            break;
-        case 1:
-            probeLEDs.setPixelColor( 0, 0x330101 ); // remove
-            break;
-        case 2:
-            probeLEDs.setPixelColor( 0, 0x3c0202 ); // remove
-            break;
-        case 3:
-            probeLEDs.setPixelColor( 0, 0x450303 ); // remove
-            break;
-        case 4:
-            probeLEDs.setPixelColor( 0, 0x4e0404 ); // remove
-            break;
-        case 5:
-            probeLEDs.setPixelColor( 0, 0x570505 ); // remove
-            break;
-        case 6:
-            probeLEDs.setPixelColor( 0, 0x600707 ); // remove
-            break;
-        case 7:
-            probeLEDs.setPixelColor( 0, 0x690909 ); // remove
-            break;
-        case 8:
-            probeLEDs.setPixelColor( 0, 0x820a0a ); // remove
-            break;
-        case 9:
-            probeLEDs.setPixelColor( 0, 0xab1010 ); // remove
-            break;
-        case 10:
-            probeLEDs.setPixelColor( 0, 0xff1a1a ); // remove
-            break;
-        default:
-            probeLEDs.setPixelColor( 0, 0x280000 ); // remove
-            break;
-        }
-        // } else {
-        //   probeLEDs.setPixelColor(0, 0x360000); // remove
-        // }
-        // probeLEDs.setPixelColor(0, 0x360000); // remove
-        // probeLEDs[0].setColorCode(0x110000);
-        // probeLEDs.show();
-        //  Serial.println(showProbeLEDs);
-        showProbeLEDs = 0;
-        break;
-    }
-    case 3:
-        probeLEDs.setPixelColor( 0, 0x003600 ); // measure
-        // probeLEDs[0].setColorCode(0x001100);
-        //  probeLEDs.show();
-        //  Serial.println(showProbeLEDs);
-        break;
-    case 4:
-
-        probeLEDs.setPixelColor( 0, 0x170c17 ); // select idle
-        // probeLEDs[0].setColorCode(0x110011);
-        //  probeLEDs.show();
-        //  Serial.println(showProbeLEDs);
-        break;
-    case 5:
-        probeLEDs.setPixelColor( 0, 0x111111 ); // all
-        // probeLEDs[0].setColorCode(0x111111);
-        //  Serial.println(showProbeLEDs);
-        break;
-    case 6:
-        probeLEDs.setPixelColor( 0, 0x0c190c ); // measure dim
-        break;
-    case 7: {
-        // hsvProbe++;
-        if ( hsvProbe > 255 ) {
-            hsvProbe = 0;
-            hsvProbe2 -= 8;
-            if ( hsvProbe2 < 15 ) {
-                hsvProbe2 = 255;
-            }
-        }
-        hsvColor probeColor;
-        probeColor.h = hsvProbe;
-        probeColor.s = hsvProbe2;
-        probeColor.v = 25;
-
-        uint32_t colorp = packRgb( HsvToRgb( probeColor ) );
-        probeLEDs.setPixelColor( 0, colorp ); // select idle dim
-        break;
-    }
-    case 8:
-        probeLEDs.setPixelColor( 0, 0xffffff ); // max
-        showProbeLEDs = 9;
-        while ( showProbeLEDs == 9 ) {
-            probeLEDs.show( );
-            delayMicroseconds( 100 );
-            // Serial.println("max");
-        }
-        showProbeLEDs = 0;
-        // Serial.println("max");
-        break;
-
-    case 10:
-        probeLEDs.setPixelColor( 0, 0x000000 ); // off
-        showProbeLEDs = 0;
-        break;
-    default:
-        break;
-    }
-    lastProbeLEDs = showProbeLEDs;
-
-    probeLEDs.show( );
-    showingProbeLEDs = 0;
-}
-
-// highlightNets function moved to Highlighting.cpp
-
-// Double click detector state machine
-
-// C wrapper functions for MicroPython module
-extern "C" int jl_probe_button_nonblocking( void ) {
-    // checkProbeButton() is already non-blocking, so just call it directly
-    // Returns: 0=NONE, 1=REMOVE(rear), 2=CONNECT(front)
-    return checkProbeButton( );
-}
-
-extern "C" int jl_probe_button_blocking( void ) {
-    // Loop until any button is pressed
-    // Returns: 1=REMOVE(rear), 2=CONNECT(front) (never returns 0)
-    int button_state = 0;
-    while ( button_state == 0 ) {
-        mp_hal_check_interrupt( );
-
-        // Check if interrupt was requested and return special value
-        if ( mp_interrupt_requested ) {
-            mp_interrupt_requested = false; // Clear the flag
-            return -999;                    // Special return value indicating interrupt
-        }
-
-        button_state = checkProbeButton( );
-        if ( button_state != 0 ) {
-            return button_state;
-        }
-        delay( 1 ); // Small delay to prevent busy-waiting
-    }
-    return button_state; // This should never be reached, but just in case
 }

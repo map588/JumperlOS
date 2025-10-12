@@ -1,4 +1,4 @@
-const uint8_t Pragmatapro5pt7bBitmaps[] PROGMEM = {
+const uint8_t Pragmatism5pt7bBitmaps[] PROGMEM = {
   0x00, 0xFD, 0xB6, 0xD0, 0x52, 0xBE, 0xAF, 0xA9, 0x40, 0x26, 0x98, 0x42,
   0x19, 0x64, 0x9A, 0x22, 0x44, 0x59, 0x25, 0x56, 0xCB, 0xB6, 0xF0, 0x29,
   0x49, 0x24, 0x48, 0x80, 0x89, 0x12, 0x49, 0x4A, 0x00, 0x25, 0x5D, 0x52,
@@ -29,7 +29,7 @@ const uint8_t Pragmatapro5pt7bBitmaps[] PROGMEM = {
   0x44, 0x48, 0x44, 0x44, 0x30, 0xFF, 0xC0, 0xC2, 0x22, 0x21, 0x22, 0x22,
   0xC0, 0x6C, 0xC0 };
 
-const GFXglyph Pragmatapro5pt7bGlyphs[] PROGMEM = {
+const GFXglyph Pragmatism5pt7bGlyphs[] PROGMEM = {
   {     0,   1,   1,   5,    0,    0 },   // 0x20 ' '
   {     1,   1,   8,   5,    2,   -7 },   // 0x21 '!'
   {     2,   3,   4,   5,    1,   -8 },   // 0x22 '"'
@@ -126,9 +126,9 @@ const GFXglyph Pragmatapro5pt7bGlyphs[] PROGMEM = {
   {   331,   4,  11,   5,    0,   -8 },   // 0x7D '}'
   {   337,   5,   2,   5,    0,   -4 } }; // 0x7E '~'
 
-const GFXfont Pragmatapro5pt7b PROGMEM = {
-  (uint8_t  *)Pragmatapro5pt7bBitmaps,
-  (GFXglyph *)Pragmatapro5pt7bGlyphs,
+const GFXfont Pragmatism5pt7b PROGMEM = {
+  (uint8_t  *)Pragmatism5pt7bBitmaps,
+  (GFXglyph *)Pragmatism5pt7bGlyphs,
   0x20, 0x7E, 11 };
 
 // Approx. 1011 bytes

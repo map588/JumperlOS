@@ -31,6 +31,16 @@ enum SyntaxHighlightingType {
   SYNTAX_DEFAULT,
 };
 
+// Python keyword classification
+enum PythonKeywordType {
+  KW_NONE,           // Not a keyword
+  KW_PYTHON,         // Python keyword (if, for, etc.)
+  KW_BUILTIN,        // Python built-in (len, str, etc.)
+  KW_JUMPERLESS,     // Jumperless function (connect, dac_set, etc.)
+  KW_JUMPERLESS_TYPE,// Jumperless constant (TOP_RAIL, GND, etc.)
+  KW_JFS             // JFS function (open, read, etc.)
+};
+
 class SyntaxHighlighting {
   public:
     SyntaxHighlighting(Stream* stream);
@@ -44,6 +54,11 @@ class SyntaxHighlighting {
     void setStream(Stream* stream);
     String highlightJumperlessConnections(const String& input); // Smart connection highlighting
     
+    // Python syntax highlighting - public for use in REPL and editors
+    String highlightPythonCode(const String& code); // Full Python syntax highlighting
+    void displayPythonWithHighlighting(const String& text, Stream* stream); // Stream output version
+    PythonKeywordType classifyPythonKeyword(const String& word); // Classify a Python identifier
+    
 private:
     // Helper methods for smart highlighting
     bool isTerminalCommand(char c);
@@ -52,9 +67,16 @@ private:
     bool isValidNodeName(const String& name);
     String processConnections(const String& connections); // Process comma-separated connections  
     String highlightConnectionsPreserveSpaces(const String& input); // Simple space-preserving highlighting
-    String highlightPythonCode(const String& code); // Python syntax highlighting
+    
+    // Python keyword checking
+    bool isPythonKeyword(const String& word);
+    bool isPythonBuiltin(const String& word);
+    bool isJumperlessFunction(const String& word);
+    bool isJumperlessType(const String& word);
+    bool isJFSFunction(const String& word);
 };
 
+// Global helper function for backward compatibility
 void displayStringWithSyntaxHighlighting(const String& text, Stream* stream);
 
 

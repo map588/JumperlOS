@@ -406,6 +406,17 @@ void debugFlagSet(int flag) {
         break;
         }
 
+    case 14: {
+    // Toggle wait loop timing debug (runtime only, no persistence)
+    debugWaitLoopTiming = !debugWaitLoopTiming;
+    break;
+    }
+
+    case 15: {
+    // Toggle USB mass storage debug (runtime only, no persistence)
+    debugUSB = !debugUSB;
+    break;
+    }
 
     case 0: {
     EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
@@ -425,6 +436,7 @@ void debugFlagSet(int flag) {
     debugNTCC2 = false;
     debugLEDs = false;
     debugLA = false;
+    debugWaitLoopTiming = false;
     jumperlessConfig.debug.arduino = 0;
     debugArduino = 0;
     showProbeCurrent = 0;
@@ -460,6 +472,7 @@ void debugFlagSet(int flag) {
     debugNTCC2 = true;
     debugLEDs = true;
     debugLA = true;
+    debugWaitLoopTiming = true;
     // do not force arduino debug level here; leave as-is
     showProbeCurrent = 1;
     jumperlessConfig.debug.file_parsing = true;

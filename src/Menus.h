@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include "JumperlOS.h"
 
 // Menu states
 #define MENU_MAIN 0
@@ -10,28 +11,69 @@
 #define MENU_APPS 4
 #define MENU_CONFIG 5  // New menu state for configuration
 
-// Function declarations
-void initMenu(void);
-void menuStuff(void);
-void drawMenu(void);
-void drawMainMenu(void);
-void drawNetsMenu(void);
-void drawProbingMenu(void);
-void drawSettingsMenu(void);
-void drawAppsMenu(void);
-void drawConfigMenu(void);  // New function for config menu
-
-extern int menuState;
-extern int menuPosition;
-extern int menuScroll;
-extern int menuScrollTarget;
-extern int menuScrollMax;
-extern int menuPositionMax;
-extern int menuPositionMin;
-
 #ifndef MENUS_H
 #define MENUS_H
-extern int defconDisplay;
+
+/**
+ * @brief Menu system service - handles click menu and menu rendering
+ * 
+ * Manages all menu-related functionality including click menus,
+ * rotary encoder navigation, and menu actions.
+ */
+class Menus : public Service {
+public:
+    // Get singleton instance
+    static Menus& getInstance();
+    
+    // Prevent copying
+    Menus(const Menus&) = delete;
+    Menus& operator=(const Menus&) = delete;
+    
+    // Service interface
+    ServiceStatus service() override;
+    const char* getName() const override { return "Menus"; }
+    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    
+    // Member variables (previously globals)
+    int inClickMenu = 0;
+    int menuState = MENU_MAIN;
+    int menuPosition = 0;
+    int menuScroll = 0;
+    int menuScrollTarget = 0;
+    int menuScrollMax = 0;
+    int menuPositionMax = 0;
+    int menuPositionMin = 0;
+    int defconDisplay = -1;
+    int selectingRotaryNode = 0;
+    
+    // Public methods
+    void initMenu(void);
+    int clickMenu(int menuType = -1, int menuOption = -1, int extraOptions = 0);
+    
+private:
+    Menus();
+    ~Menus() = default;
+    
+    static Menus* instance;
+};
+
+// Backward compatibility
+extern int& inClickMenu;
+extern int& defconDisplay;
+extern int& selectingRotaryNode;
+
+// Legacy wrapper functions
+inline int clickMenu(int menuType = -1, int menuOption = -1, int extraOptions = 0) {
+    return Menus::getInstance().clickMenu(menuType, menuOption, extraOptions);
+}
+
+extern int& menuState;
+extern int& menuPosition;
+extern int& menuScroll;
+extern int& menuScrollTarget;
+extern int& menuScrollMax;
+extern int& menuPositionMax;
+extern int& menuPositionMin;
 enum actionCategories {
   SHOWACTION,
   RAILSACTION,
@@ -82,17 +124,12 @@ enum probeOptions { PROBECONNECT, PROBECLEAR, PROBECALIBRATE, NOPROBE };
 //   int intValues[10];
 // };
 
-extern int inClickMenu;
-extern int selectingRotaryNode;
 extern int brightnessOptionMap[];
 extern int menuBrightnessOptionMap[];
 void readMenuFile(int flashOrLocal);
 void parseMenuFile(void);
 
-
-
-void initMenu(void);    
-int clickMenu(int menuType = -1 , int menuOption = -1, int extraOptions = 0);
+void initMenu(void);
 int getMenuSelection(void);
 int selectSubmenuOption(int menuPosition, int menuLevel);
 int selectNodeAction(int whichSelection = 0);
