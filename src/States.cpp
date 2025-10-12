@@ -1,0 +1,3084 @@
+// SPDX-License-Identifier: MIT
+#include "States.h"
+#include "MatrixState.h"
+#include "NetManager.h"
+#include "FileParsing.h"
+#include "Commands.h"
+#include "Peripherals.h"
+#include "PersistentStuff.h"
+#include "EkiloEditor.h"
+#include "config.h"
+#include <string.h>
+#include <FatFS.h>
+#include <hardware/gpio.h>
+
+extern struct config jumperlessConfig;
+extern volatile bool core1busy;
+extern volatile bool core2busy;
+extern int netSlot;  // Global slot number (defined in RotaryEncoder.cpp)
+extern const int gpioDef[10][3];  // GPIO pin definitions (defined in Peripherals.h)
+extern uint8_t gpioState[10];  // GPIO state for animations (defined in Peripherals.cpp)
+extern bool debugFP;  // Debug flag for file parsing (defined in FileParsing.cpp)
+
+// Forward declarations for YAML parsing helpers
+int parseNodeName(const String& nodeName);
+String nodeValueToString(int nodeValue);
+uint32_t parseColorValue(const String& colorStr, bool& success);
+String colorValueToName(uint32_t color);
+bool parseBoolean(const String& val, bool& success);
+String booleanToString(bool value);
+
+// Global singleton - THE single source of truth for all Jumperless state
+JumperlessState globalState;
+
+// ============================================================================
+// ConnectionState Implementation
+// ============================================================================
+
+ConnectionState::ConnectionState() {
+    clear();
+}
+
+void ConnectionState::clear() {
+    memset(bridges, 0, sizeof(bridges));
+    numBridges = 0;
+    numNets = 0;
+    numPaths = 0;
+    pathsCacheValid = false;
+    chipStatesCacheValid = false;
+    clearAllNTCC();
+    return;
+    // Clear nets
+    for (int i = 0; i < MAX_NETS; i++) {
+        memset(&nets[i], 0, sizeof(netStruct));
+    }
+    
+    // Clear paths
+    memset(paths, 0, sizeof(paths));
+    
+    // Clear chip states
+    for (int i = 0; i < 12; i++) {
+        memset(&chipStates[i], 0, sizeof(chipStatus));
+        memset(&chipXY[i], 0, sizeof(struct justXY));
+    }
+}
+
+void ConnectionState::invalidateCache(bool autoRefresh) {
+    pathsCacheValid = false;
+    chipStatesCacheValid = false;
+    
+    // Optionally trigger hardware refresh
+    if (autoRefresh) {
+        refreshConnections(-1);
+    }
+}
+
+void ConnectionState::recomputePaths() {
+    // This will be called to rebuild paths from bridges
+    // The actual computation is done by bridgesToPaths() in NetsToChipConnections.cpp
+    pathsCacheValid = false;
+    chipStatesCacheValid = false;
+}
+
+void ConnectionState::syncBridgesFromNets() {
+    // Generate bridges from net node lists
+    // Used when NETS_PRIMARY mode is active
+    numBridges = 0;
+    
+    for (int netIdx = 0; netIdx < numNets && netIdx < MAX_NETS; netIdx++) {
+        netStruct& currentNet = nets[netIdx];
+        
+        // Skip empty nets
+        if (currentNet.nodes[0] == 0) continue;
+        
+        // Connect all nodes in this net
+        for (int i = 0; i < MAX_NODES && currentNet.nodes[i] != 0; i++) {
+            for (int j = i + 1; j < MAX_NODES && currentNet.nodes[j] != 0; j++) {
+                if (numBridges >= MAX_BRIDGES) {
+                    Serial.println("Warning: Maximum bridges reached during sync");
+                    return;
+                }
+                
+                // Add bridge
+                bridges[numBridges][0] = currentNet.nodes[i];
+                bridges[numBridges][1] = currentNet.nodes[j];
+                bridges[numBridges][2] = currentNet.numberOfDuplicates;
+                numBridges++;
+            }
+        }
+    }
+    
+    invalidateCache(false);
+}
+
+void ConnectionState::syncNetsFromBridges() {
+    // Generate nets from bridges
+    // Used when BRIDGES_PRIMARY mode is active (default)
+    // This is typically done by the existing net management code
+    // We just invalidate to trigger recomputation
+    invalidateCache(false);
+}
+
+// ============================================================================
+// PowerState Implementation
+// ============================================================================
+
+PowerState::PowerState() {
+    setDefaults();
+}
+
+void PowerState::setDefaults() {
+    topRail = 0.0f;
+    bottomRail = 0.0f;
+    dac0 = 3.33f;
+    dac1 = 0.0f;
+}
+
+bool PowerState::validate(String& errorMsg) const {
+    // Check voltage limits (±8V typical for DACs)
+    if (dac0 < -8.0f || dac0 > 8.0f) {
+        errorMsg = "DAC 0 voltage out of range (-8V to +8V): " + String(dac0, 2) + "V";
+        return false;
+    }
+    if (dac1 < -8.0f || dac1 > 8.0f) {
+        errorMsg = "DAC 1 voltage out of range (-8V to +8V): " + String(dac1, 2) + "V";
+        return false;
+    }
+    if (topRail < -8.0f || topRail > 8.0f) {
+        errorMsg = "Top rail voltage out of range (-8V to +8V): " + String(topRail, 2) + "V";
+        return false;
+    }
+    if (bottomRail < -8.0f || bottomRail > 8.0f) {
+        errorMsg = "Bottom rail voltage out of range (-8V to +8V): " + String(bottomRail, 2) + "V";
+        return false;
+    }
+    return true;
+}
+
+// ============================================================================
+// DisplayState Implementation
+// ============================================================================
+
+DisplayState::DisplayState() {
+    clear();
+}
+
+void DisplayState::clear() {
+    memset(customColors, 0, sizeof(customColors));
+    numCustomColors = 0;
+}
+
+void DisplayState::setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name) {
+    // Check if already exists
+    for (int i = 0; i < numCustomColors; i++) {
+        if (customColors[i].netNumber == netNum) {
+            customColors[i].color = color;
+            customColors[i].rawColor = raw;
+            strncpy(customColors[i].colorName, name, 31);
+            customColors[i].colorName[31] = '\0';
+            return;
+        }
+    }
+    
+    // Add new if space available
+    if (numCustomColors < MAX_NETS) {
+        customColors[numCustomColors].netNumber = netNum;
+        customColors[numCustomColors].color = color;
+        customColors[numCustomColors].rawColor = raw;
+        strncpy(customColors[numCustomColors].colorName, name, 31);
+        customColors[numCustomColors].colorName[31] = '\0';
+        numCustomColors++;
+    }
+}
+
+bool DisplayState::getNetColor(int netNum, rgbColor& color, uint32_t& raw, char* name) const {
+    for (int i = 0; i < numCustomColors; i++) {
+        if (customColors[i].netNumber == netNum) {
+            color = customColors[i].color;
+            raw = customColors[i].rawColor;
+            if (name) {
+                strcpy(name, customColors[i].colorName);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void DisplayState::removeNetColor(int netNum) {
+    for (int i = 0; i < numCustomColors; i++) {
+        if (customColors[i].netNumber == netNum) {
+            // Shift remaining entries down
+            for (int j = i; j < numCustomColors - 1; j++) {
+                customColors[j] = customColors[j + 1];
+            }
+            numCustomColors--;
+            return;
+        }
+    }
+}
+
+// ============================================================================
+// ConfigState Implementation
+// ============================================================================
+
+ConfigState::ConfigState() {
+    setDefaults();
+}
+
+void ConfigState::setDefaults() {
+    // Source of truth defaults
+    sourceOfTruth = BRIDGES_PRIMARY;  // Default: bridges define connections
+    
+    // Routing preferences
+    stackPaths = 2;
+    stackRails = 3;
+    stackDacs = 0;
+    railPriority = 1;
+    
+    // Default GPIO to inputs with pull-down
+    for (int i = 0; i < 10; i++) {
+        gpioDirection[i] = 1;  // input
+        gpioPulls[i] = 0;      // pull down
+        gpioPwmFrequency[i] = 1.0f;
+        gpioPwmDutyCycle[i] = 0.5f;
+        gpioPwmEnabled[i] = false;
+    }
+    
+    // UART defaults
+    uartTxFunction = 0;  // TX
+    uartRxFunction = 1;  // RX
+    
+    // OLED defaults
+    oledConnected = false;
+    oledLockConnection = false;
+    
+    // Auto-refresh defaults
+    autoRefreshOnChange = false;  // Default: don't auto-refresh (user controls when)
+}
+
+// ============================================================================
+// JumperlessState Implementation
+// ============================================================================
+
+JumperlessState::JumperlessState() {
+    version = 2;  // Current format version (2 = YAML format)
+    dirty = false;
+    lastModifiedTime = 0;
+    clear();
+}
+
+void JumperlessState::clear() {
+    connections.clear();
+    power.setDefaults();
+    display.clear();
+    config.setDefaults();
+    dirty = false;
+    lastModifiedTime = 0;
+}
+
+void JumperlessState::markDirty() {
+    if (!dirty && debugWaitLoopTiming) {
+        Serial.printf("DEBUG: State marked dirty at %lu ms\n", millis());
+        // Print stack trace to help debug what's causing spurious dirty marks
+        Serial.println("DEBUG: markDirty() called from:");
+        // Print return address to help identify caller
+        void* caller = __builtin_return_address(0);
+        Serial.printf("  Caller address: %p\n", caller);
+    }
+    dirty = true;
+    lastModifiedTime = millis();
+}
+
+void JumperlessState::clearDirty() {
+    if (dirty && debugWaitLoopTiming) {
+        Serial.printf("DEBUG: State cleared dirty at %lu ms (was dirty for %lu ms)\n", 
+                     millis(), millis() - lastModifiedTime);
+    }
+    dirty = false;
+}
+
+// Connection management
+bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int duplicates) {
+    // Validate nodes
+    if (!isNodeValid(node1)) {
+        errorMsg = "Invalid node 1: " + String(node1);
+        return false;
+    }
+    if (!isNodeValid(node2)) {
+        errorMsg = "Invalid node 2: " + String(node2);
+        return false;
+    }
+    
+    // Check if connection is allowed
+    if (!isConnectionAllowed(node1, node2, errorMsg)) {
+        return false;
+    }
+    // Serial.println("Adding connection: " + String(node1) + " - " + String(node2));
+    // Serial.println("numBridges: " + String(connections.numBridges));
+    // Serial.flush();
+    // Check for duplicate - if it exists, update the duplicate count
+    for (int i = 0; i < connections.numBridges; i++) {
+        if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+            (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+            // Connection exists - update duplicates based on parameter
+            if (duplicates >= 0) {
+                // Specific duplicate count provided - replace the value
+                connections.bridges[i][2] = duplicates;
+            } else {
+                // No duplicate count specified - increment existing count
+                connections.bridges[i][2]++;
+            }
+            connections.invalidateCache(config.autoRefreshOnChange);
+            markDirty();
+            return true;
+        }
+    }
+    
+    // Check if we have space
+    if (connections.numBridges >= MAX_BRIDGES) {
+        errorMsg = "Maximum number of connections reached (" + String(MAX_BRIDGES) + ")";
+        return false;
+    }
+    
+    // Determine number of duplicates: -1 means use default from config
+    int numDuplicates;
+    if (duplicates < 0) {
+        numDuplicates = config.stackPaths;  // Use default from config
+    } else {
+        numDuplicates = duplicates;
+    }
+    
+    // Add the bridge
+    int idx = connections.numBridges;
+    connections.bridges[idx][0] = node1;
+    connections.bridges[idx][1] = node2;
+    connections.bridges[idx][2] = numDuplicates;  // Store duplicates
+    connections.numBridges++;
+    
+    // Invalidate caches - paths need to be recalculated
+    connections.invalidateCache(config.autoRefreshOnChange);
+    markDirty();
+    
+    return true;
+}
+
+bool JumperlessState::removeConnection(int node1, int node2, String& errorMsg) {
+    // Find the connection
+    int foundIdx = -1;
+    for (int i = 0; i < connections.numBridges; i++) {
+        if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+            (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+            foundIdx = i;
+            break;
+        }
+    }
+    
+    if (foundIdx == -1) {
+        errorMsg = "Connection " + String(node1) + "-" + String(node2) + " not found";
+        return false;
+    }
+    
+    // Remove by shifting remaining entries
+    for (int i = foundIdx; i < connections.numBridges - 1; i++) {
+        connections.bridges[i][0] = connections.bridges[i + 1][0];
+        connections.bridges[i][1] = connections.bridges[i + 1][1];
+        connections.bridges[i][2] = connections.bridges[i + 1][2];
+    }
+    connections.numBridges--;
+    
+    // Invalidate caches
+    connections.invalidateCache(config.autoRefreshOnChange);
+    markDirty();
+    
+    return true;
+}
+
+bool JumperlessState::hasConnection(int node1, int node2) const {
+    for (int i = 0; i < connections.numBridges; i++) {
+        if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+            (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void JumperlessState::clearAllConnections() {
+    connections.clear();
+    markDirty();
+}
+
+int JumperlessState::getConnectionDuplicates(int node1, int node2) const {
+    for (int i = 0; i < connections.numBridges; i++) {
+        if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+            (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+            return connections.bridges[i][2];  // Return duplicates from third element
+        }
+    }
+    return 0;  // Not found
+}
+
+bool JumperlessState::setConnectionDuplicates(int node1, int node2, int duplicates, String& errorMsg) {
+    if (duplicates < 0) {
+        errorMsg = "Duplicates must be non-negative: " + String(duplicates);
+        return false;
+    }
+    
+    for (int i = 0; i < connections.numBridges; i++) {
+        if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+            (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+            connections.bridges[i][2] = duplicates;  // Store duplicates in third element
+            connections.invalidateCache(config.autoRefreshOnChange);
+            markDirty();
+            return true;
+        }
+    }
+    
+    errorMsg = "Connection " + String(node1) + "-" + String(node2) + " not found";
+    return false;
+}
+
+// Power management
+void JumperlessState::setDacVoltage(int dacNum, float voltage) {
+    if (dacNum == 0) {
+        power.dac0 = voltage;
+    } else if (dacNum == 1) {
+        power.dac1 = voltage;
+    }
+    markDirty();
+}
+
+float JumperlessState::getDacVoltage(int dacNum) const {
+    return (dacNum == 0) ? power.dac0 : power.dac1;
+}
+
+void JumperlessState::setRailVoltage(bool isTopRail, float voltage) {
+    if (isTopRail) {
+        power.topRail = voltage;
+    } else {
+        power.bottomRail = voltage;
+    }
+    markDirty();
+}
+
+float JumperlessState::getRailVoltage(bool isTopRail) const {
+    return isTopRail ? power.topRail : power.bottomRail;
+}
+
+// Configuration
+void JumperlessState::setPathStacking(int paths, int rails, int dacs) {
+    config.stackPaths = paths;
+    config.stackRails = rails;
+    config.stackDacs = dacs;
+    markDirty();
+}
+
+void JumperlessState::getPathStacking(int& paths, int& rails, int& dacs) const {
+    paths = config.stackPaths;
+    rails = config.stackRails;
+    dacs = config.stackDacs;
+}
+
+// GPIO
+void JumperlessState::setGpioDirection(int gpio, int direction) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioDirection[gpio] = direction;
+        markDirty();
+    }
+}
+
+int JumperlessState::getGpioDirection(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioDirection[gpio];
+    }
+    return 1;  // default to input
+}
+
+void JumperlessState::setGpioPull(int gpio, int pull) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPulls[gpio] = pull;
+        markDirty();
+    }
+}
+
+int JumperlessState::getGpioPull(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPulls[gpio];
+    }
+    return 0;  // default to pull-down
+}
+
+void JumperlessState::setGpioPwmFrequency(int gpio, float frequency) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPwmFrequency[gpio] = frequency;
+        markDirty();
+    }
+}
+
+float JumperlessState::getGpioPwmFrequency(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPwmFrequency[gpio];
+    }
+    return 1.0f;  // default frequency
+}
+
+void JumperlessState::setGpioPwmDutyCycle(int gpio, float dutyCycle) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPwmDutyCycle[gpio] = dutyCycle;
+        markDirty();
+    }
+}
+
+float JumperlessState::getGpioPwmDutyCycle(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPwmDutyCycle[gpio];
+    }
+    return 0.5f;  // default 50% duty cycle
+}
+
+void JumperlessState::setGpioPwmEnabled(int gpio, bool enabled) {
+    if (gpio >= 0 && gpio < 10) {
+        config.gpioPwmEnabled[gpio] = enabled;
+        markDirty();
+    }
+}
+
+bool JumperlessState::getGpioPwmEnabled(int gpio) const {
+    if (gpio >= 0 && gpio < 10) {
+        return config.gpioPwmEnabled[gpio];
+    }
+    return false;  // default disabled
+}
+
+// UART
+void JumperlessState::setUartTxFunction(int function) {
+    config.uartTxFunction = function;
+    markDirty();
+}
+
+int JumperlessState::getUartTxFunction() const {
+    return config.uartTxFunction;
+}
+
+void JumperlessState::setUartRxFunction(int function) {
+    config.uartRxFunction = function;
+    markDirty();
+}
+
+int JumperlessState::getUartRxFunction() const {
+    return config.uartRxFunction;
+}
+
+// Display
+void JumperlessState::setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name) {
+    display.setNetColor(netNum, color, raw, name);
+    markDirty();
+}
+
+bool JumperlessState::getNetColor(int netNum, rgbColor& color, uint32_t& raw, char* name) const {
+    return display.getNetColor(netNum, color, raw, name);
+}
+
+// Validation
+bool JumperlessState::validate(String& errorMsg) const {
+    // Validate power settings
+    if (!power.validate(errorMsg)) {
+        return false;
+    }
+    
+    // Validate connections
+    for (int i = 0; i < connections.numBridges; i++) {
+        int n1 = connections.bridges[i][0];
+        int n2 = connections.bridges[i][1];
+        
+        if (!isNodeValid(n1)) {
+            errorMsg = "Invalid node in bridge " + String(i) + ": " + String(n1);
+            return false;
+        }
+        if (!isNodeValid(n2)) {
+            errorMsg = "Invalid node in bridge " + String(i) + ": " + String(n2);
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+// Validation helpers
+bool JumperlessState::isNodeValid(int node) const {
+    // Use the existing validation from FileParsing
+    extern int isNodeValid(int node);
+    return ::isNodeValid(node) == 1;
+}
+
+bool JumperlessState::isConnectionAllowed(int node1, int node2, String& errorMsg) const {
+    // Check for same node
+    if (node1 == node2) {
+        errorMsg = "Cannot connect node to itself: " + String(node1);
+        return false;
+    }
+    
+    // Use existing validation logic
+    extern bool connectionAllowed(int node1, int node2);
+    if (!::connectionAllowed(node1, node2)) {
+        errorMsg = "Connection not allowed between " + String(node1) + " and " + String(node2) + 
+                   " (likely power/ground conflict)";
+        return false;
+    }
+    
+    return true;
+}
+
+// State comparison
+bool JumperlessState::operator==(const JumperlessState& other) const {
+    // Compare number of bridges
+    if (connections.numBridges != other.connections.numBridges) {
+        return false;
+    }
+    
+    // Compare bridges
+    for (int i = 0; i < connections.numBridges; i++) {
+        if (connections.bridges[i][0] != other.connections.bridges[i][0] ||
+            connections.bridges[i][1] != other.connections.bridges[i][1]) {
+            return false;
+        }
+    }
+    
+    // Compare power
+    if (power.dac0 != other.power.dac0 || power.dac1 != other.power.dac1 ||
+        power.topRail != other.power.topRail || power.bottomRail != other.power.bottomRail) {
+        return false;
+    }
+    
+    // Compare config (just the important bits)
+    if (config.stackPaths != other.config.stackPaths ||
+        config.stackRails != other.config.stackRails ||
+        config.stackDacs != other.config.stackDacs) {
+        return false;
+    }
+    
+    return true;
+}
+
+size_t JumperlessState::estimateRAMUsage() const {
+    return sizeof(JumperlessState);
+}
+
+// ============================================================================
+// YAML Serialization
+// ============================================================================
+
+bool JumperlessState::toYAML(String& output) const {
+    output = "";
+    
+    // Header
+    output += "version: " + String(version) + "\n";
+    output += "sourceOfTruth: " + String(config.sourceOfTruth == BRIDGES_PRIMARY ? "bridges" : "nets") + "\n\n";
+    
+    // Bridges section
+    serializeBridges(output);
+    
+    // Nets section (optional, for colors/names)
+    serializeNets(output);
+    
+    // Power section
+    serializePower(output);
+    
+    // Config section
+    serializeConfig(output);
+    
+    return true;
+}
+
+bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
+    // Simple YAML parser for our specific format
+    // Parse line by line
+    int lineStart = 0;
+    String currentSection = "";
+    
+    clear();
+    
+    while (lineStart < (int)input.length()) {
+        int lineEnd = input.indexOf('\n', lineStart);
+        if (lineEnd == -1) lineEnd = input.length();
+        
+        String line = input.substring(lineStart, lineEnd);
+        line.trim();
+        
+        // Skip empty lines and comments
+        if (line.length() == 0 || line.startsWith("#")) {
+            lineStart = lineEnd + 1;
+            continue;
+        }
+        
+        // Check for section headers
+        if (line.startsWith("version:")) {
+            int colonIdx = line.indexOf(':');
+            String val = line.substring(colonIdx + 1);
+            val.trim();
+            version = val.toInt();
+        }
+        else if (line.startsWith("sourceOfTruth:")) {
+            int colonIdx = line.indexOf(':');
+            String val = line.substring(colonIdx + 1);
+            val.trim();
+            config.sourceOfTruth = (val == "nets") ? NETS_PRIMARY : BRIDGES_PRIMARY;
+        }
+        else if (line.startsWith("bridges:")) {
+            currentSection = "bridges";
+        }
+        else if (line.startsWith("nets:")) {
+            currentSection = "nets";
+        }
+        else if (line.startsWith("power:")) {
+            currentSection = "power";
+        }
+        else if (line.startsWith("config:")) {
+            currentSection = "config";
+        }
+        // Parse section content
+        else if (line.startsWith("- {") || line.startsWith("-{")) {
+            // Try to parse line even if incomplete (missing closing brace)
+            // The deserializer will extract whatever fields it can find
+            
+            // Bridge or net entry
+            if (currentSection == "bridges") {
+                String tempError;
+                if (!deserializeBridges(line.c_str(), tempError)) {
+                    // Skip invalid lines in preview mode - don't fail entire parse
+                    // This allows partially edited files to still work
+                    lineStart = lineEnd + 1;
+                    continue;
+                }
+            } else if (currentSection == "nets") {
+                String tempError;
+                if (!deserializeNets(line.c_str(), tempError)) {
+                    // Skip invalid lines in preview mode
+                    lineStart = lineEnd + 1;
+                    continue;
+                }
+            }
+        }
+        else if (currentSection == "power") {
+            String tempError;
+            if (!deserializePower(line.c_str(), tempError)) {
+                // Skip invalid power lines - don't fail entire parse
+                lineStart = lineEnd + 1;
+                continue;
+            }
+        }
+        else if (currentSection == "config") {
+            String tempError;
+            if (!deserializeConfig(line.c_str(), tempError)) {
+                // Skip invalid config lines - don't fail entire parse
+                lineStart = lineEnd + 1;
+                continue;
+            }
+        }
+    
+        lineStart = lineEnd + 1;
+    }
+    
+    // Reconcile bridges and nets based on source of truth
+    if (config.sourceOfTruth == NETS_PRIMARY) {
+        connections.syncBridgesFromNets();
+    } else {
+        connections.syncNetsFromBridges();
+    }
+    
+    return validate(errorMsg);
+}
+
+// YAML serialization helpers
+void JumperlessState::serializeBridges(String& output) const {
+    if (connections.numBridges == 0) {
+        return;  // Don't output empty bridges section
+    }
+    
+    output += "bridges:\n";
+    for (int i = 0; i < connections.numBridges; i++) {
+        // Use node names instead of raw numbers for readability
+        String n1Name = nodeValueToString(connections.bridges[i][0]);
+        String n2Name = nodeValueToString(connections.bridges[i][1]);
+        
+        output += "  - {n1: " + n1Name + 
+                  ", n2: " + n2Name + 
+                  ", dup: " + String(connections.bridges[i][2]) + "}\n";
+    }
+    output += "\n";
+}
+
+bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorMsg) {
+    // Parse bridge entry: - {n1: TOP_RAIL, n2: NANO_D5, dup: 2}
+    // Also accepts: - {n1: 101, n2: 75, dup: 2}
+    // Tolerant of incomplete lines for live editing
+    String line = String(yamlContent);
+    line.trim();
+    
+    // Validate line has opening brace at minimum
+    if (line.indexOf('{') == -1) {
+        errorMsg = "Missing opening brace in bridge entry";
+        return false;
+    }
+    
+    // Extract values (tolerant of incomplete/missing fields)
+    int n1 = -1, n2 = -1, dup = -1;
+    
+    // Parse n1 field
+    int n1Idx = line.indexOf("n1:");
+    if (n1Idx >= 0) {
+        // Find delimiter: comma, closing brace, or end of line
+        int commaIdx = line.indexOf(',', n1Idx);
+        int braceIdx = line.indexOf('}', n1Idx);
+        int endIdx = line.length();
+        
+        // Use the first valid delimiter found
+        if (commaIdx > n1Idx + 3 && (braceIdx == -1 || commaIdx < braceIdx)) {
+            endIdx = commaIdx;
+        } else if (braceIdx > n1Idx + 3) {
+            endIdx = braceIdx;
+        }
+        
+        if (endIdx > n1Idx + 3) {
+            String val = line.substring(n1Idx + 3, endIdx);
+            val.trim();
+            
+            // Only parse if we have actual content
+            if (val.length() > 0) {
+                n1 = parseNodeName(val);
+            }
+        }
+    }
+    
+    // Parse n2 field
+    int n2Idx = line.indexOf("n2:");
+    if (n2Idx >= 0) {
+        // Find delimiter: comma, closing brace, or end of line
+        int commaIdx = line.indexOf(',', n2Idx);
+        int braceIdx = line.indexOf('}', n2Idx);
+        int endIdx = line.length();
+        
+        // Use the first valid delimiter found
+        if (commaIdx > n2Idx + 3 && (braceIdx == -1 || commaIdx < braceIdx)) {
+            endIdx = commaIdx;
+        } else if (braceIdx > n2Idx + 3) {
+            endIdx = braceIdx;
+        }
+        
+        if (endIdx > n2Idx + 3) {
+            String val = line.substring(n2Idx + 3, endIdx);
+            val.trim();
+            
+            // Only parse if we have actual content
+            if (val.length() > 0) {
+                n2 = parseNodeName(val);
+            }
+        }
+    }
+    
+    // Parse dup field (optional)
+    int dupIdx = line.indexOf("dup:");
+    if (dupIdx >= 0) {
+        int braceIdx = line.indexOf('}', dupIdx);
+        int endIdx = (braceIdx > dupIdx + 4) ? braceIdx : line.length();
+        
+        if (endIdx > dupIdx + 4) {
+            String val = line.substring(dupIdx + 4, endIdx);
+            val.trim();
+            if (val.length() > 0) {
+                dup = val.toInt();
+            }
+        }
+    }
+    
+    // Only add connection if we have both nodes
+    if (n1 < 0 || n2 < 0) {
+        errorMsg = "Incomplete bridge (missing n1 or n2): " + line;
+        return false;
+    }
+    
+    return addConnection(n1, n2, errorMsg, dup);
+}
+
+void JumperlessState::serializeNets(String& output) const {
+    // Serialize ALL computed nets with full metadata
+    // This allows users to edit colors and see what nets exist
+    
+    // ARCHITECTURE NOTE: We use globalState.connections.nets[] which is where
+    // all net computation is now done. The old global net[] array is deprecated.
+    // The nets are computed by getNodesToConnect() which populates globalState.
+    // This approach is optimal because:
+    //   1. Nets are computed once on load, not repeatedly on save
+    //   2. We reuse the existing optimized net computation code
+    //   3. Serialization is fast (just reading already-computed data)
+    
+    // Use the state's nets (access globalState since this is a const method)
+    JumperlessState& state = const_cast<JumperlessState&>(globalState);
+    
+    // Count the number of active nets (since numNets might not be set by NetManager)
+    // Scan through nets array to find the highest numbered net
+    int maxNetNumber = 0;
+    for (int i = 1; i < MAX_NETS; i++) {
+        if (state.connections.nets[i].number > 0 && state.connections.nets[i].nodes[0] != 0) {
+            maxNetNumber = i;
+        }
+    }
+    
+    // Update numNets for the state
+    state.connections.numNets = maxNetNumber + 1;
+    
+    // If no nets were found, nothing to serialize
+    if (maxNetNumber == 0) {
+        return;  // Don't output anything for empty nets section
+    }
+    
+    output += "nets:\n";
+    
+    // Animation order for detecting animated nets
+    extern int animationOrder[26];
+    
+    for (int i = 1; i <= maxNetNumber; i++) {  // Start at 1, skip net 0
+        if (state.connections.nets[i].number == 0 || state.connections.nets[i].nodes[0] == 0) {
+            continue;  // Skip empty nets
+        }
+        
+        // Count nodes in this net
+        int nodeCount = 0;
+        for (int j = 0; j < MAX_NODES && state.connections.nets[i].nodes[j] != 0; j++) {
+            nodeCount++;
+        }
+        
+        // Skip nets with only one node
+        if (nodeCount <= 1) {
+            continue;
+        }
+        
+        // Collect node list for this net (using SHORT names)
+        String nodesList = "[";
+        bool firstNode = true;
+        for (int j = 0; j < MAX_NODES && state.connections.nets[i].nodes[j] != 0; j++) {
+            if (!firstNode) nodesList += ", ";
+            // Use short name (0 = short, 1 = long)
+            const char* shortName = definesToChar(state.connections.nets[i].nodes[j], 0);
+            if (shortName && strlen(shortName) > 0) {
+                nodesList += String(shortName);
+            } else {
+                nodesList += String(state.connections.nets[i].nodes[j]);
+            }
+            firstNode = false;
+        }
+        nodesList += "]";
+        
+        // Get color information
+        String colorName = "";
+        bool userAssigned = false;
+        bool animated = false;
+        uint32_t netColor = 0;
+        
+        // Check if this net has a custom color
+        for (int j = 0; j < display.numCustomColors; j++) {
+            if (display.customColors[j].netNumber == state.connections.nets[i].number) {
+                colorName = String(display.customColors[j].colorName);
+                colorName.trim();
+                netColor = display.customColors[j].rawColor;
+                userAssigned = true;  // Custom colors are user-assigned
+                break;
+            }
+        }
+        
+        // If no custom color, get the auto-generated color
+        if (colorName.length() == 0) {
+            // Use the net's assigned color
+            rgbColor netRgb = state.connections.nets[i].color;
+            netColor = packRgb(netRgb.r, netRgb.g, netRgb.b);
+            colorName = colorValueToName(netColor);
+        }
+        
+        // Check if net is animated (check if any of its nodes are in the animation order)
+        for (int j = 0; j < 26; j++) {
+            for (int k = 0; k < MAX_NODES && state.connections.nets[i].nodes[k] != 0; k++) {
+                if (state.connections.nets[i].nodes[k] == animationOrder[j]) {
+                    animated = true;
+                    break;
+                }
+            }
+            if (animated) break;
+        }
+        
+        // Build the output line with required fields first
+        output += "  - {num: " + String(state.connections.nets[i].number);
+        output += ", nodes: " + nodesList;
+        
+        // Only print color if not animated
+        if (!animated) {
+            output += ", color: " + colorName;
+        }
+        
+        // Optional fields at the end (only if not default)
+        
+        // Check if name is auto-generated "Net X" format
+        String netName = String(state.connections.nets[i].name);
+        netName.trim();
+        bool isAutoGeneratedName = false;
+        if (netName.startsWith("Net ") && netName.length() < 10) {
+            // Likely auto-generated like "Net 6", "Net 12", etc.
+            isAutoGeneratedName = true;
+        }
+        
+        // Only print name if it's not auto-generated
+        if (!isAutoGeneratedName && netName.length() > 0 && state.connections.nets[i].name[0] != '\0') {
+            output += ", name: \"" + netName + "\"";
+        }
+        
+        // Only print user flag if true
+        if (userAssigned) {
+            output += ", user: true";
+        }
+        
+        // Only print anim flag if true
+        if (animated) {
+            output += ", anim: true";
+        }
+        
+        output += "}\n";
+    }
+    output += "\n";
+}
+
+bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg) {
+    // Parse net entry: - {num: 6, nodes: [TOP_RAIL, NANO_D5], color: red, user: true, anim: false, name: "Power"}
+    String line = String(yamlContent);
+    line.trim();
+    
+    int netNum = -1;
+    String netName = "";
+    String colorStr = "";
+    bool userAssigned = false;
+    bool animated = false;
+    
+    // Parse num field
+    int numIdx = line.indexOf("num:");
+    if (numIdx >= 0) {
+        int commaIdx = line.indexOf(',', numIdx);
+        String val = line.substring(numIdx + 4, commaIdx);
+        val.trim();
+        netNum = val.toInt();
+    }
+    
+    // Parse nodes field (we don't use this for loading, just for reference)
+    // The bridges define the actual connections
+    
+    // Parse color field (can be name or hex)
+    int colorIdx = line.indexOf("color:");
+    if (colorIdx >= 0) {
+        int endIdx = line.indexOf(',', colorIdx);
+        if (endIdx == -1) endIdx = line.indexOf('}', colorIdx);
+        String val = line.substring(colorIdx + 6, endIdx);
+        val.trim();
+        colorStr = val;
+    }
+    
+    // Parse user field
+    int userIdx = line.indexOf("user:");
+    if (userIdx >= 0) {
+        int endIdx = line.indexOf(',', userIdx);
+        if (endIdx == -1) endIdx = line.indexOf('}', userIdx);
+        String val = line.substring(userIdx + 5, endIdx);
+        val.trim();
+        bool parseSuccess;
+        userAssigned = parseBoolean(val, parseSuccess);
+    }
+    
+    // Parse anim field
+    int animIdx = line.indexOf("anim:");
+    if (animIdx >= 0) {
+        int endIdx = line.indexOf(',', animIdx);
+        if (endIdx == -1) endIdx = line.indexOf('}', animIdx);
+        String val = line.substring(animIdx + 5, endIdx);
+        val.trim();
+        bool parseSuccess;
+        animated = parseBoolean(val, parseSuccess);
+    }
+    
+    // Parse name field (optional)
+    int nameIdx = line.indexOf("name:");
+    if (nameIdx >= 0) {
+        int startQuote = line.indexOf('"', nameIdx);
+        int endQuote = line.indexOf('"', startQuote + 1);
+        if (startQuote >= 0 && endQuote > startQuote) {
+            netName = line.substring(startQuote + 1, endQuote);
+        }
+    }
+    
+    // Only store color if it was user-assigned
+    // Auto-generated colors will be recomputed
+    if (netNum >= 0 && userAssigned && colorStr.length() > 0) {
+        bool parseSuccess;
+        uint32_t rawColor = parseColorValue(colorStr, parseSuccess);
+        
+        if (parseSuccess) {
+            rgbColor color;
+            color.r = (rawColor >> 16) & 0xFF;
+            color.g = (rawColor >> 8) & 0xFF;
+            color.b = rawColor & 0xFF;
+            
+            // Use color name if available, otherwise use parsed name
+            String colorName = colorValueToName(rawColor);
+            if (netName.length() > 0) {
+                colorName = netName;
+            }
+            
+            display.setNetColor(netNum, color, rawColor, colorName.c_str());
+        }
+    }
+    
+    return true;
+}
+
+void JumperlessState::serializePower(String& output) const {
+    output += "power:\n";
+    output += "  topRail: " + String(power.topRail, 2) + "\n";
+    output += "  bottomRail: " + String(power.bottomRail, 2) + "\n";
+    output += "  dac0: " + String(power.dac0, 2) + "\n";
+    output += "  dac1: " + String(power.dac1, 2) + "\n\n";
+}
+
+bool JumperlessState::deserializePower(const char* yamlContent, String& errorMsg) {
+    String line = String(yamlContent);
+    line.trim();
+    
+    if (line.startsWith("topRail:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.topRail = val.toFloat();
+    }
+    else if (line.startsWith("bottomRail:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.bottomRail = val.toFloat();
+    }
+    else if (line.startsWith("dac0:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.dac0 = val.toFloat();
+    }
+    else if (line.startsWith("dac1:")) {
+        int colonIdx = line.indexOf(':');
+        String val = line.substring(colonIdx + 1);
+        val.trim();
+        power.dac1 = val.toFloat();
+    }
+    
+    return power.validate(errorMsg);
+}
+
+void JumperlessState::serializeConfig(String& output) const {
+    output += "config:\n";
+    output += "  routing: {stackPaths: " + String(config.stackPaths) + 
+              ", stackRails: " + String(config.stackRails) + 
+              ", stackDacs: " + String(config.stackDacs) + 
+              ", railPriority: " + String(config.railPriority) + "}\n";
+    
+    // GPIO direction array
+    output += "  gpio:\n";
+    output += "    direction:    [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioDirection[i]);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // GPIO pulls array
+    output += "    pulls:        [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPulls[i]);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // PWM frequency array
+    output += "    pwmFrequency: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPwmFrequency[i], 2);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // PWM duty cycle array
+    output += "    pwmDutyCycle: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPwmDutyCycle[i], 2);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // PWM enabled array
+    output += "    pwmEnabled:   [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioPwmEnabled[i] ? "1" : "0");
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
+    
+    // UART and OLED
+    output += "  uart: {txFunction: " + String(config.uartTxFunction) + 
+              ", rxFunction: " + String(config.uartRxFunction) + "}\n";
+    output += "  oled: {connected: " + String(config.oledConnected ? "true" : "false") + 
+              ", lockConnection: " + String(config.oledLockConnection ? "true" : "false") + "}\n";
+}
+
+bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMsg) {
+    String line = String(yamlContent);
+    line.trim();
+    
+    // Parse routing line
+    if (line.startsWith("routing:")) {
+        int stackPathsIdx = line.indexOf("stackPaths:");
+        if (stackPathsIdx >= 0) {
+            int commaIdx = line.indexOf(',', stackPathsIdx);
+            String val = line.substring(stackPathsIdx + 11, commaIdx);
+            val.trim();
+            config.stackPaths = val.toInt();
+        }
+        
+        int stackRailsIdx = line.indexOf("stackRails:");
+        if (stackRailsIdx >= 0) {
+            int commaIdx = line.indexOf(',', stackRailsIdx);
+            String val = line.substring(stackRailsIdx + 11, commaIdx);
+            val.trim();
+            config.stackRails = val.toInt();
+        }
+        
+        int stackDacsIdx = line.indexOf("stackDacs:");
+        if (stackDacsIdx >= 0) {
+            int commaIdx = line.indexOf(',', stackDacsIdx);
+            String val = line.substring(stackDacsIdx + 10, commaIdx);
+            val.trim();
+            config.stackDacs = val.toInt();
+        }
+        
+        int railPriorityIdx = line.indexOf("railPriority:");
+        if (railPriorityIdx >= 0) {
+            int endIdx = line.indexOf('}', railPriorityIdx);
+            String val = line.substring(railPriorityIdx + 13, endIdx);
+            val.trim();
+            config.railPriority = val.toInt();
+        }
+    }
+    // Parse GPIO direction array
+    else if (line.startsWith("direction:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioDirection[idx++] = val.toInt();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse GPIO pulls array
+    else if (line.startsWith("pulls:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPulls[idx++] = val.toInt();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse PWM frequency array
+    else if (line.startsWith("pwmFrequency:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPwmFrequency[idx++] = val.toFloat();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse PWM duty cycle array
+    else if (line.startsWith("pwmDutyCycle:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioPwmDutyCycle[idx++] = val.toFloat();
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse PWM enabled array
+    else if (line.startsWith("pwmEnabled:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                bool parseSuccess;
+                config.gpioPwmEnabled[idx++] = parseBoolean(val, parseSuccess);
+                pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse UART
+    else if (line.startsWith("uart:")) {
+        int txIdx = line.indexOf("txFunction:");
+        if (txIdx >= 0) {
+            int commaIdx = line.indexOf(',', txIdx);
+            String val = line.substring(txIdx + 11, commaIdx);
+            val.trim();
+            config.uartTxFunction = val.toInt();
+        }
+        
+        int rxIdx = line.indexOf("rxFunction:");
+        if (rxIdx >= 0) {
+            int endIdx = line.indexOf('}', rxIdx);
+            String val = line.substring(rxIdx + 11, endIdx);
+            val.trim();
+            config.uartRxFunction = val.toInt();
+        }
+    }
+    // Parse OLED
+    else if (line.startsWith("oled:")) {
+        int connectedIdx = line.indexOf("connected:");
+        if (connectedIdx >= 0) {
+            int commaIdx = line.indexOf(',', connectedIdx);
+            String val = line.substring(connectedIdx + 10, commaIdx);
+            val.trim();
+            bool parseSuccess;
+            config.oledConnected = parseBoolean(val, parseSuccess);
+        }
+        
+        int lockIdx = line.indexOf("lockConnection:");
+        if (lockIdx >= 0) {
+            int endIdx = line.indexOf('}', lockIdx);
+            String val = line.substring(lockIdx + 15, endIdx);
+            val.trim();
+            bool parseSuccess;
+            config.oledLockConnection = parseBoolean(val, parseSuccess);
+        }
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// YAML Parsing Helpers - Handle Aliases and Variations
+// ============================================================================
+
+/**
+ * @brief Parse node name with alias support
+ * Accepts variations like: TOP_RAIL, topRail, t_rAiL, 101
+ * Returns the defined integer value or -1 if not found
+ */
+int parseNodeName(const String& nodeName) {
+    String normalized = nodeName;
+    normalized.trim();
+    normalized.toUpperCase();
+    normalized.replace(" ", "_");
+    
+    // Try to parse as integer first
+    if (normalized.length() > 0 && (isdigit(normalized.charAt(0)) || normalized.charAt(0) == '-')) {
+        int val = normalized.toInt();
+        if (val >= 0 && val <= 200) {  // Valid node range
+            return val;
+        }
+    }
+    
+    // Search through nano defines
+    extern const DefineInfo nanoDefines[];
+    // Count elements in nanoDefines - it has 35 elements based on the defNanoToCharShort array
+    const int numNanoDefines = 35;
+    for (int i = 0; i < numNanoDefines; i++) {
+        String longName = String(nanoDefines[i].longName);
+        String shortName = String(nanoDefines[i].shortName);
+        longName.toUpperCase();
+        shortName.toUpperCase();
+        
+        if (normalized == longName || normalized == shortName) {
+            return nanoDefines[i].defineValue;
+        }
+    }
+    
+    // Search through special defines
+    extern const DefineInfo specialDefines[];
+    // Count elements in specialDefines - it has 49 elements based on the defSpecialToCharShort array
+    const int numSpecialDefines = 49;
+    for (int i = 0; i < numSpecialDefines; i++) {
+        String longName = String(specialDefines[i].longName);
+        String shortName = String(specialDefines[i].shortName);
+        longName.toUpperCase();
+        shortName.toUpperCase();
+        
+        if (normalized == longName || normalized == shortName) {
+            return specialDefines[i].defineValue;
+        }
+    }
+    
+    // Handle common variations not in the arrays
+    if (normalized == "TOPRAIL" || normalized == "T_R" || normalized == "TOP_R") return TOP_RAIL;
+    if (normalized == "BOTTOMRAIL" || normalized == "BOTRAIL" || normalized == "B_R" || normalized == "BOT_R") return BOTTOM_RAIL;
+    if (normalized == "GROUND") return GND;
+    if (normalized == "3V3" || normalized == "3.3V") return SUPPLY_3V3;
+    if (normalized == "5V" || normalized == "+5V") return SUPPLY_5V;
+    
+    return -1;  // Not found
+}
+
+/**
+ * @brief Convert node value back to canonical string name
+ * Returns the long form name (e.g., TOP_RAIL)
+ */
+String nodeValueToString(int nodeValue) {
+    // Use the existing definesToChar function to get the long name
+    const char* name = definesToChar(nodeValue, 1);  // 1 = long name
+    if (name != nullptr && strlen(name) > 0) {
+        String result = String(name);
+        result.trim();
+        return result;
+    }
+    
+    // Fallback to number if name not found
+    return String(nodeValue);
+}
+
+/**
+ * @brief Parse color value from name or hex
+ * Accepts: "red", "0xFF0000", "16711680"
+ * Returns uint32_t color value
+ */
+uint32_t parseColorValue(const String& colorStr, bool& success) {
+    String normalized = colorStr;
+    normalized.trim();
+    normalized.toLowerCase();
+    
+    success = true;
+    
+    // Try hex format first
+    if (normalized.startsWith("0x")) {
+        return strtoul(normalized.c_str() + 2, NULL, 16);
+    }
+    
+    // Try decimal number
+    if (normalized.length() > 0 && isdigit(normalized.charAt(0))) {
+        return normalized.toInt();
+    }
+    
+    // Search through named colors
+    int numColors = sizeof(namedColors) / sizeof(namedColors[0]);
+    for (int i = 0; i < numColors; i++) {
+        String colorName = String(namedColors[i].name);
+        colorName.trim();
+        colorName.toLowerCase();
+        
+        if (normalized == colorName) {
+            return namedColors[i].dimColor;  // Use dimColor for LED display
+        }
+    }
+    
+    // Not found
+    success = false;
+    return 0x000000;
+}
+
+/**
+ * @brief Get color name from value
+ * Returns the canonical name from namedColors[]
+ */
+String colorValueToName(uint32_t color) {
+    // Use existing colorToName function
+    char* name = colorToName(color, -1);
+    if (name != nullptr) {
+        String result = String(name);
+        result.trim();
+        return result;
+    }
+    return "0x" + String(color, HEX);
+}
+
+/**
+ * @brief Parse boolean with aliases
+ * Accepts: true/false, 1/0, on/off, yes/no, enabled/disabled
+ */
+bool parseBoolean(const String& val, bool& success) {
+    String normalized = val;
+    normalized.trim();
+    normalized.toLowerCase();
+    
+    success = true;
+    
+    // True values
+    if (normalized == "true" || normalized == "1" || normalized == "on" || 
+        normalized == "yes" || normalized == "enabled") {
+        return true;
+    }
+    
+    // False values
+    if (normalized == "false" || normalized == "0" || normalized == "off" || 
+        normalized == "no" || normalized == "disabled") {
+        return false;
+    }
+    
+    // Invalid
+    success = false;
+    return false;
+}
+
+/**
+ * @brief Convert boolean to canonical string
+ */
+String booleanToString(bool value) {
+    return value ? "true" : "false";
+}
+
+// ============================================================================
+// Legacy Format Support
+// ============================================================================
+
+bool JumperlessState::fromLegacyNodeFile(const String& nodeFileContent, String& errorMsg) {
+    clear();
+    
+    // Legacy format is just: { node1-node2, node3-node4, ... }
+    // We need to parse this and extract connections
+    
+    String content = nodeFileContent;
+    content.trim();
+    
+    // Remove curly braces
+    int openBrace = content.indexOf('{');
+    int closeBrace = content.lastIndexOf('}');
+    
+    if (openBrace == -1 || closeBrace == -1) {
+        errorMsg = "Invalid legacy format: missing curly braces";
+        return false;
+    }
+    
+    content = content.substring(openBrace + 1, closeBrace);
+    content.trim();
+    
+    if (content.length() == 0) {
+        // Empty slot is valid
+        return true;
+    }
+    
+    // Parse connections
+    int startIdx = 0;
+    while (startIdx < (int)content.length()) {
+        int commaIdx = content.indexOf(',', startIdx);
+        if (commaIdx == -1) {
+            commaIdx = content.length();
+        }
+        
+        String bridge = content.substring(startIdx, commaIdx);
+        bridge.trim();
+        
+        if (bridge.length() > 0) {
+            int dashIdx = bridge.indexOf('-');
+            if (dashIdx == -1) {
+                errorMsg = "Invalid bridge format in legacy file: " + bridge;
+                return false;
+            }
+            
+            int node1 = bridge.substring(0, dashIdx).toInt();
+            int node2 = bridge.substring(dashIdx + 1).toInt();
+            
+            if (!addConnection(node1, node2, errorMsg)) {
+                errorMsg = "Error adding connection from legacy file: " + errorMsg;
+                return false;
+            }
+        }
+        
+        startIdx = commaIdx + 1;
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// Helper function to apply loaded state to hardware
+// ============================================================================
+
+/**
+ * @brief Apply the current globalState to all hardware peripherals
+ * 
+ * This function is called after loading a slot to ensure that:
+ * - DAC voltages match the loaded power state
+ * - GPIO directions and pull resistors match the loaded config
+ * - All hardware reflects the state loaded from the file
+ */
+void applyStateToHardware() {
+    // Apply power settings (DACs and rails)
+    // Note: Pass save=0 to avoid updating globalState (it's already loaded)
+    //       and saveEEPROM=0 to avoid writing to EEPROM
+    setRailsAndDACs(0);  // This applies topRail, bottomRail, dac0, dac1 from globalState
+    
+    // Apply GPIO configurations from globalState to hardware
+    for (int i = 0; i < 10; i++) {
+        uint8_t gpio_pin = gpioDef[i][0];
+        
+        // Apply direction to hardware
+        if (globalState.config.gpioDirection[i] == 0) {
+            gpio_set_dir(gpio_pin, true);  // output
+        } else {
+            gpio_set_dir(gpio_pin, false);  // input
+        }
+        
+        // Apply pull resistors to hardware and update gpioState for animations
+        switch (globalState.config.gpioPulls[i]) {
+            case 0: // pulldown
+                gpio_set_pulls(gpio_pin, false, true);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 4;  // input with pulldown
+                }
+                break;
+            case 1: // pullup
+                gpio_set_pulls(gpio_pin, true, false);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 3;  // input with pullup
+                }
+                break;
+            case 2: // no pull
+                gpio_set_pulls(gpio_pin, false, false);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 2;  // input with no pull
+                }
+                break;
+            case 3: // bus keeper
+                gpio_set_pulls(gpio_pin, true, true);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 7;  // bus keeper mode
+                }
+                break;
+            default:
+                gpio_set_pulls(gpio_pin, false, false);
+                if (globalState.config.gpioDirection[i] == 1) {
+                    gpioState[i] = 2;  // input with no pull
+                }
+                break;
+        }
+        
+        // Set initial output state for output pins
+        if (globalState.config.gpioDirection[i] == 0) {
+            gpio_put(gpio_pin, gpioState[i]);
+        }
+    }
+    
+    if (debugFP) {
+        Serial.println("✓ Applied state to hardware (power, GPIO)");
+    }
+}
+
+// ============================================================================
+// SlotManager Implementation
+// ============================================================================
+
+SlotManager::SlotManager() 
+    : activeState(globalState), activeSlotNumber(0), historySize(STATE_HISTORY_SIZE), 
+      historyHead(0), historyCount(0), historyPosition(0),
+      previewModeActive(false), previewSlotNumber(-1), originalSlotNumber(-1) {
+    // Always initialize to slot 0, sync with netSlot on first use
+    netSlot = 0;  // Ensure global is also 0
+    initHistory();
+}
+
+SlotManager& SlotManager::getInstance() {
+    static SlotManager instance;
+    return instance;
+}
+
+void SlotManager::initHistory() {
+    historyBuffer = new JumperlessState[historySize];
+}
+
+void SlotManager::cleanupHistory() {
+    if (historyBuffer) {
+        delete[] historyBuffer;
+        historyBuffer = nullptr;
+    }
+}
+
+JumperlessState& SlotManager::getActiveState() {
+    return activeState;
+}
+
+const JumperlessState& SlotManager::getActiveState() const {
+    return activeState;
+}
+
+String SlotManager::getSlotFilename(int slotNum) const {
+    return "/slots/slot" + String(slotNum) + ".yaml";
+}
+
+String SlotManager::getLegacySlotFilename(int slotNum) const {
+    return "/nodeFileSlot" + String(slotNum) + ".txt";
+}
+
+String SlotManager::getJSONSlotFilename(int slotNum) const {
+    return "/slots/slot" + String(slotNum) + ".json";
+}
+
+// Helper function to extract slot number from filename
+// Returns -1 if not a slot file
+static int extractSlotNumberFromFilename(const char* filename) {
+    if (!filename) return -1;
+    
+    // Check if filename matches pattern "/slots/slotN.yaml"
+    String fname(filename);
+    if (!fname.startsWith("/slots/slot") || !fname.endsWith(".yaml")) {
+        return -1;
+    }
+    
+    // Extract number between "slot" and ".yaml"
+    int slotStart = fname.indexOf("slot") + 4;
+    int yamlStart = fname.indexOf(".yaml");
+    if (slotStart < 4 || yamlStart <= slotStart) {
+        return -1;
+    }
+    
+    String numStr = fname.substring(slotStart, yamlStart);
+    int slotNum = numStr.toInt();
+    
+    // Validate it's a valid slot number
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+        return -1;
+    }
+    
+    return slotNum;
+}
+
+bool SlotManager::slotExists(int slotNum) const {
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+        return false;
+    }
+    
+    String filename = getSlotFilename(slotNum);
+    if (FatFS.exists(filename.c_str())) {
+        return true;
+    }
+    
+    // Check for legacy format
+    String legacyFilename = getLegacySlotFilename(slotNum);
+    return FatFS.exists(legacyFilename.c_str());
+}
+
+bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+        errorMsg = "Invalid slot number: " + String(slotNum);
+        return false;
+    }
+    
+    String content;
+    String filename = getSlotFilename(slotNum);
+
+    // Serial.println("Loading slot " + String(slotNum) + " from " + filename);
+    // Serial.flush();
+    
+    // Try loading YAML slot file
+    if (FatFS.exists(filename.c_str())) {
+        // Serial.println("  File exists, reading...");
+        // Serial.flush();
+        
+        if (!readSlotFile(slotNum, content, errorMsg)) {
+            Serial.println("  Read failed: " + errorMsg);
+            Serial.flush();
+            return false;
+        }
+        
+        // Serial.println("  Parsing YAML...");
+        // Serial.flush();
+        
+        if (!activeState.fromYAML(content, errorMsg)) {
+            errorMsg = "Failed to parse YAML slot " + String(slotNum) + ": " + errorMsg;
+            Serial.println("  Parse failed: " + errorMsg);
+            Serial.flush();
+            return false;
+        }
+        
+        // Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
+        // Serial.flush();
+        
+        // Compute nets from bridges and commit to hardware
+        // refreshLocalConnections does: loadBridgesFromState, getNodesToConnect, 
+        // bridgesToPaths, commitPaths, sendPaths, and LED updates
+        extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
+        refreshConnections(-1, 1, 0);  // Update connections, show LEDs, clean commit
+        
+        // In normal mode (not preview), also apply DAC/GPIO settings
+        if (!previewModeActive) {
+            applyStateToHardware();  // Apply power rails and GPIO configs
+            if (debugFP) {
+                Serial.println("  ✓ Applied state to hardware (connections, LEDs, power, GPIO)");
+            }
+        } else {
+            if (debugFP) {
+                Serial.println("  ✓ Preview mode - connections and LEDs updated (power/GPIO unchanged)");
+            }
+        }
+        
+        activeSlotNumber = slotNum;
+        netSlot = slotNum;  // Sync global slot tracker
+        return true;
+    }
+    
+    // Slot file doesn't exist - start with empty state
+    // Serial.println("  File doesn't exist, using empty slot");
+    // Serial.flush();
+    
+    activeState.clear();
+    activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Sync global slot tracker
+    
+    // DON'T create the file yet - only create when something is saved
+    // This prevents crashes from creating large objects on the stack
+    
+    return true;
+}
+
+bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+        errorMsg = "Invalid slot number: " + String(slotNum);
+        return false;
+    }
+    
+    // Serial.println("Saving slot " + String(slotNum) + " with " + String(activeState.connections.numBridges) + " connections");
+    // Serial.flush();
+    
+    // Ensure /slots directory exists (create on-demand)
+    if (!FatFS.exists("/slots")) {
+        // Serial.println("  Creating /slots directory");
+        // Serial.flush();
+        if (!FatFS.mkdir("/slots")) {
+            errorMsg = "Failed to create /slots directory";
+            return false;
+        }
+    }
+    
+    // Validate state before saving
+    if (!activeState.validate(errorMsg)) {
+        errorMsg = "Cannot save invalid state: " + errorMsg;
+        Serial.println("  Validation failed: " + errorMsg);
+        Serial.flush();
+        return false;
+    }
+    
+    // Convert to YAML
+    String yamlContent;
+    if (!activeState.toYAML(yamlContent)) {
+        errorMsg = "Failed to serialize state to YAML";
+        Serial.println("  Serialization failed");
+        Serial.flush();
+        return false;
+    }
+    
+    // Serial.println("  Writing to file...");
+    // Serial.flush();
+    
+    // Write to file (this will create the file if it doesn't exist)
+    if (!writeSlotFile(slotNum, yamlContent, errorMsg)) {
+        Serial.println("  Write failed: " + errorMsg);
+        Serial.flush();
+        return false;
+    }
+    
+    // Serial.println("  ✓ Saved successfully");
+    // Serial.flush();
+    
+    activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Sync global slot tracker
+    activeState.clearDirty();  // Mark as saved
+    return true;
+}
+
+bool SlotManager::saveActiveSlot(String& errorMsg) {
+    if (activeSlotNumber < 0) {
+        errorMsg = "No active slot to save";
+        return false;
+    }
+    return saveSlot(activeSlotNumber, errorMsg);
+}
+
+bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+        errorMsg = "Invalid slot number: " + String(slotNum);
+        return false;
+    }
+    
+    String filename = getSlotFilename(slotNum);
+    if (FatFS.exists(filename.c_str())) {
+        if (!FatFS.remove(filename.c_str())) {
+            errorMsg = "Failed to delete slot file: " + filename;
+            return false;
+        }
+    }
+    
+    // // Also delete legacy format if it exists
+    // String legacyFilename = getLegacySlotFilename(slotNum);
+    // if (FatFS.exists(legacyFilename.c_str())) {
+    //     FatFS.remove(legacyFilename.c_str());
+    // }
+    
+    // If this was the active slot, clear it
+    if (activeSlotNumber == slotNum) {
+        activeState.clear();
+        activeSlotNumber = -1;
+        netSlot = 0;  // Reset to slot 0
+    }
+    
+    return true;
+}
+
+void SlotManager::clearActiveSlot() {
+    activeState.clear();
+}
+
+void SlotManager::setActiveSlot(int slotNum) {
+    activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Keep global slot tracker in sync
+}
+
+void SlotManager::syncFromGlobalNetSlot() {
+    // Call this when netSlot changes externally (e.g., rotary encoder)
+    if (activeSlotNumber != netSlot) {
+        activeSlotNumber = netSlot;
+        
+        // Optionally auto-load the new slot
+        // String errorMsg;
+        // loadSlot(netSlot, errorMsg);
+    }
+}
+
+bool SlotManager::ensureSlotExists(int slotNum) {
+    if (slotExists(slotNum)) {
+        return true;
+    }
+    
+    // Create empty slot by serializing the current globalState
+    // This avoids creating a large JumperlessState on the stack
+    String errorMsg;
+    String yamlContent;
+    
+    if (!globalState.toYAML(yamlContent)) {
+        return false;
+    }
+    
+    return writeSlotFile(slotNum, yamlContent, errorMsg);
+}
+
+// File I/O helpers
+bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
+    String filename = getSlotFilename(slotNum);
+    
+    extern bool mscModeEnabled;
+    if (mscModeEnabled && debugUSB) {
+        Serial.print("USB: readSlotFile() called for slot ");
+        Serial.print(slotNum);
+        Serial.print(" (");
+        Serial.print(filename);
+        Serial.println(")");
+        Serial.flush();
+    }
+    
+    // Detect which core we're running on and synchronize appropriately
+    uint coreNum = get_core_num();
+    
+    // Add timeout to prevent deadlock during boot or race conditions
+    unsigned long timeout = millis() + 5000;  // 5 second timeout
+    
+    if (coreNum == 0) {
+        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
+        while (core2busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core2 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core1busy = true;
+    } else {
+        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
+        while (core1busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core1 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core2busy = true;
+    }
+    
+    if (mscModeEnabled && debugUSB) {
+        Serial.println("USB: Core sync acquired, attempting to open file...");
+        Serial.flush();
+    }
+    
+    // CRITICAL: In USB mode, add extra delay before opening
+    // NOTE: We don't sync here because we already synced before f_stat in the caller.
+    // Multiple rapid disk_ioctl(CTRL_SYNC) calls cause crashes.
+    if (mscModeEnabled && debugUSB) {
+        delay(50);
+    }
+    
+    File file = FatFS.open(filename.c_str(), "r");
+    if (!file) {
+        errorMsg = "Failed to open slot file: " + filename;
+        if (mscModeEnabled && debugUSB) {
+            Serial.print("USB: ✗ Failed to open file: ");
+            Serial.println(errorMsg);
+            Serial.flush();
+        }
+        if (coreNum == 0) {
+            core1busy = false;
+        } else {
+            core2busy = false;
+        }
+        return false;
+    }
+    
+    if (mscModeEnabled && debugUSB) {
+        Serial.println("USB: File opened successfully, reading content...");
+        Serial.flush();
+    }
+    
+    content = "";
+    size_t bytesRead = 0;
+    const size_t maxBytes = 65536;  // 64KB safety limit
+    
+    while (file.available() && bytesRead < maxBytes) {
+        int c = file.read();
+        if (c >= 0) {
+            content += (char)c;
+            bytesRead++;
+        } else {
+            // Read error
+            if (mscModeEnabled && debugUSB) {
+                Serial.println("USB: ⚠ Read error during file read");
+                Serial.flush();
+            }
+            break;
+        }
+    }
+    
+    if (mscModeEnabled && debugUSB) {
+        Serial.print("USB: Read ");
+        Serial.print(bytesRead);
+        Serial.println(" bytes, closing file...");
+        Serial.flush();
+    }
+    
+    file.close();
+    
+    if (mscModeEnabled && debugUSB) {
+        Serial.println("USB: File closed successfully");
+        Serial.flush();
+    }
+    
+    if (coreNum == 0) {
+        core1busy = false;
+    } else {
+        core2busy = false;
+    }
+    
+    return true;
+}
+
+bool SlotManager::writeSlotFile(int slotNum, const String& content, String& errorMsg) {
+    // Ensure slots directory exists
+    if (!FatFS.exists("/slots")) {
+        if (!FatFS.mkdir("/slots")) {
+            errorMsg = "Failed to create /slots directory";
+            return false;
+        }
+    }
+    
+    String filename = getSlotFilename(slotNum);
+    
+    // Detect which core we're running on and synchronize appropriately
+    uint coreNum = get_core_num();
+    
+    // Add timeout to prevent deadlock during boot or race conditions
+    unsigned long timeout = millis() + 5000;  // 5 second timeout
+    
+    if (coreNum == 0) {
+        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
+        while (core2busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core2 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core1busy = true;
+    } else {
+        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
+        while (core1busy) {
+            if (millis() > timeout) {
+                errorMsg = "Timeout waiting for core1 (possible deadlock)";
+                return false;
+            }
+            delay(1);
+        }
+        core2busy = true;
+    }
+    
+    File file = FatFS.open(filename.c_str(), "w");
+    if (!file) {
+        errorMsg = "Failed to open slot file for writing: " + filename;
+        if (coreNum == 0) {
+            core1busy = false;
+        } else {
+            core2busy = false;
+        }
+        return false;
+    }
+    
+    file.write((const uint8_t*)content.c_str(), content.length());
+    file.close();
+    
+    if (coreNum == 0) {
+        core1busy = false;
+    } else {
+        core2busy = false;
+    }
+    
+    return true;
+}
+
+bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
+    String legacyFilename = getLegacySlotFilename(slotNum);
+    
+    // Detect which core we're running on and synchronize appropriately
+    uint coreNum = get_core_num();
+    
+    if (coreNum == 0) {
+        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
+        while (core2busy) {
+            delay(1);
+        }
+        core1busy = true;
+    } else {
+        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
+        while (core1busy) {
+            delay(1);
+        }
+        core2busy = true;
+    }
+    
+    File file = FatFS.open(legacyFilename.c_str(), "r");
+    if (!file) {
+        errorMsg = "Failed to open legacy slot file: " + legacyFilename;
+        if (coreNum == 0) {
+            core1busy = false;
+        } else {
+            core2busy = false;
+        }
+        return false;
+    }
+    
+    String content = "";
+    while (file.available()) {
+        content += (char)file.read();
+    }
+    file.close();
+    
+    if (coreNum == 0) {
+        core1busy = false;
+    } else {
+        core2busy = false;
+    }
+    
+    // Parse legacy format
+    JumperlessState newState;
+    if (!newState.fromLegacyNodeFile(content, errorMsg)) {
+        errorMsg = "Failed to migrate legacy slot " + String(slotNum) + ": " + errorMsg;
+        return false;
+    }
+    
+    // Set default voltages for migrated old slot files (voltages no longer in config)
+    newState.setDacVoltage(0, 3.3);  // Default DAC0 voltage
+    newState.setDacVoltage(1, 0.0);  // Default DAC1 voltage
+    newState.setRailVoltage(true, 0.0);   // Default top rail voltage
+    newState.setRailVoltage(false, 0.0);  // Default bottom rail voltage
+    newState.setPathStacking(jumperlessConfig.routing.stack_paths, 
+                             jumperlessConfig.routing.stack_rails,
+                             jumperlessConfig.routing.stack_dacs);
+    
+    // Save in new format
+    activeState = newState;
+    if (!saveSlot(slotNum, errorMsg)) {
+        return false;
+    }
+    
+    activeSlotNumber = slotNum;
+    netSlot = slotNum;  // Sync global slot tracker
+    
+    Serial.println("✓ Migrated legacy slot " + String(slotNum) + " to new format");
+    return true;
+}
+
+// History management
+void SlotManager::pushHistory() {
+    // Save current state to history buffer
+    historyBuffer[historyHead] = activeState;
+    
+    // Move head forward
+    historyHead = (historyHead + 1) % historySize;
+    
+    // Update count
+    if (historyCount < historySize) {
+        historyCount++;
+    }
+    
+    // Reset position to head (can't redo after new change)
+    historyPosition = historyHead;
+}
+
+bool SlotManager::canUndo() const {
+    return historyCount > 0;
+}
+
+bool SlotManager::canRedo() const {
+    return historyPosition != historyHead;
+}
+
+bool SlotManager::undo(String& errorMsg) {
+    if (!canUndo()) {
+        errorMsg = "Nothing to undo";
+        return false;
+    }
+    
+    // Move position back
+    historyPosition = (historyPosition - 1 + historySize) % historySize;
+    
+    // Restore state
+    activeState = historyBuffer[historyPosition];
+    
+    return true;
+}
+
+bool SlotManager::redo(String& errorMsg) {
+    if (!canRedo()) {
+        errorMsg = "Nothing to redo";
+        return false;
+    }
+    
+    // Move position forward
+    historyPosition = (historyPosition + 1) % historySize;
+    
+    // Restore state
+    activeState = historyBuffer[historyPosition];
+    
+    return true;
+}
+
+void SlotManager::clearHistory() {
+    historyHead = 0;
+    historyCount = 0;
+    historyPosition = 0;
+}
+
+int SlotManager::getHistoryDepth() const {
+    if (historyPosition <= historyHead) {
+        return historyHead - historyPosition;
+    } else {
+        return historySize - historyPosition + historyHead;
+    }
+}
+
+// Utility
+void SlotManager::printSlotInfo(int slotNum) {
+    Serial.println("=== Slot " + String(slotNum) + " Info ===");
+    
+    if (!slotExists(slotNum)) {
+        Serial.println("Slot does not exist");
+        return;
+    }
+    
+    String errorMsg;
+    JumperlessState tempState;
+    
+    // Save current active state
+    JumperlessState savedState = activeState;
+    int savedSlot = activeSlotNumber;
+    
+    // Load the slot
+    if (!loadSlot(slotNum, errorMsg)) {
+        Serial.println("Error loading slot: " + errorMsg);
+        activeState = savedState;
+        activeSlotNumber = savedSlot;
+        return;
+    }
+    
+    Serial.println("Connections: " + String(activeState.connections.numBridges));
+    Serial.println("Power:");
+    Serial.println("  Top Rail:    " + String(activeState.power.topRail, 2) + "V");
+    Serial.println("  Bottom Rail: " + String(activeState.power.bottomRail, 2) + "V");
+    Serial.println("  DAC 0:       " + String(activeState.power.dac0, 2) + "V");
+    Serial.println("  DAC 1:       " + String(activeState.power.dac1, 2) + "V");
+    Serial.println("Custom Colors: " + String(activeState.display.numCustomColors));
+    Serial.println("RAM Usage: ~" + String(activeState.estimateRAMUsage()) + " bytes");
+    
+    // Restore active state
+    activeState = savedState;
+    activeSlotNumber = savedSlot;
+}
+
+void SlotManager::listSlots() {
+    Serial.println("\n=== Available Slots ===");
+    for (int i = 0; i < NUM_SLOTS; i++) {
+        if (slotExists(i)) {
+            String marker = (i == activeSlotNumber) ? " [ACTIVE]" : "";
+            Serial.println("Slot " + String(i) + marker);
+        }
+    }
+    Serial.println("=======================\n");
+}
+
+size_t SlotManager::getActiveStateRAMUsage() const {
+    size_t total = sizeof(SlotManager);
+    total += activeState.estimateRAMUsage();
+    total += historySize * sizeof(JumperlessState);
+    return total;
+}
+
+// ============================================================================
+// Preview Mode - Load slots without applying to hardware
+// Just tracks which slot to return to when done (no state copying!)
+// ============================================================================
+
+bool SlotManager::enterPreviewMode(int slotToPreview, String& errorMsg) {
+    if (slotToPreview < 0 || slotToPreview >= NUM_SLOTS) {
+        errorMsg = "Invalid slot number: " + String(slotToPreview);
+        return false;
+    }
+    
+    // Remember which slot we're currently on (to return to it later)
+    if (!previewModeActive) {
+        originalSlotNumber = activeSlotNumber;
+        // Save original rail voltage settings
+        originalRailVoltages[0] = activeState.power.topRail;
+        originalRailVoltages[1] = activeState.power.bottomRail;
+    }
+    
+    String filename = getSlotFilename(slotToPreview);
+    
+    // Check if slot file exists
+    if (FatFS.exists(filename.c_str())) {
+        // Slot exists - load it normally
+        if (!loadSlot(slotToPreview, errorMsg)) {
+            return false;
+        }
+    } else {
+        // Slot doesn't exist - just show empty state (DON'T create file!)
+        activeState.clear();
+        activeSlotNumber = slotToPreview;
+        netSlot = slotToPreview;
+    }
+    
+    // activeState.power is now the single source of truth
+    
+    // Mark that we're in preview mode
+    previewModeActive = true;
+    previewSlotNumber = slotToPreview;
+    
+    return true;
+}
+
+void SlotManager::clearPreviewMode() {
+    // Just clear the preview flag without loading anything
+    // Used when user selects a slot from menu - we want to keep the previewed state
+    // and let the normal load path handle it
+    if (previewModeActive) {
+        previewModeActive = false;
+        previewSlotNumber = -1;
+        originalSlotNumber = -1;
+    }
+}
+
+bool SlotManager::exitPreview(bool applyPreview, String& errorMsg) {
+    if (!previewModeActive) {
+        errorMsg = "Not in preview mode";
+        return false;
+    }
+    
+    if (applyPreview) {
+        // User wants to keep the previewed slot
+        // If the slot file doesn't exist yet, create it now
+        String filename = getSlotFilename(previewSlotNumber);
+        if (!FatFS.exists(filename.c_str())) {
+            // Slot was empty during preview - save it now
+            if (!saveSlot(previewSlotNumber, errorMsg)) {
+                previewModeActive = false;
+                previewSlotNumber = -1;
+                originalSlotNumber = -1;
+                return false;
+            }
+        }
+        
+        // Exit preview mode and apply the previewed state to hardware
+        previewModeActive = false;
+        previewSlotNumber = -1;
+        originalSlotNumber = -1;
+        
+        // Now apply the previewed state to hardware (power, GPIO, etc.)
+        applyStateToHardware();
+        
+        // activeSlotNumber and netSlot are already set to the previewed slot
+        return true;
+    } else {
+        // User wants to cancel - restore original slot AND rail voltages
+        previewModeActive = false;
+        previewSlotNumber = -1;
+        
+        // Restore original rail voltage settings
+        activeState.power.topRail = originalRailVoltages[0];
+        activeState.power.bottomRail = originalRailVoltages[1];
+        
+        // Load the original slot back
+        int slotToRestore = originalSlotNumber;
+        originalSlotNumber = -1;
+        
+        return loadSlot(slotToRestore, errorMsg);
+    }
+}
+
+// ============================================================================
+// State Backup/Restore Functions (for MicroPython entry/exit, undo, etc.)
+// Uses compressed YAML format - only stores actual connections, not empty array slots
+// ============================================================================
+
+static String* stateBackupYamlPtr = nullptr;
+static bool stateBackupStored = false;
+
+void storeStateBackup(void) {
+    // Store a compressed YAML snapshot of the current globalState
+    // This only includes actual connections, not empty array slots
+    if (stateBackupYamlPtr == nullptr) {
+        stateBackupYamlPtr = new String();
+    }
+    
+    *stateBackupYamlPtr = "";
+    
+    // Serialize current state to compressed YAML
+    if (!globalState.toYAML(*stateBackupYamlPtr)) {
+        Serial.println("Warning: Failed to serialize state backup");
+        stateBackupStored = false;
+        return;
+    }
+    
+    stateBackupStored = true;
+}
+
+void restoreStateBackup(bool autoSave) {
+    // Restore globalState from compressed YAML backup
+    if (stateBackupStored && stateBackupYamlPtr != nullptr && stateBackupYamlPtr->length() > 0) {
+        String errorMsg;
+        
+        if (!globalState.fromYAML(*stateBackupYamlPtr, errorMsg)) {
+            Serial.println("✗ Error restoring state backup: " + errorMsg);
+            return;
+        }
+        
+        if (autoSave) {
+            SlotManager& mgr = SlotManager::getInstance();
+            String err;
+            mgr.saveSlot(netSlot, err);
+        }
+    }
+}
+
+void restoreAndSaveStateBackup(void) {
+    // Restore and immediately save to current slot
+    restoreStateBackup(true);
+}
+
+void clearStateBackup(void) {
+    // Clear the backup
+    stateBackupStored = false;
+    if (stateBackupYamlPtr != nullptr) {
+        *stateBackupYamlPtr = "";
+        delete stateBackupYamlPtr;
+        stateBackupYamlPtr = nullptr;
+    }
+}
+
+bool hasStateBackup(void) {
+    return stateBackupStored && (stateBackupYamlPtr != nullptr) && (stateBackupYamlPtr->length() > 0);
+}
+
+bool hasStateChanges(void) {
+    // Compare current state with backup by serializing and comparing YAML
+    if (!hasStateBackup()) {
+        return false;  // No backup means no changes to compare against
+    }
+    
+    String currentYaml;
+    if (!globalState.toYAML(currentYaml)) {
+        return false;  // Can't compare if serialization fails
+    }
+    
+    // Compare YAML representations (ignores whitespace differences in serialization)
+    // For more robust comparison, we could deserialize and compare connection counts
+    return (currentYaml != *stateBackupYamlPtr);
+}
+
+size_t getStateBackupSize(void) {
+    // Return the size of the backup in bytes (for diagnostics/debugging)
+    if (!hasStateBackup()) {
+        return 0;
+    }
+    
+    return stateBackupYamlPtr->length();
+}
+
+void printStateBackupInfo(void) {
+    // Print diagnostic information about state backup memory usage
+    Serial.println("\n╔═══════════════════════════════╗");
+    Serial.println("║  State Backup Memory Info     ║");
+    Serial.println("╚═══════════════════════════════╝");
+    
+    if (!hasStateBackup()) {
+        Serial.println("  No backup stored");
+        return;
+    }
+    
+    size_t backupSize = stateBackupYamlPtr->length();
+    size_t fullStateSize = sizeof(JumperlessState);
+    size_t savings = fullStateSize - backupSize;
+    float savingsPercent = (float)savings / fullStateSize * 100.0f;
+    
+    Serial.println("  Connections: " + String(globalState.connections.numBridges));
+    Serial.println("  Nets:        " + String(globalState.connections.numNets));
+    Serial.println("");
+    Serial.println("  Compressed YAML: " + String(backupSize) + " bytes");
+    Serial.println("  Full state:      " + String(fullStateSize) + " bytes");
+    Serial.println("  Memory saved:    " + String(savings) + " bytes (" + String(savingsPercent, 1) + "%)");
+    
+    Serial.println("═══════════════════════════════\n");
+}
+
+/**
+ * @brief Service method for auto-saving dirty state
+ * 
+ * This handles automatic state persistence after modifications.
+ * Called periodically by the ServiceManager in the main loop.
+ * 
+ * IMPORTANT USB BEHAVIOR:
+ * - When USB is mounted: Allows READ operations (for live file monitoring)
+ *                        Blocks WRITE operations (host has exclusive write access)
+ * - When USB is not mounted: Normal operation (both read and write)
+ * 
+ * This enables live updates when host edits files while preventing corruption.
+ */
+ServiceStatus SlotManager::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    extern bool usbMountedByHost;
+    extern bool usbFilesystemBusy;
+    extern bool mscModeEnabled;
+    extern bool debugUSB;
+    
+    // ============================================================================
+    // FAST PATH: Early exit when there's absolutely nothing to do
+    // This makes the common case extremely fast (< 1 microsecond)
+    // ============================================================================
+    
+    // Check if we have any work to do (ordered by likelihood)
+    bool hasDirtyState = activeState.isDirty();
+    bool hasEditorOpen = (ekilo_get_currently_editing_file() != nullptr);
+    bool inPreviewMode = previewModeActive;
+    bool usbModeActive = mscModeEnabled;  // Need to monitor files when USB mode is active
+    
+    // FAST EXIT: If nothing is dirty, no editor is open, not in preview mode, and USB mode is off
+    // We need to keep monitoring when USB is active for external file changes from host
+    if (!hasDirtyState && !hasEditorOpen && !inPreviewMode && !usbModeActive) {
+        return ServiceStatus::IDLE;  // Ultra-fast return for the common case
+    }
+    
+    // Debug output (only when we're actually doing work)
+    static unsigned long lastServiceDebug = 0;
+    if (mscModeEnabled && debugUSB && (millis() - lastServiceDebug > 2000)) {
+        Serial.println("◆ SlotManager::service() - active work detected");
+        Serial.flush();
+        lastServiceDebug = millis();
+    }
+    
+    // Mark that we're about to do filesystem operations (if we're doing file work)
+    // This prevents host from mounting mid-operation via driveReady callback
+    if (hasEditorOpen || usbModeActive) {
+        usbFilesystemBusy = true;
+    }
+    
+    static unsigned long lastFileCheckTime = 0;
+    static unsigned long lastFileModTime = 0;
+    static int lastEditingSlotNumber = -1;  // Track which slot is being edited
+    
+    // Get editor state once at the start (used by multiple sections below)
+    const char* currentlyEditing = hasEditorOpen ? ekilo_get_currently_editing_file() : nullptr;
+    int editingSlotNumber = extractSlotNumberFromFilename(currentlyEditing);
+    
+    // ============================================================================
+    // PREVIEW MODE MANAGEMENT: Only run if editor is open or already in preview mode
+    // ============================================================================
+    if (hasEditorOpen || inPreviewMode) {
+        
+        // Handle preview mode state transitions
+        if (editingSlotNumber >= 0) {
+            // A slot file is being edited
+            if (!previewModeActive) {
+                // Enter preview mode
+                Serial.print("Slot ");
+                Serial.print(editingSlotNumber);
+                Serial.println(" opened in editor - entering preview mode");
+                
+                String errorMsg;
+                if (enterPreviewMode(editingSlotNumber, errorMsg)) {
+                    lastEditingSlotNumber = editingSlotNumber;
+                    lastFileModTime = 0;  // Reset to trigger initial load
+                } else {
+                    Serial.print("Failed to enter preview mode: ");
+                    Serial.println(errorMsg);
+                }
+            }
+        } else {
+            // No slot file is being edited
+            if (previewModeActive && lastEditingSlotNumber >= 0) {
+                // Exit preview mode (user closed editor without applying)
+                Serial.print("Editor closed - exiting preview mode for slot ");
+                Serial.println(lastEditingSlotNumber);
+                
+                String errorMsg;
+                exitPreview(false, errorMsg);  // Don't apply changes
+                lastEditingSlotNumber = -1;
+                lastFileModTime = 0;  // Reset for next edit
+            }
+        }
+    }
+    
+    // ============================================================================
+    // FILE MONITORING: Only check files if editor is open, in preview mode, or USB mode is active
+    // This is the most expensive operation, so we skip it when not needed
+    // ============================================================================
+    unsigned long timeSinceLastFileCheck = millis() - lastFileCheckTime;
+    
+    // OPTIMIZATION: Only monitor files when we have a reason to:
+    // - Editor is open (internal editing)
+    // - Preview mode is active (viewing changes)
+    // - USB mode is active (host may be editing files externally)
+    // This avoids ~60 f_stat() calls per minute during normal standalone operation
+    bool shouldMonitorFiles = (hasEditorOpen || inPreviewMode || usbModeActive);
+    
+    if (mscModeEnabled && debugUSB && shouldMonitorFiles && timeSinceLastFileCheck > 5000) {
+        Serial.print("USB: ⚠ File check interval: ");
+        Serial.print(timeSinceLastFileCheck);
+        Serial.println("ms (should be ~1000ms)");
+        Serial.flush();
+    }
+    
+    if (shouldMonitorFiles && timeSinceLastFileCheck > 1000) {
+        lastFileCheckTime = millis();
+        
+        if (mscModeEnabled && debugUSB) {
+            Serial.println("USB: ▶ File check cycle starting");
+            Serial.flush();
+        }
+        
+        // Determine which slot to monitor
+        int slotToMonitor = netSlot;
+        bool useEditorBuffer = false;
+        
+        if (mscModeEnabled && debugUSB) {
+            Serial.print("USB:   netSlot=");
+            Serial.print(netSlot);
+            Serial.print(", activeSlotNumber=");
+            Serial.print(activeSlotNumber);
+            Serial.print(", previewMode=");
+            Serial.println(previewModeActive ? "true" : "false");
+            Serial.flush();
+        }
+        
+        if (previewModeActive && editingSlotNumber >= 0) {
+            // In preview mode - monitor the editor buffer or file
+            slotToMonitor = editingSlotNumber;
+            useEditorBuffer = (currentlyEditing != nullptr);  // Use buffer if editor is open
+        } else if (!activeState.isDirty() && activeSlotNumber >= 0) {
+            // Normal mode - monitor active slot file if no unsaved changes
+            slotToMonitor = activeSlotNumber;
+            useEditorBuffer = false;
+        }
+        
+        if (mscModeEnabled && debugUSB) {
+            Serial.print("USB:   Monitoring slot ");
+            Serial.print(slotToMonitor);
+            Serial.print(", useEditorBuffer=");
+            Serial.println(useEditorBuffer ? "true" : "false");
+            Serial.flush();
+        }
+        
+        if (slotToMonitor >= 0) {
+            static String lastBufferContent = "";  // Track last buffer content
+            static unsigned long lastReloadTime = 0;  // Debounce reload operations
+            static bool reloadInProgress = false;  // Prevent concurrent reloads
+            const unsigned long RELOAD_COOLDOWN = 500; // Wait 500ms between reloads
+            bool contentChanged = false;
+            String newContent;
+            
+            // CRITICAL: If a reload is already in progress, skip this cycle
+            // This prevents cascading reloads that can cause crashes
+            if (reloadInProgress) {
+                if (mscModeEnabled && debugUSB && (millis() - lastReloadTime > 5000)) {
+                    Serial.println("USB: ⚠ Reload still in progress after 5s - forcing reset");
+                    reloadInProgress = false;  // Force reset after timeout
+                }
+                return ServiceStatus::BUSY;
+            }
+            
+            if (useEditorBuffer) {
+                // Get content directly from editor buffer (unsaved changes)
+                extern String ekilo_get_current_buffer_content();
+                newContent = ekilo_get_current_buffer_content();
+                
+                // Check if buffer content changed
+                if (newContent != lastBufferContent) {
+                    contentChanged = true;
+                    lastBufferContent = newContent;
+                }
+            } else {
+                // Get file modification time (saved changes)
+                if (mscModeEnabled && debugUSB) {
+                    Serial.println("USB:   Getting filename for slot...");
+                    Serial.flush();
+                }
+                
+                String filename = getSlotFilename(slotToMonitor);
+                
+                if (mscModeEnabled && debugUSB) {
+                    Serial.print("USB:   Filename: ");
+                    Serial.println(filename);
+                    Serial.println("USB:   Checking f_stat (no sync yet to avoid filesystem strain)...");
+                    Serial.flush();
+                }
+                
+                // OPTIMIZATION: Check file mod time WITHOUT syncing first
+                // We only sync if we detect a change. This dramatically reduces
+                // disk_ioctl(CTRL_SYNC) calls from ~60/minute to only when files change.
+                // Excessive SYNC calls cause filesystem crashes after many operations.
+                
+                fatfs::FILINFO fno;
+                memset(&fno, 0, sizeof(fno));  // Zero out structure for safety
+                
+                fatfs::FRESULT stat_result = fatfs::f_stat(filename.c_str(), &fno);
+                
+                if (mscModeEnabled && debugUSB) {
+                    Serial.print("USB:   f_stat returned: ");
+                    Serial.println(stat_result);
+                    Serial.flush();
+                }
+                
+                if (stat_result == fatfs::FR_OK) {
+                    unsigned long fileModTime = ((unsigned long)fno.fdate << 16) | fno.ftime;
+                    
+                    if (lastFileModTime == 0) {
+                        // First time - just record the time
+                        lastFileModTime = fileModTime;
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.print("USB: Initial mod time for ");
+                            Serial.print(filename);
+                            Serial.print(" = ");
+                            Serial.println(fileModTime, HEX);
+                        }
+                    } else if (fileModTime != lastFileModTime) {
+                        // Potential change detected! Try to sync and re-check to confirm
+                        // BUT: disk_ioctl(CTRL_SYNC) can crash after many operations in USB mode
+                        // So we make it optional - if it fails, we still proceed with the reload
+                        
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.println("USB: Potential file change detected - attempting sync...");
+                            Serial.flush();
+                        }
+                        
+                        delay(150);  // Let host finish writing
+                        
+                        // Track sync failures to avoid repeated crashes
+                        static int consecutiveSyncFailures = 0;
+                        const int MAX_SYNC_FAILURES = 3;
+                        bool syncSucceeded = false;
+                        
+                        // Only attempt sync if we haven't had too many recent failures
+                        if (consecutiveSyncFailures < MAX_SYNC_FAILURES) {
+                            // Attempt sync with basic error detection
+                            // Note: disk_ioctl may crash instead of returning error, but we try
+                            fatfs::DRESULT sync_result = fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
+                            
+                            if (sync_result == fatfs::RES_OK) {
+                                __sync_synchronize();  // Memory barrier
+                                syncSucceeded = true;
+                                consecutiveSyncFailures = 0;  // Reset on success
+                                
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.println("USB: Sync succeeded");
+                                    Serial.flush();
+                                }
+                            } else {
+                                consecutiveSyncFailures++;
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.print("USB: ⚠ Sync failed with code ");
+                                    Serial.print(sync_result);
+                                    Serial.print(" (failure #");
+                                    Serial.print(consecutiveSyncFailures);
+                                    Serial.println(")");
+                                    Serial.flush();
+                                }
+                            }
+                        } else {
+                            if (mscModeEnabled && debugUSB) {
+                                Serial.println("USB: ⚠ Skipping sync (too many recent failures)");
+                                Serial.flush();
+                            }
+                        }
+                        
+                        // Re-check file mod time (even if sync failed)
+                        memset(&fno, 0, sizeof(fno));
+                        stat_result = fatfs::f_stat(filename.c_str(), &fno);
+                        
+                        if (stat_result == fatfs::FR_OK) {
+                            unsigned long confirmedModTime = ((unsigned long)fno.fdate << 16) | fno.ftime;
+                            
+                            if (confirmedModTime != lastFileModTime) {
+                                // Change confirmed! Proceed with reload even if sync failed
+                                contentChanged = true;
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.print("USB: File change confirmed");
+                                    if (!syncSucceeded) {
+                                        Serial.print(" (without sync)");
+                                    }
+                                    Serial.print("! ");
+                                    Serial.print(filename);
+                                    Serial.print(" old=");
+                                    Serial.print(lastFileModTime, HEX);
+                                    Serial.print(" new=");
+                                    Serial.println(confirmedModTime, HEX);
+                                }
+                                lastFileModTime = confirmedModTime;
+                                lastBufferContent = "";  // Clear buffer cache
+                            } else {
+                                // False alarm - mod time returned to original
+                                if (mscModeEnabled && debugUSB) {
+                                    Serial.println("USB: False alarm - file unchanged");
+                                }
+                            }
+                        } else {
+                            if (mscModeEnabled && debugUSB) {
+                                Serial.print("USB: Re-check f_stat failed: ");
+                                Serial.println(stat_result);
+                            }
+                        }
+                    }
+                    // If fileModTime == lastFileModTime, no change, no sync needed
+                } else {
+                    // File stat failed - might be mid-write by host
+                    if (mscModeEnabled && debugUSB) {
+                        Serial.print("USB: f_stat failed with error ");
+                        Serial.print(stat_result);
+                        Serial.println(" - file might be locked by host, will retry");
+                    }
+                    // Don't mark as changed, just skip this check cycle
+                    contentChanged = false;
+                }
+            }
+            
+            // Reload if content changed AND we're past the cooldown period
+            if (contentChanged && (millis() - lastReloadTime > RELOAD_COOLDOWN)) {
+                // Mark reload as in progress to prevent concurrent operations
+                reloadInProgress = true;
+                lastReloadTime = millis();
+                String errorMsg;
+                
+                if (mscModeEnabled && debugUSB) {
+                    Serial.println("USB: Starting file reload...");
+                }
+                
+                if (useEditorBuffer && newContent.length() > 0) {
+                    // Parse YAML directly from editor buffer
+                    if (activeState.fromYAML(newContent, errorMsg)) {
+                        // Compute nets and refresh hardware
+                        extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
+                        refreshConnections(-1, 1, 0);
+                        lastStatus = ServiceStatus::BUSY;
+                        
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.println("USB: ✓ Buffer reload complete");
+                        }
+                    } else {
+                        // Parse error - don't spam, just skip this update
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.print("USB: ✗ Parse error: ");
+                            Serial.println(errorMsg);
+                        }
+                        lastStatus = ServiceStatus::IDLE;
+                    }
+                } else {
+                    // Load from disk (normal file change or save)
+                    // Add small delay to ensure host has finished writing
+                    if (mscModeEnabled && debugUSB) {
+                        Serial.println("USB: About to reload file - delaying 100ms for host write completion");
+                        Serial.flush();
+                        delay(100);  // Give host time to finish write
+                        // NOTE: We already called disk_ioctl(CTRL_SYNC) before f_stat above,
+                        // so we don't need to sync again here. Calling it twice in quick succession
+                        // causes crashes during the second reload.
+                        Serial.println("USB: Calling loadSlot()...");
+                        Serial.flush();
+                    }
+                    
+                    // Defensive: Check slot number is valid before attempting load
+                    if (slotToMonitor < 0 || slotToMonitor >= NUM_SLOTS) {
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.print("USB: ✗ Invalid slot number: ");
+                            Serial.println(slotToMonitor);
+                        }
+                        lastStatus = ServiceStatus::ERROR;
+                    } else if (loadSlot(slotToMonitor, errorMsg)) {
+                        if (!previewModeActive) {
+                            Serial.print("✓ Slot ");
+                            Serial.print(slotToMonitor);
+                            Serial.println(" reloaded from disk");
+                        }
+                        lastStatus = ServiceStatus::BUSY;
+                        
+                        if (mscModeEnabled && debugUSB) {
+                            Serial.println("USB: ✓ File reload complete");
+                            Serial.flush();
+                        }
+                    } else {
+                        if (!previewModeActive || mscModeEnabled) {
+                            Serial.print("✗ Failed to reload slot: ");
+                            Serial.println(errorMsg);
+                            Serial.flush();
+                        }
+                        lastStatus = ServiceStatus::ERROR;
+                        
+                        // Reset file mod time on error to force retry next cycle
+                        lastFileModTime = 0;
+                    }
+                }
+                
+                // Clear reload in progress flag
+                reloadInProgress = false;
+                
+            } else if (contentChanged && (millis() - lastReloadTime <= RELOAD_COOLDOWN)) {
+                // Change detected but we're in cooldown period
+                if (mscModeEnabled && debugUSB) {
+                    Serial.println("USB: Change detected but in cooldown period - will reload next cycle");
+                }
+            }
+        }
+    }
+    
+    // ============================================================================
+    // AUTO-SAVE: Only runs if state is dirty and USB is not mounted
+    // This section was already optimized with the early exit check above
+    // ============================================================================
+    if (hasDirtyState && !usbMountedByHost) {
+        unsigned long timeSinceModified = millis() - activeState.getLastModifiedTime();
+        if (timeSinceModified > 1000) {  // 2 second delay after last modification
+            if (debugWaitLoopTiming) {
+                Serial.printf("DEBUG: Auto-save triggered (dirty for %lu ms)\n", timeSinceModified);
+            }
+            
+            String errorMsg;
+            
+            // Ensure we're using the current slot (sync with netSlot)
+            syncFromGlobalNetSlot();
+            
+            // saveSlot will handle core synchronization and clearDirty
+            if (saveSlot(activeSlotNumber, errorMsg)) {
+                // Successfully auto-saved
+                lastStatus = ServiceStatus::BUSY;
+                if (debugWaitLoopTiming) {
+                    Serial.printf("DEBUG: Auto-save completed\n");
+                }
+                
+                // Update file mod time after save
+                String filename = getSlotFilename(activeSlotNumber);
+                fatfs::FILINFO fno;
+                if (fatfs::f_stat(filename.c_str(), &fno) == fatfs::FR_OK) {
+                    lastFileModTime = ((unsigned long)fno.fdate << 16) | fno.ftime;
+                }
+            } else {
+                // Don't clear dirty on failure - retry on next loop
+                Serial.print("✗ Auto-save failed (slot ");
+                Serial.print(activeSlotNumber);
+                Serial.print("): ");
+                Serial.println(errorMsg);
+                lastStatus = ServiceStatus::ERROR;
+            }
+        }
+    } else if (hasDirtyState && usbMountedByHost) {
+        // Dirty state exists but can't save while USB is mounted
+        // This is normal - we'll save when USB is unmounted
+        if (debugWaitLoopTiming) {
+            static unsigned long lastUsbBlockMsg = 0;
+            if (millis() - lastUsbBlockMsg > 5000) {  // Print every 5 seconds
+                Serial.println("DEBUG: Auto-save blocked - USB mounted by host");
+                lastUsbBlockMsg = millis();
+            }
+        }
+    }
+    
+    // Clear busy flag to allow host mounting if requested (only if we set it)
+    if (hasEditorOpen || usbModeActive) {
+        usbFilesystemBusy = false;
+    }
+    
+    if (mscModeEnabled && debugUSB) {
+        static unsigned long lastServiceCompleteDebug = 0;
+        if (millis() - lastServiceCompleteDebug > 5000) {
+            Serial.println("◆ SlotManager::service() completed normally");
+            Serial.flush();
+            lastServiceCompleteDebug = millis();
+        }
+    }
+    
+    return lastStatus;
+}
+

@@ -23,6 +23,7 @@ extern char *strcpy(char *dest, const char *src);
 #include "Graphics.h"
 #include "JumperlessDefines.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 #include "Peripherals.h"
 #include "Probing.h"
@@ -217,32 +218,32 @@ void saveRoutingState(int pathIndex) {
   // Save all chip states
   for (int i = 0; i < 12; i++) {
     for (int j = 0; j < 16; j++) {
-      chipBackup[i].xStatus[j] = ch[i].xStatus[j];
+      chipBackup[i].xStatus[j] = globalState.connections.chipStates[i].xStatus[j];
     }
     for (int j = 0; j < 8; j++) {
-      chipBackup[i].yStatus[j] = ch[i].yStatus[j];
+      chipBackup[i].yStatus[j] = globalState.connections.chipStates[i].yStatus[j];
     }
   }
 
   // Save path state
-  pathBackup.net = path[pathIndex].net;
-  pathBackup.node1 = path[pathIndex].node1;
-  pathBackup.node2 = path[pathIndex].node2;
-  pathBackup.altPathNeeded = path[pathIndex].altPathNeeded;
-  pathBackup.sameChip = path[pathIndex].sameChip;
-  pathBackup.skip = path[pathIndex].skip;
+  pathBackup.net = globalState.connections.paths[pathIndex].net;
+  pathBackup.node1 = globalState.connections.paths[pathIndex].node1;
+  pathBackup.node2 = globalState.connections.paths[pathIndex].node2;
+  pathBackup.altPathNeeded = globalState.connections.paths[pathIndex].altPathNeeded;
+  pathBackup.sameChip = globalState.connections.paths[pathIndex].sameChip;
+  pathBackup.skip = globalState.connections.paths[pathIndex].skip;
 
   for (int i = 0; i < 4; i++) {
-    pathBackup.chip[i] = path[pathIndex].chip[i];
+    pathBackup.chip[i] = globalState.connections.paths[pathIndex].chip[i];
   }
   for (int i = 0; i < 6; i++) {
-    pathBackup.x[i] = path[pathIndex].x[i];
-    pathBackup.y[i] = path[pathIndex].y[i];
+    pathBackup.x[i] = globalState.connections.paths[pathIndex].x[i];
+    pathBackup.y[i] = globalState.connections.paths[pathIndex].y[i];
   }
 
   backupValid = true;
 
-  DEBUG_NTCC6_PRINT("State saved for path[");
+  DEBUG_NTCC6_PRINT("State saved for globalState.connections.paths[");
   DEBUG_NTCC6_PRINT(pathIndex);
   DEBUG_NTCC6_PRINTLN("]");
 }
@@ -260,30 +261,30 @@ void restoreRoutingState(int pathIndex) {
   // Restore all chip states
   for (int i = 0; i < 12; i++) {
     for (int j = 0; j < 16; j++) {
-      ch[i].xStatus[j] = chipBackup[i].xStatus[j];
+      globalState.connections.chipStates[i].xStatus[j] = chipBackup[i].xStatus[j];
     }
     for (int j = 0; j < 8; j++) {
-      ch[i].yStatus[j] = chipBackup[i].yStatus[j];
+      globalState.connections.chipStates[i].yStatus[j] = chipBackup[i].yStatus[j];
     }
   }
 
   // Restore path state
-  path[pathIndex].net = pathBackup.net;
-  path[pathIndex].node1 = pathBackup.node1;
-  path[pathIndex].node2 = pathBackup.node2;
-  path[pathIndex].altPathNeeded = pathBackup.altPathNeeded;
-  path[pathIndex].sameChip = pathBackup.sameChip;
-  path[pathIndex].skip = pathBackup.skip;
+  globalState.connections.paths[pathIndex].net = pathBackup.net;
+  globalState.connections.paths[pathIndex].node1 = pathBackup.node1;
+  globalState.connections.paths[pathIndex].node2 = pathBackup.node2;
+  globalState.connections.paths[pathIndex].altPathNeeded = pathBackup.altPathNeeded;
+  globalState.connections.paths[pathIndex].sameChip = pathBackup.sameChip;
+  globalState.connections.paths[pathIndex].skip = pathBackup.skip;
 
   for (int i = 0; i < 4; i++) {
-    path[pathIndex].chip[i] = pathBackup.chip[i];
+    globalState.connections.paths[pathIndex].chip[i] = pathBackup.chip[i];
   }
   for (int i = 0; i < 6; i++) {
-    path[pathIndex].x[i] = pathBackup.x[i];
-    path[pathIndex].y[i] = pathBackup.y[i];
+    globalState.connections.paths[pathIndex].x[i] = pathBackup.x[i];
+    globalState.connections.paths[pathIndex].y[i] = pathBackup.y[i];
   }
 
-  DEBUG_NTCC6_PRINT("State restored for path[");
+  DEBUG_NTCC6_PRINT("State restored for globalState.connections.paths[");
   DEBUG_NTCC6_PRINT(pathIndex);
   DEBUG_NTCC6_PRINTLN("]");
 }
@@ -303,10 +304,10 @@ void validateTransactionConsistency(void) {
 
     // Check for paths that have assigned positions but skip flag is set
     for (int i = 0; i < numberOfPaths; i++) {
-      if (path[i].skip) {
+      if (globalState.connections.paths[i].skip) {
         bool hasAssignedPositions = false;
         for (int j = 0; j < 4; j++) {
-          if (path[i].x[j] >= 0 || path[i].y[j] >= 0) {
+          if (globalState.connections.paths[i].x[j] >= 0 || globalState.connections.paths[i].y[j] >= 0) {
             hasAssignedPositions = true;
             break;
           }
@@ -322,13 +323,13 @@ void validateTransactionConsistency(void) {
     // Check for chip positions assigned to multiple nets
     for (int chip = 0; chip < 12; chip++) {
       for (int x = 0; x < 16; x++) {
-        if (ch[chip].xStatus[x] > 0) {
+        if (globalState.connections.chipStates[chip].xStatus[x] > 0) {
           int pathCount = 0;
           for (int p = 0; p < numberOfPaths; p++) {
-            if (path[p].skip)
+            if (globalState.connections.paths[p].skip)
               continue;
             for (int seg = 0; seg < 4; seg++) {
-              if (path[p].chip[seg] == chip && path[p].x[seg] == x) {
+              if (globalState.connections.paths[p].chip[seg] == chip && globalState.connections.paths[p].x[seg] == x) {
                 pathCount++;
               }
             }
@@ -339,20 +340,20 @@ void validateTransactionConsistency(void) {
             Serial.print(" X[");
             Serial.print(x);
             Serial.print("] assigned to net ");
-            Serial.print(ch[chip].xStatus[x]);
+            Serial.print(globalState.connections.chipStates[chip].xStatus[x]);
             Serial.println(" but no paths use it");
           }
         }
       }
 
       for (int y = 0; y < 8; y++) {
-        if (ch[chip].yStatus[y] > 0) {
+        if (globalState.connections.chipStates[chip].yStatus[y] > 0) {
           int pathCount = 0;
           for (int p = 0; p < numberOfPaths; p++) {
-            if (path[p].skip)
+            if (globalState.connections.paths[p].skip)
               continue;
             for (int seg = 0; seg < 4; seg++) {
-              if (path[p].chip[seg] == chip && path[p].y[seg] == y) {
+              if (globalState.connections.paths[p].chip[seg] == chip && globalState.connections.paths[p].y[seg] == y) {
                 pathCount++;
               }
             }
@@ -363,7 +364,7 @@ void validateTransactionConsistency(void) {
             Serial.print(" Y[");
             Serial.print(y);
             Serial.print("] assigned to net ");
-            Serial.print(ch[chip].yStatus[y]);
+            Serial.print(globalState.connections.chipStates[chip].yStatus[y]);
             Serial.println(" but no paths use it");
           }
         }
@@ -376,7 +377,7 @@ void validateTransactionConsistency(void) {
 
 // Helper function to track direct Y status assignments
 void setChipYStatus(int chip, int y, int net, const char *location) {
-  if (debugNTCC6 && ch[chip].yStatus[y] != -1 && ch[chip].yStatus[y] != net) {
+  if (debugNTCC6 && globalState.connections.chipStates[chip].yStatus[y] != -1 && globalState.connections.chipStates[chip].yStatus[y] != net) {
     DEBUG_NTCC6_PRINT("DIRECT Y ASSIGNMENT CONFLICT: ");
     DEBUG_NTCC6_PRINT(location);
     DEBUG_NTCC6_PRINT(" - Chip ");
@@ -384,11 +385,11 @@ void setChipYStatus(int chip, int y, int net, const char *location) {
     DEBUG_NTCC6_PRINT(" Y[");
     DEBUG_NTCC6_PRINT(y);
     DEBUG_NTCC6_PRINT("] occupied by net ");
-    DEBUG_NTCC6_PRINT(ch[chip].yStatus[y]);
+    DEBUG_NTCC6_PRINT(globalState.connections.chipStates[chip].yStatus[y]);
     DEBUG_NTCC6_PRINT(", overwriting with net ");
     DEBUG_NTCC6_PRINTLN(net);
   }
-  ch[chip].yStatus[y] = net;
+  globalState.connections.chipStates[chip].yStatus[y] = net;
 }
 
 // Helper function to detect and report routing conflicts
@@ -399,31 +400,31 @@ void detectAndReportConflicts(void) {
     // Check for X conflicts
     for (int chip = 0; chip < 12; chip++) {
       for (int x = 0; x < 16; x++) {
-        if (ch[chip].xStatus[x] > 0) {
+        if (globalState.connections.chipStates[chip].xStatus[x] > 0) {
           // Count how many paths use this X position
           int pathCount = 0;
           int nets[MAX_NETS];
           int netCount = 0;
 
           for (int pathIdx = 0; pathIdx < numberOfPaths; pathIdx++) {
-            if (path[pathIdx].skip)
+            if (globalState.connections.paths[pathIdx].skip)
               continue;
 
             for (int seg = 0; seg < 4; seg++) {
-              if (path[pathIdx].chip[seg] == chip &&
-                  path[pathIdx].x[seg] == x) {
+              if (globalState.connections.paths[pathIdx].chip[seg] == chip &&
+                  globalState.connections.paths[pathIdx].x[seg] == x) {
                 pathCount++;
 
                 // Track unique nets
                 bool netExists = false;
                 for (int n = 0; n < netCount; n++) {
-                  if (nets[n] == path[pathIdx].net) {
+                  if (nets[n] == globalState.connections.paths[pathIdx].net) {
                     netExists = true;
                     break;
                   }
                 }
                 if (!netExists && netCount < MAX_NETS) {
-                  nets[netCount++] = path[pathIdx].net;
+                  nets[netCount++] = globalState.connections.paths[pathIdx].net;
                 }
               }
             }
@@ -449,31 +450,31 @@ void detectAndReportConflicts(void) {
     // Check for Y conflicts
     for (int chip = 0; chip < 12; chip++) {
       for (int y = 0; y < 8; y++) {
-        if (ch[chip].yStatus[y] > 0) {
+        if (globalState.connections.chipStates[chip].yStatus[y] > 0) {
           // Count how many paths use this Y position
           int pathCount = 0;
           int nets[MAX_NETS];
           int netCount = 0;
 
           for (int pathIdx = 0; pathIdx < numberOfPaths; pathIdx++) {
-            if (path[pathIdx].skip)
+            if (globalState.connections.paths[pathIdx].skip)
               continue;
 
             for (int seg = 0; seg < 4; seg++) {
-              if (path[pathIdx].chip[seg] == chip &&
-                  path[pathIdx].y[seg] == y) {
+              if (globalState.connections.paths[pathIdx].chip[seg] == chip &&
+                  globalState.connections.paths[pathIdx].y[seg] == y) {
                 pathCount++;
 
                 // Track unique nets
                 bool netExists = false;
                 for (int n = 0; n < netCount; n++) {
-                  if (nets[n] == path[pathIdx].net) {
+                  if (nets[n] == globalState.connections.paths[pathIdx].net) {
                     netExists = true;
                     break;
                   }
                 }
                 if (!netExists && netCount < MAX_NETS) {
-                  nets[netCount++] = path[pathIdx].net;
+                  nets[netCount++] = globalState.connections.paths[pathIdx].net;
                 }
               }
             }
@@ -517,7 +518,7 @@ bool setChipXStatus(int chip, int x, int net, const char *location) {
   }
 
   // Check for overlap conflicts before assignment
-  if (ch[chip].xStatus[x] != -1 && ch[chip].xStatus[x] != net) {
+  if (globalState.connections.chipStates[chip].xStatus[x] != -1 && globalState.connections.chipStates[chip].xStatus[x] != net) {
     DEBUG_NTCC6_PRINT("WARNING: X position conflict in ");
     DEBUG_NTCC6_PRINT(location);
     DEBUG_NTCC6_PRINT(" - Chip ");
@@ -525,14 +526,14 @@ bool setChipXStatus(int chip, int x, int net, const char *location) {
     DEBUG_NTCC6_PRINT(" X[");
     DEBUG_NTCC6_PRINT(x);
     DEBUG_NTCC6_PRINT("] already occupied by net ");
-    DEBUG_NTCC6_PRINT(ch[chip].xStatus[x]);
+    DEBUG_NTCC6_PRINT(globalState.connections.chipStates[chip].xStatus[x]);
     DEBUG_NTCC6_PRINT(", trying to assign net ");
     DEBUG_NTCC6_PRINTLN(net);
     return false; // Assignment failed due to conflict
   }
 
   // Assign the X position
-  ch[chip].xStatus[x] = net;
+  globalState.connections.chipStates[chip].xStatus[x] = net;
 
   DEBUG_NTCC6_PRINT("SUCCESS: ");
   DEBUG_NTCC6_PRINT(location);
@@ -563,7 +564,7 @@ bool setChipYStatusSafe(int chip, int y, int net, const char *location) {
   }
 
   // Check for overlap conflicts before assignment
-  if (ch[chip].yStatus[y] != -1 && ch[chip].yStatus[y] != net) {
+  if (globalState.connections.chipStates[chip].yStatus[y] != -1 && globalState.connections.chipStates[chip].yStatus[y] != net) {
     DEBUG_NTCC6_PRINT("WARNING: Y position conflict in ");
     DEBUG_NTCC6_PRINT(location);
     DEBUG_NTCC6_PRINT(" - Chip ");
@@ -571,14 +572,14 @@ bool setChipYStatusSafe(int chip, int y, int net, const char *location) {
     DEBUG_NTCC6_PRINT(" Y[");
     DEBUG_NTCC6_PRINT(y);
     DEBUG_NTCC6_PRINT("] already occupied by net ");
-    DEBUG_NTCC6_PRINT(ch[chip].yStatus[y]);
+    DEBUG_NTCC6_PRINT(globalState.connections.chipStates[chip].yStatus[y]);
     DEBUG_NTCC6_PRINT(", trying to assign net ");
     DEBUG_NTCC6_PRINTLN(net);
     return false; // Assignment failed due to conflict
   }
 
   // Assign the Y position
-  ch[chip].yStatus[y] = net;
+  globalState.connections.chipStates[chip].yStatus[y] = net;
 
   DEBUG_NTCC6_PRINT("SUCCESS: ");
   DEBUG_NTCC6_PRINT(location);
@@ -601,25 +602,25 @@ bool setPathX(int pathIndex, int xIndex, int xValue) {
 
   // Allow special values (-2, -1) without conflict checking
   if (xValue < 0) {
-    path[pathIndex].x[xIndex] = xValue;
+    globalState.connections.paths[pathIndex].x[xIndex] = xValue;
     return true;
   }
 
   // Check for conflicts when overwriting existing real coordinates
-  if (path[pathIndex].x[xIndex] >= 0 && path[pathIndex].x[xIndex] != xValue) {
-    DEBUG_NTCC6_PRINT("WARNING: X coordinate conflict - path[");
+  if (globalState.connections.paths[pathIndex].x[xIndex] >= 0 && globalState.connections.paths[pathIndex].x[xIndex] != xValue) {
+    DEBUG_NTCC6_PRINT("WARNING: X coordinate conflict - globalState.connections.paths[");
     DEBUG_NTCC6_PRINT(pathIndex);
     DEBUG_NTCC6_PRINT("].x[");
     DEBUG_NTCC6_PRINT(xIndex);
     DEBUG_NTCC6_PRINT("] already set to ");
-    DEBUG_NTCC6_PRINT(path[pathIndex].x[xIndex]);
+    DEBUG_NTCC6_PRINT(globalState.connections.paths[pathIndex].x[xIndex]);
     DEBUG_NTCC6_PRINT(", trying to assign ");
     DEBUG_NTCC6_PRINTLN(xValue);
     return false; // Conflict detected
   }
 
   // Assign the X coordinate
-  path[pathIndex].x[xIndex] = xValue;
+  globalState.connections.paths[pathIndex].x[xIndex] = xValue;
   return true; // Assignment successful
 }
 
@@ -632,25 +633,25 @@ bool setPathY(int pathIndex, int yIndex, int yValue) {
 
   // Allow special values (-2, -1) without conflict checking
   if (yValue < 0) {
-    path[pathIndex].y[yIndex] = yValue;
+    globalState.connections.paths[pathIndex].y[yIndex] = yValue;
     return true;
   }
 
   // Check for conflicts when overwriting existing real coordinates
-  if (path[pathIndex].y[yIndex] >= 0 && path[pathIndex].y[yIndex] != yValue) {
-    DEBUG_NTCC6_PRINT("WARNING: Y coordinate conflict - path[");
+  if (globalState.connections.paths[pathIndex].y[yIndex] >= 0 && globalState.connections.paths[pathIndex].y[yIndex] != yValue) {
+    DEBUG_NTCC6_PRINT("WARNING: Y coordinate conflict - globalState.connections.paths[");
     DEBUG_NTCC6_PRINT(pathIndex);
     DEBUG_NTCC6_PRINT("].y[");
     DEBUG_NTCC6_PRINT(yIndex);
     DEBUG_NTCC6_PRINT("] already set to ");
-    DEBUG_NTCC6_PRINT(path[pathIndex].y[yIndex]);
+    DEBUG_NTCC6_PRINT(globalState.connections.paths[pathIndex].y[yIndex]);
     DEBUG_NTCC6_PRINT(", trying to assign ");
     DEBUG_NTCC6_PRINTLN(yValue);
     return false; // Conflict detected
   }
 
   // Assign the Y coordinate
-  path[pathIndex].y[yIndex] = yValue;
+  globalState.connections.paths[pathIndex].y[yIndex] = yValue;
   return true; // Assignment successful
 }
 
@@ -719,14 +720,14 @@ void validateNoYPositionOverlaps(void);
 //   }
 
 //   // Check for overlap conflicts before assignment
-//   if (ch[chip].yStatus[yPos] != -1 && ch[chip].yStatus[yPos] != net) {
+//   if (globalState.connections.chipStates[chip].yStatus[yPos] != -1 && globalState.connections.chipStates[chip].yStatus[yPos] != net) {
 //     if (debugNTCC6) {
 //       Serial.print("WARNING: Y position overlap detected! Chip ");
 //       Serial.print(chipNumToChar(chip));
 //       Serial.print(" Y[");
 //       Serial.print(yPos);
 //       Serial.print("] already occupied by net ");
-//       Serial.print(ch[chip].yStatus[yPos]);
+//       Serial.print(globalState.connections.chipStates[chip].yStatus[yPos]);
 //       Serial.print(", trying to assign net ");
 //       Serial.println(net);
 //     }
@@ -735,13 +736,13 @@ void validateNoYPositionOverlaps(void);
 //   }
 
 //   // Only track new Y position usage if this Y position wasn't already used
-//   by this net bool alreadyUsedByThisNet = false; if (ch[chip].yStatus[yPos]
+//   by this net bool alreadyUsedByThisNet = false; if (globalState.connections.chipStates[chip].yStatus[yPos]
 //   == net) {
 //     alreadyUsedByThisNet = true;
 //   }
 
 //   // Assign the Y position
-//   ch[chip].yStatus[yPos] = net;
+//   globalState.connections.chipStates[chip].yStatus[yPos] = net;
 
 //   // Track usage if this is a new Y position for this net
 //   if (!alreadyUsedByThisNet && yPositionLimits[net] > 0) {
@@ -749,11 +750,11 @@ void validateNoYPositionOverlaps(void);
 //     int uniqueYPositions = 0;
 //     for (int checkChip = 0; checkChip < 12; checkChip++) {
 //       for (int checkY = 0; checkY < 8; checkY++) {
-//         if (ch[checkChip].yStatus[checkY] == net) {
+//         if (globalState.connections.chipStates[checkChip].yStatus[checkY] == net) {
 //           // Check if we've already counted this Y position
 //           bool alreadyCounted = false;
 //           for (int prevChip = 0; prevChip < checkChip; prevChip++) {
-//             if (ch[prevChip].yStatus[checkY] == net) {
+//             if (globalState.connections.chipStates[prevChip].yStatus[checkY] == net) {
 //               alreadyCounted = true;
 //               break;
 //             }
@@ -834,50 +835,50 @@ bool resolveYPositionConflicts(void) {
 
   // Simple approach: just look for paths that have overlapping Y positions
   for (int i = 0; i < numberOfPaths; i++) {
-    if (path[i].skip)
+    if (globalState.connections.paths[i].skip)
       continue; // Skip already failed paths
 
     for (int j = i + 1; j < numberOfPaths; j++) {
-      if (path[j].skip)
+      if (globalState.connections.paths[j].skip)
         continue; // Skip already failed paths
-      if (path[i].net == path[j].net)
+      if (globalState.connections.paths[i].net == globalState.connections.paths[j].net)
         continue; // Same net is OK
 
       // Check if these paths overlap on any chip
       for (int seg1 = 0; seg1 < 4; seg1++) {
         for (int seg2 = 0; seg2 < 4; seg2++) {
-          if (path[i].chip[seg1] == path[j].chip[seg2] &&
-              path[i].chip[seg1] != -1 && path[i].y[seg1] == path[j].y[seg2] &&
-              path[i].y[seg1] > 0) {
+          if (globalState.connections.paths[i].chip[seg1] == globalState.connections.paths[j].chip[seg2] &&
+              globalState.connections.paths[i].chip[seg1] != -1 && globalState.connections.paths[i].y[seg1] == globalState.connections.paths[j].y[seg2] &&
+              globalState.connections.paths[i].y[seg1] > 0) {
 
             foundConflicts = true;
             if (debugNTCC6) {
               Serial.print("CONFLICT: Path ");
               Serial.print(i);
               Serial.print(" (net ");
-              Serial.print(path[i].net);
+              Serial.print(globalState.connections.paths[i].net);
               Serial.print(") and path ");
               Serial.print(j);
               Serial.print(" (net ");
-              Serial.print(path[j].net);
+              Serial.print(globalState.connections.paths[j].net);
               Serial.print(") both use chip ");
-              Serial.print(chipNumToChar(path[i].chip[seg1]));
+              Serial.print(chipNumToChar(globalState.connections.paths[i].chip[seg1]));
               Serial.print(" Y[");
-              Serial.print(path[i].y[seg1]);
+              Serial.print(globalState.connections.paths[i].y[seg1]);
               Serial.println("]");
             }
 
             // Simple resolution: mark the higher-numbered path as unconnectable
-            path[j].skip = true;
+            globalState.connections.paths[j].skip = true;
             if (debugNTCC6) {
-              Serial.print("  Simple resolution: marked path[");
+              Serial.print("  Simple resolution: marked globalState.connections.paths[");
               Serial.print(j);
               Serial.println("] as unconnectable");
             }
             break;
           }
         }
-        if (path[j].skip)
+        if (globalState.connections.paths[j].skip)
           break; // Don't check more if already marked
       }
     }
@@ -893,21 +894,21 @@ void validateNoYPositionOverlaps(void) {
 
     // Simple check: compare path pairs for overlaps
     for (int i = 0; i < numberOfPaths; i++) {
-      if (path[i].skip)
+      if (globalState.connections.paths[i].skip)
         continue;
 
       for (int j = i + 1; j < numberOfPaths; j++) {
-        if (path[j].skip)
+        if (globalState.connections.paths[j].skip)
           continue;
-        if (path[i].net == path[j].net)
+        if (globalState.connections.paths[i].net == globalState.connections.paths[j].net)
           continue; // Same net is OK
 
         // Quick check for any Y overlap
         for (int seg1 = 0; seg1 < 4; seg1++) {
           for (int seg2 = 0; seg2 < 4; seg2++) {
-            if (path[i].chip[seg1] == path[j].chip[seg2] &&
-                path[i].chip[seg1] != -1 &&
-                path[i].y[seg1] == path[j].y[seg2] && path[i].y[seg1] > 0) {
+            if (globalState.connections.paths[i].chip[seg1] == globalState.connections.paths[j].chip[seg2] &&
+                globalState.connections.paths[i].chip[seg1] != -1 &&
+                globalState.connections.paths[i].y[seg1] == globalState.connections.paths[j].y[seg2] && globalState.connections.paths[i].y[seg1] > 0) {
 
               foundOverlaps = true;
               Serial.print("OVERLAP: Path ");
@@ -915,13 +916,13 @@ void validateNoYPositionOverlaps(void) {
               Serial.print(" and ");
               Serial.print(j);
               Serial.print(" both use chip ");
-              Serial.print(chipNumToChar(path[i].chip[seg1]));
+              Serial.print(chipNumToChar(globalState.connections.paths[i].chip[seg1]));
               Serial.print(" Y[");
-              Serial.print(path[i].y[seg1]);
+              Serial.print(globalState.connections.paths[i].y[seg1]);
               Serial.print("] nets ");
-              Serial.print(path[i].net);
+              Serial.print(globalState.connections.paths[i].net);
               Serial.print(" and ");
-              Serial.println(path[j].net);
+              Serial.println(globalState.connections.paths[j].net);
             }
           }
         }
@@ -936,8 +937,8 @@ void validateNoYPositionOverlaps(void) {
 
 bool isGpioConnection(int pathIndex) {
   for (int i = 0; i < 10; i++) {
-    if (path[pathIndex].node1 == gpioDef[i][0] ||
-        path[pathIndex].node2 == gpioDef[i][1]) {
+    if (globalState.connections.paths[pathIndex].node1 == gpioDef[i][0] ||
+        globalState.connections.paths[pathIndex].node2 == gpioDef[i][1]) {
       return true;
     }
   }
@@ -950,7 +951,7 @@ int getNetPriority(int netNumber) {
     return 0;
   }
 
-  return net[netNumber].priority;
+  return globalState.connections.nets[netNumber].priority;
 }
 
 void frontloadPriorityConnections(void) {
@@ -969,9 +970,9 @@ void frontloadPriorityConnections(void) {
 
   // Pass 1: Copy non-duplicates to front, preserving order
   for (int i = 0; i < numberOfPaths; i++) {
-    if (path[i].duplicate == 0) {
+    if (globalState.connections.paths[i].duplicate == 0) {
       if (writeIndex != i) {
-        path[writeIndex] = path[i];
+        globalState.connections.paths[writeIndex] = globalState.connections.paths[i];
       }
       writeIndex++;
     }
@@ -982,8 +983,8 @@ void frontloadPriorityConnections(void) {
 
   // Pass 2: Copy duplicates to end
   for (int i = 0; i < numberOfPaths; i++) {
-    if (path[i].duplicate == 1) {
-      path[writeIndex] = path[i];
+    if (globalState.connections.paths[i].duplicate == 1) {
+      globalState.connections.paths[writeIndex] = globalState.connections.paths[i];
       writeIndex++;
     }
   }
@@ -991,7 +992,7 @@ void frontloadPriorityConnections(void) {
   // Now sort the non-duplicate section by priority
   // Simple insertion sort for priority paths (nets > 3 with priority > 1)
   for (int i = 1; i < duplicateStartIndex; i++) {
-    pathStruct current = path[i];
+    pathStruct current = globalState.connections.paths[i];
     int currentPriority = (current.net > 3) ? getNetPriority(current.net) : 1;
     bool currentIsGpio =
         ((current.node1 >= NANO_D0 && current.node1 <= NANO_A7) ||
@@ -1001,10 +1002,10 @@ void frontloadPriorityConnections(void) {
 
     // Move elements that should come after current path
     while (j >= 0) {
-      int comparePriority = (path[j].net > 3) ? getNetPriority(path[j].net) : 1;
+      int comparePriority = (globalState.connections.paths[j].net > 3) ? getNetPriority(globalState.connections.paths[j].net) : 1;
       bool compareIsGpio =
-          ((path[j].node1 >= NANO_D0 && path[j].node1 <= NANO_A7) ||
-           (path[j].node2 >= NANO_D0 && path[j].node2 <= NANO_A7));
+          ((globalState.connections.paths[j].node1 >= NANO_D0 && globalState.connections.paths[j].node1 <= NANO_A7) ||
+           (globalState.connections.paths[j].node2 >= NANO_D0 && globalState.connections.paths[j].node2 <= NANO_A7));
 
       bool shouldMoveCurrentForward = false;
 
@@ -1022,11 +1023,11 @@ void frontloadPriorityConnections(void) {
         break;
       }
 
-      path[j + 1] = path[j];
+      globalState.connections.paths[j + 1] = globalState.connections.paths[j];
       j--;
     }
 
-    path[j + 1] = current;
+    globalState.connections.paths[j + 1] = current;
   }
 
   DEBUG_NTCC2_PRINT("Priority frontloading complete using in-place sort\n");
@@ -1036,7 +1037,7 @@ void frontloadPriorityConnections(void) {
   if (debugNTCC2) {
     int priorityCount = 0;
     for (int i = 0; i < duplicateStartIndex; i++) {
-      if (path[i].net > 3 && getNetPriority(path[i].net) > 1) {
+      if (globalState.connections.paths[i].net > 3 && getNetPriority(globalState.connections.paths[i].net) > 1) {
         priorityCount++;
       }
     }
@@ -1052,19 +1053,19 @@ void frontloadPriorityConnections(void) {
       DEBUG_NTCC2_PRINTLN("Top priority connections:");
       int shown = 0;
       for (int i = 0; i < duplicateStartIndex && shown < 5; i++) {
-        if (path[i].net > 3 && getNetPriority(path[i].net) > 1) {
+        if (globalState.connections.paths[i].net > 3 && getNetPriority(globalState.connections.paths[i].net) > 1) {
           DEBUG_NTCC2_PRINT("  [");
           DEBUG_NTCC2_PRINT(i);
           DEBUG_NTCC2_PRINT("] net ");
-          DEBUG_NTCC2_PRINT(path[i].net);
+          DEBUG_NTCC2_PRINT(globalState.connections.paths[i].net);
           DEBUG_NTCC2_PRINT(" priority ");
-          DEBUG_NTCC2_PRINT(getNetPriority(path[i].net));
+          DEBUG_NTCC2_PRINT(getNetPriority(globalState.connections.paths[i].net));
           DEBUG_NTCC2_PRINT(": ");
-          printNodeOrName(path[i].node1);
+          printNodeOrName(globalState.connections.paths[i].node1);
           DEBUG_NTCC2_PRINT("-");
-          printNodeOrName(path[i].node2);
-          if ((path[i].node1 >= NANO_D0 && path[i].node1 <= NANO_A7) ||
-              (path[i].node2 >= NANO_D0 && path[i].node2 <= NANO_A7)) {
+          printNodeOrName(globalState.connections.paths[i].node2);
+          if ((globalState.connections.paths[i].node1 >= NANO_D0 && globalState.connections.paths[i].node1 <= NANO_A7) ||
+              (globalState.connections.paths[i].node2 >= NANO_D0 && globalState.connections.paths[i].node2 <= NANO_A7)) {
             DEBUG_NTCC2_PRINT(" [GPIO]");
           }
           DEBUG_NTCC2_PRINTLN();
@@ -1097,31 +1098,31 @@ void clearAllNTCC(void) {
       break;
     }
     pathsWithCandidates[i] = 0;
-    path[i].net = 0;
-    path[i].node1 = 0;
-    path[i].node2 = 0;
-    path[i].altPathNeeded = false;
-    path[i].sameChip = false;
-    path[i].skip = false;
+    globalState.connections.paths[i].net = 0;
+    globalState.connections.paths[i].node1 = 0;
+    globalState.connections.paths[i].node2 = 0;
+    globalState.connections.paths[i].altPathNeeded = false;
+    globalState.connections.paths[i].sameChip = false;
+    globalState.connections.paths[i].skip = false;
 
     for (int j = 0; j < 4; j++) {
-      path[i].chip[j] = 0;
+      globalState.connections.paths[i].chip[j] = 0;
     }
 
     for (int j = 0; j < 6; j++) {
-      path[i].x[j] = 0;
-      path[i].y[j] = 0;
+      globalState.connections.paths[i].x[j] = 0;
+      globalState.connections.paths[i].y[j] = 0;
     }
 
     for (int j = 0; j < 3; j++) {
-      path[i].nodeType[j] = BB;
+      globalState.connections.paths[i].nodeType[j] = BB;
       for (int k = 0; k < 3; k++) {
-        path[i].candidates[j][k] = -1;
+        globalState.connections.paths[i].candidates[j][k] = -1;
       }
     }
   }
   // //clang-format off
-  // struct netStruct net[MAX_NETS] = { //these are the special function nets
+  // struct netStruct globalState.connections.nets[MAX_NETS] = { //these are the special function nets
   // that will always be made
   // //netNumber,       ,netName          ,memberNodes[] ,memberBridges[][2]
   // ,specialFunction        ,intsctNet[] ,doNotIntersectNodes[] ,priority
@@ -1143,7 +1144,7 @@ void clearAllNTCC(void) {
   //     Sense -"      ,{ISENSE_MINUS}        ,{{}} ,ISENSE_MINUS           ,{}
   //     ,{ISENSE_PLUS}                       , 2},
   // };
-  net[0] = {127,
+  globalState.connections.nets[0] = {127,
             "Empty Net",
             {EMPTY_NET},
             {{}},
@@ -1152,12 +1153,12 @@ void clearAllNTCC(void) {
             {EMPTY_NET, EMPTY_NET, EMPTY_NET, EMPTY_NET, EMPTY_NET, EMPTY_NET,
              EMPTY_NET},
             0};
-  net[1] = {1, "GND", {GND}, {{}}, GND, {}, {SUPPLY_3V3, SUPPLY_5V, DAC0, DAC1},
+  globalState.connections.nets[1] = {1, "GND", {GND}, {{}}, GND, {}, {SUPPLY_3V3, SUPPLY_5V, DAC0, DAC1},
             1};
-  net[2] = {2, "Top Rail", {TOP_RAIL}, {{}}, TOP_RAIL, {}, {GND}, 1};
-  net[3] = {3, "Bottom Rail", {BOTTOM_RAIL}, {{}}, BOTTOM_RAIL, {}, {GND}, 1};
-  net[4] = {4, "DAC 0", {DAC0}, {{}}, DAC0, {}, {GND}, 1};
-  net[5] = {5, "DAC 1", {DAC1}, {{}}, DAC1, {}, {GND}, 1};
+  globalState.connections.nets[2] = {2, "Top Rail", {TOP_RAIL}, {{}}, TOP_RAIL, {}, {GND}, 1};
+  globalState.connections.nets[3] = {3, "Bottom Rail", {BOTTOM_RAIL}, {{}}, BOTTOM_RAIL, {}, {GND}, 1};
+  globalState.connections.nets[4] = {4, "DAC 0", {DAC0}, {{}}, DAC0, {}, {GND}, 1};
+  globalState.connections.nets[5] = {5, "DAC 1", {DAC1}, {{}}, DAC1, {}, {GND}, 1};
 
   //clang-format on
 
@@ -1165,13 +1166,13 @@ void clearAllNTCC(void) {
   initializeYPositionLimits();
 
   for (int i = 0; i < 12; i++) {
-    ch[i].uncommittedHops = 0;
+    globalState.connections.chipStates[i].uncommittedHops = 0;
     for (int j = 0; j < 16; j++) {
-      ch[i].xStatus[j] = -1;
+      globalState.connections.chipStates[i].xStatus[j] = -1;
     }
 
     for (int j = 0; j < 8; j++) {
-      ch[i].yStatus[j] = -1;
+      globalState.connections.chipStates[i].yStatus[j] = -1;
     }
   }
   for (int i = 0; i < 10; i++) {
@@ -1237,7 +1238,7 @@ void sortPathsByNet(
 
   numberOfNets = 1;
   for (int i = 1; i < MAX_NETS - 1; i++) {
-    if (net[i].number == 0 || net[i].number == -1) {
+    if (globalState.connections.nets[i].number == 0 || globalState.connections.nets[i].number == -1) {
       break;
       // continue;
     } else {
@@ -1247,20 +1248,20 @@ void sortPathsByNet(
   }
 
   for (int i = 0; i < MAX_BRIDGES; i++) {
-    if ((path[i].node1 != 0 && path[i].node2 != 0) &&
-        (path[i].node1 != -1 && path[i].node2 != -1)) {
+    if ((globalState.connections.paths[i].node1 != 0 && globalState.connections.paths[i].node2 != 0) &&
+        (globalState.connections.paths[i].node1 != -1 && globalState.connections.paths[i].node2 != -1)) {
       numberOfPaths++;
 
-      // Serial.print("path[");
+      // Serial.print("globalState.connections.paths[");
       // Serial.print(i);
       // Serial.print("] ");
       // Serial.print("node1: ");
-      // Serial.print(path[i].node1);
+      // Serial.print(globalState.connections.paths[i].node1);
       // Serial.print("  node2: ");
-      // Serial.println(path[i].node2);
+      // Serial.println(globalState.connections.paths[i].node2);
 
       // break;
-    } else if (path[i].node1 == 0 || path[i].node2 == 0) {
+    } else if (globalState.connections.paths[i].node1 == 0 || globalState.connections.paths[i].node2 == 0) {
       break;
     }
   }
@@ -1281,52 +1282,52 @@ void sortPathsByNet(
   numberOfShownNets = 0;
 
   for (int j = 1; j <= MAX_NETS; j++) {
-    if (net[j].number == 0) {
+    if (globalState.connections.nets[j].number == 0) {
       break;
       // continue;
     }
 
     for (int k = 0; k < MAX_NODES; k++) {
-      if (net[j].bridges[k][0] == 0) {
+      if (globalState.connections.nets[j].bridges[k][0] == 0) {
         break;
         // continue;
       } else {
-        path[pathIndex].net = net[j].number;
-        path[pathIndex].node1 = net[j].bridges[k][0];
-        path[pathIndex].node2 = net[j].bridges[k][1];
-        path[pathIndex].duplicate = 0;
+        globalState.connections.paths[pathIndex].net = globalState.connections.nets[j].number;
+        globalState.connections.paths[pathIndex].node1 = globalState.connections.nets[j].bridges[k][0];
+        globalState.connections.paths[pathIndex].node2 = globalState.connections.nets[j].bridges[k][1];
+        globalState.connections.paths[pathIndex].duplicate = 0;
         indexByNet[pathIndex] = pathIndex;
 
         if (probePowerDAC == 0) {
-          if ((path[pathIndex].node1 == ROUTABLE_BUFFER_IN &&
-               path[pathIndex].node2 == DAC0) ||
-              (path[pathIndex].node1 == DAC0 &&
-               path[pathIndex].node2 == ROUTABLE_BUFFER_IN)) {
+          if ((globalState.connections.paths[pathIndex].node1 == ROUTABLE_BUFFER_IN &&
+               globalState.connections.paths[pathIndex].node2 == DAC0) ||
+              (globalState.connections.paths[pathIndex].node1 == DAC0 &&
+               globalState.connections.paths[pathIndex].node2 == ROUTABLE_BUFFER_IN)) {
             routableBufferPowerFound = pathIndex;
           }
         } else if (probePowerDAC == 1) {
-          if ((path[pathIndex].node1 == ROUTABLE_BUFFER_IN &&
-               path[pathIndex].node2 == DAC1) ||
-              (path[pathIndex].node1 == DAC1 &&
-               path[pathIndex].node2 == ROUTABLE_BUFFER_IN)) {
+          if ((globalState.connections.paths[pathIndex].node1 == ROUTABLE_BUFFER_IN &&
+               globalState.connections.paths[pathIndex].node2 == DAC1) ||
+              (globalState.connections.paths[pathIndex].node1 == DAC1 &&
+               globalState.connections.paths[pathIndex].node2 == ROUTABLE_BUFFER_IN)) {
             routableBufferPowerFound = pathIndex;
           }
         }
-        if (path[pathIndex].net <= 5) {
+        if (globalState.connections.paths[pathIndex].net <= 5) {
           lastPowerPath = pathIndex;
         }
 
-        if (path[pathIndex].net == path[pathIndex - 1].net) {
+        if (globalState.connections.paths[pathIndex].net == globalState.connections.paths[pathIndex - 1].net) {
         } else {
           numberOfUniqueNets++;
-          if (path[pathIndex].net >= 6) {
-            if ((path[pathIndex].node1 <= 60 ||
-                 (path[pathIndex].node1 >= NANO_D0 &&
-                  path[pathIndex].node1 <= NANO_RESET_1)) ||
-                (path[pathIndex].node2 <= 60 ||
-                 (path[pathIndex].node2 >= NANO_D0 &&
-                  path[pathIndex].node2 <= NANO_RESET_1))) {
-              net[j].visible = 1;
+          if (globalState.connections.paths[pathIndex].net >= 6) {
+            if ((globalState.connections.paths[pathIndex].node1 <= 60 ||
+                 (globalState.connections.paths[pathIndex].node1 >= NANO_D0 &&
+                  globalState.connections.paths[pathIndex].node1 <= NANO_RESET_1)) ||
+                (globalState.connections.paths[pathIndex].node2 <= 60 ||
+                 (globalState.connections.paths[pathIndex].node2 >= NANO_D0 &&
+                  globalState.connections.paths[pathIndex].node2 <= NANO_RESET_1))) {
+              globalState.connections.nets[j].visible = 1;
               numberOfShownNets++;
               // Serial.print("path  ");
               // Serial.print(pathIndex);
@@ -1336,26 +1337,26 @@ void sortPathsByNet(
 
             } else {
 
-              net[j].visible = 0;
+              globalState.connections.nets[j].visible = 0;
               // Serial.print("path  ");
               // Serial.print(pathIndex);
               // Serial.print("   net ");
               // Serial.print(j);
               // Serial.print(" is not visible\n\r");
               // Serial.print("node1: ");
-              // Serial.print(path[pathIndex].node1);
+              // Serial.print(globalState.connections.paths[pathIndex].node1);
               // Serial.print("  node2: ");
-              // Serial.println(path[pathIndex].node2);
+              // Serial.println(globalState.connections.paths[pathIndex].node2);
             }
             // numberOfShownNets++;
           }
         }
 
         // if (debugNTCC) {
-        // Serial.print("path[");
+        // Serial.print("globalState.connections.paths[");
         // Serial.print(pathIndex);
         // Serial.print("] net: ");
-        // Serial.println(path[pathIndex].net);
+        // Serial.println(globalState.connections.paths[pathIndex].net);
         //}
         pathIndex++;
       }
@@ -1364,15 +1365,15 @@ void sortPathsByNet(
 
   if (routableBufferPowerFound > 0) {
 
-    pathStruct tempPath = path[routableBufferPowerFound];
+    pathStruct tempPath = globalState.connections.paths[routableBufferPowerFound];
 
     // printPathsCompact();
 
     // shift all paths up one and put routableBufferPower path at the beginning
     for (int i = routableBufferPowerFound; i > 0; i--) {
-      path[i] = path[i - 1];
+      globalState.connections.paths[i] = globalState.connections.paths[i - 1];
     }
-    path[0] = tempPath;
+    globalState.connections.paths[0] = tempPath;
 
     // printPathsCompact();
   }
@@ -1458,22 +1459,22 @@ void bridgesToPaths(
   duplicateStartIndex = numberOfPaths;
 
   for (int i = 0; i < numberOfPaths; i++) {
-    if (path[i].duplicate == 1) {
+    if (globalState.connections.paths[i].duplicate == 1) {
       continue;
     }
 
     if (debugNTCC5) {
       delay(10);
-      Serial.print("path[");
+      Serial.print("globalState.connections.paths[");
       Serial.print(i);
       Serial.print("]\n\rnodes [");
-      Serial.print(path[i].node1);
+      Serial.print(globalState.connections.paths[i].node1);
       Serial.print("-");
-      Serial.print(path[i].node2);
+      Serial.print(globalState.connections.paths[i].node2);
       Serial.println("]\n\r");
     }
 
-    findStartAndEndChips(path[i].node1, path[i].node2, i);
+    findStartAndEndChips(globalState.connections.paths[i].node1, globalState.connections.paths[i].node2, i);
 
     if (debugNTCC5) {
       delay(10);
@@ -1551,10 +1552,10 @@ void bridgesToPaths(
     // printChipStatus();
 
     for (int i = duplicateStartIndex; i < numberOfPaths; i++) {
-      if (path[i].duplicate == 0) {
+      if (globalState.connections.paths[i].duplicate == 0) {
         continue;
       }
-      findStartAndEndChips(path[i].node1, path[i].node2, i);
+      findStartAndEndChips(globalState.connections.paths[i].node1, globalState.connections.paths[i].node2, i);
       mergeOverlappingCandidates(i);
       assignPathType(i);
     }
@@ -1624,33 +1625,33 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
 
     //   Serial.print("numberOfNets: ");
     // Serial.println(numberOfNets);
-    // Serial.print("net[");
+    // Serial.print("globalState.connections.nets[");
 
 
   for (int n = 0; n < numberOfNets; n++) {
 
     // Serial.print(n);
     // Serial.print("] \n\rnumber: ");
-    // Serial.println(net[n].number);
+    // Serial.println(globalState.connections.nets[n].number);
 
     for (int i = 0; i < MAX_NODES; i++) {
-      if (net[n].nodes[i] == 0) {
+      if (globalState.connections.nets[n].nodes[i] == 0) {
         break;
       }
       nodeCount[n]++;
       // Serial.print(" \n\rnode: ");
-      // Serial.println(net[n].nodes[i]);
+      // Serial.println(globalState.connections.nets[n].nodes[i]);
     }
 
     for (int i = 0; i < MAX_BRIDGES; i++) {
-      if (net[n].bridges[i][0] == 0) {
+      if (globalState.connections.nets[n].bridges[i][0] == 0) {
         break;
       }
       bridgeCount[n]++;
       // Serial.print(" \n\rbridges: ");
-      // Serial.print(net[n].bridges[i][0]);
+      // Serial.print(globalState.connections.nets[n].bridges[i][0]);
       // Serial.print("-");
-      // Serial.println(net[n].bridges[i][1]);
+      // Serial.println(globalState.connections.nets[n].bridges[i][1]);
     }
     // Serial.println("\n\r");
   }
@@ -1661,36 +1662,36 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
   // duplication
   bool netProcessed[MAX_NETS] = {false};
   for (int i = 0; i < numberOfPaths; i++) {
-    if (path[i].net > 0 &&
-        !netProcessed[path[i].net]) { // Only process each net once
-      netProcessed[path[i].net] = true;
-      if (path[i].net <= 3) {
-        net[path[i].net].numberOfDuplicates = duplicatePathsPower;
+    if (globalState.connections.paths[i].net > 0 &&
+        !netProcessed[globalState.connections.paths[i].net]) { // Only process each net once
+      netProcessed[globalState.connections.paths[i].net] = true;
+      if (globalState.connections.paths[i].net <= 3) {
+        globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = duplicatePathsPower;
 
-      } else if (path[i].net == 4 || path[i].net == 5) {
-        net[path[i].net].numberOfDuplicates = duplicatePathsDac;
+      } else if (globalState.connections.paths[i].net == 4 || globalState.connections.paths[i].net == 5) {
+        globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = duplicatePathsDac;
 
       } else {
         int isGpioNet = 0;
         for (int g = 0; g < 10; g++) {//dont duplicate gpio nets
-          if (gpioNet[g] == path[i].net) {
+          if (gpioNet[g] == globalState.connections.paths[i].net) {
             isGpioNet = 1;
             break;
           }
         }
         if (isGpioNet == 0) {
-          net[path[i].net].numberOfDuplicates =
+          globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates =
               jumperlessConfig.routing.stack_paths;
         } else {
-          net[path[i].net].numberOfDuplicates = 0;
+          globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = 0;
         }
       }
     }
 
-    // Serial.print("net[");
-    // Serial.print(path[i].net);
+    // Serial.print("globalState.connections.nets[");
+    // Serial.print(globalState.connections.paths[i].net);
     // Serial.print("] numberOfDuplicates: ");
-    // Serial.println(net[path[i].net].numberOfDuplicates);
+    // Serial.println(globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates);
   }
 
   // get the nodes in the net and cycle them, so if the bridges are A-B, B-C,
@@ -1711,27 +1712,27 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
   // int16_t tempNodes[MAX_NETS][MAX_NODES] = {0};
 
   for (int i = 1; i < numberOfNets; i++) {
-    if (net[i].numberOfDuplicates == 0) {
-      // Serial.print("net[");
+    if (globalState.connections.nets[i].numberOfDuplicates == 0) {
+      // Serial.print("globalState.connections.nets[");
       // Serial.print(i);
       // Serial.println("] numberOfDuplicates is 0");
       continue;
     }
 
     // int16_t tempNodes[MAX_NODES];
-    //  Serial.print("net[");
+    //  Serial.print("globalState.connections.nets[");
     //  Serial.print(i);
     //  Serial.print("]  nodes[");
 
     for (int j = 0; j < nodeCount[i]; j++) {
-      // tempNodes[j] = net[i].nodes[j];
+      // tempNodes[j] = globalState.connections.nets[i].nodes[j];
       //   Serial.print(tempNodes[j]);
-      // Serial.print(net[i].nodes[j]);
+      // Serial.print(globalState.connections.nets[i].nodes[j]);
       // Serial.print(", ");
     }
     // Serial.println("]\t\t");
 
-    int targetBridgeCount = net[i].numberOfDuplicates;
+    int targetBridgeCount = globalState.connections.nets[i].numberOfDuplicates;
     int skip = 1;
 
     int unique = 0;
@@ -1757,38 +1758,38 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
             }
             unique = 0;
           }
-          if (net[i].nodes[bridge0] == 0 || net[i].nodes[bridge1] == 0) {
+          if (globalState.connections.nets[i].nodes[bridge0] == 0 || globalState.connections.nets[i].nodes[bridge1] == 0) {
             break;
           }
-          if (net[i].nodes[bridge0] == net[i].nodes[bridge1]) {
+          if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].nodes[bridge1]) {
             unique = -1;
             continue;
           }
-          if (net[i].nodes[bridge0] == net[i].bridges[l][0] &&
-              net[i].nodes[bridge1] == net[i].bridges[l][1]) {
+          if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].bridges[l][0] &&
+              globalState.connections.nets[i].nodes[bridge1] == globalState.connections.nets[i].bridges[l][1]) {
             unique = -1;
             continue;
           }
-          if (net[i].nodes[bridge0] == net[i].bridges[l][1] &&
-              net[i].nodes[bridge1] == net[i].bridges[l][0]) {
+          if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].bridges[l][1] &&
+              globalState.connections.nets[i].nodes[bridge1] == globalState.connections.nets[i].bridges[l][0]) {
             unique = -1;
             continue;
           }
           unique = 1;
-          // Serial.print(net[i].nodes[bridge0]);
+          // Serial.print(globalState.connections.nets[i].nodes[bridge0]);
           // Serial.print("-");
-          // Serial.print(net[i].nodes[bridge1]);
+          // Serial.print(globalState.connections.nets[i].nodes[bridge1]);
           // Serial.println("]\t\t");
-          // Serial.print("net[");
+          // Serial.print("globalState.connections.nets[");
 
           break;
         }
       }
-      newBridges[i][j][0] = net[i].nodes[bridge0];
-      newBridges[i][j][1] = net[i].nodes[bridge1];
+      newBridges[i][j][0] = globalState.connections.nets[i].nodes[bridge0];
+      newBridges[i][j][1] = globalState.connections.nets[i].nodes[bridge1];
 
-      net[i].bridges[j][0] = newBridges[i][j][0];
-      net[i].bridges[j][1] = newBridges[i][j][1];
+      globalState.connections.nets[i].bridges[j][0] = newBridges[i][j][0];
+      globalState.connections.nets[i].bridges[j][1] = newBridges[i][j][1];
 
       bridge1++;
 
@@ -1817,16 +1818,16 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
 
   for (int j = 0; j < MAX_DUPLICATE; j++) {
     for (int i = 0; i < numberOfNets; i++) {
-      priorities[i] = net[i].priority;
-      if (i < 6 && net[i].priority > maxp) {
-        maxp = net[i].priority;
+      priorities[i] = globalState.connections.nets[i].priority;
+      if (i < 6 && globalState.connections.nets[i].priority > maxp) {
+        maxp = globalState.connections.nets[i].priority;
       }
     }
     for (int k = 0; k < maxp; k++) {
       for (int i = 0; i < 6; i++) {
-        // for (int p = 0; p < net[i].priority; p++) {
+        // for (int p = 0; p < globalState.connections.nets[i].priority; p++) {
 
-        if (net[i].numberOfDuplicates == 0) {
+        if (globalState.connections.nets[i].numberOfDuplicates == 0) {
           continue;
         }
 
@@ -1860,13 +1861,13 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
           }
         }
         if (newBridges[i][j][0] != 0 || newBridges[i][j][1] != 0) {
-          path[numberOfPaths].net = i;
-          path[numberOfPaths].node1 = newBridges[i][j][0];
-          path[numberOfPaths].node2 = newBridges[i][j][1];
-          path[numberOfPaths].altPathNeeded = false;
-          path[numberOfPaths].sameChip = false;
-          path[numberOfPaths].skip = false;
-          path[numberOfPaths].duplicate = 1;
+          globalState.connections.paths[numberOfPaths].net = i;
+          globalState.connections.paths[numberOfPaths].node1 = newBridges[i][j][0];
+          globalState.connections.paths[numberOfPaths].node2 = newBridges[i][j][1];
+          globalState.connections.paths[numberOfPaths].altPathNeeded = false;
+          globalState.connections.paths[numberOfPaths].sameChip = false;
+          globalState.connections.paths[numberOfPaths].skip = false;
+          globalState.connections.paths[numberOfPaths].duplicate = 1;
           numberOfPaths++;
           if (numberOfPaths >= MAX_BRIDGES) {
             // maxxed = 1;
@@ -1880,10 +1881,10 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
     }
 
     // for (int i = 0; i < 6; i++) {
-    //   priorities[i] = net[i].priority;
+    //   priorities[i] = globalState.connections.nets[i].priority;
     // }
     for (int i = 5; i < numberOfNets; i++) {
-      if (net[i].numberOfDuplicates == 0) {
+      if (globalState.connections.nets[i].numberOfDuplicates == 0) {
         continue;
       }
 
@@ -1902,17 +1903,17 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
 
       if (newBridges[i][j][0] != 0 && newBridges[i][j][1] != 0) {
         ///
-        net[i].bridges[bridgeCount[i]][0] = newBridges[i][j][0];
-        net[i].bridges[bridgeCount[i]][1] = newBridges[i][j][1];
+        globalState.connections.nets[i].bridges[bridgeCount[i]][0] = newBridges[i][j][0];
+        globalState.connections.nets[i].bridges[bridgeCount[i]][1] = newBridges[i][j][1];
         bridgeCount[i]++; ///!why is this incrementing bridgeCount[0]?
 
-        path[numberOfPaths].net = i;
-        path[numberOfPaths].node1 = newBridges[i][j][0];
-        path[numberOfPaths].node2 = newBridges[i][j][1];
-        path[numberOfPaths].altPathNeeded = false;
-        path[numberOfPaths].sameChip = false;
-        path[numberOfPaths].skip = false;
-        path[numberOfPaths].duplicate = 1;
+        globalState.connections.paths[numberOfPaths].net = i;
+        globalState.connections.paths[numberOfPaths].node1 = newBridges[i][j][0];
+        globalState.connections.paths[numberOfPaths].node2 = newBridges[i][j][1];
+        globalState.connections.paths[numberOfPaths].altPathNeeded = false;
+        globalState.connections.paths[numberOfPaths].sameChip = false;
+        globalState.connections.paths[numberOfPaths].skip = false;
+        globalState.connections.paths[numberOfPaths].duplicate = 1;
         numberOfPaths++;
         if (numberOfPaths >= MAX_BRIDGES) {
           // maxxed = 1;
@@ -1938,35 +1939,35 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
     DEBUG_NTCC1_PRINT("\n\rpath[");
     DEBUG_NTCC1_PRINT(i);
     DEBUG_NTCC1_PRINT("] net: ");
-    DEBUG_NTCC1_PRINT(path[i].net);
+    DEBUG_NTCC1_PRINT(globalState.connections.paths[i].net);
     DEBUG_NTCC1_PRINT("   \t ");
 
     if (debugNTCC) {
-      printNodeOrName(path[i].node1);
+      printNodeOrName(globalState.connections.paths[i].node1);
     }
     DEBUG_NTCC1_PRINT(" to ");
     if (debugNTCC) {
-      printNodeOrName(path[i].node2);
+      printNodeOrName(globalState.connections.paths[i].node2);
     }
 
     // Skip paths that are already successfully committed (x values set and no
     // altPath needed)
-    if (path[i].x[0] >= 0 && path[i].x[1] >= 0 && !path[i].altPathNeeded) {
+    if (globalState.connections.paths[i].x[0] >= 0 && globalState.connections.paths[i].x[1] >= 0 && !globalState.connections.paths[i].altPathNeeded) {
       continue; // Path already committed successfully
     }
 
-    if (powerOnly == 1 && path[i].net > 5) {
+    if (powerOnly == 1 && globalState.connections.paths[i].net > 5) {
       continue;
     }
-    if (powerOnly == 1 && path[i].duplicate == 1) {
-      continue;
-    }
-
-    if (noOrOnlyDuplicates == 1 && path[i].duplicate == 0) {
+    if (powerOnly == 1 && globalState.connections.paths[i].duplicate == 1) {
       continue;
     }
 
-    if (noOrOnlyDuplicates == 0 && path[i].duplicate == 1) {
+    if (noOrOnlyDuplicates == 1 && globalState.connections.paths[i].duplicate == 0) {
+      continue;
+    }
+
+    if (noOrOnlyDuplicates == 0 && globalState.connections.paths[i].duplicate == 1) {
       continue;
     }
 
@@ -1977,7 +1978,7 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
         (allowStacking == 2) ? 1 : 0; // 0-1 if allowStacking==2, 0-0 otherwise
 
     // Store original path state for retry attempts
-    bool originalAltPathNeeded = path[i].altPathNeeded;
+    bool originalAltPathNeeded = globalState.connections.paths[i].altPathNeeded;
 
     for (int stackingAttempt = 0;
          stackingAttempt <= maxStackingAttempts && !pathCommitted;
@@ -1987,28 +1988,28 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
       // Reset altPathNeeded for retry attempt
       if (stackingAttempt == 1) {
-        path[i].altPathNeeded = originalAltPathNeeded; // Restore original state
+        globalState.connections.paths[i].altPathNeeded = originalAltPathNeeded; // Restore original state
       }
 
-      switch (path[i].pathType) {
+      switch (globalState.connections.paths[i].pathType) {
       case BBtoBB: {
         // Serial.print("BBtoBB\t");
         int freeLane = -1;
-        int xMapL0c0 = xMapForChipLane0(path[i].chip[0], path[i].chip[1]);
-        int xMapL1c0 = xMapForChipLane1(path[i].chip[0], path[i].chip[1]);
+        int xMapL0c0 = xMapForChipLane0(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].chip[1]);
+        int xMapL1c0 = xMapForChipLane1(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].chip[1]);
 
-        int xMapL0c1 = xMapForChipLane0(path[i].chip[1], path[i].chip[0]);
-        int xMapL1c1 = xMapForChipLane1(path[i].chip[1], path[i].chip[0]);
+        int xMapL0c1 = xMapForChipLane0(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].chip[0]);
+        int xMapL1c1 = xMapForChipLane1(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].chip[0]);
 
-        if (path[i].chip[0] ==
-            path[i].chip[1]) { // && (ch[path[i].chip[0]].yStatus[0] == -1)) {
-          // if (path[i].sameChip == true ){
+        if (globalState.connections.paths[i].chip[0] ==
+            globalState.connections.paths[i].chip[1]) { // && (globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].yStatus[0] == -1)) {
+          // if (globalState.connections.paths[i].sameChip == true ){
           //  Serial.print("same chip  ");
-          setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
-          setPathY(i, 1, yMapForNode(path[i].node2, path[i].chip[0]));
-          setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+          setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+          setPathY(i, 1, yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[0]));
+          setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                              "same-chip Y0");
-          setChipYStatusSafe(path[i].chip[0], path[i].y[1], path[i].net,
+          setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                              "same-chip Y1");
           setPathX(i, 0, -2);
           setPathX(i, 1, -2);
@@ -2019,22 +2020,22 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             Serial.print("]  ");
 
             Serial.print(" \tchip[0]: ");
-            Serial.print(chipNumToChar(path[i].chip[0]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
 
             Serial.print("  x[0]: ");
-            Serial.print(path[i].x[0]);
+            Serial.print(globalState.connections.paths[i].x[0]);
 
             Serial.print("  y[0]: ");
-            Serial.print(path[i].y[0]);
+            Serial.print(globalState.connections.paths[i].y[0]);
 
             Serial.print("\t  chip[1]: ");
-            Serial.print(chipNumToChar(path[i].chip[1]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
 
             Serial.print("  x[1]: ");
-            Serial.print(path[i].x[1]);
+            Serial.print(globalState.connections.paths[i].x[1]);
 
             Serial.print("  y[1]: ");
-            Serial.print(path[i].y[1]);
+            Serial.print(globalState.connections.paths[i].y[1]);
           }
 
           pathCommitted = true;
@@ -2052,15 +2053,15 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
         // Check if we can commit this path without conflicts
         bool canCommitLane0 =
-            freeOrSameNetX(path[i].chip[0], xMapL0c0, path[i].net,
+            freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapL0c0, globalState.connections.paths[i].net,
                            currentAllowStacking) &&
-            freeOrSameNetX(path[i].chip[1], xMapL0c1, path[i].net,
+            freeOrSameNetX(globalState.connections.paths[i].chip[1], xMapL0c1, globalState.connections.paths[i].net,
                            currentAllowStacking);
         bool canCommitLane1 =
             (xMapL1c0 != -1) &&
-            freeOrSameNetX(path[i].chip[0], xMapL1c0, path[i].net,
+            freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapL1c0, globalState.connections.paths[i].net,
                            currentAllowStacking) &&
-            freeOrSameNetX(path[i].chip[1], xMapL1c1, path[i].net,
+            freeOrSameNetX(globalState.connections.paths[i].chip[1], xMapL1c1, globalState.connections.paths[i].net,
                            currentAllowStacking);
 
         if (canCommitLane0) {
@@ -2068,17 +2069,17 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
         } else if (canCommitLane1) {
           freeLane = 1;
         } else {
-          path[i].altPathNeeded = true;
+          globalState.connections.paths[i].altPathNeeded = true;
           DEBUG_NTCC2_PRINT(
               "\tno free lanes for path, setting altPathNeeded flag");
           DEBUG_NTCC2_PRINT(" \t ");
-          DEBUG_NTCC2_PRINT(ch[path[i].chip[0]].xStatus[xMapL0c0]);
+          DEBUG_NTCC2_PRINT(globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL0c0]);
           DEBUG_NTCC2_PRINT(" \t ");
-          DEBUG_NTCC2_PRINT(ch[path[i].chip[0]].xStatus[xMapL1c0]);
+          DEBUG_NTCC2_PRINT(globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL1c0]);
           DEBUG_NTCC2_PRINT(" \t ");
-          DEBUG_NTCC2_PRINT(ch[path[i].chip[1]].xStatus[xMapL0c1]);
+          DEBUG_NTCC2_PRINT(globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xStatus[xMapL0c1]);
           DEBUG_NTCC2_PRINT(" \t ");
-          DEBUG_NTCC2_PRINT(ch[path[i].chip[1]].xStatus[xMapL1c1]);
+          DEBUG_NTCC2_PRINT(globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xStatus[xMapL1c1]);
           DEBUG_NTCC2_PRINTLN(" \t ");
           break;
         }
@@ -2090,16 +2091,16 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
         // Only commit chip state after validating ALL connections
         if (freeLane == 0) {
-          bool x0Success = setChipXStatus(path[i].chip[0], xMapL0c0,
-                                          path[i].net, "BBtoBB lane0 chip0");
-          bool x1Success = setChipXStatus(path[i].chip[1], xMapL0c1,
-                                          path[i].net, "BBtoBB lane0 chip1");
+          bool x0Success = setChipXStatus(globalState.connections.paths[i].chip[0], xMapL0c0,
+                                          globalState.connections.paths[i].net, "BBtoBB lane0 chip0");
+          bool x1Success = setChipXStatus(globalState.connections.paths[i].chip[1], xMapL0c1,
+                                          globalState.connections.paths[i].net, "BBtoBB lane0 chip1");
           bool pathX0Success = setPathX(i, 0, xMapL0c0);
           bool pathX1Success = setPathX(i, 1, xMapL0c1);
 
           if (!x0Success || !x1Success || !pathX0Success || !pathX1Success) {
             if (debugNTCC6) {
-              Serial.print("BBtoBB lane0 X assignment failed for path[");
+              Serial.print("BBtoBB lane0 X assignment failed for globalState.connections.paths[");
               Serial.print(i);
               Serial.println("], will restore state");
             }
@@ -2108,16 +2109,16 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             allAssignmentsSuccessful = true;
           }
         } else if (freeLane == 1) {
-          bool x0Success = setChipXStatus(path[i].chip[0], xMapL1c0,
-                                          path[i].net, "BBtoBB lane1 chip0");
-          bool x1Success = setChipXStatus(path[i].chip[1], xMapL1c1,
-                                          path[i].net, "BBtoBB lane1 chip1");
+          bool x0Success = setChipXStatus(globalState.connections.paths[i].chip[0], xMapL1c0,
+                                          globalState.connections.paths[i].net, "BBtoBB lane1 chip0");
+          bool x1Success = setChipXStatus(globalState.connections.paths[i].chip[1], xMapL1c1,
+                                          globalState.connections.paths[i].net, "BBtoBB lane1 chip1");
           bool pathX0Success = setPathX(i, 0, xMapL1c0);
           bool pathX1Success = setPathX(i, 1, xMapL1c1);
 
           if (!x0Success || !x1Success || !pathX0Success || !pathX1Success) {
             if (debugNTCC6) {
-              Serial.print("BBtoBB lane1 X assignment failed for path[");
+              Serial.print("BBtoBB lane1 X assignment failed for globalState.connections.paths[");
               Serial.print(i);
               Serial.println("], will restore state");
             }
@@ -2130,9 +2131,9 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
         // Continue with Y assignments only if X assignments succeeded
         if (allAssignmentsSuccessful) {
           bool y0PathSuccess =
-              setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
+              setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
           bool y1PathSuccess =
-              setPathY(i, 1, yMapForNode(path[i].node2, path[i].chip[1]));
+              setPathY(i, 1, yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
 
           // Check if Y position assignments succeed
           bool y0ChipSuccess = false;
@@ -2140,12 +2141,12 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
           if (y0PathSuccess) {
             y0ChipSuccess =
-                setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                    "BBtoBB Y0 assignment");
           }
           if (y1PathSuccess) {
             y1ChipSuccess =
-                setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                    "BBtoBB Y1 assignment");
           }
 
@@ -2156,20 +2157,20 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               Serial.print("Path[");
               Serial.print(i);
               Serial.print("] net ");
-              Serial.print(path[i].net);
+              Serial.print(globalState.connections.paths[i].net);
               Serial.print(" Y assignment failed");
               if (!y0PathSuccess || !y0ChipSuccess) {
                 Serial.print(" (Y0=");
-                Serial.print(path[i].y[0]);
+                Serial.print(globalState.connections.paths[i].y[0]);
                 Serial.print(" on chip ");
-                Serial.print(chipNumToChar(path[i].chip[0]));
+                Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
                 Serial.print(" failed)");
               }
               if (!y1PathSuccess || !y1ChipSuccess) {
                 Serial.print(" (Y1=");
-                Serial.print(path[i].y[1]);
+                Serial.print(globalState.connections.paths[i].y[1]);
                 Serial.print(" on chip ");
-                Serial.print(chipNumToChar(path[i].chip[1]));
+                Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
                 Serial.print(" failed)");
               }
               Serial.println(", will restore state");
@@ -2181,15 +2182,15 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
         if (allAssignmentsSuccessful) {
           commitRoutingState();
           if (debugNTCC6) {
-            Serial.print("BBtoBB path[");
+            Serial.print("BBtoBB globalState.connections.paths[");
             Serial.print(i);
             Serial.println("] assignments committed successfully");
           }
         } else {
           restoreRoutingState(i);
-          path[i].altPathNeeded = true;
+          globalState.connections.paths[i].altPathNeeded = true;
           if (debugNTCC6) {
-            Serial.print("BBtoBB path[");
+            Serial.print("BBtoBB globalState.connections.paths[");
             Serial.print(i);
             Serial.println(
                 "] assignments failed, state restored, marked for alt routing");
@@ -2199,28 +2200,28 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
         if (debugNTCC2 == true) {
           Serial.print(" \tchip[0]: ");
-          Serial.print(chipNumToChar(path[i].chip[0]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
 
           Serial.print("  x[0]: ");
-          Serial.print(path[i].x[0]);
+          Serial.print(globalState.connections.paths[i].x[0]);
 
           Serial.print("  y[0]: ");
-          Serial.print(path[i].y[0]);
+          Serial.print(globalState.connections.paths[i].y[0]);
 
           Serial.print("\t  chip[1]: ");
-          Serial.print(chipNumToChar(path[i].chip[1]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
 
           Serial.print("  x[1]: ");
-          Serial.print(path[i].x[1]);
+          Serial.print(globalState.connections.paths[i].x[1]);
 
           Serial.print("  y[1]: ");
-          Serial.print(path[i].y[1]);
+          Serial.print(globalState.connections.paths[i].y[1]);
 
           Serial.print(" \t ");
-          Serial.print(ch[path[i].chip[0]].xStatus[xMapL0c0]);
+          Serial.print(globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL0c0]);
 
           Serial.print(" \t ");
-          Serial.print(ch[path[i].chip[1]].xStatus[xMapL0c1]);
+          Serial.print(globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xStatus[xMapL0c1]);
           Serial.print(" \t ");
         }
         pathCommitted = true;
@@ -2232,21 +2233,21 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                    // BB and node2 is SF
       {
         int xMapBBc0 = xMapForChipLane0(
-            path[i].chip[0], path[i].chip[1]); // find x connection to sf chip
+            globalState.connections.paths[i].chip[0], globalState.connections.paths[i].chip[1]); // find x connection to sf chip
 
-        int xMapSFc1 = xMapForNode(path[i].node2, path[i].chip[1]);
-        int yMapSFc1 = path[i].chip[0];
+        int xMapSFc1 = xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]);
+        int yMapSFc1 = globalState.connections.paths[i].chip[0];
 
-        // if ((ch[path[i].chip[0]].xStatus[xMapBBc0] == path[i].net ||
-        //      ch[path[i].chip[0]].xStatus[xMapBBc0] == -1) &&
-        //     (ch[path[i].chip[1]].yStatus[yMapSFc1] == path[i].net ||
-        //      ch[path[i].chip[1]].yStatus[yMapSFc1] ==
+        // if ((globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapBBc0] == globalState.connections.paths[i].net ||
+        //      globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapBBc0] == -1) &&
+        //     (globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].yStatus[yMapSFc1] == globalState.connections.paths[i].net ||
+        //      globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].yStatus[yMapSFc1] ==
         //          -1)) // how's that for a fuckin if statement
         // {
 
-        if (freeOrSameNetX(path[i].chip[0], xMapBBc0, path[i].net,
+        if (freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapBBc0, globalState.connections.paths[i].net,
                            currentAllowStacking) == true &&
-            freeOrSameNetY(path[i].chip[1], yMapSFc1, path[i].net,
+            freeOrSameNetY(globalState.connections.paths[i].chip[1], yMapSFc1, globalState.connections.paths[i].net,
                            currentAllowStacking) == true) {
 
           // Save state before making any assignments
@@ -2256,11 +2257,11 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           bool pathX1Success = setPathX(i, 1, xMapSFc1);
 
           bool pathY0Success =
-              setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
+              setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
 
           bool pathY1Success = setPathY(
               i, 1,
-              path[i]
+              globalState.connections.paths[i]
                   .chip[0]); // bb to sf connections are always in chip order,
           // so chip A is always connected to sf y 0
 
@@ -2270,20 +2271,20 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           bool chipY1Success = false;
 
           if (pathX0Success) {
-            chipX0Success = setChipXStatus(path[i].chip[0], xMapBBc0,
-                                           path[i].net, "BBtoSF chip0");
+            chipX0Success = setChipXStatus(globalState.connections.paths[i].chip[0], xMapBBc0,
+                                           globalState.connections.paths[i].net, "BBtoSF chip0");
           }
           if (pathY0Success) {
-            chipY0Success = setChipYStatusSafe(path[i].chip[0], path[i].y[0],
-                                               path[i].net, "BBtoSF Y0");
+            chipY0Success = setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0],
+                                               globalState.connections.paths[i].net, "BBtoSF Y0");
           }
           if (pathX1Success) {
-            chipX1Success = setChipXStatus(path[i].chip[1], path[i].x[1],
-                                           path[i].net, "BBtoSF chip1");
+            chipX1Success = setChipXStatus(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].x[1],
+                                           globalState.connections.paths[i].net, "BBtoSF chip1");
           }
           if (pathY1Success) {
-            chipY1Success = setChipYStatusSafe(path[i].chip[1], path[i].chip[0],
-                                               path[i].net, "BBtoSF Y1");
+            chipY1Success = setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].chip[0],
+                                               globalState.connections.paths[i].net, "BBtoSF Y1");
           }
 
           bool allAssignmentsSuccessful = pathX0Success && pathX1Success &&
@@ -2295,15 +2296,15 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             commitRoutingState();
             pathCommitted = true;
             if (debugNTCC6) {
-              Serial.print("BBtoSF path[");
+              Serial.print("BBtoSF globalState.connections.paths[");
               Serial.print(i);
               Serial.println("] assignments committed successfully");
             }
           } else {
             restoreRoutingState(i);
-            path[i].altPathNeeded = true;
+            globalState.connections.paths[i].altPathNeeded = true;
             if (debugNTCC6) {
-              Serial.print("BBtoSF assignment failed for path[");
+              Serial.print("BBtoSF assignment failed for globalState.connections.paths[");
               Serial.print(i);
               Serial.println("], state restored, marking for alt routing");
             }
@@ -2314,35 +2315,35 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             // delay(10);
 
             Serial.print(" \t\n\rchip[0]: ");
-            Serial.print(chipNumToChar(path[i].chip[0]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
 
             Serial.print("  x[0]: ");
-            Serial.print(path[i].x[0]);
+            Serial.print(globalState.connections.paths[i].x[0]);
 
             Serial.print("  y[0]: ");
-            Serial.print(path[i].y[0]);
+            Serial.print(globalState.connections.paths[i].y[0]);
 
             Serial.print("\t  chip[1]: ");
-            Serial.print(chipNumToChar(path[i].chip[1]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
 
             Serial.print("  x[1]: ");
-            Serial.print(path[i].x[1]);
+            Serial.print(globalState.connections.paths[i].x[1]);
 
             Serial.print("  y[1]: ");
-            Serial.print(path[i].y[1]);
+            Serial.print(globalState.connections.paths[i].y[1]);
 
             Serial.print(" \t ");
-            Serial.print(ch[path[i].chip[0]].xStatus[xMapBBc0]);
+            Serial.print(globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapBBc0]);
 
             Serial.print(" \t ");
-            Serial.print(ch[path[i].chip[1]].xStatus[xMapSFc1]);
+            Serial.print(globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xStatus[xMapSFc1]);
             Serial.print(" \t ");
 
             Serial.println("  ");
           }
           pathCommitted = true;
         } else {
-          path[i].altPathNeeded = true;
+          globalState.connections.paths[i].altPathNeeded = true;
 
           if (debugNTCC2) {
             // delay(10);
@@ -2356,16 +2357,16 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
       case NANOtoSF:
       case NANOtoNANO: {
         // Serial.print(" NANOtoNANO  ");
-        int xMapNANOC0 = xMapForNode(path[i].node1, path[i].chip[0]);
-        int xMapNANOC1 = xMapForNode(path[i].node2, path[i].chip[1]);
+        int xMapNANOC0 = xMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]);
+        int xMapNANOC1 = xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]);
 
-        if (debugNTCC6 && path[i].net == 23) {
-          Serial.print("GP_8-D3 in commitPaths NANOtoSF path[");
+        if (debugNTCC6 && globalState.connections.paths[i].net == 23) {
+          Serial.print("GP_8-D3 in commitPaths NANOtoSF globalState.connections.paths[");
           Serial.print(i);
           Serial.print("] - chip[0]=");
-          Serial.print(chipNumToChar(path[i].chip[0]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
           Serial.print(" chip[1]=");
-          Serial.print(chipNumToChar(path[i].chip[1]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
           Serial.print(" xMapNANOC0=");
           Serial.print(xMapNANOC0);
           Serial.print(" xMapNANOC1=");
@@ -2373,25 +2374,25 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
         }
 
         if (debugNTCC2) {
-          Serial.print("NANOtoNANO path[");
+          Serial.print("NANOtoNANO globalState.connections.paths[");
           Serial.print(i);
           Serial.print("] - chip[0]=");
-          Serial.print(chipNumToChar(path[i].chip[0]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
           Serial.print(" chip[1]=");
-          Serial.print(chipNumToChar(path[i].chip[1]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
           Serial.print(" xMapNANOC0=");
           Serial.print(xMapNANOC0);
           Serial.print(" xMapNANOC1=");
           Serial.println(xMapNANOC1);
         }
 
-        if (path[i].chip[0] == path[i].chip[1]) {
+        if (globalState.connections.paths[i].chip[0] == globalState.connections.paths[i].chip[1]) {
           if (debugNTCC2) {
             Serial.print("Same chip - checking X connections...");
           }
-          bool x0Free = freeOrSameNetX(path[i].chip[0], xMapNANOC0, path[i].net,
+          bool x0Free = freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapNANOC0, globalState.connections.paths[i].net,
                                        currentAllowStacking);
-          bool x1Free = freeOrSameNetX(path[i].chip[0], xMapNANOC1, path[i].net,
+          bool x1Free = freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapNANOC1, globalState.connections.paths[i].net,
                                        currentAllowStacking);
           if (debugNTCC2) {
             Serial.print(" x0Free=");
@@ -2403,13 +2404,13 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           // Check if this would violate Y position limits for high-traffic
           // chips
           bool respectsYLimits = true;
-          if (path[i].chip[0] >= 8) { // Special function chips
-            if (!canNetUseMoreYPositions(path[i].net)) {
+          if (globalState.connections.paths[i].chip[0] >= 8) { // Special function chips
+            if (!canNetUseMoreYPositions(globalState.connections.paths[i].net)) {
               respectsYLimits = false;
               if (debugNTCC2) {
                 Serial.print(" - rejected same-chip connection due to Y limits "
                              "for net ");
-                Serial.println(path[i].net);
+                Serial.println(globalState.connections.paths[i].net);
               }
             }
           }
@@ -2417,7 +2418,7 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           if (x0Free == true && respectsYLimits) {
             if (x1Free == true) {
               if (debugNTCC2) {
-                Serial.print("COMMITTING NANOtoNANO same-chip path[");
+                Serial.print("COMMITTING NANOtoNANO same-chip globalState.connections.paths[");
                 Serial.print(i);
                 Serial.print("] - setting x[0]=");
                 Serial.print(xMapNANOC0);
@@ -2429,10 +2430,10 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               saveRoutingState(i);
 
               bool chipX0Success =
-                  setChipXStatus(path[i].chip[0], xMapNANOC0, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[0], xMapNANOC0, globalState.connections.paths[i].net,
                                  "NANOtoNANO same-chip x0");
               bool chipX1Success =
-                  setChipXStatus(path[i].chip[1], xMapNANOC1, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[1], xMapNANOC1, globalState.connections.paths[i].net,
                                  "NANOtoNANO same-chip x1");
 
               bool pathX0Success = setPathX(i, 0, xMapNANOC0);
@@ -2447,19 +2448,19 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
               if (allAssignmentsSuccessful) {
                 commitRoutingState();
-                path[i].sameChip = true;
+                globalState.connections.paths[i].sameChip = true;
                 pathCommitted = true;
                 if (debugNTCC6) {
-                  Serial.print("NANOtoNANO same-chip path[");
+                  Serial.print("NANOtoNANO same-chip globalState.connections.paths[");
                   Serial.print(i);
                   Serial.println("] assignments committed successfully");
                 }
               } else {
                 restoreRoutingState(i);
-                path[i].altPathNeeded = true;
+                globalState.connections.paths[i].altPathNeeded = true;
                 if (debugNTCC6) {
                   Serial.print(
-                      "NANOtoNANO same-chip assignment failed for path[");
+                      "NANOtoNANO same-chip assignment failed for globalState.connections.paths[");
                   Serial.print(i);
                   Serial.println("], state restored, marking for alt routing");
                 }
@@ -2467,27 +2468,27 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               // Serial.print(" ?????????");
               if (debugNTCC2) {
                 Serial.print(" \t\t\tchip[0]: ");
-                Serial.print(chipNumToChar(path[i].chip[0]));
+                Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
 
                 Serial.print("  x[0]: ");
-                Serial.print(path[i].x[0]);
+                Serial.print(globalState.connections.paths[i].x[0]);
 
                 Serial.print("  y[0]: ");
-                Serial.print(path[i].y[0]);
+                Serial.print(globalState.connections.paths[i].y[0]);
 
                 Serial.print("\t  chip[1]: ");
-                Serial.print(chipNumToChar(path[i].chip[1]));
+                Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
 
                 Serial.print("  x[1]: ");
-                Serial.print(path[i].x[1]);
+                Serial.print(globalState.connections.paths[i].x[1]);
 
                 Serial.print("  y[1]: ");
-                Serial.print(path[i].y[1]);
+                Serial.print(globalState.connections.paths[i].y[1]);
               }
               pathCommitted = true;
             } else {
               // Same chip but one X connection not available - need alt path
-              path[i].altPathNeeded = true;
+              globalState.connections.paths[i].altPathNeeded = true;
               if (debugNTCC2) {
                 Serial.print("NANOtoNANO same chip: X1 connection conflict, "
                              "setting altPathNeeded for path ");
@@ -2496,7 +2497,7 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             }
           } else {
             // Same chip but one X connection not available - need alt path
-            path[i].altPathNeeded = true;
+            globalState.connections.paths[i].altPathNeeded = true;
             if (debugNTCC2) {
               Serial.print("NANOtoNANO same chip: X0 connection conflict, "
                            "setting altPathNeeded for path ");
@@ -2504,13 +2505,13 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             }
           }
         } else {
-          path[i].altPathNeeded = true;
-          if (debugNTCC6 && path[i].net == 23) {
+          globalState.connections.paths[i].altPathNeeded = true;
+          if (debugNTCC6 && globalState.connections.paths[i].net == 23) {
             Serial.print("GP_8-D3 setting altPathNeeded flag in commitPaths "
                          "(different chips: ");
-            Serial.print(chipNumToChar(path[i].chip[0]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
             Serial.print(" != ");
-            Serial.print(chipNumToChar(path[i].chip[1]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
             Serial.println(")");
           }
           if (debugNTCC2) {
@@ -2543,16 +2544,16 @@ void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
 int ijklPaths(int pathNumber, int currentAllowStacking) {
   // return 0;
-  int chip0 = path[pathNumber].chip[0];
-  int chip1 = path[pathNumber].chip[1];
-  // int chip2 = path[pathNumber].chip[2];
-  // int chip3 = path[pathNumber].chip[3];
+  int chip0 = globalState.connections.paths[pathNumber].chip[0];
+  int chip1 = globalState.connections.paths[pathNumber].chip[1];
+  // int chip2 = globalState.connections.paths[pathNumber].chip[2];
+  // int chip3 = globalState.connections.paths[pathNumber].chip[3];
 
   if (debugNTCC6) {
-    Serial.print("ijklPaths() called for path[");
+    Serial.print("ijklPaths() called for globalState.connections.paths[");
     Serial.print(pathNumber);
     Serial.print("] net=");
-    Serial.print(path[pathNumber].net);
+    Serial.print(globalState.connections.paths[pathNumber].net);
     Serial.print(" chips=[");
     Serial.print(chipNumToChar(chip0));
     Serial.print(",");
@@ -2574,8 +2575,8 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
   }
 
   // Check if this path is already committed (prevent duplicates)
-  if (path[pathNumber].x[0] != -1 && path[pathNumber].x[1] != -1 &&
-      !path[pathNumber].altPathNeeded) {
+  if (globalState.connections.paths[pathNumber].x[0] != -1 && globalState.connections.paths[pathNumber].x[1] != -1 &&
+      !globalState.connections.paths[pathNumber].altPathNeeded) {
     if (debugNTCC) {
       Serial.println("ijklPaths: path already committed, skipping");
     }
@@ -2587,21 +2588,21 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
   //  printPathsCompact();
   //  printChipStatus();
   for (int i = 12; i < 15; i++) {
-    if (ch[chip0].xMap[i] == chip1) {
+    if (globalState.connections.chipStates[chip0].xMap[i] == chip1) {
       x0 = i;
     }
-    if (ch[chip1].xMap[i] == chip0) {
+    if (globalState.connections.chipStates[chip1].xMap[i] == chip0) {
       x1 = i;
     }
   }
-  // if ((ch[chip0].xStatus[x0] == -1 ||
-  //      ch[chip0].xStatus[x0] == path[pathNumber].net) &&
-  //     (ch[chip1].xStatus[x1] == -1 ||
-  //      ch[chip1].xStatus[x1] == path[pathNumber].net)) {
+  // if ((globalState.connections.chipStates[chip0].xStatus[x0] == -1 ||
+  //      globalState.connections.chipStates[chip0].xStatus[x0] == globalState.connections.paths[pathNumber].net) &&
+  //     (globalState.connections.chipStates[chip1].xStatus[x1] == -1 ||
+  //      globalState.connections.chipStates[chip1].xStatus[x1] == globalState.connections.paths[pathNumber].net)) {
 
-  if (freeOrSameNetX(chip0, x0, path[pathNumber].net, currentAllowStacking) ==
+  if (freeOrSameNetX(chip0, x0, globalState.connections.paths[pathNumber].net, currentAllowStacking) ==
           true &&
-      freeOrSameNetX(chip1, x1, path[pathNumber].net, currentAllowStacking) ==
+      freeOrSameNetX(chip1, x1, globalState.connections.paths[pathNumber].net, currentAllowStacking) ==
           true) {
 
     if (debugNTCC6) {
@@ -2619,22 +2620,22 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
     // Save state before making any assignments
     saveRoutingState(pathNumber);
 
-    bool interChipX0Success = setChipXStatus(chip0, x0, path[pathNumber].net,
+    bool interChipX0Success = setChipXStatus(chip0, x0, globalState.connections.paths[pathNumber].net,
                                              "ijklPaths inter-chip x0");
-    bool interChipX1Success = setChipXStatus(chip1, x1, path[pathNumber].net,
+    bool interChipX1Success = setChipXStatus(chip1, x1, globalState.connections.paths[pathNumber].net,
                                              "ijklPaths inter-chip x1");
     bool pathX0Success =
-        setPathX(pathNumber, 0, xMapForNode(path[pathNumber].node1, chip0));
+        setPathX(pathNumber, 0, xMapForNode(globalState.connections.paths[pathNumber].node1, chip0));
     bool pathX1Success =
-        setPathX(pathNumber, 1, xMapForNode(path[pathNumber].node2, chip1));
+        setPathX(pathNumber, 1, xMapForNode(globalState.connections.paths[pathNumber].node2, chip1));
 
     bool nodeX0Success = true;
     bool nodeX1Success = true;
-    if (path[pathNumber].x[0] != -1 && path[pathNumber].x[1] != -1) {
-      nodeX0Success = setChipXStatus(chip0, path[pathNumber].x[0],
-                                     path[pathNumber].net, "ijklPaths node x0");
-      nodeX1Success = setChipXStatus(chip1, path[pathNumber].x[1],
-                                     path[pathNumber].net, "ijklPaths node x1");
+    if (globalState.connections.paths[pathNumber].x[0] != -1 && globalState.connections.paths[pathNumber].x[1] != -1) {
+      nodeX0Success = setChipXStatus(chip0, globalState.connections.paths[pathNumber].x[0],
+                                     globalState.connections.paths[pathNumber].net, "ijklPaths node x0");
+      nodeX1Success = setChipXStatus(chip1, globalState.connections.paths[pathNumber].x[1],
+                                     globalState.connections.paths[pathNumber].net, "ijklPaths node x1");
     }
 
     bool allAssignmentsSuccessful = interChipX0Success && interChipX1Success &&
@@ -2644,7 +2645,7 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
     if (!allAssignmentsSuccessful) {
       restoreRoutingState(pathNumber);
       if (debugNTCC6) {
-        Serial.print("ijklPaths assignment failed for path[");
+        Serial.print("ijklPaths assignment failed for globalState.connections.paths[");
         Serial.print(pathNumber);
         Serial.println("], state restored, connection not established");
       }
@@ -2654,14 +2655,14 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
     // If we get here, all assignments succeeded
     commitRoutingState();
 
-    ch[path[pathNumber].chip[0]].uncommittedHops++;
-    ch[path[pathNumber].chip[1]].uncommittedHops++;
+    globalState.connections.chipStates[globalState.connections.paths[pathNumber].chip[0]].uncommittedHops++;
+    globalState.connections.chipStates[globalState.connections.paths[pathNumber].chip[1]].uncommittedHops++;
 
-    path[pathNumber].sameChip = true;
-    // path[pathNumber].altPathNeeded = false;
+    globalState.connections.paths[pathNumber].sameChip = true;
+    // globalState.connections.paths[pathNumber].altPathNeeded = false;
 
-    path[pathNumber].chip[2] = chip0;
-    path[pathNumber].chip[3] = chip1;
+    globalState.connections.paths[pathNumber].chip[2] = chip0;
+    globalState.connections.paths[pathNumber].chip[3] = chip1;
     setPathX(pathNumber, 2, x0);
     setPathX(pathNumber, 3, x1);
 
@@ -2684,13 +2685,13 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
       Serial.print(".X[");
       Serial.print(x0);
       Serial.print("]=");
-      Serial.print(ch[chip0].xStatus[x0]);
+      Serial.print(globalState.connections.chipStates[chip0].xStatus[x0]);
       Serial.print(", ");
       Serial.print(chipNumToChar(chip1));
       Serial.print(".X[");
       Serial.print(x1);
       Serial.print("]=");
-      Serial.print(ch[chip1].xStatus[x1]);
+      Serial.print(globalState.connections.chipStates[chip1].xStatus[x1]);
       Serial.println(")");
     }
     return 0;
@@ -2708,28 +2709,28 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
   int couldFindPath = -1;
 
   for (int i = 0; i < numberOfPaths; i++) {
-    if (powerOnly == 1 && path[i].net > 5) {
+    if (powerOnly == 1 && globalState.connections.paths[i].net > 5) {
       continue;
     }
-    if (powerOnly == 1 && path[i].duplicate == 1) {
-      continue;
-    }
-
-    if (noOrOnlyDuplicates == 1 && path[i].duplicate == 0) {
+    if (powerOnly == 1 && globalState.connections.paths[i].duplicate == 1) {
       continue;
     }
 
-    if (noOrOnlyDuplicates == 0 && path[i].duplicate == 1) {
+    if (noOrOnlyDuplicates == 1 && globalState.connections.paths[i].duplicate == 0) {
+      continue;
+    }
+
+    if (noOrOnlyDuplicates == 0 && globalState.connections.paths[i].duplicate == 1) {
       continue;
     }
     
     // Debug output removed for production
     
-    if (path[i].altPathNeeded == true) {
+    if (globalState.connections.paths[i].altPathNeeded == true) {
       //   Serial.print("\n\n\rPATH: ");
       //   Serial.println(i);
-      // Serial.print("path[i].altPathNeeded = ");
-      // Serial.println(path[i].altPathNeeded);
+      // Serial.print("globalState.connections.paths[i].altPathNeeded = ");
+      // Serial.println(globalState.connections.paths[i].altPathNeeded);
       // Serial.print("numberOfPaths = ");
       // Serial.println(numberOfPaths);
 
@@ -2748,42 +2749,42 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
         // Reset altPathNeeded for retry attempt
         if (stackingAttempt == 1) {
-          path[i].altPathNeeded = true;
+          globalState.connections.paths[i].altPathNeeded = true;
         }
 
         // Try ijklPaths first with current stacking setting
-        if (debugNTCC6 && path[i].net == 23) {
-          Serial.print("Trying ijklPaths for GP_8-D3 connection (path[");
+        if (debugNTCC6 && globalState.connections.paths[i].net == 23) {
+          Serial.print("Trying ijklPaths for GP_8-D3 connection (globalState.connections.paths[");
           Serial.print(i);
           Serial.println("])");
         }
 
         if (ijklPaths(i, currentAllowStacking) == 1) {
-          if (debugNTCC6 && path[i].net == 23) {
+          if (debugNTCC6 && globalState.connections.paths[i].net == 23) {
             Serial.println("ijklPaths SUCCESS for GP_8-D3!");
           }
           altPathResolved = true;
           continue;
         }
 
-        if (debugNTCC6 && path[i].net == 23) {
+        if (debugNTCC6 && globalState.connections.paths[i].net == 23) {
           Serial.println(
               "ijklPaths failed for GP_8-D3, trying other alt paths...");
         }
 
-        switch (path[i].pathType) {
+        switch (globalState.connections.paths[i].pathType) {
         case BBtoBB: {
           int foundPath = 0;
           if (debugNTCC2) {
             Serial.println("BBtoBB");
           }
 
-          int yNode1 = yMapForNode(path[i].node1, path[i].chip[0]);
-          int yNode2 = yMapForNode(path[i].node2, path[i].chip[1]);
+          int yNode1 = yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]);
+          int yNode2 = yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]);
 
-          setChipYStatusSafe(path[i].chip[0], yNode1, path[i].net,
+          setChipYStatusSafe(globalState.connections.paths[i].chip[0], yNode1, globalState.connections.paths[i].net,
                              "BBtoBB alt Y0");
-          setChipYStatusSafe(path[i].chip[1], yNode2, path[i].net,
+          setChipYStatusSafe(globalState.connections.paths[i].chip[1], yNode2, globalState.connections.paths[i].net,
                              "BBtoBB alt Y1");
 
           if (foundPath == 1) {
@@ -2797,10 +2798,10 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           int numberOfChipsWithFreeY0 = 0;
 
           for (int chipFreeY = 0; chipFreeY < 8; chipFreeY++) {
-            // if (ch[chipFreeY].yStatus[0] == -1 ||
-            //     ch[chipFreeY].yStatus[0] == path[i].net) {
+            // if (globalState.connections.chipStates[chipFreeY].yStatus[0] == -1 ||
+            //     globalState.connections.chipStates[chipFreeY].yStatus[0] == globalState.connections.paths[i].net) {
 
-            if (freeOrSameNetY(chipFreeY, 0, path[i].net,
+            if (freeOrSameNetY(chipFreeY, 0, globalState.connections.paths[i].net,
                                currentAllowStacking) == true) {
               chipsWithFreeY0[chipFreeY] = chipFreeY;
               numberOfChipsWithFreeY0++;
@@ -2830,11 +2831,11 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               continue;
             }
 
-            int xMapL0c0 = xMapForChipLane0(bb, path[i].chip[0]);
-            int xMapL0c1 = xMapForChipLane0(bb, path[i].chip[1]);
+            int xMapL0c0 = xMapForChipLane0(bb, globalState.connections.paths[i].chip[0]);
+            int xMapL0c1 = xMapForChipLane0(bb, globalState.connections.paths[i].chip[1]);
 
-            int xMapL1c0 = xMapForChipLane1(bb, path[i].chip[0]);
-            int xMapL1c1 = xMapForChipLane1(bb, path[i].chip[1]);
+            int xMapL1c0 = xMapForChipLane1(bb, globalState.connections.paths[i].chip[0]);
+            int xMapL1c1 = xMapForChipLane1(bb, globalState.connections.paths[i].chip[1]);
 
             // if (bb == 7 && giveUpOnL == 0 && swapped == 0) {
             //   bb = 0;
@@ -2847,44 +2848,44 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             //   giveUpOnL = 1;
             // }
 
-            //   if ((ch[CHIP_L].yStatus[bb] != -1 &&
-            //        ch[CHIP_L].yStatus[bb] != path[i].net) &&
+            //   if ((globalState.connections.chipStates[CHIP_L].yStatus[bb] != -1 &&
+            //        globalState.connections.chipStates[CHIP_L].yStatus[bb] != globalState.connections.paths[i].net) &&
             //       giveUpOnL == 0) {
 
             //     continue;
             //   }
 
-            if (path[i].chip[0] == bb || path[i].chip[1] == bb) {
+            if (globalState.connections.paths[i].chip[0] == bb || globalState.connections.paths[i].chip[1] == bb) {
               continue;
             }
 
-            // if (path[i].chip[0] == path[i].chip[1]) {
+            // if (globalState.connections.paths[i].chip[0] == globalState.connections.paths[i].chip[1]) {
             //   continue;
             // }
 
-            // if (ch[bb].xStatus[] == path[i].net ||
-            //     ch[bb].xStatus[xMapL0c0] == -1)
+            // if (globalState.connections.chipStates[bb].xStatus[] == globalState.connections.paths[i].net ||
+            //     globalState.connections.chipStates[bb].xStatus[xMapL0c0] == -1)
 
-            if (freeOrSameNetX(bb, xMapL0c0, path[i].net,
+            if (freeOrSameNetX(bb, xMapL0c0, globalState.connections.paths[i].net,
                                currentAllowStacking) == true) {
               // were going through each bb chip to see if it has a
               // connection to both chips free
 
-              // if (ch[bb].xStatus[xMapL0c1] == path[i].net ||
-              //     ch[bb].xStatus[xMapL0c1] == -1) // lanes 0 0
-              if (freeOrSameNetX(bb, xMapL0c1, path[i].net,
+              // if (globalState.connections.chipStates[bb].xStatus[xMapL0c1] == globalState.connections.paths[i].net ||
+              //     globalState.connections.chipStates[bb].xStatus[xMapL0c1] == -1) // lanes 0 0
+              if (freeOrSameNetX(bb, xMapL0c1, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true) {
-                // if (ch[bb].yStatus[0] == -1) {
-                setChipXStatus(bb, xMapL0c0, path[i].net,
+                // if (globalState.connections.chipStates[bb].yStatus[0] == -1) {
+                setChipXStatus(bb, xMapL0c0, globalState.connections.paths[i].net,
                                "BBtoBB alt lane0 hop chip x0");
-                setChipXStatus(bb, xMapL0c1, path[i].net,
+                setChipXStatus(bb, xMapL0c1, globalState.connections.paths[i].net,
                                "BBtoBB alt lane0 hop chip x1");
 
                 //   if (giveUpOnL == 0) {
-                //     ch[CHIP_L].yStatus[bb] = path[i].net;
-                //     ch[bb].yStatus[0] = path[i].net;
-                //     path[i].y[2] = 0;
-                //     path[i].y[3] = 0;
+                //     globalState.connections.chipStates[CHIP_L].yStatus[bb] = globalState.connections.paths[i].net;
+                //     globalState.connections.chipStates[bb].yStatus[0] = globalState.connections.paths[i].net;
+                //     globalState.connections.paths[i].y[2] = 0;
+                //     globalState.connections.paths[i].y[3] = 0;
                 //   } else {
                 // if (debugNTCC2) {
                 //     Serial.println("Gave up on L  ");
@@ -2893,58 +2894,58 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
 
                 setPathY(i, 2, 0);
                 setPathY(i, 3, 0);
-                setChipYStatusSafe(bb, 0, path[i].net, "BBtoBB hop Y=0");
+                setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net, "BBtoBB hop Y=0");
                 //}
 
-                path[i].sameChip = true;
+                globalState.connections.paths[i].sameChip = true;
 
-                path[i].chip[2] = bb;
-                path[i].chip[3] = bb;
+                globalState.connections.paths[i].chip[2] = bb;
+                globalState.connections.paths[i].chip[3] = bb;
                 setPathX(i, 2, xMapL0c0);
                 setPathX(i, 3, xMapL0c1);
 
-                setChipXStatus(bb, xMapL0c0, path[i].net,
+                setChipXStatus(bb, xMapL0c0, globalState.connections.paths[i].net,
                                "BBtoBB alt lane0 hop chip x0 dup");
-                setChipXStatus(bb, xMapL0c1, path[i].net,
+                setChipXStatus(bb, xMapL0c1, globalState.connections.paths[i].net,
                                "BBtoBB alt lane0 hop chip x1 dup");
 
                 // Serial.print("!!!!3 bb: ");
                 // Serial.println(bb);
                 // Serial.print("chip[3]: ");
-                // Serial.println(path[i].chip[3]);
+                // Serial.println(globalState.connections.paths[i].chip[3]);
 
-                path[i].altPathNeeded = false;
+                globalState.connections.paths[i].altPathNeeded = false;
                 altPathResolved = true;
 
-                setPathX(i, 0, xMapForChipLane0(path[i].chip[0], bb));
-                setPathX(i, 1, xMapForChipLane0(path[i].chip[1], bb));
+                setPathX(i, 0, xMapForChipLane0(globalState.connections.paths[i].chip[0], bb));
+                setPathX(i, 1, xMapForChipLane0(globalState.connections.paths[i].chip[1], bb));
 
-                setChipXStatus(path[i].chip[0],
-                               xMapForChipLane0(path[i].chip[0], bb),
-                               path[i].net, "BBtoBB alt lane0 chip0");
-                setChipXStatus(path[i].chip[1],
-                               xMapForChipLane0(path[i].chip[1], bb),
-                               path[i].net, "BBtoBB alt lane0 chip1");
+                setChipXStatus(globalState.connections.paths[i].chip[0],
+                               xMapForChipLane0(globalState.connections.paths[i].chip[0], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt lane0 chip0");
+                setChipXStatus(globalState.connections.paths[i].chip[1],
+                               xMapForChipLane0(globalState.connections.paths[i].chip[1], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt lane0 chip1");
 
-                setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
-                setPathY(i, 1, yMapForNode(path[i].node2, path[i].chip[1]));
+                setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+                setPathY(i, 1, yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
 
-                setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                    "BBtoBB alt lane0 y0");
-                setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                    "BBtoBB alt lane0 y1");
 
                 if (debugNTCC2) {
                   Serial.print("\n\r");
                   Serial.print(i);
                   Serial.print("  chip[2]: ");
-                  Serial.print(chipNumToChar(path[i].chip[2]));
+                  Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
 
                   Serial.print("  x[2]: ");
-                  Serial.print(path[i].x[2]);
+                  Serial.print(globalState.connections.paths[i].x[2]);
 
                   Serial.print("  x[3]: ");
-                  Serial.print(path[i].x[3]);
+                  Serial.print(globalState.connections.paths[i].x[3]);
 
                   Serial.print(" \n\r");
                 }
@@ -2954,73 +2955,73 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 break;
               }
             }
-            if (freeOrSameNetX(bb, xMapL1c0, path[i].net,
+            if (freeOrSameNetX(bb, xMapL1c0, globalState.connections.paths[i].net,
                                currentAllowStacking) == true) {
-              if (freeOrSameNetX(bb, xMapL1c1, path[i].net,
+              if (freeOrSameNetX(bb, xMapL1c1, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true) {
-                setChipXStatus(bb, xMapL1c0, path[i].net,
+                setChipXStatus(bb, xMapL1c0, globalState.connections.paths[i].net,
                                "BBtoBB alt lane1 hop x0");
-                setChipXStatus(bb, xMapL1c1, path[i].net,
+                setChipXStatus(bb, xMapL1c1, globalState.connections.paths[i].net,
                                "BBtoBB alt lane1 hop x1");
 
                 //   if (giveUpOnL == 0) {
                 //     // Serial.print("Give up on L?");
-                //     ch[CHIP_L].yStatus[bb] = path[i].net;
-                //     ch[bb].yStatus[0] = path[i].net;
-                //     path[i].y[2] = 0;
-                //     path[i].y[3] = 0;
+                //     globalState.connections.chipStates[CHIP_L].yStatus[bb] = globalState.connections.paths[i].net;
+                //     globalState.connections.chipStates[bb].yStatus[0] = globalState.connections.paths[i].net;
+                //     globalState.connections.paths[i].y[2] = 0;
+                //     globalState.connections.paths[i].y[3] = 0;
                 //   } else {
                 // if (debugNTCC2) {
                 // Serial.println("Gave up on L");
                 //}
                 setPathY(i, 2, 0);
                 setPathY(i, 3, 0);
-                setChipYStatusSafe(bb, 0, path[i].net,
+                setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                    "BBtoBB alt lane1 hop y0");
                 /// }
 
-                path[i].chip[2] = bb;
-                path[i].chip[3] = bb;
+                globalState.connections.paths[i].chip[2] = bb;
+                globalState.connections.paths[i].chip[3] = bb;
                 setPathX(i, 2, xMapL1c0);
                 setPathX(i, 3, xMapL1c1);
-                path[i].sameChip = true;
-                path[i].altPathNeeded = false;
+                globalState.connections.paths[i].sameChip = true;
+                globalState.connections.paths[i].altPathNeeded = false;
                 altPathResolved = true;
 
-                setChipXStatus(bb, xMapL1c0, path[i].net,
+                setChipXStatus(bb, xMapL1c0, globalState.connections.paths[i].net,
                                "BBtoBB alt lane1 hop x0 dup");
-                setChipXStatus(bb, xMapL1c1, path[i].net,
+                setChipXStatus(bb, xMapL1c1, globalState.connections.paths[i].net,
                                "BBtoBB alt lane1 hop x1 dup");
 
-                setPathX(i, 0, xMapForChipLane1(path[i].chip[0], bb));
-                setPathX(i, 1, xMapForChipLane1(path[i].chip[1], bb));
+                setPathX(i, 0, xMapForChipLane1(globalState.connections.paths[i].chip[0], bb));
+                setPathX(i, 1, xMapForChipLane1(globalState.connections.paths[i].chip[1], bb));
 
-                setChipXStatus(path[i].chip[0],
-                               xMapForChipLane1(path[i].chip[0], bb),
-                               path[i].net, "BBtoBB alt lane1 chip0");
-                setChipXStatus(path[i].chip[1],
-                               xMapForChipLane1(path[i].chip[1], bb),
-                               path[i].net, "BBtoBB alt lane1 chip1");
+                setChipXStatus(globalState.connections.paths[i].chip[0],
+                               xMapForChipLane1(globalState.connections.paths[i].chip[0], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt lane1 chip0");
+                setChipXStatus(globalState.connections.paths[i].chip[1],
+                               xMapForChipLane1(globalState.connections.paths[i].chip[1], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt lane1 chip1");
 
-                setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
-                setPathY(i, 1, yMapForNode(path[i].node2, path[i].chip[1]));
+                setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+                setPathY(i, 1, yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
 
-                setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                    "BBtoBB alt lane1 y0");
-                setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                    "BBtoBB alt lane1 y1");
 
                 if (debugNTCC2) {
                   Serial.print("\n\r");
                   Serial.print(i);
                   Serial.print("  chip[2]: ");
-                  Serial.print(chipNumToChar(path[i].chip[2]));
+                  Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
 
                   Serial.print("  x[2]: ");
-                  Serial.print(path[i].x[2]);
+                  Serial.print(globalState.connections.paths[i].x[2]);
 
                   Serial.print("  x[3]: ");
-                  Serial.print(path[i].x[3]);
+                  Serial.print(globalState.connections.paths[i].x[3]);
 
                   Serial.print(" \n\r");
                 }
@@ -3028,69 +3029,69 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 break;
               }
             }
-            if (freeOrSameNetX(bb, xMapL0c0, path[i].net,
+            if (freeOrSameNetX(bb, xMapL0c0, globalState.connections.paths[i].net,
                                currentAllowStacking) == true &&
                 false) {
-              if (freeOrSameNetX(bb, xMapL1c1, path[i].net,
+              if (freeOrSameNetX(bb, xMapL1c1, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true) {
                 //   if (giveUpOnL == 0) {
-                //     ch[CHIP_L].yStatus[bb] = path[i].net;
-                //     ch[bb].yStatus[0] = path[i].net;
-                //     path[i].y[2] = 0;
-                //     path[i].y[3] = 0;
+                //     globalState.connections.chipStates[CHIP_L].yStatus[bb] = globalState.connections.paths[i].net;
+                //     globalState.connections.chipStates[bb].yStatus[0] = globalState.connections.paths[i].net;
+                //     globalState.connections.paths[i].y[2] = 0;
+                //     globalState.connections.paths[i].y[3] = 0;
                 //   } else {
                 if (debugNTCC2) {
                   Serial.println("Gave up on L");
                 }
                 setPathY(i, 2, 0);
                 setPathY(i, 3, 0);
-                setChipYStatusSafe(bb, 0, path[i].net,
+                setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                    "BBtoBB alt mixed hop y0");
                 //}
 
-                setChipXStatus(bb, xMapL0c0, path[i].net,
+                setChipXStatus(bb, xMapL0c0, globalState.connections.paths[i].net,
                                "BBtoBB alt mixed hop x0");
-                setChipXStatus(bb, xMapL1c1, path[i].net,
+                setChipXStatus(bb, xMapL1c1, globalState.connections.paths[i].net,
                                "BBtoBB alt mixed hop x1");
 
-                path[i].chip[2] = bb;
-                path[i].chip[3] = bb;
+                globalState.connections.paths[i].chip[2] = bb;
+                globalState.connections.paths[i].chip[3] = bb;
                 setPathX(i, 2, xMapL0c0);
                 setPathX(i, 3, xMapL1c1);
 
-                path[i].altPathNeeded = false;
+                globalState.connections.paths[i].altPathNeeded = false;
                 altPathResolved = true;
 
-                setPathX(i, 0, xMapForChipLane0(path[i].chip[0], bb));
-                setPathX(i, 1, xMapForChipLane1(path[i].chip[1], bb));
+                setPathX(i, 0, xMapForChipLane0(globalState.connections.paths[i].chip[0], bb));
+                setPathX(i, 1, xMapForChipLane1(globalState.connections.paths[i].chip[1], bb));
 
-                setChipXStatus(path[i].chip[0],
-                               xMapForChipLane0(path[i].chip[0], bb),
-                               path[i].net, "BBtoBB alt mixed chip0");
-                setChipXStatus(path[i].chip[1],
-                               xMapForChipLane1(path[i].chip[1], bb),
-                               path[i].net, "BBtoBB alt mixed chip1");
+                setChipXStatus(globalState.connections.paths[i].chip[0],
+                               xMapForChipLane0(globalState.connections.paths[i].chip[0], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt mixed chip0");
+                setChipXStatus(globalState.connections.paths[i].chip[1],
+                               xMapForChipLane1(globalState.connections.paths[i].chip[1], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt mixed chip1");
 
-                setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
-                setPathY(i, 1, yMapForNode(path[i].node2, path[i].chip[1]));
+                setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+                setPathY(i, 1, yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
 
-                setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                    "BBtoBB alt mixed y0");
-                setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                    "BBtoBB alt mixed y1");
 
-                path[i].sameChip = true;
+                globalState.connections.paths[i].sameChip = true;
                 if (debugNTCC2) {
                   Serial.print("\n\r");
                   Serial.print(i);
                   Serial.print("  chip[2]: ");
-                  Serial.print(chipNumToChar(path[i].chip[2]));
+                  Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
 
                   Serial.print("  x[2]: ");
-                  Serial.print(path[i].x[2]);
+                  Serial.print(globalState.connections.paths[i].x[2]);
 
                   Serial.print("  x[3]: ");
-                  Serial.print(path[i].x[3]);
+                  Serial.print(globalState.connections.paths[i].x[3]);
 
                   Serial.print(" \n\r");
                 }
@@ -3100,69 +3101,69 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 break;
               }
             }
-            if (freeOrSameNetX(bb, xMapL1c0, path[i].net,
+            if (freeOrSameNetX(bb, xMapL1c0, globalState.connections.paths[i].net,
                                currentAllowStacking) == true &&
                 false) {
-              if (freeOrSameNetX(bb, xMapL0c1, path[i].net,
+              if (freeOrSameNetX(bb, xMapL0c1, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true) {
                 //   if (giveUpOnL == 0) {
-                //     ch[CHIP_L].yStatus[bb] = path[i].net;
-                //     ch[bb].yStatus[0] = path[i].net;
-                //     path[i].y[2] = 0;
-                //     path[i].y[3] = 0;
+                //     globalState.connections.chipStates[CHIP_L].yStatus[bb] = globalState.connections.paths[i].net;
+                //     globalState.connections.chipStates[bb].yStatus[0] = globalState.connections.paths[i].net;
+                //     globalState.connections.paths[i].y[2] = 0;
+                //     globalState.connections.paths[i].y[3] = 0;
                 //   } else {
                 //     if (debugNTCC2) {
                 //       Serial.println("Gave up on L");
                 //     }
                 setPathY(i, 2, 0);
                 setPathY(i, 3, 0);
-                setChipYStatusSafe(bb, 0, path[i].net,
+                setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                    "BBtoBB alt mixed2 hop y0");
                 //}
 
-                setChipXStatus(bb, xMapL0c1, path[i].net,
+                setChipXStatus(bb, xMapL0c1, globalState.connections.paths[i].net,
                                "BBtoBB alt mixed2 hop x0");
-                setChipXStatus(bb, xMapL1c0, path[i].net,
+                setChipXStatus(bb, xMapL1c0, globalState.connections.paths[i].net,
                                "BBtoBB alt mixed2 hop x1");
 
-                path[i].chip[2] = bb;
-                path[i].chip[3] = bb;
+                globalState.connections.paths[i].chip[2] = bb;
+                globalState.connections.paths[i].chip[3] = bb;
                 setPathX(i, 2, xMapL0c1);
                 setPathX(i, 3, xMapL1c0);
-                // path[i].y[2] = -2;
-                // path[i].y[3] = -2;
-                path[i].altPathNeeded = false;
+                // globalState.connections.paths[i].y[2] = -2;
+                // globalState.connections.paths[i].y[3] = -2;
+                globalState.connections.paths[i].altPathNeeded = false;
                 altPathResolved = true;
-                path[i].sameChip = true;
-                setPathX(i, 0, xMapForChipLane1(path[i].chip[0], bb));
-                setPathX(i, 1, xMapForChipLane0(path[i].chip[1], bb));
+                globalState.connections.paths[i].sameChip = true;
+                setPathX(i, 0, xMapForChipLane1(globalState.connections.paths[i].chip[0], bb));
+                setPathX(i, 1, xMapForChipLane0(globalState.connections.paths[i].chip[1], bb));
 
-                setChipXStatus(path[i].chip[0],
-                               xMapForChipLane1(path[i].chip[0], bb),
-                               path[i].net, "BBtoBB alt mixed2 chip0");
-                setChipXStatus(path[i].chip[1],
-                               xMapForChipLane0(path[i].chip[1], bb),
-                               path[i].net, "BBtoBB alt mixed2 chip1");
+                setChipXStatus(globalState.connections.paths[i].chip[0],
+                               xMapForChipLane1(globalState.connections.paths[i].chip[0], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt mixed2 chip0");
+                setChipXStatus(globalState.connections.paths[i].chip[1],
+                               xMapForChipLane0(globalState.connections.paths[i].chip[1], bb),
+                               globalState.connections.paths[i].net, "BBtoBB alt mixed2 chip1");
 
-                setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
-                setPathY(i, 1, yMapForNode(path[i].node2, path[i].chip[1]));
+                setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+                setPathY(i, 1, yMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
 
-                setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                    "BBtoBB alt mixed2 y0");
-                setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                    "BBtoBB alt mixed2 y1");
 
                 if (debugNTCC2) {
                   Serial.print("\n\r");
                   Serial.print(i);
                   Serial.print(" chip[2]: ");
-                  Serial.print(chipNumToChar(path[i].chip[2]));
+                  Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
 
                   Serial.print("  x[2]: ");
-                  Serial.print(path[i].x[2]);
+                  Serial.print(globalState.connections.paths[i].x[2]);
 
                   Serial.print("  x[3]: ");
-                  Serial.print(path[i].x[3]);
+                  Serial.print(globalState.connections.paths[i].x[3]);
 
                   Serial.print(" \n\r");
                 }
@@ -3175,13 +3176,13 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 Serial.print("\n\r");
                 Serial.print(i);
                 Serial.print("  chip[2]: ");
-                Serial.print(chipNumToChar(path[i].chip[2]));
+                Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
 
                 Serial.print("  x[2]: ");
-                Serial.print(path[i].x[2]);
+                Serial.print(globalState.connections.paths[i].x[2]);
 
                 Serial.print("  x[3]: ");
-                Serial.print(path[i].x[3]);
+                Serial.print(globalState.connections.paths[i].x[3]);
 
                 Serial.print(" \n\r");
               }
@@ -3200,19 +3201,19 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           // Debug output removed for production
           
                      // Add detailed debug for failed BBtoNANO paths
-          if (debugNTCC2 && (path[i].node1 == 5 || path[i].node1 == 6 || path[i].node1 == 33)) {
-            Serial.print("   Debugging BBtoNANO path[");
+          if (debugNTCC2 && (globalState.connections.paths[i].node1 == 5 || globalState.connections.paths[i].node1 == 6 || globalState.connections.paths[i].node1 == 33)) {
+            Serial.print("   Debugging BBtoNANO globalState.connections.paths[");
             Serial.print(i);
             Serial.print("]: ");
-            printNodeOrName(path[i].node1);
+            printNodeOrName(globalState.connections.paths[i].node1);
             Serial.print(" (chip ");
-            Serial.print(chipNumToChar(path[i].chip[0]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
             Serial.print(") -> ");
-            printNodeOrName(path[i].node2);
+            printNodeOrName(globalState.connections.paths[i].node2);
             Serial.print(" (chip ");
-            Serial.print(chipNumToChar(path[i].chip[1]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
             Serial.print(") - altPath=");
-            Serial.println(path[i].altPathNeeded);
+            Serial.println(globalState.connections.paths[i].altPathNeeded);
           }
           
           int foundHop = 0;
@@ -3223,7 +3224,7 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                      // Try breadboard chips first (0-7), then special function chips (8-11)
            for (int intermediateChip = 0; intermediateChip < 12; intermediateChip++) {
              // Skip if this is the same as our source or target chip
-             if (intermediateChip == path[i].chip[0] || intermediateChip == path[i].chip[1]) {
+             if (intermediateChip == globalState.connections.paths[i].chip[0] || intermediateChip == globalState.connections.paths[i].chip[1]) {
                continue;
              }
              
@@ -3238,21 +3239,21 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
              if (intermediateChip < 8) {
                // Breadboard chip as intermediate
                // Check if this intermediate chip has free Y0 and connections to both endpoints
-               if (!freeOrSameNetY(intermediateChip, 0, path[i].net, currentAllowStacking)) {
+               if (!freeOrSameNetY(intermediateChip, 0, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue;
                }
                
                // Check connection from source breadboard chip to intermediate chip
-               xMapSourceToIntermediate = xMapForChipLane0(path[i].chip[0], intermediateChip);
-               if (xMapSourceToIntermediate == -1 || !freeOrSameNetX(path[i].chip[0], xMapSourceToIntermediate, path[i].net, currentAllowStacking)) {
+               xMapSourceToIntermediate = xMapForChipLane0(globalState.connections.paths[i].chip[0], intermediateChip);
+               if (xMapSourceToIntermediate == -1 || !freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapSourceToIntermediate, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue;
                }
                
                // Check connection from intermediate chip back to source
-               xMapIntermediateToSource = xMapForChipLane0(intermediateChip, path[i].chip[0]);
-               if (xMapIntermediateToSource == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToSource, path[i].net, currentAllowStacking)) {
+               xMapIntermediateToSource = xMapForChipLane0(intermediateChip, globalState.connections.paths[i].chip[0]);
+               if (xMapIntermediateToSource == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToSource, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue;
                }
@@ -3260,20 +3261,20 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                // CRITICAL: Also check if source chip has free X position for return connection
                if (intermediateChip < 8) {
                  // For breadboard intermediate chips, this is direct connection
-                 xMapSourceFromIntermediate = xMapForChipLane0(path[i].chip[0], intermediateChip);
+                 xMapSourceFromIntermediate = xMapForChipLane0(globalState.connections.paths[i].chip[0], intermediateChip);
                } else {
                  // For SF intermediate chips, need to find the connection from source BB chip to the intermediate Y position
-                 xMapSourceFromIntermediate = xMapForChipLane0(path[i].chip[0], intermediateY);
+                 xMapSourceFromIntermediate = xMapForChipLane0(globalState.connections.paths[i].chip[0], intermediateY);
                }
                
-               if (xMapSourceFromIntermediate == -1 || !freeOrSameNetX(path[i].chip[0], xMapSourceFromIntermediate, path[i].net, currentAllowStacking)) {
+               if (xMapSourceFromIntermediate == -1 || !freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapSourceFromIntermediate, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue;
                }
                
                // Check connection from intermediate chip to nano chip
-               xMapIntermediateToNano = xMapForNode(path[i].chip[1], intermediateChip);
-               if (xMapIntermediateToNano == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToNano, path[i].net, currentAllowStacking)) {
+               xMapIntermediateToNano = xMapForNode(globalState.connections.paths[i].chip[1], intermediateChip);
+               if (xMapIntermediateToNano == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToNano, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue;
                }
@@ -3282,10 +3283,10 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                // Find Y position for intermediate SF chip
                intermediateY = -1;
                for (int testY = 0; testY < 8; testY++) {
-                 if (freeOrSameNetY(intermediateChip, testY, path[i].net, currentAllowStacking)) {
+                 if (freeOrSameNetY(intermediateChip, testY, globalState.connections.paths[i].net, currentAllowStacking)) {
                    // For SF chips, also check if the corresponding BB chip X is free
                    int bbChipX = xMapForChipLane0(testY, intermediateChip);
-                   if (bbChipX != -1 && freeOrSameNetX(testY, bbChipX, path[i].net, currentAllowStacking)) {
+                   if (bbChipX != -1 && freeOrSameNetX(testY, bbChipX, globalState.connections.paths[i].net, currentAllowStacking)) {
                      intermediateY = testY;
                      break;
                    }
@@ -3297,41 +3298,41 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                }
                
                // Check connection from source breadboard chip to intermediate SF chip
-               xMapSourceToIntermediate = xMapForChipLane0(path[i].chip[0], intermediateY);
-               if (xMapSourceToIntermediate == -1 || !freeOrSameNetX(path[i].chip[0], xMapSourceToIntermediate, path[i].net, currentAllowStacking)) {
+               xMapSourceToIntermediate = xMapForChipLane0(globalState.connections.paths[i].chip[0], intermediateY);
+               if (xMapSourceToIntermediate == -1 || !freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapSourceToIntermediate, globalState.connections.paths[i].net, currentAllowStacking)) {
                  continue;
                }
                
                // For SF chips, the return connection goes back to the BB chip at intermediateY position
                // Find the X position on the SF chip that connects to that BB chip
                xMapIntermediateToSource = xMapForChipLane0(intermediateChip, intermediateY);
-               if (xMapIntermediateToSource == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToSource, path[i].net, currentAllowStacking)) {
+               if (xMapIntermediateToSource == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToSource, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue;
                }
                
                // Check ijkl connection from intermediate SF chip to target nano chip
                for (int ijklX = 12; ijklX <= 14; ijklX++) {
-                 if (ch[intermediateChip].xMap[ijklX] == path[i].chip[1]) {
+                 if (globalState.connections.chipStates[intermediateChip].xMap[ijklX] == globalState.connections.paths[i].chip[1]) {
                    xMapIntermediateToNano = ijklX;
                    break;
                  }
                }
                
-               if (xMapIntermediateToNano == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToNano, path[i].net, currentAllowStacking)) {
+               if (xMapIntermediateToNano == -1 || !freeOrSameNetX(intermediateChip, xMapIntermediateToNano, globalState.connections.paths[i].net, currentAllowStacking)) {
                  continue;
                }
                
                // Check the corresponding ijkl connection on the target nano chip
                int targetIjklX = -1;
                for (int ijklX = 12; ijklX <= 14; ijklX++) {
-                 if (ch[path[i].chip[1]].xMap[ijklX] == intermediateChip) {
+                 if (globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xMap[ijklX] == intermediateChip) {
                    targetIjklX = ijklX;
                    break;
                  }
                }
                
-               if (targetIjklX == -1 || !freeOrSameNetX(path[i].chip[1], targetIjklX, path[i].net, currentAllowStacking)) {
+               if (targetIjklX == -1 || !freeOrSameNetX(globalState.connections.paths[i].chip[1], targetIjklX, globalState.connections.paths[i].net, currentAllowStacking)) {
                  continue;
                }
                
@@ -3344,14 +3345,14 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
              if (intermediateChip < 8) {
                // For breadboard intermediate chips, nano Y must be the intermediate chip number
                nanoY = intermediateChip;
-               if (!freeOrSameNetY(path[i].chip[1], nanoY, path[i].net, currentAllowStacking)) {
+               if (!freeOrSameNetY(globalState.connections.paths[i].chip[1], nanoY, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue; // Required Y position not available
                }
              } else {
                // For SF intermediate chips, nano Y corresponds to the BB chip at intermediateY
                nanoY = intermediateY;
-               if (!freeOrSameNetY(path[i].chip[1], nanoY, path[i].net, currentAllowStacking)) {
+               if (!freeOrSameNetY(globalState.connections.paths[i].chip[1], nanoY, globalState.connections.paths[i].net, currentAllowStacking)) {
                  // Debug output removed for production
                  continue; // Required Y position not available
                }
@@ -3375,17 +3376,17 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
              saveRoutingState(i);
              
              // Set up the 4-segment path: source BB -> intermediate chip -> intermediate chip -> nano
-             path[i].chip[2] = intermediateChip;
-             path[i].chip[3] = intermediateChip;
+             globalState.connections.paths[i].chip[2] = intermediateChip;
+             globalState.connections.paths[i].chip[3] = intermediateChip;
              
              // X coordinates
              bool pathX0Success = setPathX(i, 0, xMapSourceToIntermediate);
-             bool pathX1Success = setPathX(i, 1, xMapForNode(path[i].node2, path[i].chip[1]));
+             bool pathX1Success = setPathX(i, 1, xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
              bool pathX2Success = setPathX(i, 2, xMapIntermediateToSource);
              bool pathX3Success = setPathX(i, 3, xMapIntermediateToNano);
              
              // Y coordinates - different for BB vs SF intermediate chips
-             bool pathY0Success = setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
+             bool pathY0Success = setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
              bool pathY1Success = setPathY(i, 1, nanoY);  // Use the found free Y position
              bool pathY2Success = false;
              bool pathY3Success = false;
@@ -3400,27 +3401,27 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
              }
              
              // Update chip status - validate all assignments first
-             bool chipX0Success = setChipXStatus(path[i].chip[0], xMapSourceToIntermediate, path[i].net, "BBtoNANO alt source->intermediate");
-             bool chipX1Success = setChipXStatus(path[i].chip[1], path[i].x[1], path[i].net, "BBtoNANO alt nano x");
-             bool chipX2Success = setChipXStatus(intermediateChip, xMapIntermediateToSource, path[i].net, "BBtoNANO alt intermediate->source");
-             bool chipX3Success = setChipXStatus(intermediateChip, xMapIntermediateToNano, path[i].net, "BBtoNANO alt intermediate->nano");
+             bool chipX0Success = setChipXStatus(globalState.connections.paths[i].chip[0], xMapSourceToIntermediate, globalState.connections.paths[i].net, "BBtoNANO alt source->intermediate");
+             bool chipX1Success = setChipXStatus(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].x[1], globalState.connections.paths[i].net, "BBtoNANO alt nano x");
+             bool chipX2Success = setChipXStatus(intermediateChip, xMapIntermediateToSource, globalState.connections.paths[i].net, "BBtoNANO alt intermediate->source");
+             bool chipX3Success = setChipXStatus(intermediateChip, xMapIntermediateToNano, globalState.connections.paths[i].net, "BBtoNANO alt intermediate->nano");
              
              // CRITICAL: Also assign the return connection on source chip
-             bool chipX0ReturnSuccess = setChipXStatus(path[i].chip[0], xMapSourceFromIntermediate, path[i].net, "BBtoNANO alt source return X");
+             bool chipX0ReturnSuccess = setChipXStatus(globalState.connections.paths[i].chip[0], xMapSourceFromIntermediate, globalState.connections.paths[i].net, "BBtoNANO alt source return X");
              
-             bool chipY0Success = setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net, "BBtoNANO alt source y");
-             bool chipY1Success = setChipYStatusSafe(path[i].chip[1], nanoY, path[i].net, "BBtoNANO alt nano y");
+             bool chipY0Success = setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net, "BBtoNANO alt source y");
+             bool chipY1Success = setChipYStatusSafe(globalState.connections.paths[i].chip[1], nanoY, globalState.connections.paths[i].net, "BBtoNANO alt nano y");
              bool chipY2Success = false;
              bool chipBBXSuccess = true;  // For SF intermediate chips
              
              if (intermediateChip < 8) {
-               chipY2Success = setChipYStatusSafe(intermediateChip, 0, path[i].net, "BBtoNANO alt hop y");
+               chipY2Success = setChipYStatusSafe(intermediateChip, 0, globalState.connections.paths[i].net, "BBtoNANO alt hop y");
              } else {
-               chipY2Success = setChipYStatusSafe(intermediateChip, intermediateY, path[i].net, "BBtoNANO alt SF hop y");
+               chipY2Success = setChipYStatusSafe(intermediateChip, intermediateY, globalState.connections.paths[i].net, "BBtoNANO alt SF hop y");
                // Also update the corresponding breadboard chip X status for SF chips
                int bbChipX = xMapForChipLane0(intermediateY, intermediateChip);
                if (bbChipX != -1) {
-                 chipBBXSuccess = setChipXStatus(intermediateY, bbChipX, path[i].net, "BBtoNANO alt SF BB connection");
+                 chipBBXSuccess = setChipXStatus(intermediateY, bbChipX, globalState.connections.paths[i].net, "BBtoNANO alt SF BB connection");
                }
              }
              
@@ -3432,11 +3433,11 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
              
              if (allAssignmentsSuccessful) {
                commitRoutingState();
-               path[i].altPathNeeded = false;
+               globalState.connections.paths[i].altPathNeeded = false;
                altPathResolved = true;
                foundHop = 1;
                if (debugNTCC6) {
-                 Serial.print("BBtoNANO alt path[");
+                 Serial.print("BBtoNANO alt globalState.connections.paths[");
                  Serial.print(i);
                  Serial.println("] assignments committed successfully");
                }
@@ -3444,7 +3445,7 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                restoreRoutingState(i);
                // Debug output removed for production
                if (debugNTCC6) {
-                 Serial.print("BBtoNANO alt assignment failed for path[");
+                 Serial.print("BBtoNANO alt assignment failed for globalState.connections.paths[");
                  Serial.print(i);
                  Serial.println("], state restored, trying next intermediate chip");
                }
@@ -3453,11 +3454,11 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             
                          if (debugNTCC2) {
                Serial.print("BBtoNANO alt path resolved: ");
-               printNodeOrName(path[i].node1);
+               printNodeOrName(globalState.connections.paths[i].node1);
                Serial.print(" -> chip ");
                Serial.print(chipNumToChar(intermediateChip));
                Serial.print(" -> ");
-               printNodeOrName(path[i].node2);
+               printNodeOrName(globalState.connections.paths[i].node2);
                Serial.print(" (nano Y=");
                Serial.print(nanoY);
                Serial.print(" CORRECTED for chip ");
@@ -3492,8 +3493,8 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           for (int bb = 0; bb < 8; bb++) // this is a long winded way to do this
                                          // but it's at least slightly readable
           {
-            int sfChip1 = path[i].chip[0];
-            int sfChip2 = path[i].chip[1];
+            int sfChip1 = globalState.connections.paths[i].chip[0];
+            int sfChip2 = globalState.connections.paths[i].chip[1];
 
             int chip1Lane = xMapForNode(sfChip1, bb);
             int chip2Lane = xMapForNode(sfChip2, bb);
@@ -3508,40 +3509,40 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               giveUpOnL = 1;
             }
 
-            // if ((ch[CHIP_L].yStatus[bb] != -1 &&
-            //      ch[CHIP_L].yStatus[bb] != path[i].net) &&
+            // if ((globalState.connections.chipStates[CHIP_L].yStatus[bb] != -1 &&
+            //      globalState.connections.chipStates[CHIP_L].yStatus[bb] != globalState.connections.paths[i].net) &&
             //     giveUpOnL == 0) {
 
             //   continue;
             // }
-            // if ((ch[path[i].chip[0]].yStatus[bb] != -1 &&
-            //      ch[path[i].chip[0]].yStatus[bb] != path[i].net) ||
-            //     (ch[path[i].chip[1]].yStatus[bb] != -1 &&
-            //      ch[path[i].chip[1]].yStatus[bb] != path[i].net) ||
-            //     (ch[bb].xStatus[chip1Lane] != -1 &&
-            //      ch[bb].xStatus[chip1Lane] != path[i].net) ||
-            //     (ch[bb].xStatus[chip2Lane] != -1 &&
-            //      ch[bb].xStatus[chip2Lane] != path[i].net) ||
-            //     (ch[bb].yStatus[0] != -1 && ch[bb].yStatus[0] !=
-            //     path[i].net))
+            // if ((globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].yStatus[bb] != -1 &&
+            //      globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].yStatus[bb] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].yStatus[bb] != -1 &&
+            //      globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].yStatus[bb] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[bb].xStatus[chip1Lane] != -1 &&
+            //      globalState.connections.chipStates[bb].xStatus[chip1Lane] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[bb].xStatus[chip2Lane] != -1 &&
+            //      globalState.connections.chipStates[bb].xStatus[chip2Lane] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[bb].yStatus[0] != -1 && globalState.connections.chipStates[bb].yStatus[0] !=
+            //     globalState.connections.paths[i].net))
             //     {
 
-            if (freeOrSameNetY(path[i].chip[0], bb, path[i].net,
+            if (freeOrSameNetY(globalState.connections.paths[i].chip[0], bb, globalState.connections.paths[i].net,
                                currentAllowStacking) == false ||
-                freeOrSameNetY(path[i].chip[1], bb, path[i].net,
+                freeOrSameNetY(globalState.connections.paths[i].chip[1], bb, globalState.connections.paths[i].net,
                                currentAllowStacking) == false ||
-                freeOrSameNetX(bb, chip1Lane, path[i].net,
+                freeOrSameNetX(bb, chip1Lane, globalState.connections.paths[i].net,
                                currentAllowStacking) == false ||
-                freeOrSameNetX(bb, chip2Lane, path[i].net,
+                freeOrSameNetX(bb, chip2Lane, globalState.connections.paths[i].net,
                                currentAllowStacking) == false ||
-                freeOrSameNetY(bb, 0, path[i].net, currentAllowStacking) ==
+                freeOrSameNetY(bb, 0, globalState.connections.paths[i].net, currentAllowStacking) ==
                     false) {
               //                 Serial.print("bb:\t");
               // Serial.println(bb);
               // Serial.print("xStatus:\t");
-              // Serial.println(ch[bb].xStatus[chip1Lane]);
+              // Serial.println(globalState.connections.chipStates[bb].xStatus[chip1Lane]);
               // Serial.print("xStatus:\t");
-              // Serial.println(ch[bb].xStatus[chip2Lane]);
+              // Serial.println(globalState.connections.chipStates[bb].xStatus[chip2Lane]);
               // Serial.println(" ");
               // Serial.print("path: ");
               // Serial.println(i);
@@ -3550,13 +3551,13 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               //   Serial.print("!!!!!!!!!!!!!!!!!!!!!!!!\n\r");
               // continue;
             } else {
-              // if (ch[bb].xStatus[chip1Lane] == path[i].net ||
-              //     ch[bb].xStatus[chip1Lane] == -1) {
-              if (freeOrSameNetX(bb, chip1Lane, path[i].net,
+              // if (globalState.connections.chipStates[bb].xStatus[chip1Lane] == globalState.connections.paths[i].net ||
+              //     globalState.connections.chipStates[bb].xStatus[chip1Lane] == -1) {
+              if (freeOrSameNetX(bb, chip1Lane, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true) {
-                // if (ch[bb].xStatus[chip2Lane] == path[i].net ||
-                //     ch[bb].xStatus[chip2Lane] == -1) {
-                if (freeOrSameNetX(bb, chip2Lane, path[i].net,
+                // if (globalState.connections.chipStates[bb].xStatus[chip2Lane] == globalState.connections.paths[i].net ||
+                //     globalState.connections.chipStates[bb].xStatus[chip2Lane] == -1) {
+                if (freeOrSameNetX(bb, chip2Lane, globalState.connections.paths[i].net,
                                    currentAllowStacking) == true) {
                   // printPathsCompact();
                   // printChipStatus();
@@ -3571,44 +3572,44 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                     // break;
                   }
 
-                  path[i].sameChip = true;
+                  globalState.connections.paths[i].sameChip = true;
 
-                  setChipXStatus(bb, chip1Lane, path[i].net,
+                  setChipXStatus(bb, chip1Lane, globalState.connections.paths[i].net,
                                  "NANOtoNANO alt hop x0");
-                  setChipXStatus(bb, chip2Lane, path[i].net,
+                  setChipXStatus(bb, chip2Lane, globalState.connections.paths[i].net,
                                  "NANOtoNANO alt hop x1");
 
-                  if (path[i].chip[0] != path[i].chip[1]) {
+                  if (globalState.connections.paths[i].chip[0] != globalState.connections.paths[i].chip[1]) {
                     //                 Serial.println("VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV");
-                    //                 int pathAddress = (int)&path[i];
+                    //                 int pathAddress = (int)&globalState.connections.paths[i];
                     // Serial.print(pathAddress);
                     // Serial.print("\tpath: ");
                     // Serial.println(i);
                     // Serial.print("bb:\t");
                     // Serial.print(bb);
 
-                    path[i].chip[2] = bb;
-                    path[i].chip[3] = bb;
+                    globalState.connections.paths[i].chip[2] = bb;
+                    globalState.connections.paths[i].chip[3] = bb;
                     setPathY(i, 2, 0);
                     setPathY(i, 3, 0);
-                    setChipYStatusSafe(bb, 0, path[i].net,
+                    setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                        "NANOtoNANO alt hop y0");
 
                     setPathX(i, 2, chip1Lane);
                     setPathX(i, 3, chip2Lane);
                   }
 
-                  path[i].altPathNeeded = false;
+                  globalState.connections.paths[i].altPathNeeded = false;
                   altPathResolved = true;
 
-                  setPathX(i, 0, xMapForNode(path[i].node1, path[i].chip[0]));
-                  setPathX(i, 1, xMapForNode(path[i].node2, path[i].chip[1]));
-                  setChipXStatus(path[i].chip[0],
-                                 xMapForNode(path[i].node1, path[i].chip[0]),
-                                 path[i].net, "NANOtoNANO alt chip0");
-                  setChipXStatus(path[i].chip[1],
-                                 xMapForNode(path[i].node2, path[i].chip[1]),
-                                 path[i].net, "NANOtoNANO alt chip1");
+                  setPathX(i, 0, xMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+                  setPathX(i, 1, xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
+                  setChipXStatus(globalState.connections.paths[i].chip[0],
+                                 xMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]),
+                                 globalState.connections.paths[i].net, "NANOtoNANO alt chip0");
+                  setChipXStatus(globalState.connections.paths[i].chip[1],
+                                 xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]),
+                                 globalState.connections.paths[i].net, "NANOtoNANO alt chip1");
 
                   setPathY(i, 0, bb);
                   setPathY(i, 1, bb);
@@ -3616,22 +3617,22 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                   //            Serial.print(">>>> path ");
                   // Serial.println(i);
 
-                  setChipYStatusSafe(path[i].chip[0], bb, path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[0], bb, globalState.connections.paths[i].net,
                                      "NANOtoNANO alt y0");
-                  setChipYStatusSafe(path[i].chip[1], bb, path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[1], bb, globalState.connections.paths[i].net,
                                      "NANOtoNANO alt y1");
 
                   if (debugNTCC2) {
                     Serial.println("\n\r");
                     Serial.print(i);
                     Serial.print("  chip[2]: ");
-                    Serial.print(chipNumToChar(path[i].chip[2]));
+                    Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
 
                     Serial.print("  y[2]: ");
-                    Serial.print(path[i].y[2]);
+                    Serial.print(globalState.connections.paths[i].y[2]);
 
                     Serial.print("  y[3]: ");
-                    Serial.print(path[i].y[3]);
+                    Serial.print(globalState.connections.paths[i].y[3]);
 
                     Serial.println(" \n\r");
                   }
@@ -3656,8 +3657,8 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                bb++) // this will connect to a random breadboard row, add a
           // test to make sure nothing is connected
           {
-            int sfChip1 = path[i].chip[0];
-            int sfChip2 = path[i].chip[1];
+            int sfChip1 = globalState.connections.paths[i].chip[0];
+            int sfChip2 = globalState.connections.paths[i].chip[1];
 
             int chip1Lane = xMapForNode(sfChip1, bb);
             int chip2Lane = xMapForNode(sfChip2, bb);
@@ -3665,40 +3666,40 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
             // Serial.print("bb:\t");
             // Serial.println(bb);
             // Serial.print("xStatus:\t");
-            // Serial.println(ch[bb].xStatus[chip1Lane]);
+            // Serial.println(globalState.connections.chipStates[bb].xStatus[chip1Lane]);
             // Serial.print("xStatus:\t");
-            // Serial.println(ch[bb].xStatus[chip2Lane]);
+            // Serial.println(globalState.connections.chipStates[bb].xStatus[chip2Lane]);
             // Serial.println(" ");
             // Serial.print("path: ");
             // Serial.println(i);
-            // if ((ch[path[i].chip[0]].yStatus[bb] != -1 &&
-            //      ch[path[i].chip[0]].yStatus[bb] != path[i].net) ||
-            //     (ch[path[i].chip[1]].yStatus[bb] != -1 &&
-            //      ch[path[i].chip[1]].yStatus[bb] != path[i].net) ||
-            //     (ch[bb].xStatus[chip1Lane] != -1 &&
-            //      ch[bb].xStatus[chip1Lane] != path[i].net) ||
-            //     (ch[bb].xStatus[chip2Lane] != -1 &&
-            //      ch[bb].xStatus[chip2Lane] != path[i].net) ||
-            //     (ch[bb].yStatus[0] != -1 && ch[bb].yStatus[0] !=
-            //     path[i].net))
+            // if ((globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].yStatus[bb] != -1 &&
+            //      globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].yStatus[bb] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].yStatus[bb] != -1 &&
+            //      globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].yStatus[bb] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[bb].xStatus[chip1Lane] != -1 &&
+            //      globalState.connections.chipStates[bb].xStatus[chip1Lane] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[bb].xStatus[chip2Lane] != -1 &&
+            //      globalState.connections.chipStates[bb].xStatus[chip2Lane] != globalState.connections.paths[i].net) ||
+            //     (globalState.connections.chipStates[bb].yStatus[0] != -1 && globalState.connections.chipStates[bb].yStatus[0] !=
+            //     globalState.connections.paths[i].net))
             //     {
 
-            if (freeOrSameNetY(path[i].chip[0], bb, path[i].net,
+            if (freeOrSameNetY(globalState.connections.paths[i].chip[0], bb, globalState.connections.paths[i].net,
                                currentAllowStacking) == true ||
-                freeOrSameNetY(path[i].chip[1], bb, path[i].net,
+                freeOrSameNetY(globalState.connections.paths[i].chip[1], bb, globalState.connections.paths[i].net,
                                currentAllowStacking) == true ||
-                freeOrSameNetX(bb, chip1Lane, path[i].net,
+                freeOrSameNetX(bb, chip1Lane, globalState.connections.paths[i].net,
                                currentAllowStacking) == true ||
-                freeOrSameNetX(bb, chip2Lane, path[i].net,
+                freeOrSameNetX(bb, chip2Lane, globalState.connections.paths[i].net,
                                currentAllowStacking) == true ||
-                freeOrSameNetY(bb, 0, path[i].net, currentAllowStacking) ==
+                freeOrSameNetY(bb, 0, globalState.connections.paths[i].net, currentAllowStacking) ==
                     true) {
               //                 Serial.print("bb:\t");
               // Serial.println(bb);
               // Serial.print("xStatus:\t");
-              // Serial.println(ch[bb].xStatus[chip1Lane]);
+              // Serial.println(globalState.connections.chipStates[bb].xStatus[chip1Lane]);
               // Serial.print("xStatus:\t");
-              // Serial.println(ch[bb].xStatus[chip2Lane]);
+              // Serial.println(globalState.connections.chipStates[bb].xStatus[chip2Lane]);
               // Serial.println(" ");
               // Serial.print("path: ");
               // Serial.println(i);
@@ -3708,28 +3709,28 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               //   // continue;
             } else {
               // Serial.print("?????????????????????\n\r");
-              // if ((ch[bb].xStatus[chip1Lane] == path[i].net ||
-              //      ch[bb].xStatus[chip1Lane] == -1) &&
+              // if ((globalState.connections.chipStates[bb].xStatus[chip1Lane] == globalState.connections.paths[i].net ||
+              //      globalState.connections.chipStates[bb].xStatus[chip1Lane] == -1) &&
               //     foundHop == 0) {
-              if (freeOrSameNetX(bb, chip1Lane, path[i].net,
+              if (freeOrSameNetX(bb, chip1Lane, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true &&
                   foundHop == 0) {
-                if (freeOrSameNetX(bb, chip2Lane, path[i].net,
+                if (freeOrSameNetX(bb, chip2Lane, globalState.connections.paths[i].net,
                                    currentAllowStacking) == true) {
                   // Serial.print("path :");
                   // Serial.println(i);
                   //  printPathsCompact();
-                  setChipXStatus(bb, chip1Lane, path[i].net,
+                  setChipXStatus(bb, chip1Lane, globalState.connections.paths[i].net,
                                  "NANOtoNANO random bb hop x0");
-                  setChipXStatus(bb, chip2Lane, path[i].net,
+                  setChipXStatus(bb, chip2Lane, globalState.connections.paths[i].net,
                                  "NANOtoNANO random bb hop x1");
-                  setChipYStatusSafe(bb, 0, path[i].net,
+                  setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                      "NANOtoNANO random bb hop y0");
-                  if (path[i].chip[0] !=
-                      path[i].chip[1]) // this makes it not try to find a third
+                  if (globalState.connections.paths[i].chip[0] !=
+                      globalState.connections.paths[i].chip[1]) // this makes it not try to find a third
                   // chip if it doesn't need to
                   {
-                    path[i].chip[2] = bb;
+                    globalState.connections.paths[i].chip[2] = bb;
                     setPathX(i, 2, chip1Lane);
                     setPathX(i, 3, chip2Lane);
 
@@ -3737,40 +3738,40 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                     setPathY(i, 3, 0);
                   }
 
-                  path[i].sameChip = true;
-                  path[i].altPathNeeded = false;
+                  globalState.connections.paths[i].sameChip = true;
+                  globalState.connections.paths[i].altPathNeeded = false;
                   altPathResolved = true;
 
-                  setPathX(i, 0, xMapForNode(path[i].node1, path[i].chip[0]));
-                  setPathX(i, 1, xMapForNode(path[i].node2, path[i].chip[1]));
-                  setChipXStatus(path[i].chip[0],
-                                 xMapForNode(path[i].node1, path[i].chip[0]),
-                                 path[i].net, "NANOtoNANO random bb chip0");
-                  setChipXStatus(path[i].chip[1],
-                                 xMapForNode(path[i].node2, path[i].chip[1]),
-                                 path[i].net, "NANOtoNANO random bb chip1");
+                  setPathX(i, 0, xMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
+                  setPathX(i, 1, xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]));
+                  setChipXStatus(globalState.connections.paths[i].chip[0],
+                                 xMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]),
+                                 globalState.connections.paths[i].net, "NANOtoNANO random bb chip0");
+                  setChipXStatus(globalState.connections.paths[i].chip[1],
+                                 xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]),
+                                 globalState.connections.paths[i].net, "NANOtoNANO random bb chip1");
                   // Serial.print(">>>> path ");
                   // Serial.println(i);
 
                   setPathY(i, 0, bb);
                   setPathY(i, 1, bb);
-                  setChipYStatusSafe(path[i].chip[0], bb, path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[0], bb, globalState.connections.paths[i].net,
                                      "NANOtoNANO random bb y0");
-                  setChipYStatusSafe(path[i].chip[1], bb, path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[1], bb, globalState.connections.paths[i].net,
                                      "NANOtoNANO random bb y1");
 
                   if (debugNTCC2) {
                     Serial.print("\n\r");
                     Serial.print(i);
                     Serial.print("  chip[2]: ");
-                    Serial.print(chipNumToChar(path[i].chip[2]));
+                    Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
                     // Serial.print("  y[2]: ");
 
                     Serial.print("  y[2]: ");
-                    Serial.print(path[i].y[2]);
+                    Serial.print(globalState.connections.paths[i].y[2]);
 
                     Serial.print("  y[3]: ");
-                    Serial.print(path[i].y[3]);
+                    Serial.print(globalState.connections.paths[i].y[3]);
 
                     Serial.print(" \n\r");
                   }
@@ -3789,13 +3790,13 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
           // couldntFindPath(i);
         }
         case BBtoSF: {
-          // Serial.print("path[");
+          // Serial.print("globalState.connections.paths[");
           // Serial.print(i);
           // Serial.println("] ");
 
           // duplicateSFnets();
-          if (path[i].pathType == BBtoSF ||
-              path[i].pathType == BBtoNANO) // do bb to sf first because these
+          if (globalState.connections.paths[i].pathType == BBtoSF ||
+              globalState.connections.paths[i].pathType == BBtoNANO) // do bb to sf first because these
           // are hardest to find
           {
             int foundPath = 0;
@@ -3805,8 +3806,8 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               Serial.println(i);
             }
 
-            int saveUncommittedHops = ch[path[i].chip[0]].uncommittedHops;
-            int saveUncommittedHops1 = ch[path[i].chip[1]].uncommittedHops;
+            int saveUncommittedHops = globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].uncommittedHops;
+            int saveUncommittedHops1 = globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].uncommittedHops;
             // Serial.print("saveUncommittedHops1: ");
             // Serial.println(saveUncommittedHops1);
 
@@ -3828,15 +3829,15 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 break;
               }
 
-              int xMapBB = xMapForChipLane0(path[i].chip[0], bb);
+              int xMapBB = xMapForChipLane0(globalState.connections.paths[i].chip[0], bb);
               if (xMapBB == -1) {
                 // Serial.print("xMapBB == -1");
 
                 continue; // don't bother checking if there's no connection
               }
-              // if (xMapForChipLane1(path[i].chip[0], bb) == -1)
+              // if (xMapForChipLane1(globalState.connections.paths[i].chip[0], bb) == -1)
               // {
-              //     //Serial.print("xMapForChipLane1(path[i].chip[0], bb) !=
+              //     //Serial.print("xMapForChipLane1(globalState.connections.paths[i].chip[0], bb) !=
               //     -1");
 
               //     continue; // don't bother checking if there's no connection
@@ -3844,7 +3845,7 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               // Serial.print("           fuck         ");
               int yMapSF = bb; // always
 
-              int sfChip = path[i].chip[1];
+              int sfChip = globalState.connections.paths[i].chip[1];
 
               // not chip L
               if (debugNTCC2) {
@@ -3858,22 +3859,22 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 Serial.print("  \t  yMapSF: ");
                 Serial.print(yMapSF);
                 Serial.print("  \t  xStatus: ");
-                Serial.print(ch[bb].xStatus[xMapBB]);
+                Serial.print(globalState.connections.chipStates[bb].xStatus[xMapBB]);
                 Serial.print("  \n\r");
               }
 
-              if (freeOrSameNetX(bb, xMapBB, path[i].net,
+              if (freeOrSameNetX(bb, xMapBB, globalState.connections.paths[i].net,
                                  currentAllowStacking) == true &&
-                  freeOrSameNetY(bb, 0, path[i].net, currentAllowStacking) ==
+                  freeOrSameNetY(bb, 0, globalState.connections.paths[i].net, currentAllowStacking) ==
                       true) {
                 // were going through each bb chip to see if it has a
                 // connection to both chips free
 
-                int xMapL0c0 = xMapForChipLane0(path[i].chip[0], bb);
-                int xMapL1c0 = xMapForChipLane1(path[i].chip[0], bb);
+                int xMapL0c0 = xMapForChipLane0(globalState.connections.paths[i].chip[0], bb);
+                int xMapL1c0 = xMapForChipLane1(globalState.connections.paths[i].chip[0], bb);
 
-                int xMapL0c1 = xMapForChipLane0(bb, path[i].chip[0]);
-                int xMapL1c1 = xMapForChipLane1(bb, path[i].chip[0]);
+                int xMapL0c1 = xMapForChipLane0(bb, globalState.connections.paths[i].chip[0]);
+                int xMapL1c1 = xMapForChipLane1(bb, globalState.connections.paths[i].chip[0]);
 
                 if (debugNTCC2) {
                   Serial.print("\n\r");
@@ -3886,7 +3887,7 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                   Serial.print("  \t  yMapSF: ");
                   Serial.print(yMapSF);
                   Serial.print("  \t  xStatus: ");
-                  Serial.print(ch[bb].xStatus[xMapBB]);
+                  Serial.print(globalState.connections.chipStates[bb].xStatus[xMapBB]);
                   Serial.print("  \n\r");
 
                   Serial.print("xMapL0c0: ");
@@ -3906,63 +3907,63 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                 // Serial.print(bb);
 
                 // if ((xMapL1c0 != -1) &&
-                //     ch[path[i].chip[0]].xStatus[xMapL1c0] ==
-                //         path[i].net) // check if lane 1 shares a net first so
+                //     globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL1c0] ==
+                //         globalState.connections.paths[i].net) // check if lane 1 shares a net first so
                 //         it
                 //                      // should prefer sharing lanes
                 // {
                 //   freeLane = 1;
                 //} else
 
-                // if ((ch[path[i].chip[0]].xStatus[xMapL0c0] == -1) ||
-                //            ch[path[i].chip[0]].xStatus[xMapL0c0] ==
-                //                path[i].net) // lanes will alway be taken
+                // if ((globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL0c0] == -1) ||
+                //            globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL0c0] ==
+                //                globalState.connections.paths[i].net) // lanes will alway be taken
                 //                together,
                 //                             // so only check chip 1
                 // {
-                if (freeOrSameNetX(path[i].chip[0], xMapL0c0, path[i].net,
+                if (freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapL0c0, globalState.connections.paths[i].net,
                                    currentAllowStacking) == true) {
                   freeLane = 0;
                   // } else if ((xMapL1c0 != -1) &&
-                  //            ((ch[path[i].chip[0]].xStatus[xMapL1c0] == -1)
+                  //            ((globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL1c0] == -1)
                   //            ||
-                  //             ch[path[i].chip[0]].xStatus[xMapL1c0] ==
-                  //             path[i].net)) {
-                } else if (freeOrSameNetX(path[i].chip[0], xMapL1c0,
-                                          path[i].net,
+                  //             globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL1c0] ==
+                  //             globalState.connections.paths[i].net)) {
+                } else if (freeOrSameNetX(globalState.connections.paths[i].chip[0], xMapL1c0,
+                                          globalState.connections.paths[i].net,
                                           currentAllowStacking) == true) {
                   freeLane = 1;
                 } else {
                   continue;
                 }
 
-                // if (ch[sfChip].yStatus[yMapSF] != -1 &&
-                //     ch[sfChip].yStatus[yMapSF] != path[i].net) {
-                if (freeOrSameNetY(sfChip, yMapSF, path[i].net,
+                // if (globalState.connections.chipStates[sfChip].yStatus[yMapSF] != -1 &&
+                //     globalState.connections.chipStates[sfChip].yStatus[yMapSF] != globalState.connections.paths[i].net) {
+                if (freeOrSameNetY(sfChip, yMapSF, globalState.connections.paths[i].net,
                                    currentAllowStacking) == false) {
                   continue;
                 }
 
-                path[i].altPathNeeded = false;
+                globalState.connections.paths[i].altPathNeeded = false;
                 altPathResolved = true;
 
-                int SFnode = xMapForNode(path[i].node2, path[i].chip[1]);
+                int SFnode = xMapForNode(globalState.connections.paths[i].node2, globalState.connections.paths[i].chip[1]);
                 // Serial.print("\n\r\t\t\t\tSFnode: ");
                 // Serial.println(SFnode);
                 // Serial.print("\n\r\t\t\t\tFree Lane: ");
                 // Serial.println(freeLane);
 
                 if (freeLane == 0) {
-                  path[i].chip[2] = bb;
-                  path[i].chip[3] = bb;
-                  setChipXStatus(path[i].chip[0], xMapL0c0, path[i].net,
+                  globalState.connections.paths[i].chip[2] = bb;
+                  globalState.connections.paths[i].chip[3] = bb;
+                  setChipXStatus(globalState.connections.paths[i].chip[0], xMapL0c0, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane0 chip0");
-                  setChipXStatus(path[i].chip[1], SFnode, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[1], SFnode, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane0 chip1");
 
-                  setChipXStatus(path[i].chip[2], xMapL0c1, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[2], xMapL0c1, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane0 hop x0");
-                  setChipXStatus(path[i].chip[2], xMapBB, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[2], xMapBB, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane0 hop x1");
 
                   setPathX(i, 0, xMapL0c0);
@@ -3972,63 +3973,63 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                   // Serial.print("\n\r\t\t\t\txBB: ");
                   // Serial.println(bb);
 
-                  xMapBB = xMapForChipLane0(path[i].chip[2], path[i].chip[1]);
+                  xMapBB = xMapForChipLane0(globalState.connections.paths[i].chip[2], globalState.connections.paths[i].chip[1]);
                   // Serial.println(xMapBB);
-                  path[i].chip[3] = path[i].chip[2];
+                  globalState.connections.paths[i].chip[3] = globalState.connections.paths[i].chip[2];
 
                   setPathX(i, 3, xMapBB);
 
-                  setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
+                  setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
                   setPathY(i, 1, yMapSF);
                   setPathY(i, 2, 0);
                   setPathY(i, 3, 0);
-                  setChipYStatusSafe(bb, 0, path[i].net,
+                  setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                      "BBtoSF alt lane0 bb y0");
 
-                  setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                      "BBtoSF alt lane0 chip0 y0");
 
-                  setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                      "BBtoSF alt lane0 chip1 y1");
-                  setChipYStatusSafe(path[i].chip[2], 0, path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[2], 0, globalState.connections.paths[i].net,
                                      "BBtoSF alt lane0 hop y0");
 
-                  path[i].sameChip = true;
+                  globalState.connections.paths[i].sameChip = true;
                 } else if (freeLane == 1) {
-                  path[i].chip[2] = bb;
-                  path[i].chip[3] = bb;
-                  setChipXStatus(path[i].chip[0], xMapL1c0, path[i].net,
+                  globalState.connections.paths[i].chip[2] = bb;
+                  globalState.connections.paths[i].chip[3] = bb;
+                  setChipXStatus(globalState.connections.paths[i].chip[0], xMapL1c0, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane1 chip0");
-                  setChipXStatus(path[i].chip[1], SFnode, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[1], SFnode, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane1 chip1");
 
-                  setChipXStatus(path[i].chip[2], xMapL1c1, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[2], xMapL1c1, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane1 hop x0");
-                  setChipXStatus(path[i].chip[2], xMapBB, path[i].net,
+                  setChipXStatus(globalState.connections.paths[i].chip[2], xMapBB, globalState.connections.paths[i].net,
                                  "BBtoSF alt lane1 hop x1");
 
                   setPathX(i, 0, xMapL1c0);
                   setPathX(i, 1, SFnode);
 
                   setPathX(i, 2, xMapL1c1);
-                  xMapBB = xMapForChipLane0(path[i].chip[2], path[i].chip[1]);
+                  xMapBB = xMapForChipLane0(globalState.connections.paths[i].chip[2], globalState.connections.paths[i].chip[1]);
                   setPathX(i, 3, xMapBB);
 
-                  path[i].chip[3] = path[i].chip[2];
+                  globalState.connections.paths[i].chip[3] = globalState.connections.paths[i].chip[2];
 
-                  setPathY(i, 0, yMapForNode(path[i].node1, path[i].chip[0]));
+                  setPathY(i, 0, yMapForNode(globalState.connections.paths[i].node1, globalState.connections.paths[i].chip[0]));
                   setPathY(i, 1, yMapSF);
                   setPathY(i, 2, 0);
                   setPathY(i, 3, 0);
-                  setChipYStatusSafe(bb, 0, path[i].net,
+                  setChipYStatusSafe(bb, 0, globalState.connections.paths[i].net,
                                      "BBtoSF alt lane1 bb y0");
 
-                  setChipYStatusSafe(path[i].chip[0], path[i].y[0], path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[0], globalState.connections.paths[i].y[0], globalState.connections.paths[i].net,
                                      "BBtoSF alt lane1 chip0 y0");
 
-                  setChipYStatusSafe(path[i].chip[1], path[i].y[1], path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[1], globalState.connections.paths[i].y[1], globalState.connections.paths[i].net,
                                      "BBtoSF alt lane1 chip1 y1");
-                  setChipYStatusSafe(path[i].chip[2], 0, path[i].net,
+                  setChipYStatusSafe(globalState.connections.paths[i].chip[2], 0, globalState.connections.paths[i].net,
                                      "BBtoSF alt lane1 hop y0");
                 }
 
@@ -4041,32 +4042,32 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
                   Serial.print("\t path: ");
                   Serial.print(i);
                   Serial.print(" \n\rchip[0]: ");
-                  Serial.print(chipNumToChar(path[i].chip[0]));
+                  Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
 
                   Serial.print("  x[0]: ");
-                  Serial.print(path[i].x[0]);
+                  Serial.print(globalState.connections.paths[i].x[0]);
 
                   Serial.print("  y[0]: ");
-                  Serial.print(path[i].y[0]);
+                  Serial.print(globalState.connections.paths[i].y[0]);
 
                   Serial.print("\t  chip[1]: ");
-                  Serial.print(chipNumToChar(path[i].chip[1]));
+                  Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
 
                   Serial.print("  x[1]: ");
-                  Serial.print(path[i].x[1]);
+                  Serial.print(globalState.connections.paths[i].x[1]);
 
                   Serial.print("  y[1]: ");
-                  Serial.print(path[i].y[1]);
+                  Serial.print(globalState.connections.paths[i].y[1]);
 
-                  Serial.print("   ch[path[i].chip[0]].xStatus[");
+                  Serial.print("   globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[");
                   Serial.print(xMapL0c0);
                   Serial.print("]: ");
-                  Serial.print(ch[path[i].chip[0]].xStatus[xMapL0c0]);
+                  Serial.print(globalState.connections.chipStates[globalState.connections.paths[i].chip[0]].xStatus[xMapL0c0]);
 
-                  Serial.print("   ch[path[i].chip[1]].xStatus[ ");
+                  Serial.print("   globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xStatus[ ");
                   Serial.print(xMapL0c1);
                   Serial.print("]: ");
-                  Serial.print(ch[path[i].chip[1]].xStatus[xMapL0c1]);
+                  Serial.print(globalState.connections.chipStates[globalState.connections.paths[i].chip[1]].xStatus[xMapL0c1]);
                   Serial.print(" \t\n\r");
                   // printChipStatus();
                 }
@@ -4078,8 +4079,8 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
               //   // if (debugNTCC2 == true)
               //   //  Serial.print("\n\rtrying again with swapped nodes\n\r");
 
-              //   // path[i].x[0] = xMapForNode(path[i].node2,
-              //   path[i].chip[0]);
+              //   // globalState.connections.paths[i].x[0] = xMapForNode(globalState.connections.paths[i].node2,
+              //   globalState.connections.paths[i].chip[0]);
               //   // swapDuplicateNode(i);
               //   bb = 0;
               //   // goto tryAfterSwap;
@@ -4109,8 +4110,8 @@ bool freeOrSameNetX(int chip, int x, int net, int allowStacking) {
   // Serial.print(", ");
   // Serial.print(allowStacking);
   // Serial.print(" = ");
-  if (ch[chip].xStatus[x] == -1 ||
-      (ch[chip].xStatus[x] == net && allowStacking == 1)) {
+  if (globalState.connections.chipStates[chip].xStatus[x] == -1 ||
+      (globalState.connections.chipStates[chip].xStatus[x] == net && allowStacking == 1)) {
     // Serial.println("true");
     return true;
   } else {
@@ -4129,8 +4130,8 @@ bool freeOrSameNetY(int chip, int y, int net, int allowStacking) {
   // Serial.print(", ");
   // Serial.print(allowStacking);
   // Serial.print(" = ");
-  if (ch[chip].yStatus[y] == -1 ||
-      (ch[chip].yStatus[y] == net && allowStacking == 1)) {
+  if (globalState.connections.chipStates[chip].yStatus[y] == -1 ||
+      (globalState.connections.chipStates[chip].yStatus[y] == net && allowStacking == 1)) {
     // Serial.println("true");
     return true;
   } else {
@@ -4178,29 +4179,29 @@ void couldntFindPath(int forcePrint) {
     }
     int foundNegative = 0;
     for (int j = 0; j < 3; j++) {
-      if (path[i].chip[j] == -1 && j >= 2) {
+      if (globalState.connections.paths[i].chip[j] == -1 && j >= 2) {
         continue;
       }
 
-      if (path[i].x[j] < 0 || path[i].y[j] < 0) {
+      if (globalState.connections.paths[i].x[j] < 0 || globalState.connections.paths[i].y[j] < 0) {
         foundNegative = 1;
       }
     }
 
-    if (foundNegative == 1 && path[i].duplicate == 0) {
+    if (foundNegative == 1 && globalState.connections.paths[i].duplicate == 0) {
 
       if (debugNTCC2 == true || forcePrint == 1) {
         Serial.print("\n\rCouldn't find a path for ");
-        printNodeOrName(path[i].node1);
+        printNodeOrName(globalState.connections.paths[i].node1);
         Serial.print(" to ");
-        printNodeOrName(path[i].node2);
+        printNodeOrName(globalState.connections.paths[i].node2);
         Serial.println("\n\r");
       }
 
-      unconnectablePaths[numberOfUnconnectablePaths][0] = path[i].node1;
-      unconnectablePaths[numberOfUnconnectablePaths][1] = path[i].node2;
+      unconnectablePaths[numberOfUnconnectablePaths][0] = globalState.connections.paths[i].node1;
+      unconnectablePaths[numberOfUnconnectablePaths][1] = globalState.connections.paths[i].node2;
       numberOfUnconnectablePaths++;
-      path[i].skip = true;
+      globalState.connections.paths[i].skip = true;
     }
   }
   if (debugNTCC2 == true || forcePrint == 1 || debugNTCC5 == true) {
@@ -4233,13 +4234,13 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
 
   for (int i = 0; i < numberOfPaths; i++) {
     // Filter paths based on powerOnly and duplicates flags
-    if (powerOnly == 1 && (path[i].net > 5 || path[i].duplicate == 1)) {
+    if (powerOnly == 1 && (globalState.connections.paths[i].net > 5 || globalState.connections.paths[i].duplicate == 1)) {
       continue;
     }
-    if (noOrOnlyDuplicates == 1 && path[i].duplicate == 0) {
+    if (noOrOnlyDuplicates == 1 && globalState.connections.paths[i].duplicate == 0) {
       continue;
     }
-    if (noOrOnlyDuplicates == 0 && path[i].duplicate == 1) {
+    if (noOrOnlyDuplicates == 0 && globalState.connections.paths[i].duplicate == 1) {
       continue;
     }
 
@@ -4248,14 +4249,14 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
     bool hasUnresolvedX = false;
 
     for (int checkY = 0; checkY < 4; checkY++) {
-      if (path[i].y[checkY] == -2) {
+      if (globalState.connections.paths[i].y[checkY] == -2) {
         hasUnresolvedY = true;
         break;
       }
     }
 
     for (int checkX = 0; checkX < 4; checkX++) {
-      if (path[i].x[checkX] == -2) {
+      if (globalState.connections.paths[i].x[checkX] == -2) {
         hasUnresolvedX = true;
         break;
       }
@@ -4270,7 +4271,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
       Serial.print("Path[");
       Serial.print(i);
       Serial.print("] net=");
-      Serial.print(path[i].net);
+      Serial.print(globalState.connections.paths[i].net);
       Serial.print(" has unresolved positions: ");
       if (hasUnresolvedY) Serial.print("Y ");
       if (hasUnresolvedX) Serial.print("X ");
@@ -4284,10 +4285,10 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
     // Handle X position assignments
     if (hasUnresolvedX) {
       // For same-chip connections, find one X position that works for both nodes
-      if (path[i].sameChip && path[i].chip[0] == path[i].chip[1] && 
-          path[i].x[0] == -2 && path[i].x[1] == -2) {
+      if (globalState.connections.paths[i].sameChip && globalState.connections.paths[i].chip[0] == globalState.connections.paths[i].chip[1] && 
+          globalState.connections.paths[i].x[0] == -2 && globalState.connections.paths[i].x[1] == -2) {
         
-        int targetChip = path[i].chip[0];
+        int targetChip = globalState.connections.paths[i].chip[0];
         int sharedX = -1;
         
         // Find a free X position that can be used for both nodes on the same chip
@@ -4297,7 +4298,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           }
           
           int testX = freeXSearchOrder[targetChip][searchIdx];
-          if (freeOrSameNetX(targetChip, testX, path[i].net, allowStacking)) {
+          if (freeOrSameNetX(targetChip, testX, globalState.connections.paths[i].net, allowStacking)) {
             sharedX = testX;
             break;
           }
@@ -4308,7 +4309,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           bool success = setPathX(i, 0, sharedX) && setPathX(i, 1, sharedX);
           bool chipSuccess = false;
           if (success) {
-            chipSuccess = setChipXStatus(targetChip, sharedX, path[i].net, "resolveUncommittedHops same-chip X");
+            chipSuccess = setChipXStatus(targetChip, sharedX, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip X");
           }
           
           if (!success || !chipSuccess) {
@@ -4317,7 +4318,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
             if (debugNTCC2) {
               Serial.print("  Assigned shared X=");
               Serial.print(sharedX);
-              Serial.print(" to same-chip path[");
+              Serial.print(" to same-chip globalState.connections.paths[");
               Serial.print(i);
               Serial.print("] on chip ");
               Serial.println(chipNumToChar(targetChip));
@@ -4326,7 +4327,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
         } else {
           allAssignmentsSucceeded = false;
           if (debugNTCC2) {
-            Serial.print("ERROR: No free shared X found for same-chip path[");
+            Serial.print("ERROR: No free shared X found for same-chip globalState.connections.paths[");
             Serial.print(i);
             Serial.println("]");
           }
@@ -4334,17 +4335,17 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
       } else {
         // Regular X position assignment for positions that still need resolution
         for (int pos = 0; pos < 4; pos++) {
-          if (path[i].chip[pos] != -1 && path[i].x[pos] == -2) {
+          if (globalState.connections.paths[i].chip[pos] != -1 && globalState.connections.paths[i].x[pos] == -2) {
             int freeX = -1;
             
             // Find free X position using search order
             for (int searchIdx = 0; searchIdx < 16; searchIdx++) {
-              if (freeXSearchOrder[path[i].chip[pos]][searchIdx] == -1) {
+              if (freeXSearchOrder[globalState.connections.paths[i].chip[pos]][searchIdx] == -1) {
                 continue;
               }
               
-              int testX = freeXSearchOrder[path[i].chip[pos]][searchIdx];
-              if (freeOrSameNetX(path[i].chip[pos], testX, path[i].net, allowStacking)) {
+              int testX = freeXSearchOrder[globalState.connections.paths[i].chip[pos]][searchIdx];
+              if (freeOrSameNetX(globalState.connections.paths[i].chip[pos], testX, globalState.connections.paths[i].net, allowStacking)) {
                 freeX = testX;
                 break;
               }
@@ -4354,7 +4355,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               bool pathXSuccess = setPathX(i, pos, freeX);
               bool chipXSuccess = false;
               if (pathXSuccess) {
-                chipXSuccess = setChipXStatus(path[i].chip[pos], freeX, path[i].net, "resolveUncommittedHops X");
+                chipXSuccess = setChipXStatus(globalState.connections.paths[i].chip[pos], freeX, globalState.connections.paths[i].net, "resolveUncommittedHops X");
               }
 
               if (!pathXSuccess || !chipXSuccess) {
@@ -4368,7 +4369,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
                 Serial.print(" to position ");
                 Serial.print(pos);
                 Serial.print(" chip ");
-                Serial.println(chipNumToChar(path[i].chip[pos]));
+                Serial.println(chipNumToChar(globalState.connections.paths[i].chip[pos]));
               }
             } else {
               allAssignmentsSucceeded = false;
@@ -4387,10 +4388,10 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
     // Handle Y position assignments
     if (allAssignmentsSucceeded && hasUnresolvedY) {
       // For same-chip connections, find one Y position that works for both nodes
-      if (path[i].sameChip && path[i].chip[0] == path[i].chip[1] && 
-          path[i].y[0] == -2 && path[i].y[1] == -2) {
+      if (globalState.connections.paths[i].sameChip && globalState.connections.paths[i].chip[0] == globalState.connections.paths[i].chip[1] && 
+          globalState.connections.paths[i].y[0] == -2 && globalState.connections.paths[i].y[1] == -2) {
         
-        int targetChip = path[i].chip[0];
+        int targetChip = globalState.connections.paths[i].chip[0];
         int sharedY = -1;
         
         // Find a free Y position that can be used for both nodes on the same chip
@@ -4400,12 +4401,12 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
             continue;
           }
           
-          if (freeOrSameNetY(targetChip, testY, path[i].net, allowStacking)) {
+          if (freeOrSameNetY(targetChip, testY, globalState.connections.paths[i].net, allowStacking)) {
             // For special function chips, check breadboard chip X connection
             if (targetChip >= 8) {
               int bbChipX = xMapForChipLane0(testY, targetChip);
               if (bbChipX != -1) {
-                if (!freeOrSameNetX(testY, bbChipX, path[i].net, allowStacking)) {
+                if (!freeOrSameNetX(testY, bbChipX, globalState.connections.paths[i].net, allowStacking)) {
                   continue;
                 }
               }
@@ -4420,14 +4421,14 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           bool success = setPathY(i, 0, sharedY) && setPathY(i, 1, sharedY);
           bool chipSuccess = false;
           if (success) {
-            chipSuccess = setChipYStatusSafe(targetChip, sharedY, path[i].net, "resolveUncommittedHops same-chip Y");
+            chipSuccess = setChipYStatusSafe(targetChip, sharedY, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip Y");
           }
           
           // Update breadboard chip X status for special function chips
           if (success && chipSuccess && targetChip >= 8) {
             int bbChipX = xMapForChipLane0(sharedY, targetChip);
             if (bbChipX != -1) {
-              bool xSuccess = setChipXStatus(sharedY, bbChipX, path[i].net, "resolveUncommittedHops same-chip BB X");
+              bool xSuccess = setChipXStatus(sharedY, bbChipX, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip BB X");
               if (!xSuccess) {
                 allAssignmentsSucceeded = false;
               }
@@ -4440,7 +4441,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
             if (debugNTCC2) {
               Serial.print("  Assigned shared Y=");
               Serial.print(sharedY);
-              Serial.print(" to same-chip path[");
+              Serial.print(" to same-chip globalState.connections.paths[");
               Serial.print(i);
               Serial.print("] on chip ");
               Serial.println(chipNumToChar(targetChip));
@@ -4449,7 +4450,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
         } else {
           allAssignmentsSucceeded = false;
           if (debugNTCC2) {
-            Serial.print("ERROR: No free shared Y found for same-chip path[");
+            Serial.print("ERROR: No free shared Y found for same-chip globalState.connections.paths[");
             Serial.print(i);
             Serial.println("]");
           }
@@ -4457,17 +4458,17 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
       } else {
         // Check if this is an ijkl inter-chip path
         bool isIjklPath = false;
-      if (path[i].chip[0] != path[i].chip[1] && path[i].chip[2] != -1 && path[i].chip[3] != -1) {
+      if (globalState.connections.paths[i].chip[0] != globalState.connections.paths[i].chip[1] && globalState.connections.paths[i].chip[2] != -1 && globalState.connections.paths[i].chip[3] != -1) {
         // Check if positions 0&2 are same chip and positions 1&3 are same chip
-        if (path[i].chip[0] == path[i].chip[2] && path[i].chip[1] == path[i].chip[3]) {
+        if (globalState.connections.paths[i].chip[0] == globalState.connections.paths[i].chip[2] && globalState.connections.paths[i].chip[1] == globalState.connections.paths[i].chip[3]) {
           isIjklPath = true;
           if (debugNTCC2) {
-            Serial.print("Detected ijkl inter-chip path[");
+            Serial.print("Detected ijkl inter-chip globalState.connections.paths[");
             Serial.print(i);
             Serial.print("] - positions 0&2 on chip ");
-            Serial.print(chipNumToChar(path[i].chip[0]));
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
             Serial.print(", positions 1&3 on chip ");
-            Serial.println(chipNumToChar(path[i].chip[1]));
+            Serial.println(chipNumToChar(globalState.connections.paths[i].chip[1]));
           }
         }
       }
@@ -4481,11 +4482,11 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           int pos2 = chipPairs[pairIdx][1];
           
           // Check if this chip pair needs Y resolution
-          bool needsY = (path[i].chip[pos1] != -1 && path[i].y[pos1] == -2) ||
-                        (path[i].chip[pos2] != -1 && path[i].y[pos2] == -2);
+          bool needsY = (globalState.connections.paths[i].chip[pos1] != -1 && globalState.connections.paths[i].y[pos1] == -2) ||
+                        (globalState.connections.paths[i].chip[pos2] != -1 && globalState.connections.paths[i].y[pos2] == -2);
           
           if (needsY) {
-            int targetChip = path[i].chip[pos1]; // Both positions should be same chip
+            int targetChip = globalState.connections.paths[i].chip[pos1]; // Both positions should be same chip
             int freeY = -1;
             
             for (int testY = 0; testY < 8; testY++) {
@@ -4495,7 +4496,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               }
 
               // Check if this Y position is free
-              if (!freeOrSameNetY(targetChip, testY, path[i].net, allowStacking)) {
+              if (!freeOrSameNetY(targetChip, testY, globalState.connections.paths[i].net, allowStacking)) {
                 continue;
               }
 
@@ -4503,7 +4504,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               if (targetChip >= 8) {
                 int bbChipX = xMapForChipLane0(testY, targetChip);
                 if (bbChipX != -1) {
-                  if (!freeOrSameNetX(testY, bbChipX, path[i].net, allowStacking)) {
+                  if (!freeOrSameNetX(testY, bbChipX, globalState.connections.paths[i].net, allowStacking)) {
                     continue;
                   }
                 }
@@ -4517,14 +4518,14 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               // Assign same Y to both positions in the pair
               bool success = true;
               
-              if (path[i].y[pos1] == -2) {
+              if (globalState.connections.paths[i].y[pos1] == -2) {
                 success &= setPathY(i, pos1, freeY);
               }
-              if (path[i].y[pos2] == -2) {
+              if (globalState.connections.paths[i].y[pos2] == -2) {
                 success &= setPathY(i, pos2, freeY);
               }
               
-              bool chipYSuccess = setChipYStatusSafe(targetChip, freeY, path[i].net, "resolveUncommittedHops ijkl Y");
+              bool chipYSuccess = setChipYStatusSafe(targetChip, freeY, globalState.connections.paths[i].net, "resolveUncommittedHops ijkl Y");
               
               if (!success || !chipYSuccess) {
                 allAssignmentsSucceeded = false;
@@ -4539,7 +4540,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               if (targetChip >= 8) {
                 int bbChipX = xMapForChipLane0(freeY, targetChip);
                 if (bbChipX != -1) {
-                  bool xSuccess = setChipXStatus(freeY, bbChipX, path[i].net, "resolveUncommittedHops ijkl BB X");
+                  bool xSuccess = setChipXStatus(freeY, bbChipX, globalState.connections.paths[i].net, "resolveUncommittedHops ijkl BB X");
                   if (!xSuccess) {
                     allAssignmentsSucceeded = false;
                     if (debugNTCC2) {
@@ -4574,25 +4575,25 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
       } else {
         // Handle regular paths: assign Y to each position independently
         for (int pos = 0; pos < 4; pos++) {
-          if (path[i].chip[pos] != -1 && path[i].y[pos] == -2) {
+          if (globalState.connections.paths[i].chip[pos] != -1 && globalState.connections.paths[i].y[pos] == -2) {
             int freeY = -1;
             
             for (int testY = 0; testY < 8; testY++) {
               // For breadboard chips, only allow Y=0
-              if (path[i].chip[pos] < 8 && testY != 0) {
+              if (globalState.connections.paths[i].chip[pos] < 8 && testY != 0) {
                 continue;
               }
 
               // Check if this Y position is free
-              if (!freeOrSameNetY(path[i].chip[pos], testY, path[i].net, allowStacking)) {
+              if (!freeOrSameNetY(globalState.connections.paths[i].chip[pos], testY, globalState.connections.paths[i].net, allowStacking)) {
                 continue;
               }
 
               // For special function chips, check breadboard chip X connection
-              if (path[i].chip[pos] >= 8) {
-                int bbChipX = xMapForChipLane0(testY, path[i].chip[pos]);
+              if (globalState.connections.paths[i].chip[pos] >= 8) {
+                int bbChipX = xMapForChipLane0(testY, globalState.connections.paths[i].chip[pos]);
                 if (bbChipX != -1) {
-                  if (!freeOrSameNetX(testY, bbChipX, path[i].net, allowStacking)) {
+                  if (!freeOrSameNetX(testY, bbChipX, globalState.connections.paths[i].net, allowStacking)) {
                     continue;
                   }
                 }
@@ -4606,7 +4607,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               bool pathYSuccess = setPathY(i, pos, freeY);
               bool chipYSuccess = false;
               if (pathYSuccess) {
-                chipYSuccess = setChipYStatusSafe(path[i].chip[pos], freeY, path[i].net, "resolveUncommittedHops Y");
+                chipYSuccess = setChipYStatusSafe(globalState.connections.paths[i].chip[pos], freeY, globalState.connections.paths[i].net, "resolveUncommittedHops Y");
               }
 
               if (!pathYSuccess || !chipYSuccess) {
@@ -4615,10 +4616,10 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               }
 
               // Update breadboard chip X status for special function chips
-              if (path[i].chip[pos] >= 8) {
-                int bbChipX = xMapForChipLane0(freeY, path[i].chip[pos]);
+              if (globalState.connections.paths[i].chip[pos] >= 8) {
+                int bbChipX = xMapForChipLane0(freeY, globalState.connections.paths[i].chip[pos]);
                 if (bbChipX != -1) {
-                  bool xSuccess = setChipXStatus(freeY, bbChipX, path[i].net, "resolveUncommittedHops BB X for SF");
+                  bool xSuccess = setChipXStatus(freeY, bbChipX, globalState.connections.paths[i].net, "resolveUncommittedHops BB X for SF");
                   if (!xSuccess) {
                     allAssignmentsSucceeded = false;
                     break;
@@ -4632,7 +4633,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
                 Serial.print(" to position ");
                 Serial.print(pos);
                 Serial.print(" chip ");
-                Serial.println(chipNumToChar(path[i].chip[pos]));
+                Serial.println(chipNumToChar(globalState.connections.paths[i].chip[pos]));
               }
             } else {
               allAssignmentsSucceeded = false;
@@ -4653,15 +4654,15 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
     if (allAssignmentsSucceeded) {
       commitRoutingState();
       if (debugNTCC2) {
-        Serial.print("SUCCESS: All positions resolved for path[");
+        Serial.print("SUCCESS: All positions resolved for globalState.connections.paths[");
         Serial.print(i);
         Serial.println("]");
       }
     } else {
       restoreRoutingState(i);
-      path[i].altPathNeeded = true;
+      globalState.connections.paths[i].altPathNeeded = true;
       if (debugNTCC2) {
-        Serial.print("FAILED: Position assignments failed for path[");
+        Serial.print("FAILED: Position assignments failed for globalState.connections.paths[");
         Serial.print(i);
         Serial.println("], state restored");
       }
@@ -4675,38 +4676,38 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
     for (int i = 0; i < numberOfPaths; i++) {
       bool hasNegTwo = false;
       for (int j = 0; j < 4; j++) {
-        if (path[i].y[j] == -2) {
+        if (globalState.connections.paths[i].y[j] == -2) {
           hasNegTwo = true;
           break;
         }
       }
       if (hasNegTwo) {
         unresolvedCount++;
-        Serial.print("  path[");
+        Serial.print("  globalState.connections.paths[");
         Serial.print(i);
         Serial.print("] net=");
-        Serial.print(path[i].net);
+        Serial.print(globalState.connections.paths[i].net);
         Serial.print(" (");
-        printNodeOrName(path[i].node1);
+        printNodeOrName(globalState.connections.paths[i].node1);
         Serial.print("-");
-        printNodeOrName(path[i].node2);
+        printNodeOrName(globalState.connections.paths[i].node2);
         Serial.print(") still has -2: ");
         Serial.print("chips=[");
         for (int j = 0; j < 4; j++) {
-          if (path[i].chip[j] != -1) {
-            Serial.print(chipNumToChar(path[i].chip[j]));
-            if (j < 3 && path[i].chip[j + 1] != -1)
+          if (globalState.connections.paths[i].chip[j] != -1) {
+            Serial.print(chipNumToChar(globalState.connections.paths[i].chip[j]));
+            if (j < 3 && globalState.connections.paths[i].chip[j + 1] != -1)
               Serial.print(",");
           }
         }
         Serial.print("] y=[");
         for (int j = 0; j < 4; j++) {
-          Serial.print(path[i].y[j]);
+          Serial.print(globalState.connections.paths[i].y[j]);
           if (j < 3)
             Serial.print(",");
         }
         Serial.print("] altPathNeeded=");
-        Serial.println(path[i].altPathNeeded);
+        Serial.println(globalState.connections.paths[i].altPathNeeded);
       }
     }
     if (unresolvedCount == 0) {
@@ -4732,95 +4733,95 @@ int checkForOverlappingPaths() {
   // printChipStatus();
 
   for (int i = 0; i < numberOfPaths; i++) {
-    int fchip[4] = {path[i].chip[0], path[i].chip[1], path[i].chip[2],
-                    path[i].chip[3]};
+    int fchip[4] = {globalState.connections.paths[i].chip[0], globalState.connections.paths[i].chip[1], globalState.connections.paths[i].chip[2],
+                    globalState.connections.paths[i].chip[3]};
 
     for (int j = 0; j < numberOfPaths; j++) {
       if (i == j) {
         continue;
       }
-      if (path[i].net == path[j].net) {
+      if (globalState.connections.paths[i].net == globalState.connections.paths[j].net) {
         continue;
       }
-      int schip[4] = {path[j].chip[0], path[j].chip[1], path[j].chip[2],
-                      path[j].chip[3]};
+      int schip[4] = {globalState.connections.paths[j].chip[0], globalState.connections.paths[j].chip[1], globalState.connections.paths[j].chip[2],
+                      globalState.connections.paths[j].chip[3]};
 
       for (int f = 0; f < 4; f++) {
         for (int s = 0; s < 4; s++) {
           if (fchip[f] == schip[s] && fchip[f] != -1) {
-            if (path[i].x[f] <= 0 || path[j].x[s] <= 0) {
+            if (globalState.connections.paths[i].x[f] <= 0 || globalState.connections.paths[j].x[s] <= 0) {
               continue;
             }
-            if (path[i].y[f] <= 0 || path[j].y[s] <= 0) {
+            if (globalState.connections.paths[i].y[f] <= 0 || globalState.connections.paths[j].y[s] <= 0) {
               continue;
             }
-            if (path[i].x[f] == path[j].x[s] && path[i].skip == 0 &&
-                path[j].skip == 0) {
+            if (globalState.connections.paths[i].x[f] == globalState.connections.paths[j].x[s] && globalState.connections.paths[i].skip == 0 &&
+                globalState.connections.paths[j].skip == 0) {
               // if (debugNTCC3) {
-              if (path[i].duplicate > 0 || path[j].duplicate > 0) {
-              if (path[i].duplicate > 0) {
-                path[i].net = -1;
-                path[i].duplicate = 0;
-                path[i].chip[0] = -1;
-                path[i].chip[1] = -1;
-                path[i].chip[2] = -1;
-                path[i].chip[3] = -1;
-                path[i].x[0] = -1;
-                path[i].x[1] = -1;
-                path[i].x[2] = -1;
-                path[i].x[3] = -1;
-                path[i].y[0] = -1;
-                path[i].y[1] = -1;
-                path[i].y[2] = -1;
-                path[i].y[3] = -1;
-                path[i].altPathNeeded = false;
-                path[i].sameChip = false;
-                path[i].skip = 0;
+              if (globalState.connections.paths[i].duplicate > 0 || globalState.connections.paths[j].duplicate > 0) {
+              if (globalState.connections.paths[i].duplicate > 0) {
+                globalState.connections.paths[i].net = -1;
+                globalState.connections.paths[i].duplicate = 0;
+                globalState.connections.paths[i].chip[0] = -1;
+                globalState.connections.paths[i].chip[1] = -1;
+                globalState.connections.paths[i].chip[2] = -1;
+                globalState.connections.paths[i].chip[3] = -1;
+                globalState.connections.paths[i].x[0] = -1;
+                globalState.connections.paths[i].x[1] = -1;
+                globalState.connections.paths[i].x[2] = -1;
+                globalState.connections.paths[i].x[3] = -1;
+                globalState.connections.paths[i].y[0] = -1;
+                globalState.connections.paths[i].y[1] = -1;
+                globalState.connections.paths[i].y[2] = -1;
+                globalState.connections.paths[i].y[3] = -1;
+                globalState.connections.paths[i].altPathNeeded = false;
+                globalState.connections.paths[i].sameChip = false;
+                globalState.connections.paths[i].skip = 0;
                 // Serial.print("Duplicate path ");
                 // Serial.print(i);
                 // Serial.print(" and ");
                 // Serial.print(j);
                 // Serial.print(" overlap at x ");
-                // Serial.print(path[i].x[f]);
+                // Serial.print(globalState.connections.paths[i].x[f]);
                 // Serial.print(" on chip ");
                 // Serial.print(chipNumToChar(fchip[f]));
                 // Serial.print("   nets ");
-                // Serial.print(path[i].net);
+                // Serial.print(globalState.connections.paths[i].net);
                 // Serial.print(" and ");
-                // Serial.print(path[j].net);
+                // Serial.print(globalState.connections.paths[j].net);
                 // Serial.println("   skipping");
                 
               }
-              if (path[j].duplicate > 0) {
-                path[j].net = -1;
-                path[j].duplicate = 0;
-                path[j].chip[0] = -1;
-                path[j].chip[1] = -1;
-                path[j].chip[2] = -1;
-                path[j].chip[3] = -1;
-                path[j].x[0] = -1;
-                path[j].x[1] = -1;
-                path[j].x[2] = -1;
-                path[j].x[3] = -1;
-                path[j].y[0] = -1;
-                path[j].y[1] = -1;
-                path[j].y[2] = -1;
-                path[j].y[3] = -1;
-                path[j].altPathNeeded = false;
-                path[j].sameChip = false;
-                path[j].skip = 0;
+              if (globalState.connections.paths[j].duplicate > 0) {
+                globalState.connections.paths[j].net = -1;
+                globalState.connections.paths[j].duplicate = 0;
+                globalState.connections.paths[j].chip[0] = -1;
+                globalState.connections.paths[j].chip[1] = -1;
+                globalState.connections.paths[j].chip[2] = -1;
+                globalState.connections.paths[j].chip[3] = -1;
+                globalState.connections.paths[j].x[0] = -1;
+                globalState.connections.paths[j].x[1] = -1;
+                globalState.connections.paths[j].x[2] = -1;
+                globalState.connections.paths[j].x[3] = -1;
+                globalState.connections.paths[j].y[0] = -1;
+                globalState.connections.paths[j].y[1] = -1;
+                globalState.connections.paths[j].y[2] = -1;
+                globalState.connections.paths[j].y[3] = -1;
+                globalState.connections.paths[j].altPathNeeded = false;
+                globalState.connections.paths[j].sameChip = false;
+                globalState.connections.paths[j].skip = 0;
                 // Serial.print("Duplicate path ");
                 // Serial.print(i);
                 // Serial.print(" and ");
                 // Serial.print(j);
                 // Serial.print(" overlap at x ");
-                // Serial.print(path[i].x[f]);
+                // Serial.print(globalState.connections.paths[i].x[f]);
                 // Serial.print(" on chip ");
                 // Serial.print(chipNumToChar(fchip[f]));
                 // Serial.print("   nets ");
-                // Serial.print(path[i].net);
+                // Serial.print(globalState.connections.paths[i].net);
                 // Serial.print(" and ");
-                // Serial.print(path[j].net);
+                // Serial.print(globalState.connections.paths[j].net);
                 // Serial.println("   skipping");
                
               }
@@ -4830,35 +4831,35 @@ int checkForOverlappingPaths() {
               Serial.print("OVERLAP DETECTED: Path ");
               Serial.print(i);
               Serial.print(" (");
-              printNodeOrName(path[i].node1);
+              printNodeOrName(globalState.connections.paths[i].node1);
               Serial.print("-");
-              printNodeOrName(path[i].node2);
+              printNodeOrName(globalState.connections.paths[i].node2);
               Serial.print(") and Path ");
               Serial.print(j);
               Serial.print(" (");
-              printNodeOrName(path[j].node1);
+              printNodeOrName(globalState.connections.paths[j].node1);
               Serial.print("-");
-              printNodeOrName(path[j].node2);
+              printNodeOrName(globalState.connections.paths[j].node2);
               Serial.print(") overlap at X=");
-              Serial.print(path[i].x[f]);
+              Serial.print(globalState.connections.paths[i].x[f]);
               Serial.print(" on chip ");
               Serial.print(chipNumToChar(fchip[f]));
               Serial.print(", nets ");
-              Serial.print(path[i].net);
+              Serial.print(globalState.connections.paths[i].net);
               Serial.print(" and ");
-              Serial.println(path[j].net);
-              path[i].skip = true;
+              Serial.println(globalState.connections.paths[j].net);
+              globalState.connections.paths[i].skip = true;
 
               // Add to unconnectable paths for LED animation
               if (numberOfUnconnectablePaths < 10) {
-                unconnectablePaths[numberOfUnconnectablePaths][0] = path[i].node1;
-                unconnectablePaths[numberOfUnconnectablePaths][1] = path[i].node2;
+                unconnectablePaths[numberOfUnconnectablePaths][0] = globalState.connections.paths[i].node1;
+                unconnectablePaths[numberOfUnconnectablePaths][1] = globalState.connections.paths[i].node2;
                 numberOfUnconnectablePaths++;
                 if (debugNTCC3) {
                   Serial.print("Added to unconnectable paths: ");
-                  printNodeOrName(path[i].node1);
+                  printNodeOrName(globalState.connections.paths[i].node1);
                   Serial.print("-");
-                  printNodeOrName(path[i].node2);
+                  printNodeOrName(globalState.connections.paths[i].node2);
                   Serial.println();
                 }
               }
@@ -4868,72 +4869,72 @@ int checkForOverlappingPaths() {
               // }
               // return 1;
               found++;
-            } else if (path[i].y[f] == path[j].y[s] && path[i].skip == 0 &&
-                       path[j].skip == 0) {
+            } else if (globalState.connections.paths[i].y[f] == globalState.connections.paths[j].y[s] && globalState.connections.paths[i].skip == 0 &&
+                       globalState.connections.paths[j].skip == 0) {
               // if (debugNTCC3) {
-              if (path[i].duplicate > 0 || path[j].duplicate > 0) {
-              if (path[i].duplicate > 0) {
-                path[i].net = -1;
-                path[i].duplicate = 0;
-                path[i].chip[0] = -1;
-                path[i].chip[1] = -1;
-                path[i].chip[2] = -1;
-                path[i].chip[3] = -1;
-                path[i].x[0] = -1;
-                path[i].x[1] = -1;
-                path[i].x[2] = -1;
-                path[i].x[3] = -1;
-                path[i].y[0] = -1;
-                path[i].y[1] = -1;
-                path[i].y[2] = -1;
-                path[i].y[3] = -1;
-                path[i].altPathNeeded = false;
-                path[i].sameChip = false;
-                path[i].skip = 0;
+              if (globalState.connections.paths[i].duplicate > 0 || globalState.connections.paths[j].duplicate > 0) {
+              if (globalState.connections.paths[i].duplicate > 0) {
+                globalState.connections.paths[i].net = -1;
+                globalState.connections.paths[i].duplicate = 0;
+                globalState.connections.paths[i].chip[0] = -1;
+                globalState.connections.paths[i].chip[1] = -1;
+                globalState.connections.paths[i].chip[2] = -1;
+                globalState.connections.paths[i].chip[3] = -1;
+                globalState.connections.paths[i].x[0] = -1;
+                globalState.connections.paths[i].x[1] = -1;
+                globalState.connections.paths[i].x[2] = -1;
+                globalState.connections.paths[i].x[3] = -1;
+                globalState.connections.paths[i].y[0] = -1;
+                globalState.connections.paths[i].y[1] = -1;
+                globalState.connections.paths[i].y[2] = -1;
+                globalState.connections.paths[i].y[3] = -1;
+                globalState.connections.paths[i].altPathNeeded = false;
+                globalState.connections.paths[i].sameChip = false;
+                globalState.connections.paths[i].skip = 0;
                 // Serial.print("Duplicate path ");
                 // Serial.print(i);
                 // Serial.print(" and ");
                 // Serial.print(j);
                 // Serial.print(" overlap at y ");
-                // Serial.print(path[i].y[f]);
+                // Serial.print(globalState.connections.paths[i].y[f]);
                 // Serial.print(" on chip ");
                 // Serial.print(chipNumToChar(fchip[f]));
                 // Serial.print("   nets ");
-                // Serial.print(path[i].net);
+                // Serial.print(globalState.connections.paths[i].net);
                 // Serial.print(" and ");
-                // Serial.println(path[j].net);
+                // Serial.println(globalState.connections.paths[j].net);
                 // Serial.println("   skipping");
               }
-              if (path[j].duplicate > 0) {
-                path[j].net = -1;
-                path[j].duplicate = 0;
-                path[j].chip[0] = -1;
-                path[j].chip[1] = -1;
-                path[j].chip[2] = -1;
-                path[j].chip[3] = -1;
-                path[j].x[0] = -1;
-                path[j].x[1] = -1;
-                path[j].x[2] = -1;
-                path[j].x[3] = -1;
-                path[j].y[0] = -1;
-                path[j].y[1] = -1;
-                path[j].y[2] = -1;
-                path[j].y[3] = -1;
-                path[j].altPathNeeded = false;
-                path[j].sameChip = false;
-                path[j].skip = 0;
+              if (globalState.connections.paths[j].duplicate > 0) {
+                globalState.connections.paths[j].net = -1;
+                globalState.connections.paths[j].duplicate = 0;
+                globalState.connections.paths[j].chip[0] = -1;
+                globalState.connections.paths[j].chip[1] = -1;
+                globalState.connections.paths[j].chip[2] = -1;
+                globalState.connections.paths[j].chip[3] = -1;
+                globalState.connections.paths[j].x[0] = -1;
+                globalState.connections.paths[j].x[1] = -1;
+                globalState.connections.paths[j].x[2] = -1;
+                globalState.connections.paths[j].x[3] = -1;
+                globalState.connections.paths[j].y[0] = -1;
+                globalState.connections.paths[j].y[1] = -1;
+                globalState.connections.paths[j].y[2] = -1;
+                globalState.connections.paths[j].y[3] = -1;
+                globalState.connections.paths[j].altPathNeeded = false;
+                globalState.connections.paths[j].sameChip = false;
+                globalState.connections.paths[j].skip = 0;
                 // Serial.print("Duplicate path ");
                 // Serial.print(i);
                 // Serial.print(" and ");
                 // Serial.print(j);
                 // Serial.print(" overlap at y ");
-                // Serial.print(path[i].y[f]);
+                // Serial.print(globalState.connections.paths[i].y[f]);
                 // Serial.print(" on chip ");
                 // Serial.print(chipNumToChar(fchip[f]));
                 // Serial.print("   nets ");
-                // Serial.print(path[i].net);
+                // Serial.print(globalState.connections.paths[i].net);
                 // Serial.print(" and ");
-                // Serial.println(path[j].net);
+                // Serial.println(globalState.connections.paths[j].net);
                 // Serial.println("   skipping");
               }
               continue;
@@ -4942,35 +4943,35 @@ int checkForOverlappingPaths() {
               Serial.print("OVERLAP DETECTED: Path ");
               Serial.print(i);
               Serial.print(" (");
-              printNodeOrName(path[i].node1);
+              printNodeOrName(globalState.connections.paths[i].node1);
               Serial.print("-");
-              printNodeOrName(path[i].node2);
+              printNodeOrName(globalState.connections.paths[i].node2);
               Serial.print(") and Path ");
               Serial.print(j);
               Serial.print(" (");
-              printNodeOrName(path[j].node1);
+              printNodeOrName(globalState.connections.paths[j].node1);
               Serial.print("-");
-              printNodeOrName(path[j].node2);
+              printNodeOrName(globalState.connections.paths[j].node2);
               Serial.print(") overlap at Y=");
-              Serial.print(path[i].y[f]);
+              Serial.print(globalState.connections.paths[i].y[f]);
               Serial.print(" on chip ");
               Serial.print(chipNumToChar(fchip[f]));
               Serial.print(", nets ");
-              Serial.print(path[i].net);
+              Serial.print(globalState.connections.paths[i].net);
               Serial.print(" and ");
-              Serial.println(path[j].net);
-              path[i].skip = true;
+              Serial.println(globalState.connections.paths[j].net);
+              globalState.connections.paths[i].skip = true;
               
               // Add to unconnectable paths for LED animation
               if (numberOfUnconnectablePaths < 10) {
-                unconnectablePaths[numberOfUnconnectablePaths][0] = path[i].node1;
-                unconnectablePaths[numberOfUnconnectablePaths][1] = path[i].node2;
+                unconnectablePaths[numberOfUnconnectablePaths][0] = globalState.connections.paths[i].node1;
+                unconnectablePaths[numberOfUnconnectablePaths][1] = globalState.connections.paths[i].node2;
                 numberOfUnconnectablePaths++;
                 if (debugNTCC3) {
                   Serial.print("Added to unconnectable paths: ");
-                  printNodeOrName(path[i].node1);
+                  printNodeOrName(globalState.connections.paths[i].node1);
                   Serial.print("-");
-                  printNodeOrName(path[i].node2);
+                  printNodeOrName(globalState.connections.paths[i].node2);
                   Serial.println();
                 }
               }
@@ -5055,85 +5056,85 @@ void printPathsCompact(int showCullDupes) {
     skipLine = 0;
     switch (showCullDupes) {
     case 0:
-      if (path[i].duplicate > 0) {
+      if (globalState.connections.paths[i].duplicate > 0) {
         skipLine = 1;
         // continue;
       }
       break;
     case 1:
 
-      if (path[i].duplicate > 0 && path[i].x[0] < 0 && path[i].x[1] < 0) {
+      if (globalState.connections.paths[i].duplicate > 0 && globalState.connections.paths[i].x[0] < 0 && globalState.connections.paths[i].x[1] < 0) {
         skipLine = 1;
         // continue;
       }
       break;
     }
 
-    if (path[i].duplicate > 0 && duplicateSection == 0) {
+    if (globalState.connections.paths[i].duplicate > 0 && duplicateSection == 0) {
       // Serial.println("\n\rduplicates");
       // duplicateSection = 1;
       skipLine = 1;
       // continue;
     }
-    if (path[i].duplicate == 0 && duplicateSection == 1) {
+    if (globalState.connections.paths[i].duplicate == 0 && duplicateSection == 1) {
       skipLine = 1;
       // continue;
     }
 
     if (skipLine == 0) {
-      lastDuplicate = path[i].duplicate;
-      changeTerminalColor(net[path[i].net].termColor);
+      lastDuplicate = globalState.connections.paths[i].duplicate;
+      changeTerminalColor(globalState.connections.nets[globalState.connections.paths[i].net].termColor);
       Serial.print(i);
       Serial.print("\t");
 
-      // Serial.print(path[i].net);
+      // Serial.print(globalState.connections.paths[i].net);
 
-      printNetOrNumber(path[i].net);
+      printNetOrNumber(globalState.connections.paths[i].net);
       Serial.print("\t");
-      printNodeOrName(path[i].node1);
+      printNodeOrName(globalState.connections.paths[i].node1);
       // Serial.print("\t");
-      // Serial.print(path[i].nodeType[0]);
+      // Serial.print(globalState.connections.paths[i].nodeType[0]);
       Serial.print("\t");
-      Serial.print(chipNumToChar(path[i].chip[0]));
+      Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
       Serial.print("\t");
-      Serial.print(path[i].x[0]);
+      Serial.print(globalState.connections.paths[i].x[0]);
       Serial.print("\t");
-      Serial.print(path[i].y[0]);
+      Serial.print(globalState.connections.paths[i].y[0]);
       Serial.print("\t");
-      printNodeOrName(path[i].node2);
+      printNodeOrName(globalState.connections.paths[i].node2);
       // Serial.print("\t");
-      // Serial.print(path[i].nodeType[1]);
+      // Serial.print(globalState.connections.paths[i].nodeType[1]);
       Serial.print("\t");
-      Serial.print(chipNumToChar(path[i].chip[1]));
+      Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
       Serial.print("\t");
-      Serial.print(path[i].x[1]);
+      Serial.print(globalState.connections.paths[i].x[1]);
       Serial.print("\t");
-      Serial.print(path[i].y[1]);
+      Serial.print(globalState.connections.paths[i].y[1]);
       Serial.print("\t");
-      Serial.print(path[i].altPathNeeded);
+      Serial.print(globalState.connections.paths[i].altPathNeeded);
       Serial.print("\t");
-      Serial.print(path[i].sameChip);
+      Serial.print(globalState.connections.paths[i].sameChip);
       Serial.print("\t");
-      Serial.print(path[i].duplicate);
+      Serial.print(globalState.connections.paths[i].duplicate);
       Serial.print("\t");
       printPathType(i);
 
-      if (path[i].chip[2] != -1) {
+      if (globalState.connections.paths[i].chip[2] != -1) {
         Serial.print(" \t");
-        Serial.print(chipNumToChar(path[i].chip[2]));
+        Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
         Serial.print(" \t");
-        Serial.print(path[i].x[2]);
+        Serial.print(globalState.connections.paths[i].x[2]);
         Serial.print(" \t");
-        Serial.print(path[i].y[2]);
+        Serial.print(globalState.connections.paths[i].y[2]);
         Serial.print(" \t");
-        Serial.print(path[i].x[3]);
+        Serial.print(globalState.connections.paths[i].x[3]);
         Serial.print(" \t");
-        Serial.print(path[i].y[3]);
+        Serial.print(globalState.connections.paths[i].y[3]);
       }
       if (1) {
-        if (path[i].chip[3] != -1) {
+        if (globalState.connections.paths[i].chip[3] != -1) {
           Serial.print(" \t");
-          Serial.print(chipNumToChar(path[i].chip[3]));
+          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[3]));
           Serial.print(" \t");
         }
       }
@@ -5172,11 +5173,11 @@ void printChipStatus(void) {
     Serial.print(chipNumToChar(i));
     Serial.print("\t");
     for (int j = 0; j < 16; j++) {
-      if (ch[i].xStatus[j] == -1) {
+      if (globalState.connections.chipStates[i].xStatus[j] == -1) {
         spaces += Serial.print(".");
       } else {
-        changeTerminalColor(net[ch[i].xStatus[j]].termColor);
-        spaces += printNetOrNumber(ch[i].xStatus[j]);
+        changeTerminalColor(globalState.connections.nets[globalState.connections.chipStates[i].xStatus[j]].termColor);
+        spaces += printNetOrNumber(globalState.connections.chipStates[i].xStatus[j]);
         changeTerminalColor();
       }
       for (int k = 0; k < 4 - spaces; k++) {
@@ -5187,11 +5188,11 @@ void printChipStatus(void) {
     }
     Serial.print("\t");
     for (int j = 0; j < 8; j++) {
-      if (ch[i].yStatus[j] == -1) {
+      if (globalState.connections.chipStates[i].yStatus[j] == -1) {
         spaces += Serial.print(".");
       } else {
-        changeTerminalColor(net[ch[i].yStatus[j]].termColor);
-        spaces += printNetOrNumber(ch[i].yStatus[j]);
+        changeTerminalColor(globalState.connections.nets[globalState.connections.chipStates[i].yStatus[j]].termColor);
+        spaces += printNetOrNumber(globalState.connections.chipStates[i].yStatus[j]);
         changeTerminalColor();
       }
 
@@ -5240,30 +5241,30 @@ void findStartAndEndChips(int node1, int node2, int pathIdx) {
     switch (bothNodes[twice]) {
     case 30:
     case 60: {
-      path[pathIdx].chip[twice] = CHIP_L;
+      globalState.connections.paths[pathIdx].chip[twice] = CHIP_L;
       if (debugNTCC5) {
         Serial.print("chip: ");
-        Serial.println(chipNumToChar(path[pathIdx].chip[twice]));
+        Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
       }
       break;
     }
 
     case 29:
     case 59: {
-      path[pathIdx].chip[twice] = CHIP_K;
+      globalState.connections.paths[pathIdx].chip[twice] = CHIP_K;
       if (debugNTCC5) {
         Serial.print("chip: ");
-        Serial.println(chipNumToChar(path[pathIdx].chip[twice]));
+        Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
       }
       break;
     }
 
     case 1 ... 28: // on the breadboard
     case 31 ... 58: {
-      path[pathIdx].chip[twice] = bbNodesToChip[bothNodes[twice]];
+      globalState.connections.paths[pathIdx].chip[twice] = bbNodesToChip[bothNodes[twice]];
       if (debugNTCC5) {
         Serial.print("chip: ");
-        Serial.println(chipNumToChar(path[pathIdx].chip[twice]));
+        Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
       }
       break;
     }
@@ -5272,29 +5273,29 @@ void findStartAndEndChips(int node1, int node2, int pathIdx) {
       int nanoIndex = defToNano(bothNodes[twice]);
 
       if (nano.numConns[nanoIndex] == 1) {
-        path[pathIdx].chip[twice] = nano.mapIJ[nanoIndex];
+        globalState.connections.paths[pathIdx].chip[twice] = nano.mapIJ[nanoIndex];
         if (debugNTCC5) {
           Serial.print("nano chip: ");
-          Serial.println(chipNumToChar(path[pathIdx].chip[twice]));
+          Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
         }
       } else {
         if (debugNTCC5) {
           Serial.print("nano candidate chips: ");
         }
         chipCandidates[twice][0] = nano.mapIJ[nanoIndex];
-        path[pathIdx].candidates[twice][0] = chipCandidates[twice][0];
+        globalState.connections.paths[pathIdx].candidates[twice][0] = chipCandidates[twice][0];
         // Serial.print(candidatesFound);
         if (debugNTCC5) {
-          Serial.print(chipNumToChar(path[pathIdx].candidates[twice][0]));
+          Serial.print(chipNumToChar(globalState.connections.paths[pathIdx].candidates[twice][0]));
         }
         candidatesFound++;
         chipCandidates[twice][1] = nano.mapKL[nanoIndex];
         Serial.print(candidatesFound);
-        path[pathIdx].candidates[twice][1] = chipCandidates[twice][1];
+        globalState.connections.paths[pathIdx].candidates[twice][1] = chipCandidates[twice][1];
         candidatesFound++;
         if (debugNTCC5) {
           Serial.print(" ");
-          Serial.println(chipNumToChar(path[pathIdx].candidates[twice][1]));
+          Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].candidates[twice][1]));
         }
       }
       break;
@@ -5305,9 +5306,9 @@ void findStartAndEndChips(int node1, int node2, int pathIdx) {
       }
       for (int i = 8; i < 12; i++) {
         for (int j = 0; j < 16; j++) {
-          if (ch[i].xMap[j] == bothNodes[twice]) {
+          if (globalState.connections.chipStates[i].xMap[j] == bothNodes[twice]) {
             chipCandidates[twice][candidatesFound] = i;
-            path[pathIdx].candidates[twice][candidatesFound] =
+            globalState.connections.paths[pathIdx].candidates[twice][candidatesFound] =
                 chipCandidates[twice][candidatesFound];
             candidatesFound++;
             if (debugNTCC5) {
@@ -5319,12 +5320,12 @@ void findStartAndEndChips(int node1, int node2, int pathIdx) {
       }
 
       if (candidatesFound == 1) {
-        path[pathIdx].chip[twice] = chipCandidates[twice][0];
+        globalState.connections.paths[pathIdx].chip[twice] = chipCandidates[twice][0];
 
-        path[pathIdx].candidates[twice][0] = -1;
+        globalState.connections.paths[pathIdx].candidates[twice][0] = -1;
         if (debugNTCC5) {
           Serial.print("chip: ");
-          Serial.println(chipNumToChar(path[pathIdx].chip[twice]));
+          Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
         }
       }
       if (debugNTCC5) {
@@ -5344,17 +5345,17 @@ void mergeOverlappingCandidates(
   // Serial.print("\t 0 \t");
   int foundOverlap = 0;
 
-  if ((path[pathIndex].candidates[0][0] != -1 &&
-       path[pathIndex].candidates[1][0] != -1)) // if both nodes have candidates
+  if ((globalState.connections.paths[pathIndex].candidates[0][0] != -1 &&
+       globalState.connections.paths[pathIndex].candidates[1][0] != -1)) // if both nodes have candidates
   {
     /// Serial.print("\t1");
     for (int i = 0; i < 2; i++) {
       for (int j = 0; j < 3; j++) {
-        if (path[pathIndex].candidates[0][i] ==
-            path[pathIndex].candidates[1][j]) {
+        if (globalState.connections.paths[pathIndex].candidates[0][i] ==
+            globalState.connections.paths[pathIndex].candidates[1][j]) {
           // Serial.print("! \t");
-          path[pathIndex].chip[0] = path[pathIndex].candidates[0][i];
-          path[pathIndex].chip[1] = path[pathIndex].candidates[0][i];
+          globalState.connections.paths[pathIndex].chip[0] = globalState.connections.paths[pathIndex].candidates[0][i];
+          globalState.connections.paths[pathIndex].chip[1] = globalState.connections.paths[pathIndex].candidates[0][i];
           foundOverlap = 1;
           break;
         }
@@ -5366,14 +5367,14 @@ void mergeOverlappingCandidates(
         pathsWithCandidatesIndex++;
       }
     }
-  } else if (path[pathIndex].candidates[0][0] != -1) // if node 1 has candidates
+  } else if (globalState.connections.paths[pathIndex].candidates[0][0] != -1) // if node 1 has candidates
   {
     // Serial.print("\t2");
 
     for (int j = 0; j < 3; j++) {
-      if (path[pathIndex].chip[1] == path[pathIndex].candidates[0][j]) {
+      if (globalState.connections.paths[pathIndex].chip[1] == globalState.connections.paths[pathIndex].candidates[0][j]) {
         // Serial.print("! \t");
-        path[pathIndex].chip[0] = path[pathIndex].candidates[0][j];
+        globalState.connections.paths[pathIndex].chip[0] = globalState.connections.paths[pathIndex].candidates[0][j];
 
         foundOverlap = 1;
 
@@ -5387,16 +5388,16 @@ void mergeOverlappingCandidates(
       }
     }
 
-    // path[pathIndex].altPathNeeded = 1;
-  } else if (path[pathIndex].candidates[1][0] != -1) // if node 2 has candidates
+    // globalState.connections.paths[pathIndex].altPathNeeded = 1;
+  } else if (globalState.connections.paths[pathIndex].candidates[1][0] != -1) // if node 2 has candidates
   {
     // Serial.print(" \t3");
 
     for (int j = 0; j < 3; j++) {
-      if (path[pathIndex].chip[0] == path[pathIndex].candidates[1][j]) {
+      if (globalState.connections.paths[pathIndex].chip[0] == globalState.connections.paths[pathIndex].candidates[1][j]) {
         // Serial.print("! \t");
 
-        path[pathIndex].chip[1] = path[pathIndex].candidates[1][j];
+        globalState.connections.paths[pathIndex].chip[1] = globalState.connections.paths[pathIndex].candidates[1][j];
         foundOverlap = 1;
         break;
       }
@@ -5408,139 +5409,139 @@ void mergeOverlappingCandidates(
       }
     }
 
-    // path[pathIndex].altPathNeeded = 1;
+    // globalState.connections.paths[pathIndex].altPathNeeded = 1;
   }
 
   if (foundOverlap == 1) {
-    path[pathIndex].candidates[0][0] = -1;
-    path[pathIndex].candidates[0][1] = -1;
-    path[pathIndex].candidates[0][2] = -1;
-    path[pathIndex].candidates[1][0] = -1;
-    path[pathIndex].candidates[1][1] = -1;
-    path[pathIndex].candidates[1][2] = -1;
+    globalState.connections.paths[pathIndex].candidates[0][0] = -1;
+    globalState.connections.paths[pathIndex].candidates[0][1] = -1;
+    globalState.connections.paths[pathIndex].candidates[0][2] = -1;
+    globalState.connections.paths[pathIndex].candidates[1][0] = -1;
+    globalState.connections.paths[pathIndex].candidates[1][1] = -1;
+    globalState.connections.paths[pathIndex].candidates[1][2] = -1;
   } else {
   }
 
-  //   if (path[pathIndex].chip[0] >= CHIP_I && path[pathIndex].chip[1] >=
+  //   if (globalState.connections.paths[pathIndex].chip[0] >= CHIP_I && globalState.connections.paths[pathIndex].chip[1] >=
   //   CHIP_I) {
-  //     if (path[pathIndex].chip[0] != path[pathIndex].chip[1]) {
+  //     if (globalState.connections.paths[pathIndex].chip[0] != globalState.connections.paths[pathIndex].chip[1]) {
 
-  //       path[pathIndex].altPathNeeded = 1;
+  //       globalState.connections.paths[pathIndex].altPathNeeded = 1;
   //     }
   //   }
 }
 
 void assignPathType(int pathIndex) {
-  if (path[pathIndex].chip[0] == path[pathIndex].chip[1]) {
-    path[pathIndex].sameChip = true;
+  if (globalState.connections.paths[pathIndex].chip[0] == globalState.connections.paths[pathIndex].chip[1]) {
+    globalState.connections.paths[pathIndex].sameChip = true;
   } else {
-    path[pathIndex].sameChip = false;
+    globalState.connections.paths[pathIndex].sameChip = false;
   }
 
-  if ((path[pathIndex].node1 == 29 || path[pathIndex].node1 == 59 ||
-       path[pathIndex].node1 == 30 || path[pathIndex].node1 == 60) ||
-      path[pathIndex].node1 == 114 || path[pathIndex].node1 == 116 ||
-      path[pathIndex].node1 == 117) {
+  if ((globalState.connections.paths[pathIndex].node1 == 29 || globalState.connections.paths[pathIndex].node1 == 59 ||
+       globalState.connections.paths[pathIndex].node1 == 30 || globalState.connections.paths[pathIndex].node1 == 60) ||
+      globalState.connections.paths[pathIndex].node1 == 114 || globalState.connections.paths[pathIndex].node1 == 116 ||
+      globalState.connections.paths[pathIndex].node1 == 117) {
     // Serial.print("\n\n\rthis should be a bb to sf connection\n\n\n\r
     // ");
-    //  path[pathIndex].altPathNeeded = true;
+    //  globalState.connections.paths[pathIndex].altPathNeeded = true;
     // Serial.print("path ");
     // Serial.print(pathIndex);
     // Serial.print(" is a bb to sf connection, swapping\n\r");
     // Serial.print("node1: ");
-    // Serial.print(path[pathIndex].node1);
+    // Serial.print(globalState.connections.paths[pathIndex].node1);
     // Serial.print("\tnode2: ");
-    // Serial.print(path[pathIndex].node2);
+    // Serial.print(globalState.connections.paths[pathIndex].node2);
     // Serial.println("\n\r");
     swapNodes(pathIndex);
     //     Serial.print("path ");
     // Serial.print(pathIndex);
     // Serial.print(" is a bb to sf connection, swapping\n\r");
     // Serial.print("node1: ");
-    // Serial.print(path[pathIndex].node1);
+    // Serial.print(globalState.connections.paths[pathIndex].node1);
     // Serial.print("\tnode2: ");
-    // Serial.print(path[pathIndex].node2);
+    // Serial.print(globalState.connections.paths[pathIndex].node2);
     // Serial.println("\n\r");
-    // path[pathIndex].Lchip = true;
+    // globalState.connections.paths[pathIndex].Lchip = true;
 
-    path[pathIndex].nodeType[0] = SF; // maybe have a separate type for ChipL
+    globalState.connections.paths[pathIndex].nodeType[0] = SF; // maybe have a separate type for ChipL
     // connected nodes, but not now
   }
 
-  if ((path[pathIndex].node1 >= 1 && path[pathIndex].node1 <= 28) ||
-      (path[pathIndex].node1 >= 31 && path[pathIndex].node1 <= 58)) {
-    path[pathIndex].nodeType[0] = BB;
-  } else if (path[pathIndex].node1 >= NANO_D0 &&
-             path[pathIndex].node1 <= NANO_A7) {
-    path[pathIndex].nodeType[0] = NANO;
-  } else if (path[pathIndex].node1 >= GND && path[pathIndex].node1 <= 141) {
-    path[pathIndex].nodeType[0] = SF;
+  if ((globalState.connections.paths[pathIndex].node1 >= 1 && globalState.connections.paths[pathIndex].node1 <= 28) ||
+      (globalState.connections.paths[pathIndex].node1 >= 31 && globalState.connections.paths[pathIndex].node1 <= 58)) {
+    globalState.connections.paths[pathIndex].nodeType[0] = BB;
+  } else if (globalState.connections.paths[pathIndex].node1 >= NANO_D0 &&
+             globalState.connections.paths[pathIndex].node1 <= NANO_A7) {
+    globalState.connections.paths[pathIndex].nodeType[0] = NANO;
+  } else if (globalState.connections.paths[pathIndex].node1 >= GND && globalState.connections.paths[pathIndex].node1 <= 141) {
+    globalState.connections.paths[pathIndex].nodeType[0] = SF;
   }
 
-  if ((path[pathIndex].node2 == 29 || path[pathIndex].node2 == 59 ||
-       path[pathIndex].node2 == 30 || path[pathIndex].node2 == 60) ||
-      path[pathIndex].node2 == 114 || path[pathIndex].node2 == 116 ||
-      path[pathIndex].node2 == 117 || path[pathIndex].chip[1] == CHIP_K) {
+  if ((globalState.connections.paths[pathIndex].node2 == 29 || globalState.connections.paths[pathIndex].node2 == 59 ||
+       globalState.connections.paths[pathIndex].node2 == 30 || globalState.connections.paths[pathIndex].node2 == 60) ||
+      globalState.connections.paths[pathIndex].node2 == 114 || globalState.connections.paths[pathIndex].node2 == 116 ||
+      globalState.connections.paths[pathIndex].node2 == 117 || globalState.connections.paths[pathIndex].chip[1] == CHIP_K) {
     // Serial.print("\n\n\rthis should be a bb to sf connection 2\n\n\n\r
-    // "); path[pathIndex].altPathNeeded = true; path[pathIndex].Lchip =
+    // "); globalState.connections.paths[pathIndex].altPathNeeded = true; globalState.connections.paths[pathIndex].Lchip =
     // true;
-    path[pathIndex].nodeType[1] = SF;
-  } else if ((path[pathIndex].node2 >= 1 && path[pathIndex].node2 <= 28) ||
-             (path[pathIndex].node2 >= 31 && path[pathIndex].node2 <= 58)) {
-    path[pathIndex].nodeType[1] = BB;
-  } else if (path[pathIndex].node2 >= NANO_D0 &&
-             path[pathIndex].node2 <= NANO_A7) {
-    path[pathIndex].nodeType[1] = NANO;
-  } else if (path[pathIndex].node2 >= GND && path[pathIndex].node2 <= 141) {
-    path[pathIndex].nodeType[1] = SF;
+    globalState.connections.paths[pathIndex].nodeType[1] = SF;
+  } else if ((globalState.connections.paths[pathIndex].node2 >= 1 && globalState.connections.paths[pathIndex].node2 <= 28) ||
+             (globalState.connections.paths[pathIndex].node2 >= 31 && globalState.connections.paths[pathIndex].node2 <= 58)) {
+    globalState.connections.paths[pathIndex].nodeType[1] = BB;
+  } else if (globalState.connections.paths[pathIndex].node2 >= NANO_D0 &&
+             globalState.connections.paths[pathIndex].node2 <= NANO_A7) {
+    globalState.connections.paths[pathIndex].nodeType[1] = NANO;
+  } else if (globalState.connections.paths[pathIndex].node2 >= GND && globalState.connections.paths[pathIndex].node2 <= 141) {
+    globalState.connections.paths[pathIndex].nodeType[1] = SF;
   }
 
-  if ((path[pathIndex].nodeType[0] == NANO &&
-       path[pathIndex].nodeType[1] == SF)) {
-    path[pathIndex].pathType = NANOtoSF;
-    if (path[pathIndex].chip[0] != path[pathIndex].chip[1]) {
-      path[pathIndex].altPathNeeded = true;
+  if ((globalState.connections.paths[pathIndex].nodeType[0] == NANO &&
+       globalState.connections.paths[pathIndex].nodeType[1] == SF)) {
+    globalState.connections.paths[pathIndex].pathType = NANOtoSF;
+    if (globalState.connections.paths[pathIndex].chip[0] != globalState.connections.paths[pathIndex].chip[1]) {
+      globalState.connections.paths[pathIndex].altPathNeeded = true;
     }
-  } else if ((path[pathIndex].nodeType[0] == SF &&
-              path[pathIndex].nodeType[1] == SF)) {
-    path[pathIndex].pathType =
+  } else if ((globalState.connections.paths[pathIndex].nodeType[0] == SF &&
+              globalState.connections.paths[pathIndex].nodeType[1] == SF)) {
+    globalState.connections.paths[pathIndex].pathType =
         NANOtoSF; // SFtoSF is dealt with the same as NANOtoSF
     // Serial.print("pathIndex: ");
     // Serial.println(pathIndex);
-    // Serial.print("path[pathIndex].pathType: ");
-    // Serial.println(path[pathIndex].pathType);
-    path[pathIndex].altPathNeeded = true;
-  } else if ((path[pathIndex].nodeType[0] == SF &&
-              path[pathIndex].nodeType[1] == NANO)) {
+    // Serial.print("globalState.connections.paths[pathIndex].pathType: ");
+    // Serial.println(globalState.connections.paths[pathIndex].pathType);
+    globalState.connections.paths[pathIndex].altPathNeeded = true;
+  } else if ((globalState.connections.paths[pathIndex].nodeType[0] == SF &&
+              globalState.connections.paths[pathIndex].nodeType[1] == NANO)) {
     // swapNodes(pathIndex);
-    path[pathIndex].pathType = NANOtoSF;
-    if (path[pathIndex].chip[0] != path[pathIndex].chip[1]) {
-      path[pathIndex].altPathNeeded = true;
+    globalState.connections.paths[pathIndex].pathType = NANOtoSF;
+    if (globalState.connections.paths[pathIndex].chip[0] != globalState.connections.paths[pathIndex].chip[1]) {
+      globalState.connections.paths[pathIndex].altPathNeeded = true;
     }
 
-    // path[pathIndex].altPathNeeded = true;
-  } else if ((path[pathIndex].nodeType[0] == BB &&
-              path[pathIndex].nodeType[1] == SF)) {
-    path[pathIndex].pathType = BBtoSF;
-  } else if ((path[pathIndex].nodeType[0] == SF &&
-              path[pathIndex].nodeType[1] == BB)) {
+    // globalState.connections.paths[pathIndex].altPathNeeded = true;
+  } else if ((globalState.connections.paths[pathIndex].nodeType[0] == BB &&
+              globalState.connections.paths[pathIndex].nodeType[1] == SF)) {
+    globalState.connections.paths[pathIndex].pathType = BBtoSF;
+  } else if ((globalState.connections.paths[pathIndex].nodeType[0] == SF &&
+              globalState.connections.paths[pathIndex].nodeType[1] == BB)) {
     swapNodes(pathIndex);
-    path[pathIndex].pathType = BBtoSF;
-  } else if ((path[pathIndex].nodeType[0] == BB &&
-              path[pathIndex].nodeType[1] == NANO)) {
-    path[pathIndex].pathType = BBtoNANO;
-  } else if (path[pathIndex].nodeType[0] == NANO &&
-             path[pathIndex].nodeType[1] ==
+    globalState.connections.paths[pathIndex].pathType = BBtoSF;
+  } else if ((globalState.connections.paths[pathIndex].nodeType[0] == BB &&
+              globalState.connections.paths[pathIndex].nodeType[1] == NANO)) {
+    globalState.connections.paths[pathIndex].pathType = BBtoNANO;
+  } else if (globalState.connections.paths[pathIndex].nodeType[0] == NANO &&
+             globalState.connections.paths[pathIndex].nodeType[1] ==
                  BB) // swtich node order so BB always comes first
   {
     swapNodes(pathIndex);
-    path[pathIndex].pathType = BBtoNANO;
-  } else if (path[pathIndex].nodeType[0] == BB &&
-             path[pathIndex].nodeType[1] == BB) {
-    path[pathIndex].pathType = BBtoBB;
-  } else if (path[pathIndex].nodeType[0] == NANO &&
-             path[pathIndex].nodeType[1] == NANO) {
-    path[pathIndex].pathType = NANOtoNANO;
+    globalState.connections.paths[pathIndex].pathType = BBtoNANO;
+  } else if (globalState.connections.paths[pathIndex].nodeType[0] == BB &&
+             globalState.connections.paths[pathIndex].nodeType[1] == BB) {
+    globalState.connections.paths[pathIndex].pathType = BBtoBB;
+  } else if (globalState.connections.paths[pathIndex].nodeType[0] == NANO &&
+             globalState.connections.paths[pathIndex].nodeType[1] == NANO) {
+    globalState.connections.paths[pathIndex].pathType = NANOtoNANO;
   }
   if (debugNTCC) {
     Serial.print("Path ");
@@ -5550,58 +5551,58 @@ void assignPathType(int pathIndex) {
     Serial.print("\n\r");
 
     Serial.print("  Node 1: ");
-    Serial.print(path[pathIndex].node1);
+    Serial.print(globalState.connections.paths[pathIndex].node1);
     Serial.print("\tNode 2: ");
-    Serial.print(path[pathIndex].node2);
+    Serial.print(globalState.connections.paths[pathIndex].node2);
     Serial.print("\n\r");
 
     Serial.print("  Chip 1: ");
-    Serial.print(path[pathIndex].chip[0]);
+    Serial.print(globalState.connections.paths[pathIndex].chip[0]);
     Serial.print("\tChip 2: ");
-    Serial.print(path[pathIndex].chip[1]);
+    Serial.print(globalState.connections.paths[pathIndex].chip[1]);
     Serial.print("\n\r");
   }
 }
 
 void swapNodes(int pathIndex) {
   int temp = 0;
-  temp = path[pathIndex].node1;
-  path[pathIndex].node1 = path[pathIndex].node2;
-  path[pathIndex].node2 = temp;
+  temp = globalState.connections.paths[pathIndex].node1;
+  globalState.connections.paths[pathIndex].node1 = globalState.connections.paths[pathIndex].node2;
+  globalState.connections.paths[pathIndex].node2 = temp;
 
-  temp = path[pathIndex].chip[0];
-  path[pathIndex].chip[0] = path[pathIndex].chip[1];
-  path[pathIndex].chip[1] = temp;
+  temp = globalState.connections.paths[pathIndex].chip[0];
+  globalState.connections.paths[pathIndex].chip[0] = globalState.connections.paths[pathIndex].chip[1];
+  globalState.connections.paths[pathIndex].chip[1] = temp;
 
-  temp = path[pathIndex].candidates[0][0];
-  path[pathIndex].candidates[0][0] = path[pathIndex].candidates[1][0];
-  path[pathIndex].candidates[1][0] = temp;
+  temp = globalState.connections.paths[pathIndex].candidates[0][0];
+  globalState.connections.paths[pathIndex].candidates[0][0] = globalState.connections.paths[pathIndex].candidates[1][0];
+  globalState.connections.paths[pathIndex].candidates[1][0] = temp;
 
-  temp = path[pathIndex].candidates[0][1];
-  path[pathIndex].candidates[0][1] = path[pathIndex].candidates[1][1];
-  path[pathIndex].candidates[1][1] = temp;
+  temp = globalState.connections.paths[pathIndex].candidates[0][1];
+  globalState.connections.paths[pathIndex].candidates[0][1] = globalState.connections.paths[pathIndex].candidates[1][1];
+  globalState.connections.paths[pathIndex].candidates[1][1] = temp;
 
-  temp = path[pathIndex].candidates[0][2];
-  path[pathIndex].candidates[0][2] = path[pathIndex].candidates[1][2];
-  path[pathIndex].candidates[1][2] = temp;
+  temp = globalState.connections.paths[pathIndex].candidates[0][2];
+  globalState.connections.paths[pathIndex].candidates[0][2] = globalState.connections.paths[pathIndex].candidates[1][2];
+  globalState.connections.paths[pathIndex].candidates[1][2] = temp;
 
-  enum nodeType tempNT = path[pathIndex].nodeType[0];
-  path[pathIndex].nodeType[0] = path[pathIndex].nodeType[1];
-  path[pathIndex].nodeType[1] = tempNT;
+  enum nodeType tempNT = globalState.connections.paths[pathIndex].nodeType[0];
+  globalState.connections.paths[pathIndex].nodeType[0] = globalState.connections.paths[pathIndex].nodeType[1];
+  globalState.connections.paths[pathIndex].nodeType[1] = tempNT;
 
-  temp = path[pathIndex].x[0];
-  path[pathIndex].x[0] = path[pathIndex].x[1];
-  path[pathIndex].x[1] = temp;
+  temp = globalState.connections.paths[pathIndex].x[0];
+  globalState.connections.paths[pathIndex].x[0] = globalState.connections.paths[pathIndex].x[1];
+  globalState.connections.paths[pathIndex].x[1] = temp;
 
-  temp = path[pathIndex].y[0];
-  path[pathIndex].y[0] = path[pathIndex].y[1];
-  path[pathIndex].y[1] = temp;
+  temp = globalState.connections.paths[pathIndex].y[0];
+  globalState.connections.paths[pathIndex].y[0] = globalState.connections.paths[pathIndex].y[1];
+  globalState.connections.paths[pathIndex].y[1] = temp;
 }
 
 int xMapForNode(int node, int chip) {
   int nodeFound = -1;
   for (int i = 0; i < 16; i++) {
-    if (ch[chip].xMap[i] == node) {
+    if (globalState.connections.chipStates[chip].xMap[i] == node) {
       nodeFound = i;
       break;
     }
@@ -5621,7 +5622,7 @@ int xMapForNode(int node, int chip) {
 int yMapForNode(int node, int chip) {
   int nodeFound = -1;
   for (int i = 1; i < 8; i++) {
-    if (ch[chip].yMap[i] == node) {
+    if (globalState.connections.chipStates[chip].yMap[i] == node) {
       nodeFound = i;
       break;
     }
@@ -5632,7 +5633,7 @@ int yMapForNode(int node, int chip) {
 int xMapForChipLane0(int chip1, int chip2) {
   int nodeFound = -1;
   for (int i = 0; i < 16; i++) {
-    if (ch[chip1].xMap[i] == chip2) {
+    if (globalState.connections.chipStates[chip1].xMap[i] == chip2) {
       nodeFound = i;
       break;
     }
@@ -5642,8 +5643,8 @@ int xMapForChipLane0(int chip1, int chip2) {
 int xMapForChipLane1(int chip1, int chip2) {
   int nodeFound = -1;
   for (int i = 0; i < 16; i++) {
-    if (ch[chip1].xMap[i] == chip2) {
-      if (ch[chip1].xMap[i + 1] == chip2) {
+    if (globalState.connections.chipStates[chip1].xMap[i] == chip2) {
+      if (globalState.connections.chipStates[chip1].xMap[i + 1] == chip2) {
         nodeFound = i + 1;
         break;
       }
@@ -5671,13 +5672,13 @@ void resolveChipCandidates(void) {
   for (int pathIndex = 0; pathIndex < numberOfPaths; pathIndex++) {
     // For duplicate path handling with stack_rails > 0, only process GND paths
     // Return early if not GND net since it's the only one with multiple routes
-    if (path[pathIndex].duplicate == 1 && jumperlessConfig.routing.stack_rails > 0) {
-      if (path[pathIndex].net != 1) {
+    if (globalState.connections.paths[pathIndex].duplicate == 1 && jumperlessConfig.routing.stack_rails > 0) {
+      if (globalState.connections.paths[pathIndex].net != 1) {
         continue; // Skip non-GND nets for duplicate path processing when stacking
       }
       
       if (debugNTCC) {
-        Serial.print("Processing GND duplicate path[");
+        Serial.print("Processing GND duplicate globalState.connections.paths[");
         Serial.print(pathIndex);
         Serial.println("] with stacking enabled");
       }
@@ -5686,13 +5687,13 @@ void resolveChipCandidates(void) {
     nodesToResolve[0] = 0;
     nodesToResolve[1] = 0;
 
-    if (path[pathIndex].chip[0] == -1) {
+    if (globalState.connections.paths[pathIndex].chip[0] == -1) {
       nodesToResolve[0] = 1;
     } else {
       nodesToResolve[0] = 0;
     }
 
-    if (path[pathIndex].chip[1] == -1) {
+    if (globalState.connections.paths[pathIndex].chip[1] == -1) {
       nodesToResolve[1] = 1;
     } else {
       nodesToResolve[1] = 0;
@@ -5701,8 +5702,8 @@ void resolveChipCandidates(void) {
     for (int nodeOneOrTwo = 0; nodeOneOrTwo < 2; nodeOneOrTwo++) {
       if (nodesToResolve[nodeOneOrTwo] == 1) {
         // Check if this is a GND path (net 1)
-        bool isGndPath = (path[pathIndex].net == 1);
-        bool isGndDuplicateWithStacking = (isGndPath && path[pathIndex].duplicate == 1 && jumperlessConfig.routing.stack_rails > 0);
+        bool isGndPath = (globalState.connections.paths[pathIndex].net == 1);
+        bool isGndDuplicateWithStacking = (isGndPath && globalState.connections.paths[pathIndex].duplicate == 1 && jumperlessConfig.routing.stack_rails > 0);
         int selectedChip = -1;
 
         if (isGndPath) {
@@ -5711,9 +5712,9 @@ void resolveChipCandidates(void) {
           
           // Find K and L in the candidates
           for (int candIdx = 0; candIdx < 3; candIdx++) {
-            if (path[pathIndex].candidates[nodeOneOrTwo][candIdx] == CHIP_K) {
+            if (globalState.connections.paths[pathIndex].candidates[nodeOneOrTwo][candIdx] == CHIP_K) {
               chipK = CHIP_K;
-            } else if (path[pathIndex].candidates[nodeOneOrTwo][candIdx] == CHIP_L) {
+            } else if (globalState.connections.paths[pathIndex].candidates[nodeOneOrTwo][candIdx] == CHIP_L) {
               chipL = CHIP_L;
             }
           }
@@ -5727,11 +5728,11 @@ void resolveChipCandidates(void) {
               
               // Check what chips are already used by non-duplicate GND paths
               for (int checkPath = 0; checkPath < pathIndex; checkPath++) {
-                if (path[checkPath].net == 1 && path[checkPath].duplicate == 0) {
-                  if (path[checkPath].chip[0] == CHIP_K || path[checkPath].chip[1] == CHIP_K) {
+                if (globalState.connections.paths[checkPath].net == 1 && globalState.connections.paths[checkPath].duplicate == 0) {
+                  if (globalState.connections.paths[checkPath].chip[0] == CHIP_K || globalState.connections.paths[checkPath].chip[1] == CHIP_K) {
                     primaryUsesK = true;
                   }
-                  if (path[checkPath].chip[0] == CHIP_L || path[checkPath].chip[1] == CHIP_L) {
+                  if (globalState.connections.paths[checkPath].chip[0] == CHIP_L || globalState.connections.paths[checkPath].chip[1] == CHIP_L) {
                     primaryUsesL = true;
                   }
                 }
@@ -5749,7 +5750,7 @@ void resolveChipCandidates(void) {
               }
               
               if (debugNTCC) {
-                Serial.print("GND duplicate path[");
+                Serial.print("GND duplicate globalState.connections.paths[");
                 Serial.print(pathIndex);
                 Serial.print("] stacking enabled, selected chip ");
                 Serial.print(chipNumToChar(selectedChip));
@@ -5764,7 +5765,7 @@ void resolveChipCandidates(void) {
               selectedChip = moreAvailableChip(chipK, chipL);
               
               if (debugNTCC) {
-                Serial.print("GND path[");
+                Serial.print("GND globalState.connections.paths[");
                 Serial.print(pathIndex);
                 Serial.print("] stacking enabled, selected chip ");
                 Serial.print(chipNumToChar(selectedChip));
@@ -5776,7 +5777,7 @@ void resolveChipCandidates(void) {
               gndChipAlternator++;
               
               if (debugNTCC) {
-                Serial.print("GND path[");
+                Serial.print("GND globalState.connections.paths[");
                 Serial.print(pathIndex);
                 Serial.print("] alternating to chip ");
                 Serial.print(chipNumToChar(selectedChip));
@@ -5791,25 +5792,25 @@ void resolveChipCandidates(void) {
             selectedChip = chipL;
           } else {
             // Fall back to standard selection if neither K nor L found
-            selectedChip = moreAvailableChip(path[pathIndex].candidates[nodeOneOrTwo][0],
-                                           path[pathIndex].candidates[nodeOneOrTwo][1]);
+            selectedChip = moreAvailableChip(globalState.connections.paths[pathIndex].candidates[nodeOneOrTwo][0],
+                                           globalState.connections.paths[pathIndex].candidates[nodeOneOrTwo][1]);
           }
         } else {
           // Standard chip selection for non-GND paths
-          selectedChip = moreAvailableChip(path[pathIndex].candidates[nodeOneOrTwo][0],
-                                         path[pathIndex].candidates[nodeOneOrTwo][1]);
+          selectedChip = moreAvailableChip(globalState.connections.paths[pathIndex].candidates[nodeOneOrTwo][0],
+                                         globalState.connections.paths[pathIndex].candidates[nodeOneOrTwo][1]);
         }
 
-        path[pathIndex].chip[nodeOneOrTwo] = selectedChip;
+        globalState.connections.paths[pathIndex].chip[nodeOneOrTwo] = selectedChip;
         
         if (debugNTCC && !isGndPath) {
-          Serial.print("path[");
+          Serial.print("globalState.connections.paths[");
           Serial.print(pathIndex);
           Serial.print("] chip from ");
           Serial.print(
-              chipNumToChar(path[pathIndex].chip[(1 + nodeOneOrTwo) % 2]));
+              chipNumToChar(globalState.connections.paths[pathIndex].chip[(1 + nodeOneOrTwo) % 2]));
           Serial.print(" to chip ");
-          Serial.print(chipNumToChar(path[pathIndex].chip[nodeOneOrTwo]));
+          Serial.print(chipNumToChar(globalState.connections.paths[pathIndex].chip[nodeOneOrTwo]));
           Serial.print(" chosen\n\n\r");
         }
       }
@@ -5839,8 +5840,8 @@ void sortSFchipsLeastToMostCrowded(void) {
 
   for (int i = 0; i < numberOfPaths; i++) {
     for (int j = 0; j < 2; j++) {
-      if (path[i].chip[j] > 7) {
-        numberOfConnectionsPerSFchip[path[i].chip[j] - 8]++;
+      if (globalState.connections.paths[i].chip[j] > 7) {
+        numberOfConnectionsPerSFchip[globalState.connections.paths[i].chip[j] - 8]++;
       }
     }
   }
@@ -5874,8 +5875,8 @@ void sortAllChipsLeastToMostCrowded(void) {
   }
   for (int i = 0; i < numberOfPaths; i++) {
     for (int j = 0; j < 2; j++) {
-      if (path[i].chip[j] != -1) {
-        numberOfConnectionsPerChip[path[i].chip[j]]++;
+      if (globalState.connections.paths[i].chip[j] != -1) {
+        numberOfConnectionsPerChip[globalState.connections.paths[i].chip[j]]++;
       }
     }
   }
@@ -5952,30 +5953,30 @@ void printPathArray(void) // this also prints candidates and x y
       tabs += Serial.print(" ");
     }
     tabs += Serial.print("[");
-    tabs += printNodeOrName(path[i].node1);
+    tabs += printNodeOrName(globalState.connections.paths[i].node1);
     tabs += Serial.print("-");
-    tabs += printNodeOrName(path[i].node2);
+    tabs += printNodeOrName(globalState.connections.paths[i].node2);
     tabs += Serial.print("]\tNet ");
-    tabs += printNodeOrName(path[i].net);
+    tabs += printNodeOrName(globalState.connections.paths[i].net);
     tabs += Serial.println(" ");
     tabs += Serial.print("\n\rnode1 chip:  ");
-    tabs += printChipNumToChar(path[i].chip[0]);
+    tabs += printChipNumToChar(globalState.connections.paths[i].chip[0]);
     tabs += Serial.print("\n\rnode2 chip:  ");
-    tabs += printChipNumToChar(path[i].chip[1]);
+    tabs += printChipNumToChar(globalState.connections.paths[i].chip[1]);
     // tabs += Serial.print("\n\n\rnode1 candidates: ");
     // for (int j = 0; j < 3; j++) {
-    //   printChipNumToChar(path[i].candidates[0][j]);
+    //   printChipNumToChar(globalState.connections.paths[i].candidates[0][j]);
     //   tabs += Serial.print(" ");
     // }
     // tabs += Serial.print("\n\rnode2 candidates: ");
     // for (int j = 0; j < 3; j++) {
-    //   printChipNumToChar(path[i].candidates[1][j]);
+    //   printChipNumToChar(globalState.connections.paths[i].candidates[1][j]);
     //   tabs += Serial.print(" ");
     // }
     tabs += Serial.print("\n\rpath type: ");
     tabs += printPathType(i);
 
-    if (path[i].altPathNeeded == true) {
+    if (globalState.connections.paths[i].altPathNeeded == true) {
       tabs += Serial.print("\n\ralt path needed");
     } else {
     }
@@ -5990,7 +5991,7 @@ void printPathArray(void) // this also prints candidates and x y
 }
 
 int printPathType(int pathIndex) {
-  switch (path[pathIndex].pathType) {
+  switch (globalState.connections.paths[pathIndex].pathType) {
   case 0:
     return Serial.print("BB to BB");
     break;
@@ -6028,24 +6029,24 @@ int printChipNumToChar(int chipNumber) {
 void clearChipsOnPathToNegOne(void) {
   for (int i = 0; i < MAX_BRIDGES - 1; i++) {
     if (i >= numberOfPaths) {
-      path[i].node1 = 0; // i know i can just do {-1,-1,-1} but
-      path[i].node2 = 0;
-      path[i].net = 0;
+      globalState.connections.paths[i].node1 = 0; // i know i can just do {-1,-1,-1} but
+      globalState.connections.paths[i].node2 = 0;
+      globalState.connections.paths[i].net = 0;
       // Serial.println(i);
     }
     for (int c = 0; c < 4; c++) {
-      path[i].chip[c] = -1;
+      globalState.connections.paths[i].chip[c] = -1;
     }
 
     for (int c = 0; c < 6; c++) {
-      path[i].x[c] = -1;
-      path[i].y[c] = -1;
+      globalState.connections.paths[i].x[c] = -1;
+      globalState.connections.paths[i].y[c] = -1;
     }
 
     for (int c = 0; c < 3; c++) {
-      path[i].candidates[c][0] = -1;
-      path[i].candidates[c][1] = -1;
-      path[i].candidates[c][2] =
+      globalState.connections.paths[i].candidates[c][0] = -1;
+      globalState.connections.paths[i].candidates[c][1] = -1;
+      globalState.connections.paths[i].candidates[c][2] =
           -1; // CEEEEEEEE!!!!!! i had this set to 3 and it was clearing
       // everything, but no im not using rust
     }
@@ -6182,7 +6183,7 @@ NANO_A7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 
 };
 
-struct netStruct net[MAX_NETS] = { //these are the special function nets that
+struct netStruct globalState.connections.nets[MAX_NETS] = { //these are the special function nets that
 will always be made
 //netNumber,       ,netName          ,memberNodes[] ,memberBridges[][2]
 ,specialFunction        ,intsctNet[] ,doNotIntersectNodes[] ,priority { 127
@@ -6238,7 +6239,7 @@ yMap[8];
 
 
 
-struct chipStatus ch[12] = {
+struct chipStatus globalState.connections.chipStates[12] = {
   {0,'A',
   {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}, // x status
   {-1,-1,-1,-1,-1,-1,-1,-1}, //y status

@@ -9,6 +9,7 @@
 #include "Graphics.h"
 #include "configManager.h"
 #include "config.h"
+#include "States.h"
 #include "ArduinoStuff.h"
 
 bool firstStart = false;
@@ -405,6 +406,17 @@ void debugFlagSet(int flag) {
         break;
         }
 
+    case 14: {
+    // Toggle wait loop timing debug (runtime only, no persistence)
+    debugWaitLoopTiming = !debugWaitLoopTiming;
+    break;
+    }
+
+    case 15: {
+    // Toggle USB mass storage debug (runtime only, no persistence)
+    debugUSB = !debugUSB;
+    break;
+    }
 
     case 0: {
     EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
@@ -424,6 +436,7 @@ void debugFlagSet(int flag) {
     debugNTCC2 = false;
     debugLEDs = false;
     debugLA = false;
+    debugWaitLoopTiming = false;
     jumperlessConfig.debug.arduino = 0;
     debugArduino = 0;
     showProbeCurrent = 0;
@@ -459,6 +472,7 @@ void debugFlagSet(int flag) {
     debugNTCC2 = true;
     debugLEDs = true;
     debugLA = true;
+    debugWaitLoopTiming = true;
     // do not force arduino debug level here; leave as-is
     showProbeCurrent = 1;
     jumperlessConfig.debug.file_parsing = true;
@@ -523,13 +537,10 @@ void saveVoltages(float top, float bot, float dac0, float dac1) {
   // delayMicroseconds(100);
   // //#endif
 
-      // Save to config file
-  jumperlessConfig.dacs.top_rail = top;
-  jumperlessConfig.dacs.bottom_rail = bot;
-  jumperlessConfig.dacs.dac_0 = dac0;
-  jumperlessConfig.dacs.dac_1 = dac1;
-
-  configChanged = true;
+      // Voltage state is now stored in globalState.power (already updated by caller)
+  // No need to save to config - voltages are saved in YAML state files
+  
+  //configChanged = true;
   // saveConfig();
   }
 
@@ -632,7 +643,7 @@ void updateStateFromGPIOConfig(void) {
     int gpio_pin = gpioDef[i][0];  // Map GPIO 0-7 to pins 20-27
     if (gpio_function_map[i] == GPIO_FUNC_SIO) {
 
-      switch (jumperlessConfig.gpio.direction[i]) {
+      switch (globalState.config.gpioDirection[i]) {
         case 0: // output low
           gpioState[i] = 0;
           gpio_set_dir(gpio_pin, true);  // Set as output
@@ -640,7 +651,7 @@ void updateStateFromGPIOConfig(void) {
           // gpio_put(gpio_pin, 0);
           break;
         case 1: // output high
-          switch (jumperlessConfig.gpio.pulls[i]) {
+          switch (globalState.config.gpioPulls[i]) {
             case 0: // pulldown
               gpioState[i] = 4;
               gpio_set_dir(gpio_pin, false);  // Set as input
@@ -689,67 +700,67 @@ void updateGPIOConfigFromState(void) {
 
       switch (gpioState[i]) {
         case 0: // output low
-          if (jumperlessConfig.gpio.direction[i] != 0 || jumperlessConfig.gpio.pulls[i] != 2) {
+          if (globalState.config.gpioDirection[i] != 0 || globalState.config.gpioPulls[i] != 2) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 0; // output
-          jumperlessConfig.gpio.pulls[i] = 2; // no pull
+          globalState.config.gpioDirection[i] = 0; // output
+          globalState.config.gpioPulls[i] = 2; // no pull
           gpio_set_dir(gpio_pin, true);  // Set as output
           gpio_set_pulls(gpio_pin, false, false);  // No pulls
           break;
         case 1: // output high
-          if (jumperlessConfig.gpio.direction[i] != 0 || jumperlessConfig.gpio.pulls[i] != 2) {
+          if (globalState.config.gpioDirection[i] != 0 || globalState.config.gpioPulls[i] != 2) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 0; // output
-          jumperlessConfig.gpio.pulls[i] = 2;
+          globalState.config.gpioDirection[i] = 0; // output
+          globalState.config.gpioPulls[i] = 2;
           gpio_set_dir(gpio_pin, true);  // Set as output
           gpio_set_pulls(gpio_pin, false, false);  // No pulls
           break;
         case 2: // input
-          if (jumperlessConfig.gpio.direction[i] != 1 || jumperlessConfig.gpio.pulls[i] != 2) {
+          if (globalState.config.gpioDirection[i] != 1 || globalState.config.gpioPulls[i] != 2) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 1; // input
-          jumperlessConfig.gpio.pulls[i] = 2; // no pull
+          globalState.config.gpioDirection[i] = 1; // input
+          globalState.config.gpioPulls[i] = 2; // no pull
           gpio_set_dir(gpio_pin, false);  // Set as input
           gpio_set_pulls(gpio_pin, false, false);  // No pulls
           break;
         case 3: // input pullup
-          if (jumperlessConfig.gpio.direction[i] != 1 || jumperlessConfig.gpio.pulls[i] != 1) {
+          if (globalState.config.gpioDirection[i] != 1 || globalState.config.gpioPulls[i] != 1) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 1; // input
-          jumperlessConfig.gpio.pulls[i] = 1; // pullup
+          globalState.config.gpioDirection[i] = 1; // input
+          globalState.config.gpioPulls[i] = 1; // pullup
           gpio_set_dir(gpio_pin, false);  // Set as input
           gpio_set_pulls(gpio_pin, true, false);  // Pull up
           break;
         case 4: // input pulldown
-          if (jumperlessConfig.gpio.direction[i] != 1 || jumperlessConfig.gpio.pulls[i] != 0) {
+          if (globalState.config.gpioDirection[i] != 1 || globalState.config.gpioPulls[i] != 0) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 1; // input
-          jumperlessConfig.gpio.pulls[i] = 0; // pulldown
+          globalState.config.gpioDirection[i] = 1; // input
+          globalState.config.gpioPulls[i] = 0; // pulldown
           gpio_set_dir(gpio_pin, false);  // Set as input
           gpio_set_pulls(gpio_pin, false, true);  // Pull down
           break;
         case 5: // unknown
-          if (jumperlessConfig.gpio.direction[i] != 1 || jumperlessConfig.gpio.pulls[i] != 0) {
+          if (globalState.config.gpioDirection[i] != 1 || globalState.config.gpioPulls[i] != 0) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 1; // default to input
-          jumperlessConfig.gpio.pulls[i] = 0; // default to pulldown
+          globalState.config.gpioDirection[i] = 1; // default to input
+          globalState.config.gpioPulls[i] = 0; // default to pulldown
           gpio_set_dir(gpio_pin, false);  // Set as input
           gpio_set_pulls(gpio_pin, false, true);  // Pull down
           break;
         case 6: // do nothing
           break;
         case 7: // bus keeper
-          if (jumperlessConfig.gpio.direction[i] != 1 || jumperlessConfig.gpio.pulls[i] != 3) {
+          if (globalState.config.gpioDirection[i] != 1 || globalState.config.gpioPulls[i] != 3) {
             changed = 1;
             }
-          jumperlessConfig.gpio.direction[i] = 1; // input
-          jumperlessConfig.gpio.pulls[i] = 3; // bus keeper
+          globalState.config.gpioDirection[i] = 1; // input
+          globalState.config.gpioPulls[i] = 3; // bus keeper
           gpio_set_dir(gpio_pin, false);  // Set as input
           gpio_set_pulls(gpio_pin, true, true);  // Both pulls enabled = bus keeper
           break;
@@ -847,20 +858,17 @@ void readSettingsFromConfig() {
   adcZero[7] = jumperlessConfig.calibration.adc_7_zero;
 
 
-  // DAC voltages
-  railVoltage[0] = jumperlessConfig.dacs.top_rail;
-  railVoltage[1] = jumperlessConfig.dacs.bottom_rail;
-  dacOutput[0] = jumperlessConfig.dacs.dac_0;
-  dacOutput[1] = jumperlessConfig.dacs.dac_1;
+  // DAC voltages are now stored in globalState.power (loaded from YAML state file)
+  // No longer using jumperlessConfig.dacs for voltage state
 
-  // Serial.print("railVoltage[0]: ");
-  // Serial.println(railVoltage[0]);
-  // Serial.print("railVoltage[1]: ");
-  // Serial.println(railVoltage[1]);
-  // Serial.print("dacOutput[0]: ");
-  // Serial.println(dacOutput[0]);
-  // Serial.print("dacOutput[1]: ");
-  // Serial.println(dacOutput[1]);
+  // Serial.print("topRail: ");
+  // Serial.println(globalState.power.topRail);
+  // Serial.print("bottomRail: ");
+  // Serial.println(globalState.power.bottomRail);
+  // Serial.print("dac0: ");
+  // Serial.println(globalState.power.dac0);
+  // Serial.print("dac1: ");
+  // Serial.println(globalState.power.dac1);
 
   probePowerDAC = jumperlessConfig.dacs.probe_power_dac;
 
@@ -881,8 +889,8 @@ void readSettingsFromConfig() {
    // gpio_init(gpio_pin);
 
    // if (gpio_get_function(gpio_pin) == GPIO_FUNC_SIO) {
-    if (jumperlessConfig.gpio.direction[i] == 0) { // output
-      //gpioState[i] = jumperlessConfig.gpio.pulls[i] ? 1 : 0; // 1 for high, 0 for low
+    if (globalState.config.gpioDirection[i] == 0) { // output
+      //gpioState[i] = globalState.config.gpioPulls[i] ? 1 : 0; // 1 for high, 0 for low
       gpio_set_dir(gpio_pin, true);
       gpioState[i] = 0;
       // Serial.print("gpio_pin: ");
@@ -892,7 +900,7 @@ void readSettingsFromConfig() {
       // Serial.print(" actual: ");
       // Serial.println(gpio_get_dir(gpio_pin));
       //Serial.flush();
-      } else if (jumperlessConfig.gpio.direction[i] == 1) { // input
+      } else if (globalState.config.gpioDirection[i] == 1) { // input
         gpio_set_dir(gpio_pin, false);
         gpioState[i] = 2;
         //         Serial.print("gpio_pin: ");
@@ -902,16 +910,16 @@ void readSettingsFromConfig() {
         // Serial.print(" actual: ");
         // Serial.println(gpio_get_dir(gpio_pin));
         // Serial.flush();
-        if (jumperlessConfig.gpio.pulls[i] == 2) { // no pull
+        if (globalState.config.gpioPulls[i] == 2) { // no pull
           //  gpioState[i] = 2;
           gpio_set_pulls(gpio_pin, false, false);
-          } else if (jumperlessConfig.gpio.pulls[i] == 1) { // pullup
+          } else if (globalState.config.gpioPulls[i] == 1) { // pullup
             gpioState[i] = 3;
             gpio_set_pulls(gpio_pin, true, false);
-            } else if (jumperlessConfig.gpio.pulls[i] == 0) { // pulldown
+            } else if (globalState.config.gpioPulls[i] == 0) { // pulldown
               gpioState[i] = 4;
               gpio_set_pulls(gpio_pin, false, true);
-              } else if (jumperlessConfig.gpio.pulls[i] == 3) { // bus keeper
+              } else if (globalState.config.gpioPulls[i] == 3) { // bus keeper
               gpioState[i] = 7;
               gpio_set_pulls(gpio_pin, true, true);
               } else {

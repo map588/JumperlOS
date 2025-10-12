@@ -1479,7 +1479,7 @@ Serial.println(probe_art);
         changeTerminalColor(HELP_COMMAND_COLOR, false);
         Serial.print("slot     ");
         changeTerminalColor(HELP_DESC_COLOR, false);
-        Serial.println("- Saved configuration file (nodeFileSlot[0-7].txt)");
+        Serial.println("- Saved configuration file (/slots/slot[0-7].yaml)");
         
         changeTerminalColor(HELP_COMMAND_COLOR, false);
         Serial.print("chip     ");

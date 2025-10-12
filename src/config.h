@@ -18,7 +18,6 @@ struct routing;
 struct calibration;
 struct logo_pads;
 struct display_settings;
-struct gpio;
 struct serial_1;
 struct serial_2;
 struct top_oled;
@@ -31,10 +30,7 @@ struct config {
     } hardware;
 
     struct dacs {
-        float top_rail = 0.00;
-        float bottom_rail = 0.00;
-        float dac_0 = 3.33;
-        float dac_1 = 0.00;
+        // Voltage values moved to activeState.power (topRail, bottomRail, dac0, dac1)
         bool set_dacs_on_boot = false;
         bool set_rails_on_boot = true;
         int probe_power_dac = 0;
@@ -53,6 +49,7 @@ struct config {
         bool logo_pads = false;
         bool logic_analyzer = true; 
         int  arduino = 0;
+        bool  usb_mass_storage = false;
     } debug;
 
     struct routing {
@@ -115,79 +112,6 @@ struct config {
         int terminal_line_buffering = 0;
     } display;
 
-    struct gpio {
-        
-        ///@param 1 = input 0 = output
-        int direction[10] = {
-            1, //gpio_0 1 = input 0 = output
-            1, //gpio_1
-            1, //gpio_2
-            1, //gpio_3
-            1, //gpio_4
-            1, //gpio_5
-            1, //gpio_6
-            1, //gpio_7
-            0, //uart_tx
-            1, //uart_rx
-        };
-        
-        ///@param 0 = pull down 1 = pull up 2 = none 3 = bus keeper
-        int pulls[10] = {
-            0, //gpio_0 0 = pull down 1 = pull up 2 = none 3 = bus keeper
-            0, //gpio_1
-            0, //gpio_2
-            0, //gpio_3
-            0, //gpio_4
-            0, //gpio_5
-            0, //gpio_6
-            0, //gpio_7
-            2, //uart_tx - no pull
-            2, //uart_rx - no pull
-        };
-        float pwm_frequency[10] = { 
-            1.0, //gpio_0 default frequency in Hz 
-            1.0, //gpio_1 
-            1.0, //gpio_2 
-            1.0, //gpio_3 
-            1.0, //gpio_4 
-            1.0, //gpio_5 
-            1.0, //gpio_6 
-            1.0, //gpio_7 
-            1.0, //uart_tx 
-            1.0, //uart_rx 
-        }; 
-        float pwm_duty_cycle[10] = {
-            0.5, //gpio_0 default duty cycle (0.0 to 1.0)
-            0.5, //gpio_1
-            0.5, //gpio_2
-            0.5, //gpio_3
-            0.5, //gpio_4
-            0.5, //gpio_5
-            0.5, //gpio_6
-            0.5, //gpio_7
-            0.5, //uart_tx
-            0.5, //uart_rx
-        };
-        bool pwm_enabled[10] = {
-            false, //gpio_0 PWM enabled flag
-            false, //gpio_1
-            false, //gpio_2
-            false, //gpio_3
-            false, //gpio_4
-            false, //gpio_5
-            false, //gpio_6
-            false, //gpio_7
-            false, //uart_tx
-            false, //uart_rx
-        };
-        // int uart_tx_pin = 0;
-        // int uart_rx_pin = 1;
-        // int uart_tx_pull = 2;
-        // int uart_rx_pull = 2;
-        int uart_tx_function = 0; //0 = tx, 1 = rx, 2 = gpio_in, 3 = gpio_out
-        int uart_rx_function = 1;
-    } gpio;
-
     
         struct serial_1 {
             int function = 1; 
@@ -201,7 +125,7 @@ struct config {
 
         
         struct serial_2 {
-            int function = 0; // 0 = off
+            int function = 3; // 0 = off 3 = USB MSC enabled
             int baud_rate = 115200;
             int print_passthrough = 0;
             int connect_on_boot = 0;

@@ -37,7 +37,8 @@ void writeJSONtoFile();
 
 int printNodeOrName(int node, int longOrShort = 0); //0 = short, 1 = long
 
-void getNodesToConnect(); //read in the nodes you'd like to connect
+void loadBridgesFromState(); //load bridges from globalState into newBridge[] array
+void getNodesToConnect(); //read in the nodes you'd like to connect from newBridge[] array
 
 int searchExistingNets(int,int); //search through existing nets for all nodes that match either one of the new nodes (so it will be added to that net)
 

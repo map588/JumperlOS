@@ -36,7 +36,7 @@ bool oledConnected = false;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire1, OLED_RESET);
 
 int oledAddress = -1;
-int numFonts = 19;
+int numFonts = 26;
 
 // Global instance
 class oled oled;
@@ -54,32 +54,37 @@ class oled oled;
 // };
 
 struct font fontList[] = {
-  { &Eurostile8pt7b, "Eurostl", "Eurostile", 0, FONT_EUROSTILE },                               // Index 0 - Size 1
-  { &Eurostile12pt7b, "Eurostl", "Eurostile", 0, FONT_EUROSTILE },                           // Index 1 - Size 2
-  { &Jokerman8pt7b, "Jokermn", "Jokerman", 0, FONT_JOKERMAN },                               // Index 2 - Size 1
-  { &Jokerman12pt7b, "Jokermn", "Jokerman", 0, FONT_JOKERMAN },                           // Index 3 - Size 2
-  { &Comic_Sans8pt7b, "ComicSns", "Comic Sans", 0, FONT_COMIC_SANS },                             // Index 4 - Size 1
-  { &Comic_Sans12pt7b, "ComicSns", "Comic Sans", 0, FONT_COMIC_SANS },                          // Index 5 - Size 2
-  { &Courier_New8pt7b, "Courier", "Courier New", 0, FONT_COURIER_NEW },                         // Index 6 - Size 1
-  { &Courier_New12pt7b, "Courier", "Courier New", 0, FONT_COURIER_NEW },                      // Index 7 - Size 2
-  { &new_science_medium8pt7b, "Science", "New Science", 0, FONT_NEW_SCIENCE_MEDIUM },           // Index 8 - Size 1
-  { &new_science_medium12pt7b, "Science", "New Science", 0, FONT_NEW_SCIENCE_MEDIUM },        // Index 9 - Size 2
+  // Core fonts - Size 1 (small) and Size 2 (large) for auto-fallback
+  { &Eurostile8pt7b, "Eurostl", "Eurostile", 0, FONT_EUROSTILE },                           // Index 0 - Size 1
+  { &Eurostile12pt7b, "Eurostl", "Eurostile", 0, FONT_EUROSTILE },                          // Index 1 - Size 2
+  { &Jokerman8pt7b, "Jokermn", "Jokerman", 0, FONT_JOKERMAN },                              // Index 2 - Size 1
+  { &Jokerman12pt7b, "Jokermn", "Jokerman", 0, FONT_JOKERMAN },                             // Index 3 - Size 2
+  { &Comic_Sans8pt7b, "ComicSns", "Comic Sans", 0, FONT_COMIC_SANS },                       // Index 4 - Size 1
+  { &Comic_Sans12pt7b, "ComicSns", "Comic Sans", 0, FONT_COMIC_SANS },                      // Index 5 - Size 2
+  { &Courier_New8pt7b, "Courier", "Courier New", 0, FONT_COURIER_NEW },                     // Index 6 - Size 1
+  { &Courier_New12pt7b, "Courier", "Courier New", 0, FONT_COURIER_NEW },                    // Index 7 - Size 2
+  { &new_science_medium8pt7b, "Science", "New Science", 0, FONT_NEW_SCIENCE_MEDIUM },       // Index 8 - Size 1
+  { &new_science_medium12pt7b, "Science", "New Science", 0, FONT_NEW_SCIENCE_MEDIUM },      // Index 9 - Size 2
   { &new_science_medium_extended8pt7b, "SciExt", "New Science Ext", 0, FONT_NEW_SCIENCE_MEDIUM_EXTENDED },  // Index 10 - Size 1
   { &new_science_medium_extended12pt7b, "SciExt", "New Science Ext", 0, FONT_NEW_SCIENCE_MEDIUM_EXTENDED }, // Index 11 - Size 2
-  { &IosevkaSS08_Light8pt7b, "Iosevka", "Iosevka SS08 Light", 0, FONT_IOSEVKA_LIGHT },         // Index 12 - Size 1
-  { &IosevkaSS08_Light12pt7b, "Iosevka", "Iosevka SS08 Light", 0, FONT_IOSEVKA_LIGHT },        // Index 13 - Size 2
-
-  // Monospaced fonts for text highlighting
-  { &ANDALEMO5pt7b, "AndlMno5", "Andale Mono", 0, FONT_ANDALE_MONO },                        // Index 12 - Size 1
-  { &ANDALEMO6pt7b, "AndlMno6", "Andale Mono", 0, FONT_ANDALE_MONO },                        // Index 13 - Size 2
-  { &FreeMono4pt7b, "FreMno4", "Free Mono", 0, FONT_FREE_MONO },                             // Index 14 - Size 1
-  { &FreeMono5pt7b, "FreMno5", "Free Mono", 0, FONT_FREE_MONO },                             // Index 15 - Size 2
+  { &ANDALEMO5pt7b, "AndlMno", "Andale Mono", 0, FONT_ANDALE_MONO },                        // Index 12 - Size 1
+  { &FreeMono4pt7b, "FreMno", "Free Mono", 0, FONT_FREE_MONO },                             // Index 13 - Size 1
   
+  // New fonts - Size 1 (small) and Size 2 (large)
+  { &BerkeleyMono8pt7b, "BerkMono", "Berkeley Mono", 0, FONT_BERKELEY_MONO },               // Index 14 - Size 1
+  { &BerkeleyMono12pt7b, "BerkMono", "Berkeley Mono", 0, FONT_BERKELEY_MONO },              // Index 15 - Size 2
+  { &Pragmatism8pt7b, "Pragmtsm", "Pragmatism", 0, FONT_PRAGMATISM },                       // Index 16 - Size 1
+  { &Pragmatism12pt7b, "Pragmtsm", "Pragmatism", 0, FONT_PRAGMATISM },                      // Index 17 - Size 2
+  { &IosevkaSS08_Regular9pt7b, "IosevkaR", "Iosevka Regular", -1, FONT_IOSEVKA_REGULAR },   // Index 18 - Size 1
+  { &IosevkaSS08_Regular11pt7b, "IosevkaR", "Iosevka Regular", -1, FONT_IOSEVKA_REGULAR },  // Index 19 - Size 2
 
-  // Small fonts for file manager (4-5pt for better readability)
-  { &ubuntu5pt7b, "Ubuntu5", "Ubuntu 5pt", 0, FONT_EUROSTILE },                              // Index 16 - Small font
-  { &DotGothic16_Regular4pt7b, "DotGoth4", "DotGothic 4pt", 0, FONT_EUROSTILE },             // Index 17 - Small font
-  { &Jokerman4pt7b, "Joker4", "Jokerman 4pt", 0, FONT_JOKERMAN },                           // Index 18 - Small font
+  // Small fonts for file manager
+  { &ubuntu5pt7b, "Ubuntu", "Ubuntu", 0, FONT_EUROSTILE },                                   // Index 20 - Small font
+  { &DotGothic16_Regular4pt7b, "DotGoth", "DotGothic", 0, FONT_EUROSTILE },                  // Index 21 - Small font
+  { &IosevkaSS08_Light5pt7b, "IosevkaS5", "Iosevka Small 5pt", 0, FONT_IOSEVKA_REGULAR },    // Index 22 - Small font
+  { &Pragmatism5pt7b, "PragS5", "Pragmatism Small 5pt", 0, FONT_PRAGMATISM },                // Index 23 - Small font
+  { &FreeMono5pt7b, "FreMonoS5", "Free Mono Small 5pt", 0, FONT_FREE_MONO },                 // Index 24 - Small font
+  { &EnvyCodeRNerdFont_Regular5pt7b, "EnvyS5", "EnvyCode Small 5pt", 0, FONT_EUROSTILE },    // Index 25 - Small font
 };
 
 // Font family mappings: {size1_index, size2_index}
@@ -96,12 +101,11 @@ FontSizeMapping fontFamilyMap[] = {
     {6, 7},   // FONT_COURIER_NEW: 8pt for size 1, 12pt for size 2
     {8, 9},   // FONT_NEW_SCIENCE_MEDIUM: 8pt for size 1, 12pt for size 2
     {10, 11}, // FONT_NEW_SCIENCE_MEDIUM_EXTENDED: 8pt for size 1, 12pt for size 2
-    {12, 13}, // FONT_ANDALE_MONO: 5pt for size 1, 6pt for size 2
-    {14, 15}, // FONT_FREE_MONO: 4pt for size 1, 5pt for size 2
-    {16, 17}, // FONT_IOSEVKA_LIGHT: 8pt for size 1, 12pt for size 2
-    {18, 19}, // FONT_IOSEVKA_REGULAR: 11pt for size 1, 12pt for size 2
-    {20, 21}, // FONT_IOSEVKA_MEDIUM: 11pt for size 1, 12pt for size 2
-    {22, 23}, // FONT_IOSEVKA_SEMI_BOLD: 11pt for size 1, 12pt for size 2
+    {12, 12}, // FONT_ANDALE_MONO: 5pt for both sizes
+    {13, 13}, // FONT_FREE_MONO: 4pt for both sizes
+    {18, 19}, // FONT_IOSEVKA_REGULAR: 9pt for size 1, 11pt for size 2 (index 8 in enum)
+    {14, 15}, // FONT_BERKELEY_MONO: 8pt for size 1, 12pt for size 2 (index 9 in enum)
+    {16, 17}, // FONT_PRAGMATISM: 8pt for size 1, 12pt for size 2 (index 10 in enum)
 };
 
 // SIMPLIFIED POSITIONING SYSTEM
@@ -137,9 +141,14 @@ int oled::init() {
        /// disconnect();
         return 0;
     }
-    // Set font family from config (defaults to size 1 variant)
-    FontFamily configFamily = (FontFamily)jumperlessConfig.top_oled.font;
-    setFontForSize(configFamily, 1);
+    // Set font from config value
+    if (jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= 10) {
+        int fontIndex = configValueToFontIndex[jumperlessConfig.top_oled.font];
+        setFont(fontIndex);
+    } else {
+        // Fallback to Eurostile
+        setFont(0);
+    }
     
     display.begin(SSD1306_SWITCHCAPVCC, address, false, false);
     display.setTextColor(SSD1306_WHITE);
@@ -182,15 +191,50 @@ bool oled::checkConnection(void) {
 
 // Font management
 
+// Map config value (0-10) to font index (size 2 / large version)
+int configValueToFontIndex[] = {
+    1,  // 0: Eurostile → index 1 (12pt)
+    3,  // 1: Jokerman → index 3 (12pt)
+    5,  // 2: Comic Sans → index 5 (12pt)
+    7,  // 3: Courier → index 7 (12pt)
+    9,  // 4: Science → index 9 (12pt)
+    11, // 5: SciExt → index 11 (12pt)
+    12, // 6: Andale → index 12 (5pt - no large version)
+    13, // 7: FreeMono → index 13 (4pt - no large version)
+    15, // 8: BerkMono → index 15 (12pt)
+    17, // 9: Pragmatism → index 17 (12pt)
+    19  // 10: IosevkaR → index 19 (11pt)
+};
+
+// Map config value (0-10) to FontFamily enum
+FontFamily mapConfigValueToFontFamily(int configValue) {
+    switch (configValue) {
+        case 0: return FONT_EUROSTILE;
+        case 1: return FONT_JOKERMAN;
+        case 2: return FONT_COMIC_SANS;
+        case 3: return FONT_COURIER_NEW;
+        case 4: return FONT_NEW_SCIENCE_MEDIUM;
+        case 5: return FONT_NEW_SCIENCE_MEDIUM_EXTENDED;
+        case 6: return FONT_ANDALE_MONO;
+        case 7: return FONT_FREE_MONO;
+        case 8: return FONT_BERKELEY_MONO;
+        case 9: return FONT_PRAGMATISM;
+        case 10: return FONT_IOSEVKA_REGULAR;
+        default: return FONT_EUROSTILE;
+    }
+}
 
 int oled::cycleFont(void) {
     currentFontFamily = (FontFamily)(currentFontFamily + 1);
-    if (currentFontFamily > FONT_FREE_MONO) {
+    if (currentFontFamily > FONT_PRAGMATISM) {
         currentFontFamily = FONT_EUROSTILE;
     }
     setFontForSize(currentFontFamily, currentTextSize);
     clearPrintShow((String)fontList[fontFamilyMap[currentFontFamily].size2Index].longName, 2);
-    jumperlessConfig.top_oled.font = (int)currentFontFamily;
+    
+    // Map FontFamily back to config value for proper saving
+    int configValue = (int)currentFontFamily; // Direct mapping works now!
+    jumperlessConfig.top_oled.font = configValue;
     saveConfig();
     return currentFontFamily;
 }
@@ -258,7 +302,7 @@ void oled::setFont(int fontIndex) {
 
 // Smart font selection based on family and text size
 void oled::setFontForSize(FontFamily family, int textSize) {
-    if (family < 0 || family > FONT_FREE_MONO) {
+    if (family < 0 || family > FONT_PRAGMATISM) {
         family = FONT_EUROSTILE; // Default to Eurostile
     }
     currentFontFamily = family;
@@ -477,11 +521,11 @@ void oled::setCursor(int16_t x, int16_t y, PositionMode mode) {
             // Special case for top of screen - position baseline so text starts at y=0
             finalY = metrics.ascent;
             
-            // Apply Jokerman offset for multi-line displays
+            // Apply font-specific offset for multi-line displays
             for (int i = 0; i < numFonts; i++) {
-                if (fontList[i].font == currentFont && fontList[i].topRowOffset > 0) {
+                if (fontList[i].font == currentFont && fontList[i].topRowOffset != 0) {
                     if (SCREEN_HEIGHT >= 24) { // Multi-line capable
-                        finalY += fontList[i].topRowOffset;
+                        finalY += fontList[i].topRowOffset; // Can be positive or negative
                     }
                     break;
                 }
@@ -675,6 +719,17 @@ void oled::displayMultiLineText(const char* text, bool center) {
     int16_t lastLineBaseline = SCREEN_HEIGHT- 2 ;
     int16_t firstLineBaseline = lastLineBaseline - (lines.size() - 1) * lineSpacing;
     
+    // Apply font-specific topRowOffset for multi-line text positioning
+    // This ensures fonts with different vertical metrics render at the correct position
+    for (int i = 0; i < numFonts; i++) {
+        if (fontList[i].font == currentFont && fontList[i].topRowOffset != 0) {
+            if (SCREEN_HEIGHT >= 24) { // Multi-line capable display
+                firstLineBaseline += fontList[i].topRowOffset; // Can be positive or negative
+            }
+            break;
+        }
+    }
+    
     // Display each line
     for (int i = 0; i < lines.size(); i++) {
         int16_t lineX = 0;
@@ -863,10 +918,20 @@ void oled::printSmallText(const char* text, int16_t x, int16_t y, bool clear) {
     display.clearDisplay();
   }
   
-  // Use small font for better readability
-  setSmallFont(SMALL_FONT_UBUNTU);
+  // Store current font before changing
+  const GFXfont* savedFont = currentFont;
+  FontFamily savedFamily = currentFontFamily;
+  
+  // Use default small font
+  setSmallFont(DEFAULT_SMALL_FONT);
   setCursor(x, y + 8); // Adjust Y for 4-5pt font baseline
   display.print(text);
+  
+  // Restore previous font
+  currentFont = savedFont;
+  currentFontFamily = savedFamily;
+  display.setFont(currentFont);
+  usingSmallFont = false;
   
   if (clear) {
     display.display();
@@ -880,10 +945,20 @@ void oled::printSmallTextLine(const char* text, int line, bool clear) {
     display.clearDisplay();
   }
   
-  // Use small font for better readability
-  setSmallFont(SMALL_FONT_UBUNTU);
+  // Store current font before changing
+  const GFXfont* savedFont = currentFont;
+  FontFamily savedFamily = currentFontFamily;
+  
+  // Use default small font
+  setSmallFont(DEFAULT_SMALL_FONT);
   setCursor(0, (line * 8) + 8); // Adjust Y for 4-5pt font baseline
   display.print(text);
+  
+  // Restore previous font
+  currentFont = savedFont;
+  currentFontFamily = savedFamily;
+  display.setFont(currentFont);
+  usingSmallFont = false;
   
   if (clear) {
     display.display();
@@ -902,8 +977,12 @@ void oled::showFileStatus(const char* currentPath, int fileCount, const char* se
   
   display.clearDisplay();
   
-  // Use small font for file manager display
-  setSmallFont(SMALL_FONT_UBUNTU);
+  // Store current font before changing
+  const GFXfont* savedFont = currentFont;
+  FontFamily savedFamily = currentFontFamily;
+  
+  // Use default small font for file manager display
+  setSmallFont(DEFAULT_SMALL_FONT);
   
   // Path display without truncation
   display.setTextWrap(false);
@@ -927,6 +1006,12 @@ void oled::showFileStatus(const char* currentPath, int fileCount, const char* se
   
   display.setTextWrap(true);
   display.display();
+  
+  // Restore previous font
+  currentFont = savedFont;
+  currentFontFamily = savedFamily;
+  display.setFont(currentFont);
+  usingSmallFont = false;
 }
 
 void oled::showFileStatusScrolled(const char* visibleText, int fileCount, int cursorPosition) {
@@ -935,8 +1020,12 @@ void oled::showFileStatusScrolled(const char* visibleText, int fileCount, int cu
   // Clear display
   clearFramebuffer();
   
-  // Use small font for file manager display
-  setSmallFont(SMALL_FONT_ANDALE_MONO);
+  // Store current font before changing
+  const GFXfont* savedFont = currentFont;
+  FontFamily savedFamily = currentFontFamily;
+  
+  // Use default small font for file manager display
+  setSmallFont(DEFAULT_SMALL_FONT);
   display.setTextWrap(false);
   
   String text = String(visibleText);
@@ -993,6 +1082,12 @@ void oled::showFileStatusScrolled(const char* visibleText, int fileCount, int cu
   
   // Flush to display
   flushFramebuffer();
+  
+  // Restore previous font
+  currentFont = savedFont;
+  currentFontFamily = savedFamily;
+  display.setFont(currentFont);
+  usingSmallFont = false;
 }
 
 void oled::showMultiLineSmallText(const char* text, bool clear) {
@@ -1002,8 +1097,12 @@ void oled::showMultiLineSmallText(const char* text, bool clear) {
     display.clearDisplay();
   }
   
-  // Use small font for better text density
-  setSmallFont(SMALL_FONT_ANDALE_MONO);
+  // Store current font before changing
+  const GFXfont* savedFont = currentFont;
+  FontFamily savedFamily = currentFontFamily;
+  
+  // Use default small font for better text density
+  setSmallFont(DEFAULT_SMALL_FONT);
   display.setTextWrap(false); // Disable text wrapping - let text fall off the edge
   
   // Simply print the text without wrapping
@@ -1013,6 +1112,12 @@ void oled::showMultiLineSmallText(const char* text, bool clear) {
   if (clear) {
     display.display();
   }
+  
+  // Restore previous font
+  currentFont = savedFont;
+  currentFontFamily = savedFamily;
+  display.setFont(currentFont);
+  usingSmallFont = false;
 }
 
 // Connection status
@@ -1334,9 +1439,10 @@ void oled::dumpFrameBuffer() {
 void oled::setSmallFont(SmallFont smallFont) {
     if (!oledConnected) return;
     
-    // Store current font for restoration
+    // Store current font and family for restoration
     if (!usingSmallFont) {
         previousFont = currentFont;
+        previousFontFamily = currentFontFamily;
     }
     
     currentSmallFont = smallFont;
@@ -1346,16 +1452,31 @@ void oled::setSmallFont(SmallFont smallFont) {
     int fontIndex;
     switch (smallFont) {
         case SMALL_FONT_UBUNTU:
-            fontIndex = 16; // ubuntu5pt7b
+            fontIndex = 20; // ubuntu5pt7b
             break;
         case SMALL_FONT_DOTGOTHIC:
-            fontIndex = 17; // DotGothic16_Regular4pt7b
+            fontIndex = 21; // DotGothic16_Regular4pt7b
             break;
         case SMALL_FONT_JOKERMAN:
-            fontIndex = 18; // Jokerman4pt7b
+            fontIndex = 2; // Jokerman8pt7b
             break;
         case SMALL_FONT_ANDALE_MONO:
             fontIndex = 12; // ANDALEMO5pt7b - monospaced for text highlighting
+            break;
+        case SMALL_FONT_IOSEVKA_REGULAR:
+            fontIndex = 18; // IosevkaSS08_Regular9pt
+            break;
+        case SMALL_FONT_IOSEVKA_5PT:
+            fontIndex = 22; // IosevkaSS08_Light5pt
+            break;
+        case SMALL_FONT_PRAGMATISM_5PT:
+            fontIndex = 23; // Pragmatism5pt
+            break;
+        case SMALL_FONT_FREEMONO_5PT:
+            fontIndex = 24; // FreeMono5pt
+            break;
+        case SMALL_FONT_ENVYCODE_5PT:
+            fontIndex = 25; // EnvyCodeRNerdFont_Regular5pt
             break;
         default:
             fontIndex = 12; // Default to Andale Mono
@@ -1408,6 +1529,7 @@ void oled::restoreNormalFont() {
     
     if (usingSmallFont && previousFont) {
         currentFont = previousFont;
+        currentFontFamily = previousFontFamily;
         display.setFont(currentFont);
         usingSmallFont = false;
         previousFont = nullptr;
@@ -1497,15 +1619,11 @@ int oled::connect(void) {
     // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, -1, netSlot, 0);
     // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, -1, netSlot, 0);
     
-    // Use batch operation to add both bridges at once for better performance
+    // Use RAM-based state system
+    addBridgeToState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, 1);
+    addBridgeToState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, 1);
     
-    int oledBridges[2][2] = {
-        {jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row},
-        {jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row}
-    };
-    addBridgeToNodeFile(oledBridges[0][0], oledBridges[0][1], netSlot, 0, 0);
-    addBridgeToNodeFile(oledBridges[1][0], oledBridges[1][1], netSlot, 0, 0);
-    
+    // Extra refresh to ensure OLED connections are applied
     refreshConnections(1, 0, 0);
     // Serial.print("waitCore2     ");
     // Serial.println(millis());
@@ -1536,8 +1654,9 @@ void oled::disconnect(void) {
     if (jumperlessConfig.top_oled.enabled == 0) {
         return;
     }
-    removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, netSlot, 0);
-    removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, netSlot, 0);
+    // Use RAM-based state system
+    removeBridgeFromState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row);
+    removeBridgeFromState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);
     // Restore pins to unassigned in net map so they show as normal when disconnected
     // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -1;
     // gpioNet[jumperlessConfig.top_oled.scl_pin - 20] = -1;

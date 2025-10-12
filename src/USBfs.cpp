@@ -27,21 +27,30 @@
 #include "FileParsing.h"    // for validation functions
 #include "LEDs.h"           // for core synchronization variables
 #include "FilesystemStuff.h" // for initializeMicroPythonExamples
+#include "States.h"         // for SlotManager reload after USB mode
 // #include <class/msc/msc.h>
 bool mscModeEnabled = false;
+bool usbMountedByHost = false;  // Track when host has mounted the drive (filesystem access must stop)
+bool usbFilesystemBusy = false; // Track when device is accessing filesystem (host must wait)
 FatFSUSBClass FatFSUSB;
 
 // Periodic maintenance (called from main loop)
+// NOTE: This function no longer calls SlotManager::service() to prevent race conditions.
+// Service is called from the main loop via jOS.serviceAll() or from the USB mode loop in main.cpp
 void usbPeriodic(void) {
-    static unsigned long mscModeRefreshTimer = 0;
-    const unsigned long mscModeRefreshInterval = 2000;
-    if (mscModeEnabled == true) {
-        if (millis() - mscModeRefreshTimer > mscModeRefreshInterval) {
-            mscModeRefreshTimer = millis();
-            // Optionally refresh or check status here
-            // refreshUSBFilesystem();
-        }
+    static unsigned long lastDebugPrint = 0;
+    
+    // Debug every 5 seconds
+    if (usb_debug_enabled && millis() - lastDebugPrint > 5000) {
+        Serial.print("◆ usbPeriodic: mscModeEnabled=");
+        Serial.print(mscModeEnabled ? "TRUE" : "FALSE");
+        Serial.print(", usbMountedByHost=");
+        Serial.println(usbMountedByHost ? "TRUE" : "FALSE");
+        lastDebugPrint = millis();
     }
+    
+    // Just keep USB alive - don't do file operations here
+    // The main loop or USB mode loop handles service calls
 }
 
 // Ensure we are logged in to the USB framework
@@ -336,7 +345,7 @@ void setUSBDebug(bool enable) {
 }
 
 String readSlotFileContent(int slot) {
-    String filename = "nodeFileSlot" + String(slot) + ".txt";
+    String filename = "/slots/slot" + String(slot) + ".yaml";
     String content = "";
     
     // Use core synchronization to prevent flash access conflicts
@@ -345,11 +354,22 @@ String readSlotFileContent(int slot) {
     }
     core1busy = true;
     
+    // Try YAML file first (new format)
     if (FatFS.exists(filename)) {
         File slotFile = FatFS.open(filename, "r");
         if (slotFile) {
             content = slotFile.readString();
             slotFile.close();
+        }
+    } else {
+        // Fall back to legacy .txt format if YAML doesn't exist
+        String legacyFilename = "nodeFileSlot" + String(slot) + ".txt";
+        if (FatFS.exists(legacyFilename)) {
+            File slotFile = FatFS.open(legacyFilename, "r");
+            if (slotFile) {
+                content = slotFile.readString();
+                slotFile.close();
+            }
         }
     }
     
@@ -379,9 +399,16 @@ void validateAllSlots(bool verbose) {
     int total_connections = 0;
     
     for (int i = 0; i < 8; i++) { // Assuming 8 slots (0-7)
-        String filename = "nodeFileSlot" + String(i) + ".txt";
+        String filename = "/slots/slot" + String(i) + ".yaml";
         
-        if (!FatFS.exists(filename)) {
+        // Check for YAML file first, fall back to legacy .txt
+        bool fileExists = FatFS.exists(filename);
+        if (!fileExists) {
+            filename = "nodeFileSlot" + String(i) + ".txt";
+            fileExists = FatFS.exists(filename);
+        }
+        
+        if (!fileExists) {
             if (usb_debug_enabled && verbose) Serial.println("  Slot " + String(i) + ": File does not exist");
             continue;
         }
@@ -487,28 +514,151 @@ void manualRefreshFromUSB() {
 
 
 //==============================================================================
+// USB Mount/Unmount Callbacks
+//==============================================================================
+
+/**
+ * @brief Callback to check if drive is ready for host to mount
+ * 
+ * This is called by FatFSUSB when the host PC attempts to mount the drive.
+ * We return true ONLY when:
+ * - No files are currently open by the device
+ * - No filesystem operations are in progress
+ * - FatFS has been properly ended
+ * 
+ * Following best practices from arduino-pico FatFSUSB documentation:
+ * "Failing to close all files AND FatFS.end() before granting the PC access 
+ * to flash memory will result in corruption."
+ */
+bool usbDriveReadyCallback(uint32_t cbData) {
+    (void)cbData;
+    
+    // If we're busy with filesystem operations, tell host to wait
+    if (usbFilesystemBusy) {
+        if (usb_debug_enabled) {
+            Serial.println("◆ USB driveReady: Device busy with filesystem operations - host must wait");
+        }
+        return false;
+    }
+    
+    // Drive is ready for host to mount
+    if (usb_debug_enabled) {
+        Serial.println("◆ USB driveReady: Device ready - host can mount");
+    }
+    return true;
+}
+
+/**
+ * @brief Callback when host mounts the drive
+ * 
+ * When the host mounts, we must:
+ * 1. Close any open file handles
+ * 2. Set flag to prevent WRITE operations (but allow READ for live monitoring)
+ * 3. Keep FatFS mounted so device can READ files and monitor changes
+ * 
+ * This allows live file monitoring while preventing the "multiple writers" problem.
+ * Device can READ (to detect host changes), but host is the only WRITER.
+ */
+void usbPlugCallback(uint32_t cbData) {
+    (void)cbData;
+    
+    Serial.println("◆ USB MOUNTED BY HOST - Switching to READ-ONLY mode for live monitoring");
+    
+    // Close any open file handles to prevent write conflicts
+    extern File nodeFile;
+    if (nodeFile) {
+        nodeFile.close();
+    }
+    
+    // Set flag - this allows READs (for monitoring) but blocks WRITEs
+    __sync_synchronize();  // Memory barrier
+    usbMountedByHost = true;
+    __sync_synchronize();
+    
+    if (usb_debug_enabled) {
+        Serial.println("◆ USB: Device in READ-ONLY mode");
+        Serial.println("  - Device can READ files to monitor host changes");
+        Serial.println("  - Device CANNOT WRITE (host has exclusive write access)");
+    }
+    
+    Serial.println("◆ Live file monitoring ACTIVE - device will detect host changes in real-time");
+    promptRefreshConnections();
+}
+
+/**
+ * @brief Callback when host unmounts/ejects the drive
+ * 
+ * When the host unmounts, we must:
+ * 1. Clear the mounted flag to resume full READ+WRITE access
+ * 2. Sync filesystem to ensure all host changes are visible
+ * 3. Reload current slot to pick up any changes made by host
+ */
+void usbUnplugCallback(uint32_t cbData) {
+    (void)cbData;
+    
+    Serial.println("◆ USB UNMOUNTED BY HOST - Resuming full READ+WRITE filesystem access");
+    
+    // Clear mounted flag to allow device to write again
+    __sync_synchronize();
+    usbMountedByHost = false;
+    __sync_synchronize();
+    
+    // Sync filesystem to ensure all host writes are visible to device
+    fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
+    __sync_synchronize();
+    
+    if (usb_debug_enabled) {
+        Serial.println("◆ USB: Full filesystem access restored to device");
+    }
+    
+    // Reload active slot to pick up any external changes made during USB mode
+    extern int netSlot;
+    if (netSlot >= 0) {
+        Serial.print("◆ Reloading slot ");
+        Serial.print(netSlot);
+        Serial.println(" to pick up external changes...");
+        
+        String errorMsg;
+        if (SlotManager::getInstance().loadSlot(netSlot, errorMsg)) {
+            Serial.println("✓ Slot reloaded successfully");
+        } else {
+            Serial.print("✗ Failed to reload slot: ");
+            Serial.println(errorMsg);
+        }
+    }
+}
+
+//==============================================================================
 // Public Interface Functions
 //==============================================================================
 
 bool initUSBMassStorage(void) {
-   // delay(1000);
+    Serial.println("Initializing USB Mass Storage with FatFSUSB callbacks...");
+    
+    // Register callbacks BEFORE calling begin()
+    // These ensure proper mount/unmount synchronization between device and host
+    FatFSUSB.driveReady(usbDriveReadyCallback);  // Called when host tries to mount
+    FatFSUSB.onPlug(usbPlugCallback);            // Called when host mounts
+    FatFSUSB.onUnplug(usbUnplugCallback);        // Called when host unmounts
+    
     if (usb_debug_enabled) {
-        Serial.println("Initializing USB Mass Storage with direct FatFS access...");
+        Serial.println("◆ USB callbacks registered:");
+        Serial.println("  - driveReady: Checks if device is ready for mount");
+        Serial.println("  - onPlug: Stops FatFS when host mounts");
+        Serial.println("  - onUnplug: Restarts FatFS when host unmounts");
     }
     
     // Initialize FatFSUSB class
     if (!FatFSUSB.begin()) {
-        Serial.println("Failed to initialize FatFSUSB");
+        Serial.println("✗ Failed to initialize FatFSUSB");
         return false;
     }
     
-    // Automatically create MicroPython examples if needed
-    //initializeMicroPythonExamples();
-    
     if (usb_debug_enabled) {
-        Serial.println("FatFSUSB initialized successfully");
-        Serial.println("Device will appear as 'JUMPERLESS' drive (direct FatFS access)");
+        Serial.println("✓ FatFSUSB initialized successfully");
+        Serial.println("Device will appear as 'JUMPERLESS' drive");
         Serial.println("Host can read/write actual flash filesystem directly");
+        Serial.println("\nIMPORTANT: Device will automatically stop filesystem access when host mounts");
     }
     
     // Set flash ready
@@ -516,15 +666,25 @@ bool initUSBMassStorage(void) {
     flash_ready = true;
     __sync_synchronize();
     
-    if (usb_debug_enabled) {
-        Serial.println("Direct FatFS access ready - no virtual filesystem needed!");
-    }
+    Serial.println("✓ USB Mass Storage ready - waiting for host to connect");
     return true;
 }
 
 bool disableUSBMassStorage(void) {
-    if (usb_debug_enabled) {
-        Serial.println("◆ Disabling USB Mass Storage...");
+    Serial.println("◆ Disabling USB Mass Storage...");
+    
+    // First, ensure any pending dirty state is saved before we disconnect
+    // This handles the case where user made changes but USB was still mounted
+    if (SlotManager::getInstance().getActiveState().isDirty()) {
+        Serial.println("◆ Saving pending changes before USB disconnect...");
+        String errorMsg;
+        extern int netSlot;
+        if (SlotManager::getInstance().saveSlot(netSlot, errorMsg)) {
+            Serial.println("✓ Pending changes saved");
+        } else {
+            Serial.print("⚠ Warning: Could not save pending changes: ");
+            Serial.println(errorMsg);
+        }
     }
     
     // Force disconnect from host perspective first
@@ -533,7 +693,7 @@ bool disableUSBMassStorage(void) {
     // Disconnect the USB device - this will force the host to see it as ejected
     if (tud_disconnect) {
         tud_disconnect();
-        delay(100);  // Give host time to process the disconnect
+        delay(500);  // Give host time to process the disconnect
     }
     
     // End FatFSUSB operations
@@ -544,6 +704,8 @@ bool disableUSBMassStorage(void) {
     mscModeEnabled = false;
     usb_msc_mounted = false;
     usb_msc_ejected = false;
+    usbMountedByHost = false;
+    usbFilesystemBusy = false;
     flash_ready = false;
     __sync_synchronize();
     
@@ -552,12 +714,30 @@ bool disableUSBMassStorage(void) {
         tud_connect();
     }
     
-    if (usb_debug_enabled) {
-        Serial.println("◆ USB Mass Storage disabled - device disconnected from host");
-    } else {
-        Serial.println("◆ USB Mass Storage disabled - device disconnected from host");
+    Serial.println("◆ USB Mass Storage disabled - device disconnected from host");
+    
+    // Sync filesystem one more time to ensure all changes are visible
+    fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
+    __sync_synchronize();
+    
+    // Reload active slot to pick up any external changes made during USB mode
+    extern int netSlot;
+    if (netSlot >= 0) {
+        Serial.print("◆ Reloading slot ");
+        Serial.print(netSlot);
+        Serial.println(" to pick up external changes...");
+        
+        // Use SlotManager to reload the current slot
+        String errorMsg;
+        if (SlotManager::getInstance().loadSlot(netSlot, errorMsg)) {
+            Serial.println("✓ Slot reloaded successfully");
+        } else {
+            Serial.print("✗ Failed to reload slot: ");
+            Serial.println(errorMsg);
+        }
     }
     
+    Serial.println("✓ USB Mass Storage fully disabled - normal operation resumed");
     return true;
 }
 

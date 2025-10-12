@@ -389,9 +389,12 @@ struct rgbColor shiftHue(struct rgbColor colorToShift, int hueShift = 0,
                          int specialFunction = -1);
 void initLEDs(void);
 char LEDbrightnessMenu(void);
-void refreshSavedColors(int slot = -1);
-int saveRawColors(int slot = -1);
-void showSavedColors(int slot = -1);
+
+
+
+void previewSlotColors(int slot, bool showVoltages = true);  // NEW: Preview slot with voltages (stays in preview mode!)
+void applyPreviewedSlot();  // Helper to apply the previewed slot and refresh hardware
+void cancelPreview();  // Helper to cancel preview and return to original slot
 void clearLEDs(void);
 void randomColors(void);
 void rainbowy(int, int, int wait);

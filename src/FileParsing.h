@@ -3,7 +3,8 @@
 #define FILEPARSING_H
 
 #include <Arduino.h>
-#include "CoreBusyFlags.h"
+#include "externVars.h"
+
 // #include "RotaryEncoder.h"
 
 // Forward declaration for TermControl
@@ -18,6 +19,10 @@ extern String currentCommandLine;
 extern volatile bool netsUpdated;
 void createConfigFile(int overwrite = 0);
 
+// DEPRECATED: Net colors are now persisted in YAML state files (States.cpp)
+// The changedNetColors[] array is still used at runtime, but persistence
+// is handled by the JumperlessState YAML serialization system.
+// These functions remain for potential legacy file migration only.
 int saveChangedNetColorsToFile(int slot = 0, int flashOrLocal = 0);
 int loadChangedNetColorsFromFile(int slot = 0, int flashOrLocal = 0);
 int printChangedNetColorFile(int slot = 0, int flashOrLocal = 0);
@@ -46,24 +51,32 @@ int openFileThreadSafe(int openTypeEnum, int slot = 0, int flashOrLocal = 0);
 void createLocalNodeFile(int slot = 0);
 void saveLocalNodeFile(int slot = 0);
 
-// General-purpose nodeFileString backup/restore functions
+// General-purpose nodeFileString backup/restore functions (DEPRECATED - use state backup below)
 void storeNodeFileBackup(void);
 void restoreNodeFileBackup(void);
 void restoreAndSaveNodeFileBackup(void);
 void clearNodeFileBackup(void);
 bool hasNodeFileBackup(void);
 bool hasNodeFileChanges(void);
-const char* getNodeFileBackup(void);   
+const char* getNodeFileBackup(void);
+
+// Note: State backup functions have been moved to States.h/States.cpp   
 void writeMenuTree(void);
 void createSlots(int slot = -1,  int overwrite = 0);
 void inputNodeFileList(int addRotaryConnections = 0);
 //this just opens the file, takes out all the bullshit, and then populates the newBridge array
 void parseWokwiFileToNodeFile();
 void changeWokwiDefinesToJumperless ();
-void writeToNodeFile(int slot = 0, int flashOrLocal = 0);
+
 int removeBridgeFromNodeFile(int node1, int node2 = -1, int slot = 0, int flashOrLocal = 0, int onlyCheck = 0);
 int addBridgeToNodeFile(int node1, int node2, int slot = 0, int flashOrLocal = 0, int allowDuplicates = 1); //returns 1 if duplicate was found
 void savePreformattedNodeFile (int source = 0, int slot = 0, int keepEncoder = 1);
+
+// New RAM-based state functions (preferred over file-based functions above)
+// All code should use these functions instead of addBridgeToNodeFile/removeBridgeFromNodeFile
+bool addBridgeToState(int node1, int node2, int duplicates = -1, bool autoRefresh = true); // Add bridge to globalState
+bool removeBridgeFromState(int node1, int node2, bool autoRefresh = true); // Remove bridge from globalState (node2=-1 removes ALL connections containing node1)
+bool saveStateToSlot(int slot = -1); // Save globalState to YAML file (slot=-1 uses current slot)
 
 void readStringFromSerial(int source = 0, int addRemove = 0);
 // void addStringToNodeFile(String str);
@@ -71,7 +84,8 @@ void readStringFromSerial(int source = 0, int addRemove = 0);
 int parseStringToNode(int source = 0);
 
 int getSlotLength(int slot, int flashOrLocal = 0);
-void openNodeFile(int slot = 0, int flashOrLocal = 0);
+void openNodeFile(int slot = 0, int flashOrLocal = 0); // DEPRECATED - use loadSlotIntoState()
+void loadSlotIntoState(int slot); // NEW: Load slot into globalState using SlotManager
 
 void splitStringToFields();
 
@@ -109,7 +123,6 @@ bool isSlotFileEmpty(int slot);
 // External declarations for node file operations
 // extern File nodeFile;
 // extern SafeString nodeFileString;
-// extern int netSlot;
 
 // External declaration for net color tracking
 extern uint32_t slotsWithNetColors;

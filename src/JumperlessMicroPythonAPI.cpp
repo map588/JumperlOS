@@ -22,6 +22,7 @@
 
 #include "LogicAnalyzer.h"
 #include "WaveGen.h"
+#include "States.h"
 
 extern LogicAnalyzer logicAnalyzer; // defined in main.cpp
 extern WaveGen wavegen; // defined in main.cpp
@@ -225,13 +226,13 @@ float jl_dac_get(int channel) {
     float voltage = 0.0f;
 
     if (channel == 0) {
-        voltage = dacOutput[0];
+        voltage = globalState.power.dac0;
     } else if (channel == 1) {
-        voltage = dacOutput[1];
+        voltage = globalState.power.dac1;
     } else if (channel == 2) {
-        voltage = railVoltage[0];
+        voltage = globalState.power.topRail;
     } else if (channel == 3) {
-        voltage = railVoltage[1];
+        voltage = globalState.power.bottomRail;
     }
 
     return voltage;
@@ -314,10 +315,10 @@ int jl_gpio_get(int pin) {
 
 int jl_gpio_set_direction(int pin, int direction) {
     if (pin >= 1 && pin <= 10) {
-        jumperlessConfig.gpio.direction[pin - 1] = direction;
+        globalState.config.gpioDirection[pin - 1] = direction;
         pinMode(gpioDef[pin - 1][0], direction ? OUTPUT : INPUT);
     } else if (pin >= 20 && pin <= 27) {
-        jumperlessConfig.gpio.direction[pin - 20] = direction;
+        globalState.config.gpioDirection[pin - 20] = direction;
         pinMode(pin, direction ? OUTPUT : INPUT);
     }
     return 1;
@@ -335,10 +336,10 @@ int jl_gpio_get_dir(int pin) {
 void jl_gpio_set_dir(int pin, int direction) {
     if (pin >= 1 && pin <= 10) {
         gpio_set_dir(gpioDef[pin - 1][0], direction);
-        jumperlessConfig.gpio.direction[pin - 1] = direction;
+        globalState.config.gpioDirection[pin - 1] = direction;
     } else if (pin >= 20 && pin <= 27) {
         gpio_set_dir(pin, direction);
-        jumperlessConfig.gpio.direction[pin - 20] = direction;
+        globalState.config.gpioDirection[pin - 20] = direction;
     } 
 
 }
@@ -407,95 +408,91 @@ void jl_gpio_set_pull(int pin, int pull) {
         
         gpio_set_pulls(pin, pull_up, pull_down);
         
-        jumperlessConfig.gpio.pulls[pin - 1] = config_pull;
+        globalState.config.gpioPulls[pin - 1] = config_pull;
     } else if (pin >= 20 && pin <= 27) {
         gpio_set_pulls(pin, pull_up, pull_down);
-        jumperlessConfig.gpio.pulls[pin - 20] = config_pull;
+        globalState.config.gpioPulls[pin - 20] = config_pull;
     }
 }
 
 // Node Functions
 int jl_nodes_connect(int node1, int node2, int save) {
+    // Add to RAM state
+    addBridgeToState(node1, node2);
+    
     if (save) {
-        addBridgeToNodeFile(node1, node2, netSlot, 0);
+        // Immediately save to YAML
+        saveStateToSlot();
         refreshConnections();
     } else {
-        addBridgeToNodeFile(node1, node2, netSlot, 1);
+        // Just refresh locally (save happens later)
         refreshLocalConnections();
     }
     return 1;
 }
 
 int jl_nodes_disconnect(int node1, int node2) {
-    removeBridgeFromNodeFile(node1, node2, netSlot, 0);
+    // Remove from RAM state
+    removeBridgeFromState(node1, node2);
+    // Save immediately
+    saveStateToSlot();
     refreshConnections(-1);
     return 1;
 }
 
 int jl_nodes_clear(void) {
-    createSlots(netSlot,  1);
-    //delay(2);
+    // Clear the entire state
+    globalState.clearAllConnections();
+    // Save the cleared state
+    saveStateToSlot();
     refreshConnections(-1, 1, 1);
     waitCore2();
     return 1;
 }
 
 int jl_nodes_is_connected(int node1, int node2) {
-
-    int connected = checkIfBridgeExists(node1, node2, netSlot, 0 );
-    // Serial.print("jl_nodes_is_connected = ");
-    // Serial.println(connected);
-    return connected;
-    //return checkIfBridgeExists(node1, node2, netSlot, 0 );
+    // Check in globalState instead of file
+    bool connected = globalState.hasConnection(node1, node2);
+    return connected ? 1 : 0;
 }
 
 int jl_nodes_save(int slot) {
     int target_slot = (slot == -1) ? netSlot : slot;  // Use current slot if -1
     
-    // Save the local nodeFileString to the specified slot
-    saveLocalNodeFile(target_slot);
-//     printSlots(-1);
-//     //saveLocalNodeFile(netSlot);
-//     Serial.println("netslot = " + String(netSlot));
-//     Serial.print("jl_nodes_save: slot = ");
-//     Serial.println(slot);
-//     Serial.print("jl_nodes_save: target_slot = ");
-//     Serial.println(target_slot);
-//     Serial.println("jl_nodes_save: saving local nodeFileString to slot " + String(target_slot));
-// saveCurrentSlotToSlot(netSlot, target_slot, 0, 0);
-//     //saveLocalNodeFile(target_slot);
+    // Save globalState to YAML
+    saveStateToSlot(target_slot);
     
-//     // Refresh connections to make sure everything is in sync
+    // Refresh connections to make sure everything is in sync
     refreshConnections();
     
     return target_slot;  // Return the slot that was saved to
 }
 
 void jl_init_micropython_local_copy(void) {
-    // Use the generalized backup system to store entry state
-    storeNodeFileBackup();
+    // Use the new state-based backup system to store entry state
+    storeStateBackup();
 }
 
 void jl_exit_micropython_restore_entry_state(void) {
     // By default, restore to entry state (discard Python changes)
     // This makes Python connections temporary unless explicitly saved
-    restoreAndSaveNodeFileBackup();
+    restoreAndSaveStateBackup();
     
     // Refresh connections to match the restored state
     refreshLocalConnections();
 }
 
 void jl_restore_micropython_entry_state(void) {
-    // Use the generalized backup system to restore entry state
-    restoreAndSaveNodeFileBackup();
+    // Use the new state-based backup system to restore entry state
+    restoreAndSaveStateBackup();
     
     // Refresh connections to match the restored state
     refreshLocalConnections();
 }
 
 int jl_has_unsaved_changes(void) {
-    // Use the generalized backup system to check for changes
-    return hasNodeFileChanges() ? 1 : 0;
+    // Use the new state-based backup system to check for changes
+    return hasStateChanges() ? 1 : 0;
 }
 
 // Helper function to convert chip identifier to chip number

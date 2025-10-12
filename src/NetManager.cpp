@@ -6,6 +6,7 @@
 #include <string.h>
 #include <math.h>
 #include "MatrixState.h"
+#include "States.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
 #include "SafeString.h"
@@ -122,7 +123,7 @@ int foundNode2Net =
 int foundNode1inSpecialNet = foundNode1Net;
 int foundNode2inSpecialNet = foundNode2Net;
 
-// struct pathStruct path[MAX_BRIDGES]; // node1, node2, net, chip[3], x[3],
+// struct pathStruct globalState.connections.paths[MAX_BRIDGES]; // node1, node2, net, chip[3], x[3],
 // y[3]
 int newBridge[MAX_BRIDGES][3]; // node1, node2, net
 int newBridgeLength = 0;
@@ -131,6 +132,26 @@ unsigned long timeToNM;
 
 bool debugNM = EEPROM.read(DEBUG_NETMANAGERADDRESS);
 bool debugNMtime = EEPROM.read(TIME_NETMANAGERADDRESS);
+
+/// @brief Load bridges from globalState instead of from file
+/// This is the new way to populate connections - directly from the state system
+void loadBridgesFromState() {
+  newBridgeLength = globalState.connections.numBridges;
+  newBridgeIndex = 0;
+  
+  // Copy bridges from globalState to newBridge array for processing
+  for (int i = 0; i < newBridgeLength && i < MAX_BRIDGES; i++) {
+    newBridge[i][0] = globalState.connections.bridges[i][0];  // node1
+    newBridge[i][1] = globalState.connections.bridges[i][1];  // node2
+    newBridge[i][2] = 0;  // net (will be assigned by searchExistingNets)
+  }
+  
+  if (debugNM) {
+    Serial.print("Loaded ");
+    Serial.print(newBridgeLength);
+    Serial.println(" bridges from globalState");
+  }
+}
 
 void getNodesToConnect() // read in the nodes you'd like to connect
   {
@@ -141,9 +162,9 @@ void getNodesToConnect() // read in the nodes you'd like to connect
     Serial.println("\n\n\rconnecting nodes into nets\n\r");
 
   for (int i = 0; i < newBridgeLength; i++) {
-    newNode1 = path[i].node1;
-
-    newNode2 = path[i].node2;
+    // Read from newBridge array (populated from globalState or file)
+    newNode1 = newBridge[i][0];
+    newNode2 = newBridge[i][1];
 
     if (debugNM)
       printNodeOrName(newNode1);
@@ -155,7 +176,7 @@ void getNodesToConnect() // read in the nodes you'd like to connect
       Serial.print("\n\r");
 
     if (newNode1 <= 0 || newNode2 <= 0) {
-      path[i].net = -1;
+      globalState.connections.paths[i].net = -1;
       } else {
       searchExistingNets(newNode1, newNode2);
       }
@@ -192,17 +213,17 @@ int searchExistingNets(
   foundNode2inSpecialNet = node2;
 
   for (int i = 1; i < MAX_NETS; i++) {
-    if (net[i].number <= 0) // stops searching if it gets to an unallocated net
+    if (globalState.connections.nets[i].number <= 0) // stops searching if it gets to an unallocated net
       {
       break;
       }
 
     for (int j = 0; j < MAX_NODES; j++) {
-      if (net[i].nodes[j] <= 0) {
+      if (globalState.connections.nets[i].nodes[j] <= 0) {
         break;
         }
 
-      if (net[i].nodes[j] == node1) {
+      if (globalState.connections.nets[i].nodes[j] == node1) {
         if (i > 7) {
           if (debugNM)
             Serial.print("found Node ");
@@ -214,14 +235,14 @@ int searchExistingNets(
             Serial.println(i);
           }
 
-        if (net[i].specialFunction > 0) {
+        if (globalState.connections.nets[i].specialFunction > 0) {
           foundNode1Net = i;
           foundNode1inSpecialNet = i;
           } else {
           foundNode1Net = i;
           }
         }
-      if (net[i].nodes[j] == node2) {
+      if (globalState.connections.nets[i].nodes[j] == node2) {
         if (i > 7) {
           if (debugNM)
             Serial.print("found Node ");
@@ -233,7 +254,7 @@ int searchExistingNets(
             Serial.println(i);
           }
 
-        if (net[i].specialFunction > 0) {
+        if (globalState.connections.nets[i].specialFunction > 0) {
           foundNode2Net = i;
           foundNode2inSpecialNet = i;
           } else {
@@ -252,7 +273,7 @@ int searchExistingNets(
                  node1); // note that they both connect to node1's net
     addNodeToNet(foundNode1Net, node2);
     addBridgeToNet(foundNode1Net, node1, node2);
-    path[newBridgeIndex].net = foundNode1Net;
+    globalState.connections.paths[newBridgeIndex].net = foundNode1Net;
     return 1;
     } else if ((foundNode1Net > 0 && foundNode2Net > 0) &&
                (foundNode1Net != foundNode2Net)) // if both nodes are in different
@@ -277,7 +298,7 @@ int searchExistingNets(
 
           addNodeToNet(foundNode1Net, node2);
           addBridgeToNet(foundNode1Net, node1, node2);
-          path[newBridgeIndex].net = foundNode1Net;
+          globalState.connections.paths[newBridgeIndex].net = foundNode1Net;
           } else {
           createNewNet();
           }
@@ -298,7 +319,7 @@ int searchExistingNets(
 
             addNodeToNet(foundNode2Net, node1);
             addBridgeToNet(foundNode2Net, node1, node2);
-            path[newBridgeIndex].net = foundNode2Net;
+            globalState.connections.paths[newBridgeIndex].net = foundNode2Net;
             } else {
             createNewNet();
             }
@@ -325,10 +346,10 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
 
       for (int i = 0; i < MAX_DNI; i++) {
         for (int j = 0; j < MAX_DNI; j++) {
-          if ((net[foundNode1Net].doNotIntersectNodes[i] == foundNode1Net ||
-               net[foundNode2Net].doNotIntersectNodes[j] == foundNode2Net)) {//&&
-            //(net[foundNode1Net].doNotIntersectNodes[i] != -1 &&
-            // net[foundNode2Net].doNotIntersectNodes[j] != -1)) {
+          if ((globalState.connections.nets[foundNode1Net].doNotIntersectNodes[i] == foundNode1Net ||
+               globalState.connections.nets[foundNode2Net].doNotIntersectNodes[j] == foundNode2Net)) {//&&
+            //(globalState.connections.nets[foundNode1Net].doNotIntersectNodes[i] != -1 &&
+            // globalState.connections.nets[foundNode2Net].doNotIntersectNodes[j] != -1)) {
 
             if (debugNM)
               Serial.print(
@@ -336,7 +357,7 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
             // bridge between them if
             // it's allowed?
 
-            path[newBridgeIndex].net = -1;
+            globalState.connections.paths[newBridgeIndex].net = -1;
             return;
             }
           }
@@ -351,7 +372,7 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
             "can't combine Specccccccial Nets\n\r"); // maybe have it add a bridge
       // between them if it's allowed?
 
-      path[newBridgeIndex].net = -1;
+      globalState.connections.paths[newBridgeIndex].net = -1;
       } else {
 
       if (foundNode2Net <= 5) {
@@ -362,7 +383,7 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
       addNodeToNet(foundNode1Net, newNode1);
       addNodeToNet(foundNode1Net, newNode2);
       addBridgeToNet(foundNode1Net, newNode1, newNode2);
-      path[newBridgeIndex].net = foundNode1Net;
+      globalState.connections.paths[newBridgeIndex].net = foundNode1Net;
       if (debugNM)
         Serial.print("combining Nets ");
       if (debugNM)
@@ -373,46 +394,46 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
         Serial.println(foundNode2Net);
 
       for (int i = 0; i < MAX_NODES; i++) {
-        if (net[foundNode2Net].nodes[i] == 0) {
+        if (globalState.connections.nets[foundNode2Net].nodes[i] == 0) {
           break;
           }
 
-        addNodeToNet(foundNode1Net, net[foundNode2Net].nodes[i]);
+        addNodeToNet(foundNode1Net, globalState.connections.nets[foundNode2Net].nodes[i]);
         }
 
       for (int i = 0; i < MAX_BRIDGES; i++) {
-        if (net[foundNode2Net].bridges[i][0] == 0) {
+        if (globalState.connections.nets[foundNode2Net].bridges[i][0] == 0) {
           break;
           }
 
-        addBridgeToNet(foundNode1Net, net[foundNode2Net].bridges[i][0],
-                       net[foundNode2Net].bridges[i][1]);
+        addBridgeToNet(foundNode1Net, globalState.connections.nets[foundNode2Net].bridges[i][0],
+                       globalState.connections.nets[foundNode2Net].bridges[i][1]);
         }
       for (int i = 0; i < MAX_DNI; i++) {
-        if (net[foundNode2Net].doNotIntersectNodes[i] == 0) {
+        if (globalState.connections.nets[foundNode2Net].doNotIntersectNodes[i] == 0) {
           break;
           }
 
-        addNodeToNet(foundNode1Net, net[foundNode2Net].doNotIntersectNodes[i]);
+        addNodeToNet(foundNode1Net, globalState.connections.nets[foundNode2Net].doNotIntersectNodes[i]);
         }
       for (int i = 0; i < newBridgeIndex;
            i++) // update the newBridge array to reflect the new net number
         {
-        if (path[i].net == foundNode2Net) {
+        if (globalState.connections.paths[i].net == foundNode2Net) {
           if (debugNM)
-            Serial.print("updating path[");
+            Serial.print("updating globalState.connections.paths[");
           if (debugNM)
             Serial.print(i);
           if (debugNM)
             Serial.print("].net from ");
           if (debugNM)
-            Serial.print(path[i].net);
+            Serial.print(globalState.connections.paths[i].net);
           if (debugNM)
             Serial.print(" to ");
           if (debugNM)
             Serial.println(foundNode1Net);
 
-          path[i].net = foundNode1Net;
+          globalState.connections.paths[i].net = foundNode1Net;
           }
         }
       if (debugNM)
@@ -430,19 +451,19 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
 int checkIfBridgeExistsLocal(int node1, int node2) {
 
   for (int i = 1; i < MAX_NETS; i++) {
-    if (net[i].number <= 0) {
+    if (globalState.connections.nets[i].number <= 0) {
       break;
       }
     for (int j = 0; j < MAX_NODES; j++) {
-      if (net[i].nodes[j] <= 0) {
+      if (globalState.connections.nets[i].nodes[j] <= 0) {
         break;
         }
-      if (net[i].nodes[j] == node1) {
+      if (globalState.connections.nets[i].nodes[j] == node1) {
         if (node2 == -1) {
           return 1;
           }
         for (int k = 0; k < MAX_NODES; k++) {
-          if (net[i].nodes[k] == node2) {
+          if (globalState.connections.nets[i].nodes[k] == node2) {
             return 1;
             }
 
@@ -466,7 +487,7 @@ int shiftNets(
   int lastNet;
 
   for (int i = MAX_NETS - 2; i > 0; i--) {
-    if (net[i].number != 0) {
+    if (globalState.connections.nets[i].number != 0) {
       lastNet = i;
       // if(debugNM) Serial.print("last net = ");
       // if(debugNM) Serial.println(lastNet);
@@ -479,35 +500,35 @@ int shiftNets(
     Serial.println(deletedNet);
 
   for (int i = deletedNet; i < lastNet; i++) {
-    net[i] = net[i + 1];
-    net[i].name = netNameConstants[i];
-    net[i].number = i;
+    globalState.connections.nets[i] = globalState.connections.nets[i + 1];
+    globalState.connections.nets[i].name = netNameConstants[i];
+    globalState.connections.nets[i].number = i;
     }
 
-  net[lastNet].number = 0;
-  net[lastNet].name = "       "; // netNameConstants[lastNet];
-  net[lastNet].visible = 0;
-  net[lastNet].specialFunction = -1;
+  globalState.connections.nets[lastNet].number = 0;
+  globalState.connections.nets[lastNet].name = "       "; // netNameConstants[lastNet];
+  globalState.connections.nets[lastNet].visible = 0;
+  globalState.connections.nets[lastNet].specialFunction = -1;
 
   for (int i = 0; i < 6; i++) {
-    net[lastNet].intersections[i] = 0;
-    net[lastNet].doNotIntersectNodes[i] = 0;
+    globalState.connections.nets[lastNet].intersections[i] = 0;
+    globalState.connections.nets[lastNet].doNotIntersectNodes[i] = 0;
     }
   for (int j = 0; j < MAX_NODES; j++) {
-    if (net[lastNet].nodes[j] == 0) {
+    if (globalState.connections.nets[lastNet].nodes[j] == 0) {
       break;
       }
 
-    net[lastNet].nodes[j] = 0;
+    globalState.connections.nets[lastNet].nodes[j] = 0;
     }
 
   for (int j = 0; j < MAX_BRIDGES; j++) {
-    if (net[lastNet].bridges[j][0] == 0) {
+    if (globalState.connections.nets[lastNet].bridges[j][0] == 0) {
       break;
       }
 
-    net[lastNet].bridges[j][0] = 0;
-    net[lastNet].bridges[j][1] = 0;
+    globalState.connections.nets[lastNet].bridges[j][0] = 0;
+    globalState.connections.nets[lastNet].bridges[j][1] = 0;
     }
   return lastNet;
   }
@@ -519,17 +540,17 @@ int findNodeInNet(int node) {
   for (int i = 1; i < MAX_NETS; i++) {
 
     for (int j = 0; j < MAX_NODES; j++) {
-      if (net[i].nodes[j] == -1) {
+      if (globalState.connections.nets[i].nodes[j] == -1) {
         // continue; 
         break;
         }
 
-      if (net[i].nodes[j] == node) {
+      if (globalState.connections.nets[i].nodes[j] == node) {
         // Serial.print("found node ");
         // Serial.print(node);
         // Serial.print(" in net ");
-        // Serial.println(net[i].number);
-        return net[i].number;
+        // Serial.println(globalState.connections.nets[i].number);
+        return globalState.connections.nets[i].number;
         }
       }
     }
@@ -538,7 +559,7 @@ int findNodeInNet(int node) {
       //         Serial.print("found node ");
       // Serial.print(node);
       // Serial.print(" in net ");
-      // Serial.println(net[i].number);
+      // Serial.println(globalState.connections.nets[i].number);
       return gpioNet[i];
       }
     }
@@ -556,12 +577,12 @@ int findNodeInNet(int node) {
 void createNewNet() // add those nodes to a new net
   {
   int newNetNumber = findFirstUnusedNetIndex();
-  net[newNetNumber].number = newNetNumber;
+  globalState.connections.nets[newNetNumber].number = newNetNumber;
 
-  net[newNetNumber].name =
+  globalState.connections.nets[newNetNumber].name =
     netNameConstants[newNetNumber]; // dont need a function for this anymore
 
-  net[newNetNumber].specialFunction = -1;
+  globalState.connections.nets[newNetNumber].specialFunction = -1;
 
   addNodeToNet(newNetNumber, newNode1);
 
@@ -569,15 +590,15 @@ void createNewNet() // add those nodes to a new net
 
   addBridgeToNet(newNetNumber, newNode1, newNode2);
 
-  path[newBridgeIndex].net = newNetNumber;
+  globalState.connections.paths[newBridgeIndex].net = newNetNumber;
   }
 
 void addBridgeToNet(uint16_t netToAddBridge, int16_t node1,
                     int16_t node2) // just add those nodes to the net
   {
   int newBridgeIndex = findFirstUnusedBridgeIndex(netToAddBridge);
-  net[netToAddBridge].bridges[newBridgeIndex][0] = node1;
-  net[netToAddBridge].bridges[newBridgeIndex][1] = node2;
+  globalState.connections.nets[netToAddBridge].bridges[newBridgeIndex][0] = node1;
+  globalState.connections.nets[netToAddBridge].bridges[newBridgeIndex][1] = node2;
   }
 
 void populateSpecialFunctions(int net, int node) {
@@ -671,11 +692,11 @@ void addNodeToNet(int netToAddNode, int node) {
   // and maybe shift the nodes down so they're left justified
   populateSpecialFunctions(netToAddNode, node);
   for (int i = 0; i < MAX_NODES; i++) {
-    if (net[netToAddNode].nodes[i] == 0) {
+    if (globalState.connections.nets[netToAddNode].nodes[i] == 0) {
       break;
       }
 
-    if (net[netToAddNode].nodes[i] == node) {
+    if (globalState.connections.nets[netToAddNode].nodes[i] == node) {
       if (debugNM)
         Serial.print("Node ");
       if (debugNM)
@@ -691,13 +712,13 @@ void addNodeToNet(int netToAddNode, int node) {
       }
     }
 
-  net[netToAddNode].nodes[newNodeIndex] = node;
+  globalState.connections.nets[netToAddNode].nodes[newNodeIndex] = node;
   }
 
-int findFirstUnusedNetIndex() // search for a free net[]
+int findFirstUnusedNetIndex() // search for a free globalState.connections.nets[]
   {
   for (int i = 0; i < MAX_NETS; i++) {
-    if (net[i].nodes[0] <= 0) {
+    if (globalState.connections.nets[i].nodes[0] <= 0) {
       if (debugNM)
         Serial.print("found unused Net ");
       if (debugNM)
@@ -712,7 +733,7 @@ int findFirstUnusedNetIndex() // search for a free net[]
 
 int findFirstUnusedBridgeIndex(int netNumber) {
   for (int i = 0; i < MAX_BRIDGES; i++) {
-    if (net[netNumber].bridges[i][0] == 0) {
+    if (globalState.connections.nets[netNumber].bridges[i][0] == 0) {
       // if(debugNM) Serial.print("found unused bridge ");
       // if(debugNM) Serial.println(i);
 
@@ -723,11 +744,11 @@ int findFirstUnusedBridgeIndex(int netNumber) {
   return 0x7f;
   }
 
-int findFirstUnusedNodeIndex(int netNumber) // search for a free net[]
+int findFirstUnusedNodeIndex(int netNumber) // search for a free globalState.connections.nets[]
   {
   for (int i = 0; i < MAX_NODES; i++) {
-    if (net[netNumber].nodes[i] == 0) {
-      // if(debugNM) Serial.printf("found unused node index net[%d].
+    if (globalState.connections.nets[netNumber].nodes[i] == 0) {
+      // if(debugNM) Serial.printf("found unused node index globalState.connections.nets[%d].
       // node[%d]\n\r", netNumber, i);
       //  if(debugNM) Serial.println(i);
 
@@ -748,7 +769,7 @@ int checkDoNotIntersectsByNet(int netToCheck1, int netToCheck2) // If you're sea
   {
 
   for (int i = 0; i <= MAX_DNI; i++) {
-    if (net[netToCheck1].doNotIntersectNodes[i] == 0) {
+    if (globalState.connections.nets[netToCheck1].doNotIntersectNodes[i] == 0) {
       break;
       }
 
@@ -756,16 +777,16 @@ int checkDoNotIntersectsByNet(int netToCheck1, int netToCheck2) // If you're sea
          j++) {
 
       if (debugNM) Serial.print
-      (net[netToCheck1].doNotIntersectNodes[i]);
+      (globalState.connections.nets[netToCheck1].doNotIntersectNodes[i]);
       if (debugNM) Serial.print("-");
-      if (debugNM) Serial.println(net[netToCheck2].nodes[j]);
+      if (debugNM) Serial.println(globalState.connections.nets[netToCheck2].nodes[j]);
 
-      if (net[netToCheck2].nodes[j] == 0) {
+      if (globalState.connections.nets[netToCheck2].nodes[j] == 0) {
         break;
         }
 
-      if (net[netToCheck1].doNotIntersectNodes[i] ==
-          net[netToCheck2].nodes[j]) {
+      if (globalState.connections.nets[netToCheck1].doNotIntersectNodes[i] ==
+          globalState.connections.nets[netToCheck2].nodes[j]) {
         if (debugNM)
           Serial.print("Net ");
         if (debugNM)
@@ -776,8 +797,8 @@ int checkDoNotIntersectsByNet(int netToCheck1, int netToCheck2) // If you're sea
           Serial.print(netToCheck1);
         if (debugNM)
           Serial.print(" due to Do Not Intersect rules, skipping\n\r");
-        path[newBridgeIndex].skip = true;
-        path[newBridgeIndex].net = -1;
+        globalState.connections.paths[newBridgeIndex].skip = true;
+        globalState.connections.paths[newBridgeIndex].net = -1;
         return 0;
         }
       }
@@ -785,17 +806,17 @@ int checkDoNotIntersectsByNet(int netToCheck1, int netToCheck2) // If you're sea
     }
 
   for (int i = 0; i <= MAX_DNI; i++) {
-    if (net[netToCheck2].doNotIntersectNodes[i] == 0) {
+    if (globalState.connections.nets[netToCheck2].doNotIntersectNodes[i] == 0) {
       break;
       }
 
     for (int j = 0; j <= MAX_NODES; j++) {
-      if (net[netToCheck1].nodes[j] == 0) {
+      if (globalState.connections.nets[netToCheck1].nodes[j] == 0) {
         break;
         }
 
-      if (net[netToCheck2].doNotIntersectNodes[i] ==
-          net[netToCheck1].nodes[j]) {
+      if (globalState.connections.nets[netToCheck2].doNotIntersectNodes[i] ==
+          globalState.connections.nets[netToCheck1].nodes[j]) {
         if (debugNM)
           Serial.print("Net ");
         printNodeOrName(netToCheck2);
@@ -805,7 +826,7 @@ int checkDoNotIntersectsByNet(int netToCheck1, int netToCheck2) // If you're sea
           Serial.print(netToCheck1);
         if (debugNM)
           Serial.print(" due to Do Not Intersect rules, skipping\n\r");
-        path[newBridgeIndex].net = -1;
+        globalState.connections.paths[newBridgeIndex].net = -1;
         return 0;
         }
       }
@@ -825,11 +846,11 @@ int checkDoNotIntersectsByNode(
   {
 
   for (int i = 0; i < MAX_DNI; i++) {
-    if (net[netToCheck].doNotIntersectNodes[i] == 0) {
+    if (globalState.connections.nets[netToCheck].doNotIntersectNodes[i] == 0) {
       break;
       }
 
-    if (net[netToCheck].doNotIntersectNodes[i] == nodeToCheck) {
+    if (globalState.connections.nets[netToCheck].doNotIntersectNodes[i] == nodeToCheck) {
       if (debugNM)
         Serial.print("Node ");
       if (debugNM)
@@ -857,24 +878,24 @@ void assignTermColor(void) {
 
 
   for (int i = 1; i < 6; i++) {
-    net[i].termColor = railTermColors[i - 1];
-    // changeTerminalColor(net[i].termColor);
-    // Serial.print("net[");
+    globalState.connections.nets[i].termColor = railTermColors[i - 1];
+    // changeTerminalColor(globalState.connections.nets[i].termColor);
+    // Serial.print("globalState.connections.nets[");
     // Serial.print(i);
     // Serial.print("].termColor = ");
-    // Serial.println(net[i].termColor);
+    // Serial.println(globalState.connections.nets[i].termColor);
     // changeTerminalColor();
     }
 
   for (int i = 6; i < numberOfNets; i++) {
-    if (net[i].nodes[0] > 0) {
-      net[i].termColor = colorToVT100(packRgb(netColors[i]));
+    if (globalState.connections.nets[i].nodes[0] > 0) {
+      globalState.connections.nets[i].termColor = colorToVT100(packRgb(netColors[i]));
       }
-    // changeTerminalColor(net[i].termColor);
-    // Serial.print("net[");
+    // changeTerminalColor(globalState.connections.nets[i].termColor);
+    // Serial.print("globalState.connections.nets[");
     // Serial.print(i);
     // Serial.print("].termColor = ");
-    // Serial.println(net[i].termColor);
+    // Serial.println(globalState.connections.nets[i].termColor);
     // changeTerminalColor();
     }
 #endif
@@ -922,29 +943,29 @@ void listNets(int liveUpdate)
       }
     // First scan all nets to check for ADC and GPIO nodes
     for (int i = 6; i <= numberOfNets; i++) {
-      if (net[i].nodes[0] <= 0) continue; // Skip empty nets
+      if (globalState.connections.nets[i].nodes[0] <= 0) continue; // Skip empty nets
 
       for (int j = 0; j < MAX_NODES; j++) {
-        if (net[i].nodes[j] <= 0) break; // End of nodes for this net
+        if (globalState.connections.nets[i].nodes[j] <= 0) break; // End of nodes for this net
 
         // Check for ADC nodes (ADC0-ADC7)
         // Values from JumperlessDefines.h: ADC0(110), ADC1(111), ADC2(112), ADC3(113), ADC4(114), ADC7(115)
-        if ((net[i].nodes[j] >= ADC0 && net[i].nodes[j] <= ADC4) ||
-            net[i].nodes[j] == ADC7) {
+        if ((globalState.connections.nets[i].nodes[j] >= ADC0 && globalState.connections.nets[i].nodes[j] <= ADC4) ||
+            globalState.connections.nets[i].nodes[j] == ADC7) {
           // Serial.print("adc  ");
-          // Serial.println(net[i].nodes[j]);
+          // Serial.println(globalState.connections.nets[i].nodes[j]);
           showVoltage = 1;
           netsShowingSpecial[i] = 1;
           }
 
         // Check for GPIO nodes (RP_GPIO_1-RP_GPIO_8)
         // Values from JumperlessDefines.h: RP_GPIO_1(131)-RP_GPIO_4(134), RP_GPIO_5(135)-RP_GPIO_8(138)
-        if ((net[i].nodes[j] >= RP_GPIO_1 && net[i].nodes[j] <= RP_GPIO_4) ||
-            (net[i].nodes[j] >= RP_GPIO_5 && net[i].nodes[j] <= RP_GPIO_8)) {
+        if ((globalState.connections.nets[i].nodes[j] >= RP_GPIO_1 && globalState.connections.nets[i].nodes[j] <= RP_GPIO_4) ||
+            (globalState.connections.nets[i].nodes[j] >= RP_GPIO_5 && globalState.connections.nets[i].nodes[j] <= RP_GPIO_8)) {
           // Serial.print("gpio");
-          // Serial.println(net[i].nodes[j]);
+          // Serial.println(globalState.connections.nets[i].nodes[j]);
           showGPIO = 1;
-          if (gpioState[net[i].nodes[j] - RP_GPIO_1] == 0) {
+          if (gpioState[globalState.connections.nets[i].nodes[j] - RP_GPIO_1] == 0) {
             netsShowingSpecial[i] = 3;
             } else {
             netsShowingSpecial[i] = 2;
@@ -952,11 +973,11 @@ void listNets(int liveUpdate)
           }
 
         // Check for UART pins which are also GPIO pins
-        if (net[i].nodes[j] == RP_UART_TX) {
+        if (globalState.connections.nets[i].nodes[j] == RP_UART_TX) {
           showGPIO = 1;
           netsShowingSpecial[i] = 4;
           }
-        if (net[i].nodes[j] == RP_UART_RX) {
+        if (globalState.connections.nets[i].nodes[j] == RP_UART_RX) {
           showGPIO = 1;
           netsShowingSpecial[i] = 5;
           }
@@ -972,12 +993,12 @@ void listNets(int liveUpdate)
     int maxChars = 0;
 
     for (int i = 6; i < numberOfNets; i++) {
-      if (net[i].nodes[0] > 0) {
+      if (globalState.connections.nets[i].nodes[0] > 0) {
         int nodeCount = 0;
         int charCount = 0;
         // Count all nodes in this net
         for (int j = 0; j < MAX_NODES; j++) {
-          if (net[i].nodes[j] > 0) {
+          if (globalState.connections.nets[i].nodes[j] > 0) {
             nodeCount++;
             // Calculate characters for this node using definesToChar
             if (j > 0) {
@@ -985,13 +1006,13 @@ void listNets(int liveUpdate)
               }
 
             // Get character length based on node value
-            if (net[i].nodes[j] >= 100) {
-              charCount += strlen(definesToChar(net[i].nodes[j], 0)); // Short form
-              } else if (net[i].nodes[j] >= NANO_D0) {
-                charCount += strlen(definesToChar(net[i].nodes[j], 0)); // Short form
+            if (globalState.connections.nets[i].nodes[j] >= 100) {
+              charCount += strlen(definesToChar(globalState.connections.nets[i].nodes[j], 0)); // Short form
+              } else if (globalState.connections.nets[i].nodes[j] >= NANO_D0) {
+                charCount += strlen(definesToChar(globalState.connections.nets[i].nodes[j], 0)); // Short form
                 } else {
                 // For numeric nodes, calculate digits
-                int node = net[i].nodes[j];
+                int node = globalState.connections.nets[i].nodes[j];
                 if (node == 0) charCount += 1;
                 else {
                   int digits = 0;
@@ -1099,8 +1120,8 @@ void listNets(int liveUpdate)
             Serial.printf("\033[38;5;%dm", railTermColors[i - 1]);
             }
 
-          if (net[i].number == 0 ||
-              net[i].nodes[0] ==
+          if (globalState.connections.nets[i].number == 0 ||
+              globalState.connections.nets[i].nodes[0] ==
                   -1) // stops searching if it gets to an unallocated net
             {
             // Serial.print("Done listing nets");
@@ -1111,9 +1132,9 @@ void listNets(int liveUpdate)
 
           if (netsShowingSpecial[i] != 0) {
             for (int j = 0; j < MAX_NODES; j++) {
-              if (net[i].nodes[j] > 0) {
+              if (globalState.connections.nets[i].nodes[j] > 0) {
                 for (int k = 0; k < 8; k++) {
-                  if (net[i].nodes[j] == ADC0 + k || net[i].nodes[j] == RP_GPIO_1 + k) {
+                  if (globalState.connections.nets[i].nodes[j] == ADC0 + k || globalState.connections.nets[i].nodes[j] == RP_GPIO_1 + k) {
                     gpioOrAdcNumber = k;
                     break;
                     }
@@ -1132,7 +1153,7 @@ void listNets(int liveUpdate)
        // Serial.print("\n\r ");
           Serial.print(i);
           Serial.print("\t ");
-          int netNameLength = Serial.print(net[i].name);
+          int netNameLength = Serial.print(globalState.connections.nets[i].name);
           if (netNameLength < 8) {
             Serial.print("\t");
             }
@@ -1205,18 +1226,18 @@ void listNets(int liveUpdate)
                     spaces = Serial.print("0 V       ");
                     break;
                   case 2:
-                    spaces = Serial.printf("%-.2f V", railVoltage[0]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.topRail);
 
                     break;
                   case 3:
-                    spaces = Serial.printf("%-.2f V", railVoltage[1]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.bottomRail);
 
                     break;
                   case 4:
-                    spaces = Serial.printf("%-.2f V", dacOutput[0]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.dac0);
                     break;
                   case 5:
-                    spaces = Serial.printf("%-.2f V", dacOutput[1]);
+                    spaces = Serial.printf("%-.2f V", globalState.power.dac1);
                     break;
                   }
 
@@ -1271,14 +1292,14 @@ void listNets(int liveUpdate)
 
           tabs = 0;
           for (int j = 0; j < MAX_NODES; j++) {
-            if (brightenedNode == net[i].nodes[j]) {
+            if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
               Serial.printf("\033[7m");
               }
-            tabs += printNodeOrName(net[i].nodes[j]);
-            if (brightenedNode == net[i].nodes[j]) {
+            tabs += printNodeOrName(globalState.connections.nets[i].nodes[j]);
+            if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
               Serial.printf("\033[27m");
               }
-            // if (brightenedNode == net[i].nodes[j]) {
+            // if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
             //   if (floatingTermColor != -1) {
             //     Serial.printf("\033[38;5;%dm", floatingTermColors[gpioOrAdcNumber]);
             //     } else {
@@ -1288,7 +1309,7 @@ void listNets(int liveUpdate)
 
 
 
-            if (net[i].nodes[j + 1] == 0) {
+            if (globalState.connections.nets[i].nodes[j + 1] == 0) {
               break;
               } else {
 
@@ -1387,7 +1408,8 @@ void listNets(int liveUpdate)
               }
             }
           if (millis() - startTime > 100) {
-            if (checkProbeButton() != 0) {
+            // Use state-based check in loop (doesn't consume event)
+            if (checkProbeButtonState() != 0) {
               blockProbeButton = 500;
               blockProbeButtonTimer = millis();
               liveUpdate = 0;
@@ -1472,17 +1494,17 @@ void listSpecialNets() {
 
   for (int i = 1; i < 6; i++) {
     int spaces = 0;
-    if (net[i].number == 0) // stops searching if it gets to an unallocated net
+    if (globalState.connections.nets[i].number == 0) // stops searching if it gets to an unallocated net
       {
       // Serial.print("Done listing nets");
       break;
       }
 
     Serial.print("\n\r ");
-    Serial.print(net[i].number);
+    Serial.print(globalState.connections.nets[i].number);
     Serial.print("\t ");
 
-    int netNameLength = Serial.print(net[i].name);
+    int netNameLength = Serial.print(globalState.connections.nets[i].name);
     // if (netNameLength < 8)
     // {
     //     Serial.print("\t");
@@ -1498,22 +1520,22 @@ void listSpecialNets() {
         spaces += Serial.print("0V");
         break;
       case 2:
-        spaces += Serial.print(railVoltage[0]);
+        spaces += Serial.print(globalState.power.topRail);
         spaces += Serial.print("V");
         break;
       case 3:
-        spaces += Serial.print(railVoltage[1]);
+        spaces += Serial.print(globalState.power.bottomRail);
         spaces += Serial.print("V");
         break;
       case 4:
-        spaces += Serial.print(dacOutput[0]);
+        spaces += Serial.print(globalState.power.dac0);
         spaces += Serial.print("V");
         break;
       case 5:
-        spaces += Serial.print(dacOutput[1]);
+        spaces += Serial.print(globalState.power.dac1);
         // for (int i = 0; i < 32; i++)
         // {
-        //     uint32_t dacMask = dacOutput[1];
+        //     uint32_t dacMask = globalState.power.dac1;
         //     Serial.println(dacMask, BIN);
         // }
         spaces += Serial.print("V");
@@ -1529,22 +1551,22 @@ void listSpecialNets() {
     // Serial.print("   ");
 
     // Serial.print("r");
-    // if (net[i].color.r < 16) {
+    // if (globalState.connections.nets[i].color.r < 16) {
     //   Serial.print("0");
     // }
-    // netNameLength = Serial.print(net[i].color.r, HEX);
+    // netNameLength = Serial.print(globalState.connections.nets[i].color.r, HEX);
 
     // Serial.print(" g");
-    // if (net[i].color.g < 16) {
+    // if (globalState.connections.nets[i].color.g < 16) {
     //   Serial.print("0");
     // }
-    // netNameLength = Serial.print(net[i].color.g, HEX);
+    // netNameLength = Serial.print(globalState.connections.nets[i].color.g, HEX);
 
     // Serial.print(" b");
-    // if (net[i].color.b < 16) {
+    // if (globalState.connections.nets[i].color.b < 16) {
     //   Serial.print("0");
     // }
-    // netNameLength = Serial.print(net[i].color.b, HEX);
+    // netNameLength = Serial.print(globalState.connections.nets[i].color.b, HEX);
 
     // if (netNameLength < 6)
     // {
@@ -1554,10 +1576,10 @@ void listSpecialNets() {
 
     tabs = 0;
     for (int j = 0; j < MAX_NODES; j++) {
-      tabs += printNodeOrName(net[i].nodes[j]);
-      // tabs += Serial.print(definesToChar(net[i].nodes[j]));
+      tabs += printNodeOrName(globalState.connections.nets[i].nodes[j]);
+      // tabs += Serial.print(definesToChar(globalState.connections.nets[i].nodes[j]));
 
-      if (net[i].nodes[j + 1] == 0) {
+      if (globalState.connections.nets[i].nodes[j + 1] == 0) {
         break;
         } else {
 
@@ -1593,11 +1615,11 @@ void printBridgeArray(void) {
       tabs += Serial.print(" ");
       }
     tabs += Serial.print("[");
-    tabs += printNodeOrName(path[i].node1);
+    tabs += printNodeOrName(globalState.connections.paths[i].node1);
     tabs += Serial.print(",");
-    tabs += printNodeOrName(path[i].node2);
+    tabs += printNodeOrName(globalState.connections.paths[i].node2);
     tabs += Serial.print(",Net ");
-    tabs += printNodeOrName(path[i].net);
+    tabs += printNodeOrName(globalState.connections.paths[i].net);
     tabs += Serial.print("],");
     lineCount++;
     // Serial.print(tabs);
@@ -1723,9 +1745,9 @@ void clearAllPaths(void) {
   digitalWrite(RESETPIN, LOW);
 
   for (int i = 0; i < MAX_BRIDGES; i++) {
-    path[i].node1 = 0;
-    path[i].node2 = 0;
-    path[i].net = 0;
+    globalState.connections.paths[i].node1 = 0;
+    globalState.connections.paths[i].node2 = 0;
+    globalState.connections.paths[i].net = 0;
     }
   }
 

@@ -4,6 +4,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
 
@@ -64,12 +65,6 @@ void isrFromPio(void) {
 
   }
 
-struct pathStruct lastPath[MAX_BRIDGES];
-struct pathStruct emptyPath;
-
-
-//struct pathStruct newPath[MAX_BRIDGES];
-int lastPathNumber = 0;
 int changedPaths[MAX_BRIDGES];
 int changedPathsCount = 0;
 
@@ -119,29 +114,8 @@ void initCH446Q(void) {
         }
       }
     }
-
-  for (int i = 0; i < MAX_BRIDGES; i++) {
-    lastPath[i].chip[0] = -1;
-    lastPath[i].chip[1] = -1;
-    lastPath[i].chip[2] = -1;
-    lastPath[i].chip[3] = -1;
-    lastPath[i].x[0] = -1;
-    lastPath[i].x[1] = -1;
-    lastPath[i].x[2] = -1;
-    lastPath[i].x[3] = -1;
-    lastPath[i].y[0] = -1;
-    lastPath[i].y[1] = -1;
-    lastPath[i].y[2] = -1;
-    lastPath[i].y[3] = -1;
-    }
   
   chipOrderValid = false; // Initialize chip order as invalid
-  emptyPath.node1 = -1;
-  emptyPath.node2 = -1;
-  emptyPath.net = 0;
-  for (int i = 0; i < 4; i++) {
-    emptyPath.chip[i] = 13;
-    }
   }
 
 void sendPaths(int clean) {
@@ -194,10 +168,6 @@ void refreshPaths(void) {
   for (int i = 0; i < MAX_BRIDGES; i++) {
     changedPaths[i] = -2;
     }
-  lastPathNumber = 0;
-  for (int i = 0; i < MAX_BRIDGES; i++) {
-    lastPath[i] = emptyPath;
-    }
   chipOrderValid = false; // Invalidate chip order index
   sendAllPaths(1);
   }
@@ -219,14 +189,13 @@ void sendAllPaths(int clean) // should we sort them by chip? for now, no
     for (int i = 0; i < numberOfPaths; i++) {
       int pathIdx = chipOrderValid ? chipOrderedIndex[i] : i;
       sendPath(pathIdx, 1, 0);
-      lastPath[pathIdx] = path[pathIdx];
 
       // Update lastChipXY
       for (int j = 0; j < 4; j++) {
-        if (path[pathIdx].chip[j] != -1 && path[pathIdx].x[j] != -1 && path[pathIdx].y[j] != -1) {
-          int chip = path[pathIdx].chip[j];
-          int x = path[pathIdx].x[j];
-          int y = path[pathIdx].y[j];
+        if (globalState.connections.paths[pathIdx].chip[j] != -1 && globalState.connections.paths[pathIdx].x[j] != -1 && globalState.connections.paths[pathIdx].y[j] != -1) {
+          int chip = globalState.connections.paths[pathIdx].chip[j];
+          int x = globalState.connections.paths[pathIdx].x[j];
+          int y = globalState.connections.paths[pathIdx].y[j];
 
           if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
             lastChipXY[chip].connected[x][y] = true;
@@ -234,7 +203,6 @@ void sendAllPaths(int clean) // should we sort them by chip? for now, no
           }
         }
       }
-    lastPathNumber = numberOfPaths;
     return;
     } else {
     // Only send changed paths
@@ -242,28 +210,26 @@ void sendAllPaths(int clean) // should we sort them by chip? for now, no
     for (int i = 0; i < numberOfPaths; i++) {
       if (changedPaths[i] == 1) {
         sendPath(i, 1, 0);
-        lastPath[i] = path[i];
 
         if (debugNTCC) {
           Serial.print("changed path ");
           Serial.print(i);
           Serial.print(" c: ");
-          Serial.print(path[i].chip[0]);
+          Serial.print(globalState.connections.paths[i].chip[0]);
           Serial.print(" x: ");
-          Serial.print(path[i].x[0]);
+          Serial.print(globalState.connections.paths[i].x[0]);
           Serial.print(" y: ");
-          Serial.print(path[i].y[0]);
+          Serial.print(globalState.connections.paths[i].y[0]);
           Serial.print("   -   c:");
-          Serial.print(path[i].chip[1]);
+          Serial.print(globalState.connections.paths[i].chip[1]);
           Serial.print(" x: ");
-          Serial.print(path[i].x[1]);
+          Serial.print(globalState.connections.paths[i].x[1]);
           Serial.print(" y: ");
-          Serial.print(path[i].y[1]);
+          Serial.print(globalState.connections.paths[i].y[1]);
           Serial.println();
           }
         }
       }
-    lastPathNumber = numberOfPaths;
     }
   // unsigned long endTime = micros();
   // unsigned long duration = endTime - startTime;
@@ -428,10 +394,10 @@ void updateChipStateArray() {
   // Set connections based on current paths
   for (int i = 0; i < MAX_NETS; i++) {
     for (int j = 0; j < 4; j++) {
-      if (path[i].chip[j] != -1 && path[i].x[j] != -1 && path[i].y[j] != -1) {
-        int chip = path[i].chip[j];
-        int x = path[i].x[j];
-        int y = path[i].y[j];
+      if (globalState.connections.paths[i].chip[j] != -1 && globalState.connections.paths[i].x[j] != -1 && globalState.connections.paths[i].y[j] != -1) {
+        int chip = globalState.connections.paths[i].chip[j];
+        int x = globalState.connections.paths[i].x[j];
+        int y = globalState.connections.paths[i].y[j];
 
         if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
           newChipXY[chip][x][y] = true;
@@ -448,10 +414,10 @@ void updateChipStateArray() {
   // Find paths that have changed from last state
   for (int i = 0; i < MAX_NETS; i++) {
     for (int j = 0; j < 4; j++) {
-      if (path[i].chip[j] != -1 && path[i].x[j] != -1 && path[i].y[j] != -1) {
-        int chip = path[i].chip[j];
-        int x = path[i].x[j];
-        int y = path[i].y[j];
+      if (globalState.connections.paths[i].chip[j] != -1 && globalState.connections.paths[i].x[j] != -1 && globalState.connections.paths[i].y[j] != -1) {
+        int chip = globalState.connections.paths[i].chip[j];
+        int x = globalState.connections.paths[i].x[j];
+        int y = globalState.connections.paths[i].y[j];
 
         if (lastChipXY[chip].connected[x][y] != newChipXY[chip][x][y]) {
           changedPaths[i] = 1; // Mark path as changed
@@ -496,42 +462,42 @@ void sendPath(int i, int setOrClear, int newOrLast) {
   int chipToConnect = 0;
   int chYdata = 0;
   int chXdata = 0;
-  if (newOrLast == 1) {
+  // if (newOrLast == 1) {
+  //   for (int chip = 0; chip < 4; chip++) {
+  //     if (lastPath[i].chip[chip] != -1) {
+  //       chipSelect = lastPath[i].chip[chip];
+
+  //       chipToConnect = lastPath[i].chip[chip];
+
+  //       if (lastPath[i].y[chip] == -1 || lastPath[i].x[chip] == -1) {
+  //         if (debugNTCC||1)
+  //           Serial.print("!");
+
+  //         continue;
+  //         }
+
+  //       sendXYraw(chipToConnect, lastPath[i].x[chip], lastPath[i].y[chip], 0);
+  //       }
+  //     }
+  //   } else {
+
     for (int chip = 0; chip < 4; chip++) {
-      if (lastPath[i].chip[chip] != -1) {
-        chipSelect = lastPath[i].chip[chip];
+      if (globalState.connections.paths[i].chip[chip] != -1) {
+        chipSelect = globalState.connections.paths[i].chip[chip];
 
-        chipToConnect = lastPath[i].chip[chip];
+        chipToConnect = globalState.connections.paths[i].chip[chip];
 
-        if (lastPath[i].y[chip] == -1 || lastPath[i].x[chip] == -1) {
+        if (globalState.connections.paths[i].y[chip] == -1 || globalState.connections.paths[i].x[chip] == -1) {
           if (debugNTCC)
             Serial.print("!");
 
           continue;
           }
 
-        sendXYraw(chipToConnect, lastPath[i].x[chip], lastPath[i].y[chip], 0);
+        sendXYraw(chipToConnect, globalState.connections.paths[i].x[chip], globalState.connections.paths[i].y[chip], setOrClear);
         }
       }
-    } else {
-
-    for (int chip = 0; chip < 4; chip++) {
-      if (path[i].chip[chip] != -1) {
-        chipSelect = path[i].chip[chip];
-
-        chipToConnect = path[i].chip[chip];
-
-        if (path[i].y[chip] == -1 || path[i].x[chip] == -1) {
-          if (debugNTCC)
-            Serial.print("!");
-
-          continue;
-          }
-
-        sendXYraw(chipToConnect, path[i].x[chip], path[i].y[chip], setOrClear);
-        }
-      }
-    }
+   // }
   }
 
 void sendXYraw(int chip, int x, int y, int setOrClear) {
@@ -623,12 +589,12 @@ void createChipOrderedIndex() {
         int idx1 = chipOrderedIndex[j];
         int idx2 = chipOrderedIndex[j + 1];
         
-        if (path[idx1].chip[k] < path[idx2].chip[k]) break;
-        if (path[idx1].chip[k] > path[idx2].chip[k]) { swap = true; break; }
-        if (path[idx1].x[k] < path[idx2].x[k]) break;
-        if (path[idx1].x[k] > path[idx2].x[k]) { swap = true; break; }
-        if (path[idx1].y[k] < path[idx2].y[k]) break;
-        if (path[idx1].y[k] > path[idx2].y[k]) { swap = true; break; }
+        if (globalState.connections.paths[idx1].chip[k] < globalState.connections.paths[idx2].chip[k]) break;
+        if (globalState.connections.paths[idx1].chip[k] > globalState.connections.paths[idx2].chip[k]) { swap = true; break; }
+        if (globalState.connections.paths[idx1].x[k] < globalState.connections.paths[idx2].x[k]) break;
+        if (globalState.connections.paths[idx1].x[k] > globalState.connections.paths[idx2].x[k]) { swap = true; break; }
+        if (globalState.connections.paths[idx1].y[k] < globalState.connections.paths[idx2].y[k]) break;
+        if (globalState.connections.paths[idx1].y[k] > globalState.connections.paths[idx2].y[k]) { swap = true; break; }
         }
       if (swap) {
         int temp = chipOrderedIndex[j];

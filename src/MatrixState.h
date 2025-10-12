@@ -43,7 +43,7 @@ uint8_t termColor; //terminal color index for 255 color mode (default is white)
 //uint16_t uniqueID; //this is a unique ID for the net, it's used to identify the net in the machine
 };
 
-extern struct netStruct net[MAX_NETS];
+// NOTE: net[] now accessed via globalState.connections.nets[]
 
 //see the comments at the end for a more nicely formatted version that's not in struct initalizers
 enum pathType {BBtoBB, BBtoNANO, NANOtoNANO, BBtoSF, NANOtoSF, BBtoBBL, NANOtoBBL, SFtoSF, SFtoBBL, BBLtoBBL};
@@ -83,7 +83,7 @@ int senseRevision(void);
 bool isConnectable(int node);
 
 bool connectionAllowed(int node1, int node2);
-extern struct pathStruct path[MAX_BRIDGES]; //this is the array of paths 
+// NOTE: path[] array is now defined via macro (see below)
 
 extern int globalDoNotIntersects[60][2];
 
@@ -134,8 +134,6 @@ void printAllConnectableNodes(void);
 void printAllConnectableNodes(int actuallyCheck);
 
 extern struct justXY justXY[MAX_BRIDGES];
-
-extern struct chipStatus ch[12];
 
 void initChipStatus(void);
 struct nanoStatus {  //there's only one of these so ill declare and initalize together unlike above
@@ -304,6 +302,4 @@ use the littleFS to make a text file with connections and just update it
 maybe copy kicad's schematic format 
 */
 
-
-
-#endif
+#endif // MATRIXSTATE_H

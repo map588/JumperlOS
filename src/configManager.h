@@ -70,15 +70,30 @@ extern const char* arbitraryFunctionStrings[];
 // };
 const StringIntEntry fontTable[] = {
     {"eurostile", 0},
+    {"eurostl", 0},
     {"jokerman", 1},
+    {"jokermn", 1},
     {"comicsans", 2},
+    {"comicsns", 2},
     {"courier", 3},
+    {"couriernew", 3},
     {"science", 4},
+    {"newscience", 4},
     {"scienceext", 5},
+    {"sciext", 5},
     {"andale", 6},
     {"andalemono", 6},
+    {"andlmno", 6},
     {"freemono", 7},
-    {"mono", 6}
+    {"fremno", 7},
+    {"mono", 6},
+    {"iosevka", 8},
+    {"iosevkar", 8},
+    {"iosevkaregular", 8},
+    {"berkeleymono", 9},
+    {"berkmono", 9},
+    {"pragmatism", 10},
+    {"pragmtsm", 10}
 };
 const int fontTableSize = sizeof(fontTable) / sizeof(fontTable[0]);
 // Table for parseBool

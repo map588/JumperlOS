@@ -23,6 +23,80 @@ static int map_hl_to_color(int hl) {
   }
 }
 
+// Python keyword arrays - consolidated from EkiloEditor.cpp
+static const char* python_keywords[] = {
+    "and", "as", "assert", "break", "class", "continue", "def", "del",
+    "elif", "else", "except", "exec", "finally", "for", "from", "global",
+    "if", "import", "in", "is", "lambda", "not", "or", "pass", "print",
+    "raise", "return", "try", "while", "with", "yield", "async", "await",
+    "nonlocal", "True", "False", "None",
+    nullptr
+};
+
+static const char* python_builtins[] = {
+    "abs", "all", "any", "bin", "bool", "bytes", "callable",
+    "chr", "dict", "dir", "enumerate", "eval", "filter", "float",
+    "format", "getattr", "globals", "hasattr", "hash", "help", "hex",
+    "id", "input", "int", "isinstance", "iter", "len", "list",
+    "locals", "map", "max", "min", "next", "object", "oct", "open",
+    "ord", "pow", "print", "range", "repr", "reversed", "round",
+    "set", "setattr", "slice", "sorted", "str", "sum", "super",
+    "tuple", "type", "vars", "zip", "self", "cls",
+    nullptr
+};
+
+static const char* jumperless_functions[] = {
+    "dac_set", "dac_get", "set_dac", "get_dac", "adc_get", "get_adc",
+    "ina_get_current", "ina_get_voltage", "ina_get_bus_voltage", "ina_get_power",
+    "get_current", "get_voltage", "get_bus_voltage", "get_power",
+    "gpio_set", "gpio_get", "gpio_set_dir", "gpio_get_dir", "gpio_set_pull", "gpio_get_pull",
+    "set_gpio", "get_gpio", "set_gpio_dir", "get_gpio_dir", "set_gpio_pull", "get_gpio_pull",
+    "connect", "disconnect", "is_connected", "nodes_clear", "node",
+    "oled_print", "oled_clear", "oled_connect", "oled_disconnect",
+    "clickwheel_up", "clickwheel_down", "clickwheel_press",
+    "print_bridges", "print_paths", "print_crossbars", "print_nets", "print_chip_status",
+    "probe_read", "read_probe", "probe_read_blocking", "probe_read_nonblocking",
+    "get_button", "probe_button", "probe_button_blocking", "probe_button_nonblocking",
+    "probe_wait", "wait_probe", "probe_touch", "wait_touch", "button_read", "read_button",
+    "check_button", "button_check", "arduino_reset", "probe_tap", "run_app", "format_output",
+    "help_nodes", "pause_core2", "send_raw", "pwm", "pwm_set_duty_cycle", "pwm_set_frequency", "pwm_stop", "nodes_save",
+    "wavegen_set_output", "set_wavegen_output",
+    "wavegen_set_freq", "set_wavegen_freq",
+    "wavegen_set_wave", "set_wavegen_wave",
+    "wavegen_set_sweep", "set_wavegen_sweep",
+    "wavegen_set_amplitude", "set_wavegen_amplitude",
+    "wavegen_set_offset", "set_wavegen_offset",
+    "wavegen_start", "start_wavegen",
+    "wavegen_stop", "stop_wavegen",
+    "wavegen_get_output", "get_wavegen_output",
+    "wavegen_get_freq", "get_wavegen_freq",
+    "wavegen_get_wave", "get_wavegen_wave",
+    "wavegen_get_amplitude", "get_wavegen_amplitude",
+    "wavegen_get_offset", "get_wavegen_offset",
+    "wavegen_is_running",
+    nullptr
+};
+
+static const char* jumperless_types[] = {
+    "TOP_RAIL", "BOTTOM_RAIL", "GND", "DAC0", "DAC1", "ADC0", "ADC1", "ADC2", "ADC3", "ADC4",
+    "PROBE", "ISENSE_PLUS", "ISENSE_MINUS", "UART_TX", "UART_RX", "BUFFER_IN", "BUFFER_OUT",
+    "GPIO_1", "GPIO_2", "GPIO_3", "GPIO_4", "GPIO_5", "GPIO_6", "GPIO_7", "GPIO_8",
+    "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13",
+    "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7",
+    "D13_PAD", "TOP_RAIL_PAD", "BOTTOM_RAIL_PAD", "LOGO_PAD_TOP", "LOGO_PAD_BOTTOM",
+    "CONNECT_BUTTON", "REMOVE_BUTTON", "BUTTON_NONE", "CONNECT", "REMOVE", "NONE",
+    "SINE", "TRIANGLE", "SAWTOOTH", "SQUARE", "RAMP", "ARBITRARY",
+    nullptr
+};
+
+static const char* jfs_functions[] = {
+    "open", "read", "write", "close", "seek", "tell", "size", "available",
+    "exists", "listdir", "mkdir", "rmdir", "remove", "rename", "stat", "info",
+    "SEEK_SET", "SEEK_CUR", "SEEK_END",
+    "fs_exists", "fs_listdir", "fs_read", "fs_write", "fs_cwd",
+    nullptr
+};
+
 SyntaxHighlighting::SyntaxHighlighting(Stream* stream) {
   syntaxHighlightingStream = stream;
 }
@@ -43,6 +117,62 @@ void SyntaxHighlighting::syntaxHighlightingToColor(int hl) {
   syntaxHighlightingStream->print("\x1b[38;5;");
   syntaxHighlightingStream->print(color);
   syntaxHighlightingStream->print("m");
+}
+
+// Keyword classification methods
+bool SyntaxHighlighting::isPythonKeyword(const String& word) {
+  for (int i = 0; python_keywords[i] != nullptr; i++) {
+    if (word == python_keywords[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SyntaxHighlighting::isPythonBuiltin(const String& word) {
+  for (int i = 0; python_builtins[i] != nullptr; i++) {
+    if (word == python_builtins[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SyntaxHighlighting::isJumperlessFunction(const String& word) {
+  for (int i = 0; jumperless_functions[i] != nullptr; i++) {
+    if (word == jumperless_functions[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SyntaxHighlighting::isJumperlessType(const String& word) {
+  for (int i = 0; jumperless_types[i] != nullptr; i++) {
+    if (word == jumperless_types[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SyntaxHighlighting::isJFSFunction(const String& word) {
+  for (int i = 0; jfs_functions[i] != nullptr; i++) {
+    if (word == jfs_functions[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Classify a Python identifier
+PythonKeywordType SyntaxHighlighting::classifyPythonKeyword(const String& word) {
+  if (isPythonKeyword(word)) return KW_PYTHON;
+  if (isPythonBuiltin(word)) return KW_BUILTIN;
+  if (isJumperlessFunction(word)) return KW_JUMPERLESS;
+  if (isJumperlessType(word)) return KW_JUMPERLESS_TYPE;
+  if (isJFSFunction(word)) return KW_JFS;
+  return KW_NONE;
 }
 
 // Terminal command set derived from main.cpp switch cases
@@ -281,20 +411,28 @@ String SyntaxHighlighting::processConnections(const String& connections) {
 }
 
 
-// Python syntax highlighting for > commands
+// Python syntax highlighting with full Jumperless support
 String SyntaxHighlighting::highlightPythonCode(const String& code) {
   String result = "";
   int i = 0;
   
-//   // Debug: Add some visual feedback that this function is being called
-//   Serial.print("[DEBUG: highlightPythonCode called with: '");
-//   Serial.print(code);
-//   Serial.println("']");
-  
   while (i < code.length()) {
     char c = code.charAt(i);
     
-    // Handle strings first (highest priority)
+    // Handle comments first (highest priority)
+    if (c == '#') {
+      int comment_color = map_hl_to_color(HL_COMMENT);
+      result += "\x1b[38;5;" + String(comment_color) + "m";
+      // Consume rest of line as comment
+      while (i < code.length() && code.charAt(i) != '\n') {
+        result += code.charAt(i);
+        i++;
+      }
+      result += "\x1b[0m"; // Reset color
+      continue;
+    }
+    
+    // Handle strings (second priority)
     if (c == '"' || c == '\'') {
       int string_color = map_hl_to_color(HL_STRING);
       result += "\x1b[38;5;" + String(string_color) + "m";
@@ -343,19 +481,31 @@ String SyntaxHighlighting::highlightPythonCode(const String& code) {
       }
       
       String word = code.substring(start, i);
-      int color = 255; // Default white - don't color unknown identifiers
       
-      // Check for Python keywords
-      if (word == "print" || word == "def" || word == "if" || word == "else" || 
-          word == "elif" || word == "for" || word == "while" || word == "import" || 
-          word == "from" || word == "return" || word == "class" || word == "try" ||
-          word == "except" || word == "with" || word == "as" || word == "pass" ||
-          word == "True" || word == "False" || word == "None") {
-        color = map_hl_to_color(HL_KEYWORD1); // Orange for keywords
-      } else if (word == "len" || word == "str" || word == "int" || word == "float" || 
-                 word == "list" || word == "dict" || word == "range" || word == "abs" ||
-                 word == "min" || word == "max" || word == "sum") {
-        color = map_hl_to_color(HL_KEYWORD2); // Green for builtins
+      // Classify the word and choose appropriate color
+      PythonKeywordType kw_type = classifyPythonKeyword(word);
+      int color = 255; // Default white
+      
+      switch (kw_type) {
+        case KW_PYTHON:
+          color = map_hl_to_color(HL_KEYWORD1); // Orange for Python keywords
+          break;
+        case KW_BUILTIN:
+          color = map_hl_to_color(HL_KEYWORD2); // Green for Python builtins
+          break;
+        case KW_JUMPERLESS:
+          color = map_hl_to_color(HL_JUMPERLESS_FUNC); // Magenta for Jumperless functions
+          break;
+        case KW_JUMPERLESS_TYPE:
+          color = map_hl_to_color(HL_JUMPERLESS_TYPE); // Purple for Jumperless constants
+          break;
+        case KW_JFS:
+          color = map_hl_to_color(HL_JFS_FUNC); // Cyan-blue for JFS functions
+          break;
+        case KW_NONE:
+        default:
+          color = 255; // White for unknown identifiers
+          break;
       }
       
       if (color != 255) {
@@ -372,6 +522,14 @@ String SyntaxHighlighting::highlightPythonCode(const String& code) {
   }
   
   return result;
+}
+
+// Stream output version of Python highlighting
+void SyntaxHighlighting::displayPythonWithHighlighting(const String& text, Stream* stream) {
+  if (!stream || text.length() == 0) return;
+  
+  String highlighted = highlightPythonCode(text);
+  stream->print(highlighted);
 }
 
 // Smart highlighting for Jumperless connections
@@ -462,56 +620,11 @@ String SyntaxHighlighting::highlightConnectionsPreserveSpaces(const String& inpu
 }
 
 // Helper function for Python syntax highlighting (used elsewhere)
+// Now uses the centralized SyntaxHighlighting class
 void displayStringWithSyntaxHighlighting(const String& text, Stream* stream) {
-  if (text.length() == 0) return;
+  if (text.length() == 0 || !stream) return;
   
-  // Simple highlighting - can be enhanced later
-  // For now just apply basic keyword highlighting
-  
-  String working_text = text;
-  
-  // Handle strings first
-  int i = 0;
-  while (i < working_text.length()) {
-    char c = working_text.charAt(i);
-    
-    if (c == '"' || c == '\'') {
-      stream->print("\x1b[38;5;39m");  // Cyan for strings
-      char quote = c;
-      stream->print(c);
-      i++;
-      while (i < working_text.length() && working_text.charAt(i) != quote) {
-        stream->print(working_text.charAt(i));
-        i++;
-      }
-      if (i < working_text.length()) {
-        stream->print(working_text.charAt(i)); // Closing quote
-        i++;
-      }
-      stream->print("\x1b[0m");  // Reset
-      continue;
-    }
-    
-    // Check for keywords
-    if (isalpha(c) || c == '_') {
-      int start = i;
-      while (i < working_text.length() && (isalnum(working_text.charAt(i)) || working_text.charAt(i) == '_')) {
-        i++;
-      }
-      
-      String word = working_text.substring(start, i);
-      if (word == "print" || word == "def" || word == "if" || word == "else" || word == "for" || word == "while") {
-        stream->print("\x1b[38;5;214m");  // Orange for keywords
-        stream->print(word);
-        stream->print("\x1b[0m");
-      } else {
-        stream->print(word);
-      }
-      continue;
-    }
-    
-    // Default character
-    stream->print(c);
-    i++;
-  }
+  // Create a temporary highlighter and use it
+  SyntaxHighlighting highlighter(stream);
+  highlighter.displayPythonWithHighlighting(text, stream);
 }

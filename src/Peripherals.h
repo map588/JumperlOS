@@ -7,15 +7,55 @@
 #include "INA219.h"
 #include <Wire.h>
 #include "JumperlessDefines.h"
+#include "JumperlOS.h"
 #include <cstdlib>
 //#include "MCP23S17.h"
 
+/**
+ * @brief Peripherals system service - manages GPIOs, ADCs, DACs, and measurements
+ * 
+ * Handles periodic monitoring and control of all peripheral hardware.
+ */
+class Peripherals : public Service {
+public:
+    // Get singleton instance
+    static Peripherals& getInstance();
+    
+    // Prevent copying
+    Peripherals(const Peripherals&) = delete;
+    Peripherals& operator=(const Peripherals&) = delete;
+    
+    // Service interface
+    ServiceStatus service() override;
+    const char* getName() const override { return "Peripherals"; }
+    ServicePriority getPriority() const override { return ServicePriority::NORMAL; }
+    
+    // Member variables (previously globals)
+    unsigned long gpioToggleFrequency = 0;
+    int showReadings = 0;
+    
+    // Public methods
+    void checkPads(void);
+    void showMeasurements(int samples = 8, int printOrBB = 2, int oneShot = 0);
+    
+private:
+    Peripherals();
+    ~Peripherals() = default;
+    
+    static Peripherals* instance;
+};
 
-extern unsigned long gpioToggleFrequency;
+// Backward compatibility
+extern unsigned long& gpioToggleFrequency;
+extern int& showReadings;
+
+// Legacy wrappers
+inline void showMeasurements(int samples = 8, int printOrBB = 2, int oneShot = 0) {
+    Peripherals::getInstance().showMeasurements(samples, printOrBB, oneShot);
+}
 
 extern INA219 INA0;
 extern INA219 INA1;
-extern int showReadings;
 
 extern int i2cSpeed;
 
@@ -32,8 +72,6 @@ extern uint32_t adcReadingColors[8];
 extern float adcReadingRanges[8][2];
 
 extern float adcRange[8][2];
-extern float dacOutput[2];
-extern float railVoltage[2];
 extern uint8_t gpioState[10];
 extern uint8_t gpioReading[10];
 extern int gpioNet[10];
@@ -57,9 +95,6 @@ extern float gpioPWMDutyCycle[10];
 extern bool gpioPWMEnabled[10];
 
 extern volatile bool readingGPIO;
-
-
-
 
 struct gpio_function_name_struct {
     gpio_function_t function;
@@ -147,7 +182,6 @@ float readAdcVoltage(int channel, int samples = 8);
 int readAdc(int channel, int samples = 8);
 
 void chooseShownReadings(void);
-void showMeasurements(int samples = 8, int printOrBB = 2, int oneShot = 0);// 0 = print, 1 = breadboard 2 = both
 void showLEDmeasurements(void);
 
 uint32_t measurementToColor(float measurement, float min = -8.0, float max = 8.0);

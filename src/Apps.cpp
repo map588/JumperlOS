@@ -16,6 +16,7 @@
 #include "Probing.h"
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
+#include "States.h"
 #include "config.h"
 #include "configManager.h"
 #include "oled.h"
@@ -27,6 +28,7 @@
 #include <JDI_MIP_Display.h>
 #include <Display_cfg.h>
 #include "Images.h"
+#include "externVars.h"
 
 #define DISPLAY_WIDTH   72
 #define DISPLAY_HEIGHT  144
@@ -136,7 +138,7 @@ void microPythonREPLapp(void) {
 }
 
 void leaveApp(int lastNetSlot) {
-  createSlots(8, 1);
+  globalState.clearAllConnections();
   netSlot = lastNetSlot;
   refreshConnections(-1, 0, 1);
 }
@@ -161,7 +163,7 @@ void probeCalibApp(void) {
   b.clear();
   int lastNetSlot = netSlot;
   netSlot = 8;
-  createSlots(8, 1);
+  globalState.clearAllConnections();
 
   refreshConnections(-1, 0);
   routableBufferPower(1, 1, 1);
@@ -282,16 +284,16 @@ void customApp(void) {
   netSlot = 8; // net slot for custom app
   int leave = 0;
 
-  createSlots(8, 1);
+  globalState.clearAllConnections();
 
-  addBridgeToNodeFile(12, 25, netSlot, 0, 0);
-  addBridgeToNodeFile(TOP_RAIL, 52, netSlot, 0, 0);
+  addBridgeToState(12, 25);
+  addBridgeToState(TOP_RAIL, 52);
   refreshConnections(-1, 1);
 
   setTopRail((float)3.3);
 
-  addBridgeToNodeFile(RP_GPIO_1, 42, netSlot, 0, 0);
-  addBridgeToNodeFile(RP_GPIO_2, 42, netSlot, 0, 0);
+  addBridgeToState(RP_GPIO_1, 42);
+  addBridgeToState(RP_GPIO_2, 42);
   refreshConnections(-1, 0);
 
   pinMode(GPIO_1_PIN, OUTPUT);
@@ -308,16 +310,19 @@ void customApp(void) {
   Serial.print("GPIO_2_PIN: ");
   Serial.println(reading);
 
-  removeBridgeFromNodeFile(RP_GPIO_1, 42, netSlot, 0);
-  removeBridgeFromNodeFile(RP_GPIO_2, 42, netSlot, 0);
+  removeBridgeFromState(RP_GPIO_1, 42);
+  removeBridgeFromState(RP_GPIO_2, 42);
+  saveStateToSlot();
   refreshConnections(-1, 0);
 
   setDacByNumber(1, 5.35);
-  addBridgeToNodeFile(DAC1, 20, netSlot, 0, 0);
+  addBridgeToState(DAC1, 20);
+  saveStateToSlot();
   refreshConnections(-1, 0);
   delay(10);
 
-  addBridgeToNodeFile(ADC0, 20, netSlot, 0, 0);
+  addBridgeToState(ADC0, 20);
+  saveStateToSlot();
   refreshConnections(-1, 0);
   waitCore2();
 
@@ -333,12 +338,14 @@ void customApp(void) {
   printPathsCompact();
   Serial.println("\n\n\n\n\r");
 
-  removeBridgeFromNodeFile(ADC0, 20, netSlot, 0);
-  removeBridgeFromNodeFile(DAC1, 20, netSlot, 0);
+  removeBridgeFromState(ADC0, 20);
+  removeBridgeFromState(DAC1, 20);
+  saveStateToSlot();
   refreshConnections(-1, 0);
 
-  addBridgeToNodeFile(ISENSE_PLUS, 9, netSlot, 0, 0);
-  addBridgeToNodeFile(ISENSE_MINUS, 28, netSlot, 0, 0);
+  addBridgeToState(ISENSE_PLUS, 9);
+  addBridgeToState(ISENSE_MINUS, 28);
+  saveStateToSlot();
   refreshConnections();
 
   float current_ma = INA0.getCurrent_mA();
@@ -347,15 +354,17 @@ void customApp(void) {
   Serial.print(current_ma);
   Serial.println(" mA\n\r");
 
-  removeBridgeFromNodeFile(ISENSE_PLUS, 9, netSlot, 0);
-  removeBridgeFromNodeFile(ISENSE_MINUS, 28, netSlot, 0);
+  removeBridgeFromState(ISENSE_PLUS, 9);
+  removeBridgeFromState(ISENSE_MINUS, 28);
+  saveStateToSlot();
   refreshConnections(-1, 0);
   delay(1);
 
   if ( (encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED) || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
 
   setTopRail(4.20F);
-  addBridgeToNodeFile(TOP_RAIL, ISENSE_PLUS, netSlot, 0, 0);
+  addBridgeToState(TOP_RAIL, ISENSE_PLUS);
+  saveStateToSlot();
   refreshConnections(-1, 0);
   waitCore2();
   delay(10);
@@ -364,7 +373,8 @@ void customApp(void) {
   Serial.print(voltage2, 4);
   Serial.println(" V\n\r");
 
-  removeBridgeFromNodeFile(TOP_RAIL, ISENSE_PLUS, netSlot, 0);
+  removeBridgeFromState(TOP_RAIL, ISENSE_PLUS);
+  saveStateToSlot();
   refreshConnections(-1, 0);
 
   float probeVoltage = readAdcVoltage(7, 8);
@@ -417,7 +427,8 @@ void customApp(void) {
   int lastProbedRow = 0;
 
   Serial.println("Click the probe button to exit\n\n\n\r");
-  while (checkProbeButton() == 0) {
+  // Use state-based button check in loop (doesn't consume events)
+  while (checkProbeButtonState() == 0) {
     if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
     probeRow = justReadProbe();
     if (probeRow != -1) {
@@ -431,41 +442,41 @@ void customApp(void) {
     }
   }
 
-  removeBridgeFromNodeFile(12, -1, netSlot, 0);
-  removeBridgeFromNodeFile(52, -1, netSlot, 0);
+  removeBridgeFromState(12, -1);
+  removeBridgeFromState(52, -1);
   refreshConnections(-1, 0);
 
-  addBridgeToNodeFile(12, 25, netSlot, 1);
+  addBridgeToState(12, 25);
   refreshLocalConnections(-1, 0);
   delay(100);
 
-  removeBridgeFromNodeFile(12, -1, netSlot, 1);
+  removeBridgeFromState(12, -1);
   refreshLocalConnections(-1, 0);
   delay(100);
 
   if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
 
   for (int i = 1; i <= 31; i++) {
-    removeBridgeFromNodeFile(1, i - 1, netSlot, 1);
-    addBridgeToNodeFile(1, i, netSlot, 1);
+    removeBridgeFromState(1, i - 1);
+    addBridgeToState(1, i);
     refreshLocalConnections(-1, 0);
     showLEDsCore2 = -1;
     waitCore2();
   }
 
-  removeBridgeFromNodeFile(30, -1, netSlot, 1);
+  removeBridgeFromState(30, -1);
   refreshLocalConnections(-1, 0);
 
   if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
 
   for (int i = 31; i <= 60; i++) {
-    removeBridgeFromNodeFile(31, i - 1, netSlot, 0);
-    addBridgeToNodeFile(31, i, netSlot, 0);
+    removeBridgeFromState(31, i - 1);
+    addBridgeToState(31, i);
     refreshConnections(-1, 0);
     showLEDsCore2 = -1;
     if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
   }
-  removeBridgeFromNodeFile(60, -1, netSlot, 1);
+  removeBridgeFromState(60, -1);
   refreshConnections(-1, 0);
   delay(100);
 
@@ -686,8 +697,8 @@ int i2cScan(int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnections
   if (sdaRow < 0 || sclRow < 0) {
     Serial.println("defaulting to \n\n\rGPIO 26 = SDA\n\rGPIO 27 = SCL");
   } else {
-    addBridgeToNodeFile(RP_GPIO_26, sdaRow, netSlot, 0, 0); // SDA
-    addBridgeToNodeFile(RP_GPIO_27, sclRow, netSlot, 0, 0); // SCL
+    addBridgeToState(RP_GPIO_26, sdaRow); // SDA
+    addBridgeToState(RP_GPIO_27, sclRow); // SCL
     refreshConnections(-1, 1);
     waitCore2();
   }
@@ -760,8 +771,8 @@ int i2cScan(int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnections
   }
 
   if (leaveConnections == 0 && sdaRow != -1 && sclRow != -1) {
-    removeBridgeFromNodeFile(RP_GPIO_26, sdaRow, netSlot, 0);
-    removeBridgeFromNodeFile(RP_GPIO_27, sclRow, netSlot, 0);
+    removeBridgeFromState(RP_GPIO_26, sdaRow);
+    removeBridgeFromState(RP_GPIO_27, sclRow);
     refreshConnections(-1, 1);
   }
 
@@ -794,12 +805,12 @@ void calibrateDacs( void ) {
         Serial.println( "Initializing routing system for first startup..." );
         Serial.flush();
         initChipStatus( ); // Initialize chip mappings based on hardware revision
-        clearAllNTCC( );   // Clear and reinitialize routing state
+        globalState.clearAllConnections();   // Clear all connections using state system
         delay( 100 );      // Give system time to stabilize
         Serial.println( "Routing system initialized." );
     } else {
         // Serial.println("Calibration");
-        clearAllNTCC( );
+        globalState.clearAllConnections();
     }
     // delay(3000);
     float setVoltage = 0.0;
@@ -813,7 +824,7 @@ void calibrateDacs( void ) {
 
     int failedToConverge = 0;
 
-    createSlots( 8, 1 );
+    globalState.clearAllConnections();
     // for (int i = 0; i < 4; i++) {
 
     // Serial.print("netSlot: ");
@@ -859,8 +870,7 @@ void calibrateDacs( void ) {
 
             b.print( d, dacColors[ d ], 5, 1, -1 );
             refreshPaths( );
-            clearAllNTCC( );
-            createSlots( netSlot, 1 );
+            globalState.clearAllConnections();
             refreshConnections( 0, 0, 1 );
 
             if ( firstStart == 1 ) {
@@ -873,27 +883,27 @@ void calibrateDacs( void ) {
             switch ( d ) {
             case 0:
 
-                addBridgeToNodeFile( DAC0, ISENSE_PLUS, netSlot );
-                // addBridgeToNodeFile(DAC0, ROUTABLE_BUFFER_IN, netSlot);
-                addBridgeToNodeFile( DAC0, ADC0, netSlot );
+                addBridgeToState( DAC0, ISENSE_PLUS );
+                // addBridgeToState(DAC0, ROUTABLE_BUFFER_IN);
+                addBridgeToState( DAC0, ADC0 );
                 Serial.println( "\n\n\r\tDAC 0" );
                 break;
             case 1:
 
-                addBridgeToNodeFile( DAC1, ISENSE_PLUS, netSlot );
-                addBridgeToNodeFile( DAC1, ADC1, netSlot );
+                addBridgeToState( DAC1, ISENSE_PLUS );
+                addBridgeToState( DAC1, ADC1 );
                 Serial.println( "\n\n\r\tDAC 1" );
                 break;
             case 2:
 
-                addBridgeToNodeFile( TOP_RAIL, ISENSE_PLUS, netSlot );
-                addBridgeToNodeFile( TOP_RAIL, ADC2, netSlot );
+                addBridgeToState( TOP_RAIL, ISENSE_PLUS );
+                addBridgeToState( TOP_RAIL, ADC2 );
                 Serial.println( "\n\n\r\tTop Rail" );
                 break;
             case 3:
 
-                addBridgeToNodeFile( BOTTOM_RAIL, ISENSE_PLUS, netSlot );
-                addBridgeToNodeFile( BOTTOM_RAIL, ADC3, netSlot );
+                addBridgeToState( BOTTOM_RAIL, ISENSE_PLUS );
+                addBridgeToState( BOTTOM_RAIL, ADC3 );
                 Serial.println( "\n\n\r\tBottom Rail" );
                 break;
             }
@@ -1081,37 +1091,36 @@ void calibrateDacs( void ) {
             b.print( adcName, dacColors[ d % 4 ], 0x000000, 0, 1, 3 );
 
             // Use DAC 1 to calibrate all ADCs (it's working properly)
-            clearAllNTCC( );
-            createSlots( netSlot, 1 );
+            globalState.clearAllConnections();
             // refreshConnections(0, 0, 1);
 
             // Always use DAC 1 as the voltage source
-            addBridgeToNodeFile( DAC1, ISENSE_PLUS, netSlot );
+            addBridgeToState( DAC1, ISENSE_PLUS );
 
             // Connect to the appropriate ADC
             switch ( d ) {
             case 0:
-                addBridgeToNodeFile( DAC1, ADC0, netSlot );
+                addBridgeToState( DAC1, ADC0 );
                 Serial.println( "\n\n\r\tADC 0 calibration (using DAC 1)" );
                 break;
             case 1:
-                addBridgeToNodeFile( DAC1, ADC1, netSlot );
+                addBridgeToState( DAC1, ADC1 );
                 Serial.println( "\n\n\r\tADC 1 calibration (using DAC 1)" );
                 break;
             case 2:
-                addBridgeToNodeFile( DAC1, ADC2, netSlot );
+                addBridgeToState( DAC1, ADC2 );
                 Serial.println( "\n\n\r\tADC 2 calibration (using DAC 1)" );
                 break;
             case 3:
-                addBridgeToNodeFile( DAC1, ADC3, netSlot );
+                addBridgeToState( DAC1, ADC3 );
                 Serial.println( "\n\n\r\tADC 3 calibration (using DAC 1)" );
                 break;
             case 4:
-                addBridgeToNodeFile( DAC1, ADC4, netSlot );
+                addBridgeToState( DAC1, ADC4 );
                 Serial.println( "\n\n\r\tADC 4 calibration (0-5V range, using DAC 1)" );
                 break;
             case 7:
-                addBridgeToNodeFile( DAC1, ROUTABLE_BUFFER_IN, netSlot );
+                addBridgeToState( DAC1, ROUTABLE_BUFFER_IN );
                 Serial.println( "\n\n\r\tADC 7 calibration (Probe tip, using DAC 1)" );
                 break;
             }
@@ -1364,8 +1373,7 @@ void calibrateDacs( void ) {
 
 
 
-            clearAllNTCC( );
-            createSlots( netSlot, 1 );
+            globalState.clearAllConnections();
             // refreshConnections(0, 0, 1);
             if ( firstStart == 1 ) {
                 delay( 8 );
@@ -1375,24 +1383,24 @@ void calibrateDacs( void ) {
             switch ( d ) {
             case 0:
 
-                // addBridgeToNodeFile(DAC0, ISENSE_PLUS, netSlot);
+                // addBridgeToState(DAC0, ISENSE_PLUS);
 
-                addBridgeToNodeFile( DAC0, ROUTABLE_BUFFER_IN, netSlot );
-                // addBridgeToNodeFile(DAC0, ADC0, netSlot);
+                addBridgeToState( DAC0, ROUTABLE_BUFFER_IN );
+                // addBridgeToState(DAC0, ADC0);
                 Serial.println( "\n\n\r\tDAC 0 test" );
                 b.print( "DAC 0", dacColors[ d ], 0x000000, 1, -1, -1 );
                 break;
             case 1:
-                /// removeBridgeFromNodeFile(ADC0+d, -1, netSlot);
-                addBridgeToNodeFile( DAC1, ISENSE_PLUS, netSlot );
-                addBridgeToNodeFile( DAC1, ADC1, netSlot );
+                /// removeBridgeFromState(ADC0+d, -1);
+                addBridgeToState( DAC1, ISENSE_PLUS );
+                addBridgeToState( DAC1, ADC1 );
                 Serial.println( "\n\n\r\tDAC 1 test" );
                 b.print( "DAC 1", dacColors[ d ], 0x000000, 1, -1, -1 );
                 break;
             case 2:
-                // removeBridgeFromNodeFile(ADC0+d, -1, netSlot);
-                addBridgeToNodeFile( TOP_RAIL, ISENSE_PLUS, netSlot );
-                addBridgeToNodeFile( TOP_RAIL, ADC2, netSlot );
+                // removeBridgeFromState(ADC0+d, -1);
+                addBridgeToState( TOP_RAIL, ISENSE_PLUS );
+                addBridgeToState( TOP_RAIL, ADC2 );
                 Serial.println( "\n\n\r\tTop Rail test" );
                 // b.print("Top Ral", dacColors[d], 0x000000, 0, -1, -1);
                 b.print( "Top", dacColors[ d ], 0x000000, 0, -1, -1 );
@@ -1401,9 +1409,9 @@ void calibrateDacs( void ) {
                 b.print( "l", dacColors[ d ], 0xfffffe, 6, 0, -1 );
                 break;
             case 3:
-                // removeBridgeFromNodeFile(ADC0+d, -1, netSlot);
-                addBridgeToNodeFile( BOTTOM_RAIL, ISENSE_PLUS, netSlot );
-                addBridgeToNodeFile( BOTTOM_RAIL, ADC3, netSlot );
+                // removeBridgeFromState(ADC0+d, -1);
+                addBridgeToState( BOTTOM_RAIL, ISENSE_PLUS );
+                addBridgeToState( BOTTOM_RAIL, ADC3 );
                 Serial.println( "\n\n\r\tBottom Rail test" );
                 b.print( "Bot", dacColors[ d ], 0x000000, 0, -1, -1 );
                 b.print( "Ra", dacColors[ d ], 0xfffffe, 4, -1, -2 );
@@ -1512,7 +1520,7 @@ void calibrateDacs( void ) {
                 // dacCalibration[0][i] = reading;
             }
             setDacByNumber( d, 0.0, 0 );
-            // setDacByNumber(d, d < 2 ? dacOutput[d] : railVoltage[d - 2], 0);
+            // Old code (replaced with globalState.power): setDacByNumber(d, d < 2 ? dacOutput[d] : railVoltage[d - 2], 0);
         }
     }
     unsigned long timeout = millis( );
@@ -1532,9 +1540,8 @@ void calibrateDacs( void ) {
     // delay(5000);
     INA0.setBusADC( 0x0b );
     INA1.setBusADC( 0x0b );
-    // removeBridgeFromNodeFile(ISENSE_PLUS, -1, netSlot);
-    createSlots( netSlot, 1 );
-    clearAllNTCC( );
+    // removeBridgeFromState(ISENSE_PLUS, -1);
+    globalState.clearAllConnections();
     netSlot = lastNetSlot;
     if (failedToConverge == 0) {
        

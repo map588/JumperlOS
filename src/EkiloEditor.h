@@ -157,4 +157,8 @@ bool check_memory_available(size_t needed);
 void ekilo_show_memory_status();
 void ekilo_emergency_cleanup();
 
+// External monitoring functions
+const char* ekilo_get_currently_editing_file();  // Get currently open file (nullptr if none)
+String ekilo_get_current_buffer_content();       // Get current editor buffer as String (for live preview)
+
 #endif // EKILO_EDITOR_H 

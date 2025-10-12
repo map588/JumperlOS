@@ -7,6 +7,7 @@
 #include "LEDs.h"
 
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 
 #include "hardware/adc.h"
@@ -29,6 +30,51 @@
 
 #include "MCP4728.h"  // New library
 
+// ============================================================================
+// Peripherals Class Implementation
+// ============================================================================
+
+// Static member initialization
+Peripherals* Peripherals::instance = nullptr;
+
+Peripherals& Peripherals::getInstance() {
+    if (instance == nullptr) {
+        instance = new Peripherals();
+    }
+    return *instance;
+}
+
+Peripherals::Peripherals() {
+    // Initialize defaults
+    gpioToggleFrequency = 250; // ms
+}
+
+/**
+ * @brief Main service method for peripherals system
+ * 
+ * This is called each loop iteration and handles:
+ * - Measurement display (if enabled)
+ */
+ServiceStatus Peripherals::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Show measurements if enabled
+    if (showReadings >= 1) {
+        showMeasurements(16, 0, 0);
+        lastStatus = ServiceStatus::BUSY;
+    }
+    showLEDmeasurements();
+    
+    return lastStatus;
+}
+
+// Backward compatibility - create references to singleton members
+unsigned long& gpioToggleFrequency = Peripherals::getInstance().gpioToggleFrequency;
+int& showReadings = Peripherals::getInstance().showReadings;
+
+// ============================================================================
+// Existing Functions
+// ============================================================================
 
 int i2cSpeed = 400000;
 
@@ -48,8 +94,6 @@ extern double round( double );
 #define DAC_RESOLUTION 9
 
 float adcRange[ 8 ][ 2 ] = { { -8, 8 }, { -8, 8 }, { -8, 8 }, { -8, 8 }, { 0, 5 } };
-float dacOutput[ 2 ] = { 0, 0 };
-float railVoltage[ 2 ] = { 0, 0 };
 
 float dacSpread[ 4 ] = { 20.2, 20.2, 20.2, 20.2 };
 int dacZero[ 4 ] = { 1650, 1650, 1650, 1650 };
@@ -77,8 +121,6 @@ uint8_t gpioReading[ 10 ] = {
 int gpioNet[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
 int revisionNumber = 0;
-
-int showReadings = 0;
 
 float adcReadings[ 8 ] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -171,7 +213,7 @@ void initGPIO( void ) {
         }
         gpio_init( gpio_pin );
 
-        switch ( jumperlessConfig.gpio.direction[ i ] ) {
+        switch ( globalState.config.gpioDirection[ i ] ) {
         case 0:                             // output
             gpio_set_dir( gpio_pin, true ); // Set as output
             break;
@@ -180,7 +222,7 @@ void initGPIO( void ) {
             break;
         }
 
-        switch ( jumperlessConfig.gpio.pulls[ i ] ) {
+        switch ( globalState.config.gpioPulls[ i ] ) {
         case 2:                                       // no pull
             gpio_set_pulls( gpio_pin, false, false ); // No pulls
             break;
@@ -424,48 +466,48 @@ void setGPIO( void ) {
         uint8_t gpio_pin = gpioDef[ i ][ 0 ];
 
         // Set direction
-        if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+        if ( globalState.config.gpioDirection[ i ] == 0 ) {
             gpio_set_dir( gpio_pin, true ); // Set as output
         } else {
             gpio_set_dir( gpio_pin, false ); // Set as input
         }
 
         // Set pull resistors and update gpioState for animation system
-        switch ( jumperlessConfig.gpio.pulls[ i ] ) {
+        switch ( globalState.config.gpioPulls[ i ] ) {
         case 0: // pulldown
             gpio_set_pulls( gpio_pin, false, true );
-            if ( jumperlessConfig.gpio.direction[ i ] == 1 ) { // input
+            if ( globalState.config.gpioDirection[ i ] == 1 ) { // input
                 gpioState[ i ] = 4;                            // input with pulldown
             }
             break;
         case 1: // pullup
             gpio_set_pulls( gpio_pin, true, false );
-            if ( jumperlessConfig.gpio.direction[ i ] == 1 ) { // input
+            if ( globalState.config.gpioDirection[ i ] == 1 ) { // input
                 gpioState[ i ] = 3;                            // input with pullup
             }
             break;
         case 2: // no pull
             gpio_set_pulls( gpio_pin, false, false );
-            if ( jumperlessConfig.gpio.direction[ i ] == 1 ) { // input
+            if ( globalState.config.gpioDirection[ i ] == 1 ) { // input
                 gpioState[ i ] = 2;                            // input with no pull
             }
             break;
         case 3: // bus keeper - weakly retains current logical state when not driven
             gpio_set_pulls( gpio_pin, true, true );
-            if ( jumperlessConfig.gpio.direction[ i ] == 1 ) { // input
+            if ( globalState.config.gpioDirection[ i ] == 1 ) { // input
                 gpioState[ i ] = 7;                            // bus keeper mode
             }
             break;
         default:
             gpio_set_pulls( gpio_pin, false, false );
-            if ( jumperlessConfig.gpio.direction[ i ] == 1 ) { // input
+            if ( globalState.config.gpioDirection[ i ] == 1 ) { // input
                 gpioState[ i ] = 2;                            // input with no pull
             }
             break;
         }
 
         // Set initial output state for output pins
-        if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+        if ( globalState.config.gpioDirection[ i ] == 0 ) {
             gpio_put( gpio_pin, gpioState[ i ] );
         }
     }
@@ -643,7 +685,7 @@ void printGPIOState( void ) {
     Serial.println( );
     Serial.print( "set direction:\t" );
     for ( int i = 0; i < 8; i++ ) {
-        switch ( jumperlessConfig.gpio.direction[ i ] ) {
+        switch ( globalState.config.gpioDirection[ i ] ) {
         case 0:
             Serial.print( "out" );
             break;
@@ -782,7 +824,7 @@ void readGPIO( void ) {
         } else if ( gpioNet[ i ] == -3 ) {
             // gpioState[i] = 5;
             continue;
-        } else if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+        } else if ( globalState.config.gpioDirection[ i ] == 0 ) {
             
             /*if ( gpioState[ i ] == 0 ) {
                 // gpio_set_dir(gpioDef[i][0], true);
@@ -801,7 +843,7 @@ void readGPIO( void ) {
         if ( gpioNet[ i ] >= 0 ) {
             int reading = 0;
 
-            if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+            if ( globalState.config.gpioDirection[ i ] == 0 ) {
                 reading = gpio_get_out_level( gpioDef[ i ][ 0 ] );
 
                 switch ( reading ) {
@@ -857,13 +899,13 @@ void setRailsAndDACs( int saveEEPROM ) {
 
     // Serial.println("setRailsAndDACs");
     // Serial.flush();
-    setTopRail( jumperlessConfig.dacs.top_rail, 1, 0 );
+    setTopRail( globalState.power.topRail, 1, 0 );
     // delay(10);
-    setBotRail( jumperlessConfig.dacs.bottom_rail, 1, 0 );
+    setBotRail( globalState.power.bottomRail, 1, 0 );
     // delay(10);
-    setDac0voltage( jumperlessConfig.dacs.dac_0, 1, 0 );
+    setDac0voltage( globalState.power.dac0, 1, 0 );
     // delay(10);
-    setDac1voltage( jumperlessConfig.dacs.dac_1, 1, saveEEPROM );
+    setDac1voltage( globalState.power.dac1, 1, saveEEPROM );
     // delay(10);
 }
 void setTopRail( float value, int save, int saveEEPROM ) {
@@ -879,16 +921,17 @@ void setTopRail( float value, int save, int saveEEPROM ) {
     digitalWrite( LDAC, HIGH );
     mcp.setChannelValue( MCP4728_CHANNEL_C, dacValue );
     digitalWrite( LDAC, LOW );
+    
+    // Update globalState for YAML persistence (single source of truth)
+    // ONLY update when save == 1 to avoid spurious dirty marks
     if ( save ) {
-        jumperlessConfig.dacs.top_rail = value;
-        railVoltage[ 0 ] = value; // Keep legacy variable in sync
-        configChanged = true;
+        globalState.setRailVoltage(true, value);  // true = top rail
+        //configChanged = true;
     }
-    if ( saveEEPROM ) {
-
-        saveVoltages( jumperlessConfig.dacs.top_rail,
-                      jumperlessConfig.dacs.bottom_rail, jumperlessConfig.dacs.dac_0,
-                      jumperlessConfig.dacs.dac_1 );
+    if ( saveEEPROM && false) {
+        saveVoltages( globalState.power.topRail,
+                      globalState.power.bottomRail, globalState.power.dac0,
+                      globalState.power.dac1 );
     }
 }
 
@@ -906,28 +949,27 @@ void setBotRail( float value, int save, int saveEEPROM ) {
     mcp.setChannelValue( MCP4728_CHANNEL_D, dacValue );
     digitalWrite( LDAC, LOW );
     if ( save ) {
-        jumperlessConfig.dacs.bottom_rail = value;
-        railVoltage[ 1 ] = value; // Keep legacy variable in sync
-        configChanged = true;
+        // Update globalState for YAML persistence (single source of truth)
+        globalState.setRailVoltage(false, value);  // false = bottom rail
+        //configChanged = true;
     }
-    if ( saveEEPROM ) {
-
-        saveVoltages( jumperlessConfig.dacs.top_rail,
-                      jumperlessConfig.dacs.bottom_rail, jumperlessConfig.dacs.dac_0,
-                      jumperlessConfig.dacs.dac_1 );
+    if ( saveEEPROM && false) {
+        saveVoltages( globalState.power.topRail,
+                      globalState.power.bottomRail, globalState.power.dac0,
+                      globalState.power.dac1 );
     }
 }
 
 
 float getDacVoltage( int dac ) {
     if ( dac == 0 ) {
-        return jumperlessConfig.dacs.dac_0;
+        return globalState.power.dac0;
     } else if ( dac == 1 ) {
-        return jumperlessConfig.dacs.dac_1;
+        return globalState.power.dac1;
     } else if ( dac == 2 ) {
-        return jumperlessConfig.dacs.top_rail;
+        return globalState.power.topRail;
     } else if ( dac == 3 ) {
-        return jumperlessConfig.dacs.bottom_rail;
+        return globalState.power.bottomRail;
     }
     return 0;
 }
@@ -962,14 +1004,16 @@ void setDac0voltage( float voltage, int save, int saveEEPROM,
     }
     // delay(10);
     digitalWrite( LDAC, LOW );
-    // if (save) {
+    
+    // Update globalState for YAML persistence (single source of truth)
+    // ONLY update state if save == 1 to avoid marking state dirty unnecessarily
+    if ( save ) {
+        globalState.setDacVoltage(0, voltage);
+    }
 
-    dacOutput[ 0 ] = voltage;
-    // }
-
-    if ( saveEEPROM ) {
-
-        saveVoltages( railVoltage[ 0 ], railVoltage[ 1 ], dacOutput[ 0 ], dacOutput[ 1 ] );
+    if ( saveEEPROM && false) {
+        saveVoltages( globalState.power.topRail, globalState.power.bottomRail, 
+                      globalState.power.dac0, globalState.power.dac1 );
     }
 }
 
@@ -1004,14 +1048,16 @@ void setDac1voltage( float voltage, int save, int saveEEPROM,
     digitalWrite( LDAC, HIGH );
     mcp.setChannelValue( MCP4728_CHANNEL_B, dacValue );
     digitalWrite( LDAC, LOW );
-    // if (save) {
+    
+    // Update globalState for YAML persistence (single source of truth)
+    // ONLY update state if save == 1 to avoid marking state dirty unnecessarily
+    if ( save ) {
+        globalState.setDacVoltage(1, voltage);
+    }
 
-    dacOutput[ 1 ] = voltage;
-    //  }
-
-    if ( saveEEPROM ) {
-
-        saveVoltages( railVoltage[ 0 ], railVoltage[ 1 ], dacOutput[ 0 ], dacOutput[ 1 ] );
+    if ( saveEEPROM && false) {
+        saveVoltages( globalState.power.topRail, globalState.power.bottomRail, 
+                      globalState.power.dac0, globalState.power.dac1 );
     }
 }
 
@@ -1057,7 +1103,7 @@ void erattaClearGPIO( int gpio ) {
         // check free y connections on chip L
         for ( int i = 0; i < 8; i++ ) {
 
-            if ( ch[ 11 ].yStatus[ i ] == -1 ) {
+            if ( globalState.connections.chipStates[ 11 ].yStatus[ i ] == -1 ) {
                 freeYL = i;
                 break;
             }
@@ -1184,28 +1230,28 @@ void chooseShownReadings( void ) {
 
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
-        if ( path[ i ].node1 == ADC0 || path[ i ].node2 == ADC0 ) {
-            showADCreadings[ 0 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC0 || globalState.connections.paths[ i ].node2 == ADC0 ) {
+            showADCreadings[ 0 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC1 || path[ i ].node2 == ADC1 ) {
-            showADCreadings[ 1 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC1 || globalState.connections.paths[ i ].node2 == ADC1 ) {
+            showADCreadings[ 1 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC2 || path[ i ].node2 == ADC2 ) {
-            showADCreadings[ 2 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC2 || globalState.connections.paths[ i ].node2 == ADC2 ) {
+            showADCreadings[ 2 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC3 || path[ i ].node2 == ADC3 ) {
-            showADCreadings[ 3 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC3 || globalState.connections.paths[ i ].node2 == ADC3 ) {
+            showADCreadings[ 3 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ADC4 || path[ i ].node2 == ADC4 ) {
-            showADCreadings[ 4 ] = path[ i ].net;
+        if ( globalState.connections.paths[ i ].node1 == ADC4 || globalState.connections.paths[ i ].node2 == ADC4 ) {
+            showADCreadings[ 4 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( path[ i ].node1 == ISENSE_PLUS || path[ i ].node1 == ISENSE_PLUS ||
-             path[ i ].node2 == ISENSE_MINUS || path[ i ].node2 == ISENSE_MINUS ) {
+        if ( globalState.connections.paths[ i ].node1 == ISENSE_PLUS || globalState.connections.paths[ i ].node1 == ISENSE_PLUS ||
+             globalState.connections.paths[ i ].node2 == ISENSE_MINUS || globalState.connections.paths[ i ].node2 == ISENSE_MINUS ) {
             // Serial.println(showReadings);
 
             inaConnected = 1;
@@ -1245,8 +1291,6 @@ int handleHighlights( int probeReading ) {
     return probeReading;
 }
 
-unsigned long gpioToggleFrequency = 250; // ms
-
 int highlightInteractable[ 10 ] = { RP_GPIO_0, RP_GPIO_1, RP_GPIO_2,
                                     RP_GPIO_3, RP_GPIO_4, RP_GPIO_5,
                                     RP_GPIO_6, RP_GPIO_7, RP_GPIO_8 };
@@ -1275,13 +1319,11 @@ int probeToggle( void ) {
                 newVoltage = -8.0; // Clamp to min
         }
 
-        // Set the new voltage
+        // Set the new voltage (setDac functions update globalState.power)
         if ( brightenedNet == 4 ) {
             setDac0voltage( newVoltage, 1, 0, true );
-            jumperlessConfig.dacs.dac_0 = newVoltage;
         } else {
             setDac1voltage( newVoltage, 1, 0, true );
-            jumperlessConfig.dacs.dac_1 = newVoltage;
         }
 
         // Reset the highlight timer to keep DAC highlighted during adjustment
@@ -1338,7 +1380,7 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
     if ( gpio < 0 || gpio > 9 ) {
         for ( int i = 0; i < 10; i++ ) {
             if ( gpioNet[ i ] == brightenedNet ) {
-                if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+                if ( globalState.config.gpioDirection[ i ] == 0 ) {
                     gpio = gpioDef[ i ][ 0 ];
                     gpioOutputFound = i;
                 }
@@ -1355,7 +1397,7 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
         return gpioOutputFound;
     }
 
-    if ( jumperlessConfig.gpio.direction[ gpioOutputFound ] == 0 ) {
+    if ( globalState.config.gpioDirection[ gpioOutputFound ] == 0 ) {
 
         if ( lowHigh == 0 ) {
             gpio_put( gpio, 0 );
@@ -1406,6 +1448,7 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
 float railSpread = 17.88;
 
 void showLEDmeasurements( void ) {
+    //return;
 
     for ( int i = 0; i < 8; i++ ) {
         int samples = 16;
@@ -1452,7 +1495,7 @@ void showLEDmeasurements( void ) {
             netColors[ showADCreadings[ i ] ] = unpackRgb( color );
             adcReadingColors[ i ] = color;
 
-            net[ showADCreadings[ i ] ].color = unpackRgb( color );
+            globalState.connections.nets[ showADCreadings[ i ] ].color = unpackRgb( color );
             // drawWires(showADCreadings[0]);
             // showLEDsCore2 = 2;
         }
@@ -1487,7 +1530,7 @@ int anyGpioOutputConnected( int net ) {
     if ( net == -1 ) {
         for ( int i = 0; i < 10; i++ ) {
             if ( gpioNet[ i ] > 0 && gpioNet[ i ] <= numberOfNets ) {
-                if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+                if ( globalState.config.gpioDirection[ i ] == 0 ) {
                     // Only treat as GPIO output if pin function is SIO
                     if ( gpio_function_map[ i ] == GPIO_FUNC_SIO ) {
                         return i;
@@ -1498,7 +1541,7 @@ int anyGpioOutputConnected( int net ) {
     } else {
         for ( int i = 0; i < 10; i++ ) {
             if ( gpioNet[ i ] == net ) {
-                if ( jumperlessConfig.gpio.direction[ i ] == 0 ) {
+                if ( globalState.config.gpioDirection[ i ] == 0 ) {
                     // Only treat as GPIO output if pin function is SIO
                     if ( gpio_function_map[ i ] == GPIO_FUNC_SIO ) {
                         return i;
@@ -1520,7 +1563,7 @@ int anyGpioInputConnected( int net ) {
     if ( net == -1 ) {
         for ( int i = 0; i < 10; i++ ) {
             if ( gpioNet[ i ] > 0 && gpioNet[ i ] <= numberOfNets ) {
-                if ( jumperlessConfig.gpio.direction[ i ] == 1 ) {
+                if ( globalState.config.gpioDirection[ i ] == 1 ) {
                     if ( gpio_function_map[ i ] == GPIO_FUNC_SIO ) {
                         return i;
                     }
@@ -1531,7 +1574,7 @@ int anyGpioInputConnected( int net ) {
     } else {
         for ( int i = 0; i < 10; i++ ) {
             if ( gpioNet[ i ] == net ) {
-                if ( jumperlessConfig.gpio.direction[ i ] == 1 ) {
+                if ( globalState.config.gpioDirection[ i ] == 1 ) {
                     if ( gpio_function_map[ i ] == GPIO_FUNC_SIO ) {
                         return i;
                     }
@@ -1624,7 +1667,7 @@ uint32_t measurementToColor( float measurement, float min, float max ) {
     return color;
 }
 
-void showMeasurements( int samples, int printOrBB, int oneShot ) {
+void Peripherals::showMeasurements( int samples, int printOrBB, int oneShot ) {
     unsigned long startMillis = millis( );
     int printInterval = 150;
     static unsigned long lastPrintTime = 0;
@@ -1975,9 +2018,10 @@ int setupSlowPWM( int gpio_pin, float frequency, float duty_cycle ) {
     gpioPWMEnabled[ gpio_index ] = false; // Not using hardware PWM
 
     // Update config
-    jumperlessConfig.gpio.pwm_frequency[ gpio_index ] = frequency;
-    jumperlessConfig.gpio.pwm_duty_cycle[ gpio_index ] = duty_cycle;
-    jumperlessConfig.gpio.pwm_enabled[ gpio_index ] = true;
+    globalState.config.gpioPwmFrequency[ gpio_index ] = frequency;
+    globalState.config.gpioPwmDutyCycle[ gpio_index ] = duty_cycle;
+    globalState.config.gpioPwmEnabled[ gpio_index ] = true;
+    globalState.markDirty();
 
     return 0; // Success
 }
@@ -2010,7 +2054,8 @@ int setSlowPWMDutyCycle( int gpio_pin, float duty_cycle ) {
     uint32_t duty_ms = (uint32_t)( period_ms * duty_cycle );
     gpioSlowPWMDutyTicks[ gpio_index ] = duty_ms;
     gpioPWMDutyCycle[ gpio_index ] = duty_cycle;
-    jumperlessConfig.gpio.pwm_duty_cycle[ gpio_index ] = duty_cycle;
+    globalState.config.gpioPwmDutyCycle[ gpio_index ] = duty_cycle;
+    globalState.markDirty();
 
     return 0; // Success
 }
@@ -2066,7 +2111,8 @@ int stopSlowPWM( int gpio_pin ) {
 
     // Update state tracking
     gpioPWMEnabled[ gpio_index ] = false;
-    jumperlessConfig.gpio.pwm_enabled[ gpio_index ] = false;
+    globalState.config.gpioPwmEnabled[ gpio_index ] = false;
+    globalState.markDirty();
 
     return 0; // Success
 }
@@ -2126,9 +2172,10 @@ int setupPWM( int gpio_pin, float frequency, float duty_cycle ) {
     gpioPWMEnabled[ gpio_index ] = true;
 
     // Update config
-    jumperlessConfig.gpio.pwm_frequency[ gpio_index ] = frequency;
-    jumperlessConfig.gpio.pwm_duty_cycle[ gpio_index ] = duty_cycle;
-    jumperlessConfig.gpio.pwm_enabled[ gpio_index ] = true;
+    globalState.config.gpioPwmFrequency[ gpio_index ] = frequency;
+    globalState.config.gpioPwmDutyCycle[ gpio_index ] = duty_cycle;
+    globalState.config.gpioPwmEnabled[ gpio_index ] = true;
+    globalState.markDirty();
 
     return 0; // Success
 }
@@ -2223,7 +2270,8 @@ int stopPWM( int gpio_pin ) {
 
     // Update state tracking
     gpioPWMEnabled[ gpio_index ] = false;
-    jumperlessConfig.gpio.pwm_enabled[ gpio_index ] = false;
+    globalState.config.gpioPwmEnabled[ gpio_index ] = false;
+    globalState.markDirty();
 
     return 0; // Success
 }

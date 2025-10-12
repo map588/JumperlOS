@@ -1,8 +1,10 @@
 #include "Highlighting.h"
+#include "JumperlOS.h"
 #include "Graphics.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "States.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
@@ -15,39 +17,115 @@
 #include <Arduino.h>
 #include <cmath>
 
-// Global variables definitions
-rgbColor highlightedOriginalColor;
-rgbColor brightenedOriginalColor;
-rgbColor warningOriginalColor;
+// ============================================================================
+// Highlighting Class Implementation
+// ============================================================================
 
-int firstConnection = -1;
+// Static member initialization
+Highlighting* Highlighting::instance = nullptr;
 
-int showReadingRow = -1;
-int showReadingNet = -1;
-int highlightedRow = -1;
-int lastNodeHighlighted = -1;
-int lastNetPrinted = -1;
-int lastPrintedNet = -1;
+Highlighting& Highlighting::getInstance() {
+    if (instance == nullptr) {
+        instance = new Highlighting();
+    }
+    return *instance;
+}
 
-int currentHighlightedNode = 0;
-int currentHighlightedNet = -2;
+Highlighting::Highlighting() {
+    // Initialize colors
+    highlightedOriginalColor = {0, 0, 0};
+    brightenedOriginalColor = {0, 0, 0};
+    warningOriginalColor = {0, 0, 0};
+}
 
-int warningRow = -1;
-int warningNet = -1;
-unsigned long warningTimeout = 0;
-unsigned long warningTimer = 0;
+/**
+ * @brief Main service method for highlighting system
+ * 
+ * This is called each loop iteration and handles:
+ * - Encoder-based net highlighting (CRITICAL - must run every loop for smooth UX)
+ * - Probe reading integration
+ * - Warning timeouts (rate-limited)
+ * - Reading change detection (rate-limited)
+ * 
+ * OPTIMIZATION: encoder highlighting runs every loop for instant response,
+ * but timeout checks and change detection are rate-limited to reduce overhead.
+ */
+ServiceStatus Highlighting::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // ============================================================================
+    // CRITICAL PATH: Encoder highlighting - MUST run every loop for smooth UX
+    // ============================================================================
+    int encoderNetHighlighted = encoderNetHighlight();
+    
+    // Get probe reading from Probing service (cheap - cached value)
+    int probeReading = probing.getLastProbeReading();
+    
+    // Handle probe-based highlighting (only if probe is touching something)
+    if (probeReading > 0) {
+        if (highlightNets(probeReading) > 0) {
+            firstConnection = probeReading;
+            lastStatus = ServiceStatus::BUSY;
+        }
+    }
+    
+    // ============================================================================
+    // NON-CRITICAL PATH: Timeout checks and change detection
+    // Rate-limit these to ~50Hz (every 20ms) - no need to check every loop
+    // ============================================================================
+    static unsigned long lastPeriodicCheckTime = 0;
+    unsigned long now = millis();
+    if (now - lastPeriodicCheckTime >= 20) {  // 20ms = 50Hz
+        lastPeriodicCheckTime = now;
+        
+        // Handle warning timeouts
+        warnNetTimeout(1);
+        
+        // Check for reading changes
+        checkForReadingChanges();
+    }
+    
+    // Track changes for LED updates
+    if (lastHighlightedNet != highlightedNet ||
+        lastBrightenedNet != brightenedNet ||
+        lastWarningNet != warningNet) {
+        lastHighlightedNet = highlightedNet;
+        lastBrightenedNet = brightenedNet;
+        lastWarningNet = warningNet;
+        lastStatus = ServiceStatus::BUSY;
+    }
+    
+    return lastStatus;
+}
 
-// Additional highlighting variables that were in LEDs.cpp
-int highlightedNet = -1;
-int probeConnectHighlight = -1;
-int brightenedNode = -1;
-int brightenedNet = -1;
-int brightenedRail = -1;
-int brightenedAmount = 20;
-int brightenedNodeAmount = 400;
-int brightenedNetAmount = 150;
+// Backward compatibility - create references to singleton members
+rgbColor& highlightedOriginalColor = Highlighting::getInstance().highlightedOriginalColor;
+rgbColor& brightenedOriginalColor = Highlighting::getInstance().brightenedOriginalColor;
+rgbColor& warningOriginalColor = Highlighting::getInstance().warningOriginalColor;
+int& firstConnection = Highlighting::getInstance().firstConnection;
+int& showReadingRow = Highlighting::getInstance().showReadingRow;
+int& showReadingNet = Highlighting::getInstance().showReadingNet;
+int& highlightedRow = Highlighting::getInstance().highlightedRow;
+int& lastNodeHighlighted = Highlighting::getInstance().lastNodeHighlighted;
+int& highlightedNet = Highlighting::getInstance().highlightedNet;
+int& probeConnectHighlight = Highlighting::getInstance().probeConnectHighlight;
+int& brightenedNode = Highlighting::getInstance().brightenedNode;
+int& brightenedNet = Highlighting::getInstance().brightenedNet;
+int& brightenedRail = Highlighting::getInstance().brightenedRail;
+int& brightenedAmount = Highlighting::getInstance().brightenedAmount;
+int& brightenedNodeAmount = Highlighting::getInstance().brightenedNodeAmount;
+int& brightenedNetAmount = Highlighting::getInstance().brightenedNetAmount;
+int& warningRow = Highlighting::getInstance().warningRow;
+int& warningNet = Highlighting::getInstance().warningNet;
+unsigned long& warningTimeout = Highlighting::getInstance().warningTimeout;
+unsigned long& warningTimer = Highlighting::getInstance().warningTimer;
+unsigned long& highlightTimer = Highlighting::getInstance().highlightTimer;
 
-void clearHighlighting( void ) {
+// ============================================================================
+// Existing Functions (now class methods)
+// ============================================================================
+
+void Highlighting::clearHighlighting( void ) {
 
     // netColors[highlightedNet] = highlightedOriginalColor;
     // netColors[brightenedNet] = brightenedOriginalColor;
@@ -78,7 +156,7 @@ void clearHighlighting( void ) {
 int lastReturnNode = -1;
 int scrolledRow = -1;
 
-int encoderNetHighlight( int print, int mode, int divider ) {
+int Highlighting::encoderNetHighlight( int print, int mode, int divider ) {
 
     int lastDivider = rotaryDivider;
     rotaryDivider = divider;
@@ -107,7 +185,7 @@ int encoderNetHighlight( int print, int mode, int divider ) {
                 currentHighlightedNode = 0;
             }
             currentHighlightedNode++;
-            if ( highlightedNet >= 0 && highlightedNet < numberOfNets && net[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
+            if ( highlightedNet >= 0 && highlightedNet < numberOfNets && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
                 currentHighlightedNode = 0;
                 highlightedNet++;
                 if ( highlightedNet > numberOfNets - 1 ) {
@@ -117,9 +195,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
                 }
                 brightenedNet = highlightedNet;
                 if ( highlightedNet >= 0 && highlightedNet < numberOfNets ) {
-                    brightenedNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
-                    if ( highlightedNet != 0 && net[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
-                        returnNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
+                    brightenedNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
+                    if ( highlightedNet != 0 && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
+                        returnNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
                     }
                 } else {
                     brightenedNode = -1;
@@ -138,9 +216,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
             brightenedNet = highlightedNet;
 
             if ( highlightedNet >= 0 && highlightedNet < numberOfNets ) {
-                brightenedNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
-                if ( highlightedNet != 0 && net[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
-                    returnNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
+                brightenedNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
+                if ( highlightedNet != 0 && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
+                    returnNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
                 }
             } else {
 
@@ -175,7 +253,7 @@ int encoderNetHighlight( int print, int mode, int divider ) {
                     currentHighlightedNode = 0;
                 }
                 currentHighlightedNode = MAX_NODES - 1;
-                while ( highlightedNet >= 0 && highlightedNet < numberOfNets && net[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
+                while ( highlightedNet >= 0 && highlightedNet < numberOfNets && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] <= 0 ) {
                     currentHighlightedNode--;
                     if ( currentHighlightedNode < 0 ) {
                         highlightedNet--;
@@ -189,9 +267,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
             }
             brightenedNet = highlightedNet;
             if ( highlightedNet >= 0 && highlightedNet < numberOfNets ) {
-                brightenedNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
-                if ( highlightedNet != 0 && net[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
-                    returnNode = net[ highlightedNet ].nodes[ currentHighlightedNode ];
+                brightenedNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
+                if ( highlightedNet != 0 && globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ] != 0 ) {
+                    returnNode = globalState.connections.nets[ highlightedNet ].nodes[ currentHighlightedNode ];
                 }
             } else {
                 brightenedNode = -1;
@@ -280,9 +358,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
 
                 // Check if current scrolledRow has any connections
                 for ( int i = 0; i < numberOfPaths; i++ ) {
-                    if ( path[ i ].node1 == scrolledRow || path[ i ].node2 == scrolledRow ) {
+                    if ( globalState.connections.paths[ i ].node1 == scrolledRow || globalState.connections.paths[ i ].node2 == scrolledRow ) {
                         foundConnection = true;
-                        connectedNet = path[ i ].net;
+                        connectedNet = globalState.connections.paths[ i ].net;
                         break;
                     }
                 }
@@ -325,9 +403,9 @@ int encoderNetHighlight( int print, int mode, int divider ) {
 
                 // Check if current scrolledRow has any connections
                 for ( int i = 0; i < numberOfPaths; i++ ) {
-                    if ( path[ i ].node1 == scrolledRow || path[ i ].node2 == scrolledRow ) {
+                    if ( globalState.connections.paths[ i ].node1 == scrolledRow || globalState.connections.paths[ i ].node2 == scrolledRow ) {
                         foundConnection = true;
-                        connectedNet = path[ i ].net;
+                        connectedNet = globalState.connections.paths[ i ].net;
                         break;
                     }
                 }
@@ -379,7 +457,7 @@ int encoderNetHighlight( int print, int mode, int divider ) {
     return returnNode;
 }
 
-int brightenNet( int node, int addBrightness ) {
+int Highlighting::brightenNet( int node, int addBrightness ) {
 
     if ( node == -1 ) {
         netColors[ brightenedNet ] = brightenedOriginalColor;
@@ -392,14 +470,14 @@ int brightenNet( int node, int addBrightness ) {
 
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
-        if ( node == path[ i ].node1 || node == path[ i ].node2 && path[ i ].duplicate == 0 ) {
+        if ( node == globalState.connections.paths[ i ].node1 || node == globalState.connections.paths[ i ].node2 && globalState.connections.paths[ i ].duplicate == 0 ) {
             /// if (brightenedNet != i) {
-            brightenedNet = path[ i ].net;
+            brightenedNet = globalState.connections.paths[ i ].net;
             brightenedNode = node;
             // Serial.print("\n\n\rbrightenedNet: ");
             // Serial.println(brightenedNet);
             // Serial.print("net ");
-            // Serial.print(path[i].net);
+            // Serial.print(globalState.connections.paths[i].net);
             if ( brightenedNet == 1 ) {
                 brightenedRail = 1;
                 // lightUpRail(-1, 1, 1, addBrightness);
@@ -450,7 +528,7 @@ int brightenNet( int node, int addBrightness ) {
 /// @brief  mark a net as warning
 /// @param -1 to clear warning
 /// @return warningNet
-int warnNet( int node ) {
+int Highlighting::warnNet( int node ) {
     // Serial.print("warnNet node = ");
     // Serial.println(node);
     // Serial.flush();
@@ -470,9 +548,9 @@ int warnNet( int node ) {
 
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
-        if ( node == path[ i ].node1 || node == path[ i ].node2 ) {
+        if ( node == globalState.connections.paths[ i ].node1 || node == globalState.connections.paths[ i ].node2 ) {
             /// if (brightenedNet != i) {
-            warningNet = path[ i ].net;
+            warningNet = globalState.connections.paths[ i ].net;
 
             // Serial.print("warningNet = ");
             // Serial.println(warningNet);
@@ -506,11 +584,10 @@ unsigned long lastWarningTimer = 0;
 unsigned long lastHighlightTimer = 0;
 unsigned long highlightTimeout = 1800;    // 3 seconds timeout for highlighted nets
 unsigned long dacHighlightTimeout = 6000; // 8 seconds timeout for DAC nets
-unsigned long highlightTimer = 0;
 
 unsigned long lastFirstConnectionTimer = 0;
 
-void warnNetTimeout( int clearAll ) {
+void Highlighting::warnNetTimeout( int clearAll ) {
     // Serial.print("warningTimer = ");
     // Serial.println(warningTimer);
     // Serial.print("warningTimeout = ");
@@ -568,7 +645,7 @@ void warnNetTimeout( int clearAll ) {
     }
 }
 
-int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
+int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
     // Serial.print("justReadProbe = ");
     // Serial.println(probeReading);
     // delay(100);
@@ -631,12 +708,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 if ( print == 1 ) {
                     Serial.print( "Top Rail  " );
 
-                    Serial.print( railVoltage[ 0 ] );
+                    Serial.print( globalState.power.topRail );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "Top Rail\n%0.2f V", (float)railVoltage[ 0 ] );
+                    sprintf( oledString, "Top Rail\n%0.2f V", (float)globalState.power.topRail );
 
                     //oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -651,12 +728,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 if ( print == 1 ) {
                     Serial.print( "Bottom Rail  " );
 
-                    Serial.print( railVoltage[ 1 ] );
+                    Serial.print( globalState.power.bottomRail );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "Bottom Rail\n%0.2f V", (float)railVoltage[ 1 ] );
+                    sprintf( oledString, "Bottom Rail\n%0.2f V", (float)globalState.power.bottomRail );
 
                     //oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -672,12 +749,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 DACcolorOverride1 = 0x000000;
                 if ( print == 1 ) {
                     Serial.print( "DAC 0  " );
-                    Serial.print( dacOutput[ 0 ] );
+                    Serial.print( globalState.power.dac0 );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "DAC 0\n%0.2f V", (float)dacOutput[ 0 ] );
+                    sprintf( oledString, "DAC 0\n%0.2f V", (float)globalState.power.dac0 );
 
                     //  oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -693,12 +770,12 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
                 DACcolorOverride1 = -2;
                 if ( print == 1 ) {
                     Serial.print( "DAC 1  " );
-                    Serial.print( dacOutput[ 1 ] );
+                    Serial.print( globalState.power.dac1 );
                     Serial.print( " V" );
                     Serial.flush( );
 
                     char oledString[ 30 ];
-                    sprintf( oledString, "DAC 1\n%0.2f V", (float)dacOutput[ 1 ] );
+                    sprintf( oledString, "DAC 1\n%0.2f V", (float)globalState.power.dac1 );
 
                     //oled.clear( );
                     oled.clearPrintShow( oledString, 2, true, true, true );
@@ -1044,7 +1121,7 @@ int highlightNets( int probeReading, int encoderNetHighlighted, int print ) {
     return netHighlighted;
 }
 
-int checkForReadingChanges( void ) {
+int Highlighting::checkForReadingChanges( void ) {
     // Static variables to store previous measurement values
     static float prevAdcReading = 0.0;
     static int prevGpioInputState = -1;
@@ -1208,7 +1285,7 @@ int checkForReadingChanges( void ) {
 
     // Check for rail connections (nets 1, 2, 3)
     if ( showReadingNet == 2 ) { // Top Rail
-        float currentRailVoltage = railVoltage[ 0 ];
+        float currentRailVoltage = globalState.power.topRail;
 
         // Check if change is significant (>0.05V dead zone)
         if ( fabs( currentRailVoltage - prevRailVoltage ) > 0.05 ) {
@@ -1222,7 +1299,7 @@ int checkForReadingChanges( void ) {
             displayUpdated = true;
         }
     } else if ( showReadingNet == 3 ) { // Bottom Rail
-        float currentRailVoltage = railVoltage[ 1 ];
+        float currentRailVoltage = globalState.power.bottomRail;
 
         // Check if change is significant (>0.05V dead zone)
         if ( fabs( currentRailVoltage - prevRailVoltage ) > 0.05 ) {
