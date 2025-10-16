@@ -21,3 +21,4 @@ compile_commands.json
 src_micropython*.o
 lib/micropython/build-embed
 micropython_repo
+JumperlOS.code-workspace

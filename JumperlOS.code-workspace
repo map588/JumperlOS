@@ -1,12 +1,15 @@
 {
     "folders": [
         {
+            "name": "JumperlOS",
             "path": "."
         },
         {
+            "name": "Jumperless-App",
             "path": "../Jumperless-App"
         },
         {
+            "name": "Jumperless-docs",
             "path": "../Jumperless-docs"
         }
     ]
