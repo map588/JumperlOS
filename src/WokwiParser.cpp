@@ -5,6 +5,7 @@
 #include "USBfs.h"
 #include "FatFS.h"
 #include "Colors.h"
+#include "Probing.h"
 
 extern bool debugFP;
 
@@ -40,7 +41,51 @@ String extractJsonString(const String& json, const String& key, int startIdx) {
         int startQuote = valueIdx;
         int endQuote = json.indexOf('"', startQuote + 1);
         if (endQuote == -1) return "";
-        return json.substring(startQuote + 1, endQuote);
+        
+        String result = json.substring(startQuote + 1, endQuote);
+        
+        // Unescape JSON escape sequences (critical for handling \n in multi-line text!)
+        // This is essential for correctly parsing multi-line labels like:
+        // "text": "top rail 4.3V\nbottom rail -6.5V"
+        // The \n needs to be converted from two characters (backslash, n) to one newline
+        String unescapedStr;
+        unescapedStr.reserve(result.length()); // Pre-allocate for efficiency
+        
+        for (unsigned int i = 0; i < result.length(); i++) {
+            if (result[i] == '\\' && i + 1 < result.length()) {
+                char nextChar = result[i + 1];
+                switch (nextChar) {
+                    case 'n':
+                        unescapedStr += '\n';
+                        i++; // Skip next char
+                        break;
+                    case 'r':
+                        unescapedStr += '\r';
+                        i++; // Skip next char
+                        break;
+                    case 't':
+                        unescapedStr += '\t';
+                        i++; // Skip next char
+                        break;
+                    case '\\':
+                        unescapedStr += '\\';
+                        i++; // Skip next char
+                        break;
+                    case '"':
+                        unescapedStr += '"';
+                        i++; // Skip next char
+                        break;
+                    default:
+                        // Unknown escape, keep the backslash
+                        unescapedStr += result[i];
+                        break;
+                }
+            } else {
+                unescapedStr += result[i];
+            }
+        }
+        
+        return unescapedStr;
     }
     
     return "";
@@ -200,23 +245,134 @@ int logicAnalyzerPinToGPIO(const String& pinStr) {
 }
 
 int parseVoltageString(const String& voltageStr) {
-    // Parse strings like "3.3V", "5V", "2.5V"
+    // Parse voltage strings in various formats:
+    // "3.3V", "-5V", "5.0V", "=3.3V", "= -5V", "3V3", "3300mV", "3.3", "4,5V" (European comma)
+    // Supports range: -8V to +8V
+    // Returns voltage in millivolts, or -9999 if parsing failed
+    
     String str = voltageStr;
     str.trim();
+    
+    // Stop at newline or other common delimiters to avoid parsing multiple values
+    // This is CRITICAL to prevent digit contamination from multi-line text like:
+    // "top rail 4.3V\nbottom rail -6.5V" where we must stop at the \n
+    int newlineIdx = str.indexOf('\n');
+    int carriageReturnIdx = str.indexOf('\r');
+    int commaIdx = str.indexOf(',', 1); // Skip first char in case of European decimal comma
+    int spaceIdx = str.indexOf("  "); // Double space often indicates separate values
+    
+    // Take substring up to first delimiter found (excluding European comma decimal)
+    // Use >= 0 not > 0 because indexOf returns -1 if not found, and we want to catch position 0 too
+    int stopIdx = str.length();
+    if (newlineIdx >= 0 && newlineIdx < stopIdx) stopIdx = newlineIdx;
+    if (carriageReturnIdx >= 0 && carriageReturnIdx < stopIdx) stopIdx = carriageReturnIdx;
+    // Only use comma as delimiter if it's not in position 1-2 (where it would be a decimal)
+    if (commaIdx > 2 && commaIdx < stopIdx) stopIdx = commaIdx;
+    if (spaceIdx >= 0 && spaceIdx < stopIdx) stopIdx = spaceIdx;
+    
+    if (stopIdx < str.length()) {
+        str = str.substring(0, stopIdx);
+        str.trim();
+    }
+    
     str.toUpperCase();
     
-    // Remove 'V' suffix
-    if (str.endsWith("V")) {
+    // Remove leading '=' and any whitespace after it
+    while (str.length() > 0 && (str[0] == '=' || str[0] == ' ')) {
+        str = str.substring(1);
+        str.trim();
+    }
+    
+    // Check if this is in millivolts format (e.g., "3300mV")
+    bool isMillivolts = false;
+    if (str.endsWith("MV")) {
+        isMillivolts = true;
+        str = str.substring(0, str.length() - 2);
+        str.trim();
+    } else if (str.endsWith("V")) {
+        // Remove 'V' suffix
         str = str.substring(0, str.length() - 1);
+        str.trim();
     }
     
-    // Parse as float and convert to millivolts
-    float voltage = str.toFloat();
-    if (voltage > 0 && voltage <= 12) { // Reasonable voltage range
-        return (int)(voltage * 1000); // Convert to millivolts
+    // Handle European notation like "3V3" → "3.3"
+    // Look for pattern like "3V3" or "-5V2" where V is in the middle
+    int vIndex = str.indexOf('V');
+    if (vIndex > 0 && vIndex < str.length() - 1) {
+        // Check if there are digits before and after the V
+        bool digitBefore = (vIndex > 0 && isdigit(str[vIndex - 1]));
+        bool digitAfter = (vIndex < str.length() - 1 && isdigit(str[vIndex + 1]));
+        
+        if (digitBefore && digitAfter) {
+            // Replace the 'V' with a decimal point
+            String beforeV = str.substring(0, vIndex);
+            String afterV = str.substring(vIndex + 1);
+            str = beforeV + "." + afterV;
+        }
     }
     
-    return -1;
+    // Replace European comma with period for decimal point (e.g., "4,5" → "4.5")
+    // Only replace the first comma that's between digits
+    for (unsigned int i = 1; i < str.length() - 1; i++) {
+        if (str[i] == ',' && isdigit(str[i-1]) && isdigit(str[i+1])) {
+            str.setCharAt(i, '.');
+            break; // Only replace the first one
+        }
+    }
+    
+    // Clean up any remaining non-numeric characters except '-' at start and '.'
+    String cleaned = "";
+    bool hasDecimal = false;
+    bool hasNegative = false;
+    
+    for (unsigned int i = 0; i < str.length(); i++) {
+        char c = str[i];
+        
+        // Allow negative sign only at the start
+        if (c == '-' && i == 0) {
+            hasNegative = true;
+            cleaned += c;
+        }
+        // Allow one decimal point
+        else if (c == '.' && !hasDecimal) {
+            hasDecimal = true;
+            cleaned += c;
+        }
+        // Allow digits
+        else if (isdigit(c)) {
+            cleaned += c;
+        }
+        // Skip other characters (including commas at this point)
+    }
+    
+    // Parse as float
+    float voltage = cleaned.toFloat();
+    
+    // If it was in millivolts, convert to volts
+    if (isMillivolts) {
+        voltage = voltage / 1000.0;
+    }
+    
+    // Check if parsing was successful (non-zero or explicitly zero)
+    if (cleaned.length() == 0 || (voltage == 0.0 && cleaned != "0" && cleaned != "0.0" && cleaned != "-0")) {
+        return -9999; // Parse failed - use -9999 as error (outside valid -8V to +8V range)
+    }
+    
+    // Enforce range: -8V to +8V
+    if (voltage < -8.0 || voltage > 8.0) {
+        return -9999; // Out of acceptable range
+    }
+    
+    // Apply DAC limits from config
+    if (voltage < jumperlessConfig.dacs.limit_min) {
+        voltage = jumperlessConfig.dacs.limit_min;
+    }
+    if (voltage > jumperlessConfig.dacs.limit_max) {
+        voltage = jumperlessConfig.dacs.limit_max;
+    }
+    
+    // Convert to millivolts and return
+    return (int)(voltage * 1000);
 }
 
 bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState, 
@@ -247,8 +403,9 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
     // We only need to extract connections and text labels from Wokwi diagram format
     
     // Extract rail voltages from text labels
-    int topRailVoltage = -1;
-    int bottomRailVoltage = -1;
+    // Use -9999 as "not found" sentinel (clearly outside valid -8V to +8V range)
+    int topRailVoltage = -9999;
+    int bottomRailVoltage = -9999;
     
     // Find all text parts and parse voltage info
     int textIdx = 0;
@@ -263,31 +420,72 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
                 Serial.println("  Found text: " + textValue);
             }
             
-            // Parse "top rail 3.3V" or "VCC = 5V" style labels
-            // Be very permissive - handle various formats and multi-line text
-            if (textValue.indexOf("top") >= 0 && textValue.indexOf("rail") >= 0) {
-                // Find "top" and search for "rail" AFTER it
-                int topIdx = textValue.indexOf("top");
-                int railIdx = textValue.indexOf("rail", topIdx);
-                if (railIdx > topIdx) {
-                    String voltPart = textValue.substring(railIdx + 4);
-                    topRailVoltage = parseVoltageString(voltPart);
-                    if (debugFP && topRailVoltage > 0) {
-                        Serial.println("  Top rail: " + String(topRailVoltage) + "mV");
-                    }
+            // Parse rail voltage labels - handle various formats:
+            // "top rail 3.3V", "TOP RAIL = 5V", "top_rail: 4.5V", "toprail 3v3"
+            // "bottom rail -6.5V", "bot rail 2.5V", "BOTTOM_RAIL = -5V"
+            // Work directly with textValue (already lowercased) for consistent indexing
+            
+            // Replace underscores with spaces for flexible matching
+            String workText = textValue;
+            workText.replace("_", " ");
+            
+            // Check for top rail patterns (search in workText, extract from workText)
+            int topRailIdx = -1;
+            int topVoltStartIdx = -1;
+            
+            // Try "top rail" or "top  rail" (with underscore removed)
+            if ((topRailIdx = workText.indexOf("top rail")) >= 0) {
+                topVoltStartIdx = topRailIdx + 8; // After "top rail"
+            } else if ((topRailIdx = workText.indexOf("toprail")) >= 0) {
+                topVoltStartIdx = topRailIdx + 7; // After "toprail"
+            } else if ((topRailIdx = workText.indexOf("top")) >= 0) {
+                // "top" found - check if "rail" follows within reasonable distance
+                int railIdx = workText.indexOf("rail", topRailIdx + 3);
+                if (railIdx >= 0 && railIdx - topRailIdx < 12) {
+                    topVoltStartIdx = railIdx + 4; // After "rail"
                 }
             }
             
-            if (textValue.indexOf("bottom") >= 0 && textValue.indexOf("rail") >= 0) {
-                // Find "bottom" and search for "rail" AFTER it (not before!)
-                int bottomIdx = textValue.indexOf("bottom");
-                int railIdx = textValue.indexOf("rail", bottomIdx);
-                if (railIdx > bottomIdx) {
-                    String voltPart = textValue.substring(railIdx + 4);
-                    bottomRailVoltage = parseVoltageString(voltPart);
-                    if (debugFP && bottomRailVoltage > 0) {
-                        Serial.println("  Bottom rail: " + String(bottomRailVoltage) + "mV");
-                    }
+            if (topVoltStartIdx > 0) {
+                String voltPart = workText.substring(topVoltStartIdx);
+                topRailVoltage = parseVoltageString(voltPart);
+                if (debugFP && topRailVoltage != -9999) {
+                    Serial.println("  Top rail: " + String(topRailVoltage) + "mV");
+                }
+            }
+            
+            // Check for bottom rail patterns
+            int bottomRailIdx = -1;
+            int bottomVoltStartIdx = -1;
+            
+            // Try various bottom/bot patterns
+            if ((bottomRailIdx = workText.indexOf("bottom rail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 11; // After "bottom rail"
+            } else if ((bottomRailIdx = workText.indexOf("bot rail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 8; // After "bot rail"
+            } else if ((bottomRailIdx = workText.indexOf("bottomrail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 10; // After "bottomrail"
+            } else if ((bottomRailIdx = workText.indexOf("botrail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 7; // After "botrail"
+            } else if ((bottomRailIdx = workText.indexOf("bottom")) >= 0) {
+                // "bottom" found - check if "rail" follows
+                int railIdx = workText.indexOf("rail", bottomRailIdx + 6);
+                if (railIdx >= 0 && railIdx - bottomRailIdx < 12) {
+                    bottomVoltStartIdx = railIdx + 4; // After "rail"
+                }
+            } else if ((bottomRailIdx = workText.indexOf("bot")) >= 0) {
+                // "bot" found - check if "rail" follows
+                int railIdx = workText.indexOf("rail", bottomRailIdx + 3);
+                if (railIdx >= 0 && railIdx - bottomRailIdx < 12) {
+                    bottomVoltStartIdx = railIdx + 4; // After "rail"
+                }
+            }
+            
+            if (bottomVoltStartIdx > 0) {
+                String voltPart = workText.substring(bottomVoltStartIdx);
+                bottomRailVoltage = parseVoltageString(voltPart);
+                if (debugFP && bottomRailVoltage != -9999) {
+                    Serial.println("  Bottom rail: " + String(bottomRailVoltage) + "mV");
                 }
             }
             
@@ -297,7 +495,7 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
                 if (eqIdx >= 0) {
                     String voltPart = textValue.substring(eqIdx + 1);
                     int voltage = parseVoltageString(voltPart);
-                    if (voltage > 0 && topRailVoltage == -1) {
+                    if (voltage != -9999 && topRailVoltage == -9999) {
                         topRailVoltage = voltage;
                         if (debugFP) {
                             Serial.println("  VCC: " + String(topRailVoltage) + "mV");
@@ -496,22 +694,22 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
             Serial.println("  Colors: " + String(userColorCount) + " user-defined (" + 
                          String(greenColorCount) + " green)");
         }
-        if (topRailVoltage > 0) {
+        if (topRailVoltage != -9999) {
             Serial.println("  Top rail: " + String(topRailVoltage) + "mV");
         }
-        if (bottomRailVoltage > 0) {
+        if (bottomRailVoltage != -9999) {
             Serial.println("  Bottom rail: " + String(bottomRailVoltage) + "mV");
         }
     }
     
-    // Apply rail voltages to PowerState if detected
-    if (topRailVoltage > 0) {
+    // Apply rail voltages to PowerState if detected (check for -9999 which means parse failed)
+    if (topRailVoltage != -9999) {
         outState.power.topRail = topRailVoltage / 1000.0f; // Convert mV to V
         if (debugFP) {
             Serial.println("  Set top rail to " + String(outState.power.topRail, 2) + "V");
         }
     }
-    if (bottomRailVoltage > 0) {
+    if (bottomRailVoltage != -9999) {
         outState.power.bottomRail = bottomRailVoltage / 1000.0f; // Convert mV to V
         if (debugFP) {
             Serial.println("  Set bottom rail to " + String(outState.power.bottomRail, 2) + "V");
@@ -533,6 +731,95 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
     // Bridge colors are now stored in outState.connections.bridgeColors[]
     // The actual net-to-color mapping will be done after nets are generated
     // by the system when the state is loaded and nets are computed
+    
+    // Add locked OLED connections if enabled
+    extern struct config jumperlessConfig;
+    extern JumperlessState globalState;
+    
+    if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
+        // Check if OLED connections already exist in the parsed diagram
+        bool hasSdaConnection = false;
+        bool hasSclConnection = false;
+        
+        for (int i = 0; i < outState.connections.numBridges; i++) {
+            int n1 = outState.connections.bridges[i][0];
+            int n2 = outState.connections.bridges[i][1];
+            
+            // Check for SDA connection
+            if ((n1 == jumperlessConfig.top_oled.sda_row && n2 == jumperlessConfig.top_oled.gpio_sda) ||
+                (n2 == jumperlessConfig.top_oled.sda_row && n1 == jumperlessConfig.top_oled.gpio_sda)) {
+                hasSdaConnection = true;
+            }
+            
+            // Check for SCL connection
+            if ((n1 == jumperlessConfig.top_oled.scl_row && n2 == jumperlessConfig.top_oled.gpio_scl) ||
+                (n2 == jumperlessConfig.top_oled.scl_row && n1 == jumperlessConfig.top_oled.gpio_scl)) {
+                hasSclConnection = true;
+            }
+        }
+        
+        // Add missing OLED connections
+        if (!hasSdaConnection && outState.connections.numBridges < MAX_BRIDGES) {
+            int bridgeIdx = outState.connections.numBridges;
+            outState.connections.bridges[bridgeIdx][0] = jumperlessConfig.top_oled.sda_row;
+            outState.connections.bridges[bridgeIdx][1] = jumperlessConfig.top_oled.gpio_sda;
+            outState.connections.bridges[bridgeIdx][2] = -1;
+            outState.connections.numBridges++;
+            if (debugFP || !quietMode) {
+                Serial.println("  + Added locked OLED SDA connection: " + 
+                             String(jumperlessConfig.top_oled.sda_row) + " ↔ " + 
+                             String(jumperlessConfig.top_oled.gpio_sda));
+            }
+        }
+        
+        if (!hasSclConnection && outState.connections.numBridges < MAX_BRIDGES) {
+            int bridgeIdx = outState.connections.numBridges;
+            outState.connections.bridges[bridgeIdx][0] = jumperlessConfig.top_oled.scl_row;
+            outState.connections.bridges[bridgeIdx][1] = jumperlessConfig.top_oled.gpio_scl;
+            outState.connections.bridges[bridgeIdx][2] = -1;
+            outState.connections.numBridges++;
+            if (debugFP || !quietMode) {
+                Serial.println("  + Added locked OLED SCL connection: " + 
+                             String(jumperlessConfig.top_oled.scl_row) + " ↔ " + 
+                             String(jumperlessConfig.top_oled.gpio_scl));
+            }
+        }
+    }
+    
+    // Add locked probe power connection if switch is in connect mode (switchPosition == 1)
+    // switchPosition and probePowerDAC are already declared in Probing.h
+    
+    if (switchPosition == 1) {  // Only lock when in SELECT/CONNECT mode
+        // Determine which DAC to connect to based on probePowerDAC setting
+        int targetDAC = (probePowerDAC == 0) ? DAC0 : DAC1;
+        
+        // Check if probe power connection already exists
+        bool hasProbeConnection = false;
+        for (int i = 0; i < outState.connections.numBridges; i++) {
+            int n1 = outState.connections.bridges[i][0];
+            int n2 = outState.connections.bridges[i][1];
+            
+            if ((n1 == ROUTABLE_BUFFER_IN && n2 == targetDAC) ||
+                (n2 == ROUTABLE_BUFFER_IN && n1 == targetDAC)) {
+                hasProbeConnection = true;
+                break;
+            }
+        }
+        
+        // Add missing probe power connection
+        if (!hasProbeConnection && outState.connections.numBridges < MAX_BRIDGES) {
+            int bridgeIdx = outState.connections.numBridges;
+            outState.connections.bridges[bridgeIdx][0] = ROUTABLE_BUFFER_IN;
+            outState.connections.bridges[bridgeIdx][1] = targetDAC;
+            outState.connections.bridges[bridgeIdx][2] = -1;
+            outState.connections.numBridges++;
+            if (debugFP || !quietMode) {
+                Serial.println("  + Added locked probe power connection: ROUTABLE_BUFFER_IN ↔ " + 
+                             String(targetDAC == DAC0 ? "DAC0" : "DAC1") + 
+                             " (switch in connect mode)");
+            }
+        }
+    }
     
     return connCount > 0;
 }
@@ -623,8 +910,9 @@ bool parseWokwiDiagramDirectToFile(const String& jsonContent, int slotNum,
     }
     
     // Extract rail voltages from text labels
-    int topRailVoltage = -1;
-    int bottomRailVoltage = -1;
+    // Use -9999 as "not found" sentinel (clearly outside valid -8V to +8V range)
+    int topRailVoltage = -9999;
+    int bottomRailVoltage = -9999;
     
     // Find all text parts and parse voltage info
     int textIdx = 0;
@@ -634,25 +922,70 @@ bool parseWokwiDiagramDirectToFile(const String& jsonContent, int slotNum,
             String textValue = extractJsonString(jsonContent, "text", textKeyIdx);
             textValue.toLowerCase();
             
-            if (textValue.indexOf("top") >= 0 && textValue.indexOf("rail") >= 0) {
-                int topIdx = textValue.indexOf("top");
-                int railIdx = textValue.indexOf("rail", topIdx);
-                if (railIdx > topIdx) {
-                    String voltPart = textValue.substring(railIdx + 4);
-                    topRailVoltage = parseVoltageString(voltPart);
+            // Parse rail voltage labels - handle various formats:
+            // "top rail 3.3V", "TOP RAIL = 5V", "top_rail: 4.5V", "toprail 3v3"
+            // "bottom rail -6.5V", "bot rail 2.5V", "BOTTOM_RAIL = -5V"
+            // Work directly with textValue (already lowercased) for consistent indexing
+            
+            // Replace underscores with spaces for flexible matching
+            String workText = textValue;
+            workText.replace("_", " ");
+            
+            // Check for top rail patterns (search in workText, extract from workText)
+            int topRailIdx = -1;
+            int topVoltStartIdx = -1;
+            
+            // Try "top rail" or "top  rail" (with underscore removed)
+            if ((topRailIdx = workText.indexOf("top rail")) >= 0) {
+                topVoltStartIdx = topRailIdx + 8; // After "top rail"
+            } else if ((topRailIdx = workText.indexOf("toprail")) >= 0) {
+                topVoltStartIdx = topRailIdx + 7; // After "toprail"
+            } else if ((topRailIdx = workText.indexOf("top")) >= 0) {
+                // "top" found - check if "rail" follows within reasonable distance
+                int railIdx = workText.indexOf("rail", topRailIdx + 3);
+                if (railIdx >= 0 && railIdx - topRailIdx < 12) {
+                    topVoltStartIdx = railIdx + 4; // After "rail"
                 }
             }
             
-            if (textValue.indexOf("bottom") >= 0 && textValue.indexOf("rail") >= 0) {
-                int bottomIdx = textValue.indexOf("bottom");
-                int railIdx = textValue.indexOf("rail", bottomIdx);
-                if (railIdx > bottomIdx) {
-                    String voltPart = textValue.substring(railIdx + 4);
-                    bottomRailVoltage = parseVoltageString(voltPart);
+            if (topVoltStartIdx > 0) {
+                String voltPart = workText.substring(topVoltStartIdx);
+                topRailVoltage = parseVoltageString(voltPart);
+            }
+            
+            // Check for bottom rail patterns
+            int bottomRailIdx = -1;
+            int bottomVoltStartIdx = -1;
+            
+            // Try various bottom/bot patterns
+            if ((bottomRailIdx = workText.indexOf("bottom rail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 11; // After "bottom rail"
+            } else if ((bottomRailIdx = workText.indexOf("bot rail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 8; // After "bot rail"
+            } else if ((bottomRailIdx = workText.indexOf("bottomrail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 10; // After "bottomrail"
+            } else if ((bottomRailIdx = workText.indexOf("botrail")) >= 0) {
+                bottomVoltStartIdx = bottomRailIdx + 7; // After "botrail"
+            } else if ((bottomRailIdx = workText.indexOf("bottom")) >= 0) {
+                // "bottom" found - check if "rail" follows
+                int railIdx = workText.indexOf("rail", bottomRailIdx + 6);
+                if (railIdx >= 0 && railIdx - bottomRailIdx < 12) {
+                    bottomVoltStartIdx = railIdx + 4; // After "rail"
+                }
+            } else if ((bottomRailIdx = workText.indexOf("bot")) >= 0) {
+                // "bot" found - check if "rail" follows
+                int railIdx = workText.indexOf("rail", bottomRailIdx + 3);
+                if (railIdx >= 0 && railIdx - bottomRailIdx < 12) {
+                    bottomVoltStartIdx = railIdx + 4; // After "rail"
                 }
             }
             
-            if (textValue.indexOf("vcc") >= 0 && topRailVoltage == -1) {
+            if (bottomVoltStartIdx > 0) {
+                String voltPart = workText.substring(bottomVoltStartIdx);
+                bottomRailVoltage = parseVoltageString(voltPart);
+            }
+            
+            if (textValue.indexOf("vcc") >= 0 && topRailVoltage == -9999) {
                 int eqIdx = textValue.indexOf('=');
                 if (eqIdx >= 0) {
                     String voltPart = textValue.substring(eqIdx + 1);
@@ -766,14 +1099,66 @@ bool parseWokwiDiagramDirectToFile(const String& jsonContent, int slotNum,
         connIdx = connEnd + 1;
     }
     
-    // Add power section if voltages were detected
+    // Add locked OLED connections if enabled
+    extern struct config jumperlessConfig;
+    extern JumperlessState globalState;
+    
+    if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
+        // Check if OLED connections were already parsed from the diagram
+        // We need to search the yamlContent string for these specific connections
+        String sdaConnectionStr1 = "n1: " + String(jumperlessConfig.top_oled.sda_row) + ", n2: " + String(jumperlessConfig.top_oled.gpio_sda);
+        String sdaConnectionStr2 = "n1: " + String(jumperlessConfig.top_oled.gpio_sda) + ", n2: " + String(jumperlessConfig.top_oled.sda_row);
+        String sclConnectionStr1 = "n1: " + String(jumperlessConfig.top_oled.scl_row) + ", n2: " + String(jumperlessConfig.top_oled.gpio_scl);
+        String sclConnectionStr2 = "n1: " + String(jumperlessConfig.top_oled.gpio_scl) + ", n2: " + String(jumperlessConfig.top_oled.scl_row);
+        
+        bool hasSdaConnection = (yamlContent.indexOf(sdaConnectionStr1) >= 0) || (yamlContent.indexOf(sdaConnectionStr2) >= 0);
+        bool hasSclConnection = (yamlContent.indexOf(sclConnectionStr1) >= 0) || (yamlContent.indexOf(sclConnectionStr2) >= 0);
+        
+        // Add missing OLED connections to YAML
+        if (!hasSdaConnection) {
+            yamlContent += "  - {n1: " + String(jumperlessConfig.top_oled.sda_row) + 
+                          ", n2: " + String(jumperlessConfig.top_oled.gpio_sda) + "}\n";
+            connCount++;
+            if (debugFP || !quietMode) {
+                Serial.println("  + Added locked OLED SDA connection: " + 
+                             String(jumperlessConfig.top_oled.sda_row) + " ↔ " + 
+                             String(jumperlessConfig.top_oled.gpio_sda));
+            }
+        }
+        
+        if (!hasSclConnection) {
+            yamlContent += "  - {n1: " + String(jumperlessConfig.top_oled.scl_row) + 
+                          ", n2: " + String(jumperlessConfig.top_oled.gpio_scl) + "}\n";
+            connCount++;
+            if (debugFP || !quietMode) {
+                Serial.println("  + Added locked OLED SCL connection: " + 
+                             String(jumperlessConfig.top_oled.scl_row) + " ↔ " + 
+                             String(jumperlessConfig.top_oled.gpio_scl));
+            }
+        }
+    }
+    
+    // Ensure probe power connection is established if switch is in connect mode
+    // switchPosition is already declared in Probing.h (included above)
+    
+    if (switchPosition == 1) {  // Only when in SELECT/CONNECT mode
+        // Use the existing routableBufferPower function to ensure connection
+        // This handles all the state management, voltage checks, and proper connection logic
+        Probing::getInstance().routableBufferPower(1, 1, 1);  // on, flash=true, force=true
+        
+        if (debugFP || !quietMode) {
+            Serial.println("  ✓ Ensured probe power connection via routableBufferPower()");
+        }
+    }
+    
+    // Add power section if voltages were detected (check for -9999 which means parse failed)
     yamlContent += "\npower:\n";
-    if (topRailVoltage > 0) {
+    if (topRailVoltage != -9999) {
         yamlContent += "  topRail: " + String(topRailVoltage / 1000.0f, 2) + "\n";
     } else {
         yamlContent += "  topRail: 0.0\n";
     }
-    if (bottomRailVoltage > 0) {
+    if (bottomRailVoltage != -9999) {
         yamlContent += "  bottomRail: " + String(bottomRailVoltage / 1000.0f, 2) + "\n";
     } else {
         yamlContent += "  bottomRail: 0.0\n";
@@ -785,10 +1170,10 @@ bool parseWokwiDiagramDirectToFile(const String& jsonContent, int slotNum,
     if (!quietMode || debugFP) {
         Serial.println("◆ Wokwi parsing complete:");
         Serial.println("  Connections: " + String(connCount) + " added, " + String(skippedCount) + " skipped");
-        if (topRailVoltage > 0) {
+        if (topRailVoltage != -9999) {
             Serial.println("  Top rail: " + String(topRailVoltage) + "mV");
         }
-        if (bottomRailVoltage > 0) {
+        if (bottomRailVoltage != -9999) {
             Serial.println("  Bottom rail: " + String(bottomRailVoltage) + "mV");
         }
     }

@@ -364,7 +364,7 @@ void Probing::handleProbeButtonActions( ) {
 
                 } else {
                     highlighting.warnNet( firstConnection );
-                    warningTimeout = 3800;
+                    warningTimeout = 1500;
                     warningTimer = millis( );
                 }
             }
@@ -3305,7 +3305,7 @@ void Probing::checkPads( void ) {
             clearHighlighting( );
             checkChangedNetColors( -1 );
             assignNetColors( );
-            saveChangedNetColorsToFile( netSlot, 0 );
+            // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
             // colorPicker(45, jumperlessConfig.display.led_brightness);
@@ -3327,7 +3327,7 @@ void Probing::checkPads( void ) {
             clearHighlighting( );
             checkChangedNetColors( -1 );
             assignNetColors( );
-            saveChangedNetColorsToFile( netSlot, 0 );
+            // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
             // colorPicker(225, jumperlessConfig.display.led_brightness);

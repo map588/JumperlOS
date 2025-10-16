@@ -28,10 +28,7 @@ int loadChangedNetColorsFromFile(int slot = 0, int flashOrLocal = 0);
 int printChangedNetColorFile(int slot = 0, int flashOrLocal = 0);
 void printAllChangedNetColorFiles(void);
 
-// Net color tracking functions
-void ensureNetColorsDirectoryExists(void);
-bool slotHasNetColors(int slot);
-void setSlotHasNetColors(int slot, bool hasColors);
+
 void removeNetColorFile(int slot);
 void initializeNetColorTracking(void);
 void printNetColorTrackingStatus(void);

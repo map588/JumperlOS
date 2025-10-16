@@ -1764,7 +1764,9 @@ void applyStateToHardware() {
     // Note: Pass save=0 to avoid updating globalState (it's already loaded)
     //       and saveEEPROM=0 to avoid writing to EEPROM
     setRailsAndDACs(0);  // This applies topRail, bottomRail, dac0, dac1 from globalState
-    
+
+
+
     // Apply GPIO configurations from globalState to hardware
     for (int i = 0; i < 10; i++) {
         uint8_t gpio_pin = gpioDef[i][0];

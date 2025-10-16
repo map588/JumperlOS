@@ -3089,8 +3089,10 @@ int doMenuAction( int menuPosition, int selection ) {
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Lock   Connect" ) != -1 ) {
             if ( currentAction.from[ 0 ] == 0 ) {
                 jumperlessConfig.top_oled.lock_connection = 1;
+                globalState.config.oledLockConnection = 1;
             } else if ( currentAction.from[ 0 ] == 1 ) {
                 jumperlessConfig.top_oled.lock_connection = 0;
+                globalState.config.oledLockConnection = 0;
             }
             oled.clear( );
             oled.setTextSize( 1 );

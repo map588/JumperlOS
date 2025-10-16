@@ -1466,9 +1466,10 @@ void clearChangedNetColors(int saveToFile) {
     changedNetColors[i].node2 = 0;
     changedNetColors[i].fromBridge = false;
     }
-  if (saveToFile == 1) {
-    saveChangedNetColorsToFile(netSlot, 0);
-    }
+  // saveToFile parameter is now ignored - colors are saved via YAML state system
+  // if (saveToFile == 1) {
+  //   saveChangedNetColorsToFile(netSlot, 0); // DEPRECATED: Colors now saved via YAML state
+  // }
   }
 
 void rebuildChangedNetColorsFromBridges(void) {
@@ -1534,9 +1535,10 @@ int removeChangedNetColors(int node, int saveToFile) {
       ret = 1;
       }
     }
-  if (saveToFile == 1 && ret == 1) {
-    saveChangedNetColorsToFile(netSlot, 0);
-    }
+  // saveToFile parameter is now ignored - colors are saved via YAML state system
+  // if (saveToFile == 1 && ret == 1) {
+  //   saveChangedNetColorsToFile(netSlot, 0); // DEPRECATED: Colors now saved via YAML state
+  // }
   return ret;
   }
 

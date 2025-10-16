@@ -606,7 +606,7 @@ int Highlighting::warnNet( int node ) {
 unsigned long lastWarningTimer = 0;
 unsigned long lastHighlightTimer = 0;
 unsigned long highlightTimeout = 1800;           // 3 seconds timeout for regular nets
-unsigned long persistentHighlightTimeout = 30000; // 30 seconds timeout for rails, DACs, GPIO outputs
+unsigned long persistentHighlightTimeout = 15000; // 15 seconds timeout for rails, DACs, GPIO outputs
 
 unsigned long lastFirstConnectionTimer = 0;
 
