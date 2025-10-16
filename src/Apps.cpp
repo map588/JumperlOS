@@ -1,4 +1,5 @@
 #include "Apps.h"
+#include "Adafruit_USBD_CDC.h"
 #include "ArduinoStuff.h"
 #include "CH446Q.h"
 #include "Commands.h"
@@ -25,792 +26,850 @@
 #include <Adafruit_SSD1306.h>
 #include <SPI.h>
 
-#include <JDI_MIP_Display.h>
-#include <Display_cfg.h>
 #include "Images.h"
 #include "externVars.h"
+#include <Display_cfg.h>
+#include <JDI_MIP_Display.h>
+#include <DmxOutput.h>
+#include <DmxInput.h>
 
-#define DISPLAY_WIDTH   72
-#define DISPLAY_HEIGHT  144
+#define DISPLAY_WIDTH 72
+#define DISPLAY_HEIGHT 144
 
-#define HALF_WIDTH (DISPLAY_WIDTH / 2)
+#define HALF_WIDTH ( DISPLAY_WIDTH / 2 )
 
-#define COLOR_BLACK   0x00
-#define COLOR_BLUE    0x02
-#define COLOR_GREEN   0x04
-#define COLOR_CYAN    0x06
-#define COLOR_RED     0x08
+#define COLOR_BLACK 0x00
+#define COLOR_BLUE 0x02
+#define COLOR_GREEN 0x04
+#define COLOR_CYAN 0x06
+#define COLOR_RED 0x08
 #define COLOR_MAGENTA 0x0a
-#define COLOR_YELLOW  0x0c
-#define COLOR_WHITE   0x0e
+#define COLOR_YELLOW 0x0c
+#define COLOR_WHITE 0x0e
 
-#define CMD_NO_UPDATE           0x00
-#define CMD_BLINKING_BLACK      0x10
-#define CMD_BLINKING_INVERSION  0x14
-#define CMD_BLINKING_WHITE      0x18
-#define CMD_ALL_CLEAR           0x20
-#define CMD_VCOM                0x40
-#define CMD_UPDATE              0x90
+#define CMD_NO_UPDATE 0x00
+#define CMD_BLINKING_BLACK 0x10
+#define CMD_BLINKING_INVERSION 0x14
+#define CMD_BLINKING_WHITE 0x18
+#define CMD_ALL_CLEAR 0x20
+#define CMD_VCOM 0x40
+#define CMD_UPDATE 0x90
 #define OLED_CONNECTED 0
 
 JDI_MIP_Display jdi_display;
 
-
 // Wrapper for i2cScan to match void(*)(void)
-static void i2cScanWrapper(void) { i2cScan(); }
+static void i2cScanWrapper( void ) { i2cScan( ); }
 
-struct app apps[NUM_APPS] = {
-  { "Bounce Startup",  0, 1, bounceStartup },
-  { "Calib  DACs",     1, 1, calibrateDacs },
-  { "I2C    Scan",     2, 1, i2cScanWrapper },
-  { "Custom App",      3, 1, customApp },
-  { "PNG Image",       4, 1, displayImage },
-  { "Scan",            5, 1, scanBoard },
-  { "XLSX   GUI",      6, 1, xlsxGui },
-  { "Micropython",     7, 1, microPythonREPLapp },
-  { "uPythonREPL",     8, 1, microPythonREPLapp },
-  { "File   Manager",  9, 1, fileManagerApp },
-  { "eKilo Editor",   10, 1, eKiloApp },
-  { "Probe  Calib",   11, 1, probeCalibApp },
-  { "JDI MIPdisplay", 12, 1, jdiMIPdisplay },
-  { "DOOM",           16, 1, playDoom },
-  // others can remain uninitialized (works=0)
+struct app apps[ NUM_APPS ] = {
+    { "Bounce Startup", 0, 1, bounceStartup },
+    { "Calib  DACs", 1, 1, calibrateDacs },
+    { "I2C    Scan", 2, 1, i2cScanWrapper },
+    { "Custom App", 3, 1, customApp },
+    { "PNG Image", 4, 1, displayImage },
+    { "Scan", 5, 1, scanBoard },
+    { "XLSX   GUI", 6, 1, xlsxGui },
+    { "Micropython", 7, 1, microPythonREPLapp },
+    { "uPythonREPL", 8, 1, microPythonREPLapp },
+    { "File   Manager", 9, 1, fileManagerApp },
+    { "eKilo Editor", 10, 1, eKiloApp },
+    { "Probe  Calib", 11, 1, probeCalibApp },
+    { "JDI MIPdisplay", 12, 1, jdiMIPdisplay },
+    { "DOOM", 16, 1, playDoom },
+    { "DMX Serial", 13, 1, DMXSerialApp },
+    // others can remain uninitialized (works=0)
 };
 
-
-
 // Helper: normalize spaces (trim + collapse)
-String normalizeSpaces(const char* s) {
-  if (!s) return String();
-  String in(s);
-  in.trim();
-  String out;
-  out.reserve(in.length());
-  bool lastSpace = false;
-  for (size_t i = 0; i < in.length(); ++i) {
-    char c = in[i];
-    if (c == ' ') {
-      if (!lastSpace) { out += ' '; lastSpace = true; }
-    } else {
-      out += c; lastSpace = false;
-    }
-  }
-  return out;
-}
-
-
-
-void runApp(int index, char* name) {
-  const int APP_COUNT = NUM_APPS;
-
-  // Try to resolve by name 
-  if (index < 0 || index >= APP_COUNT) {
-    if (name) {
-      String want = normalizeSpaces(name);
-      for (int i = 0; i < APP_COUNT; ++i) {
-        if (!apps[i].works || !apps[i].action) continue;
-        if (normalizeSpaces(apps[i].name).equalsIgnoreCase(want)) {
-          index = i;
-          break;
-        }
-      }
-    }
-  }
-
-  // Validate
-  if (index < 0 || index >= APP_COUNT || !apps[index].works || !apps[index].action) {
-    Serial.println(F("App not found"));
-    return;
-  }
-
-  // Ensure we have a display name
-  if (!name) name = apps[index].name;
-
-  Serial.println("Running app: " + normalizeSpaces(name));
-  Serial.println("Index: " + String(index));
-
-  // Direct dispatch (no giant switch)
-  apps[index].action();
-}
-
-void microPythonREPLapp(void) {
-  enterMicroPythonREPL(global_mp_stream);
-}
-
-void leaveApp(int lastNetSlot) {
-  globalState.clearAllConnections();
-  netSlot = lastNetSlot;
-  refreshConnections(-1, 0, 1);
-}
-
-void fileManagerApp(void) { filesystemApp(true); }
-
-void probeCalibApp(void) {
-  b.clear();
-
-  cycleTerminalColor(true, 5.0, true);
-  Serial.println("Probe Calibration App");
-  cycleTerminalColor();
-  Serial.println("\n\rTap rows with the probe and rotate the clickweel until they're lighting up the correct row");
-  cycleTerminalColor();
-  Serial.println("be sure to check nano header rows too");
-  cycleTerminalColor();
-  Serial.println("Hold the clickwheel when you're done\n\n\r");
-  cycleTerminalColor();
-
-  bool done = false;
-
-  b.clear();
-  int lastNetSlot = netSlot;
-  netSlot = 8;
-  globalState.clearAllConnections();
-
-  refreshConnections(-1, 0);
-  routableBufferPower(1, 1, 1);
-  resetEncoderPosition = true;
-  int lastEncoderPosition = encoderPosition;
-  int reading = 0;
-  int lastReading = -1;
-
-  int probeMax = jumperlessConfig.calibration.probe_max;
-
-  int nodeSelected = -1;
-  int lastNodeSelected = -1;
-
-  int nodeSelectedWithOldMapping = -1;
-  int lastNodeSelectedWithOldMapping = -1;
-
-  int lastValidProbeRead = -1;
-  int lastSwitchPosition = -1;
-
-  int measureOrSelect = 0;
-
-  float measureModeOutputVoltage = jumperlessConfig.calibration.measure_mode_output_voltage;
-
-  while (done == false) {
-    int probeRead = readProbeRaw(0, true);
-    if (probeRead != -1) lastValidProbeRead = probeRead;
-
-    int rowProbed = map(lastValidProbeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0);
-    int rowProbedWithOldMapping = map(lastValidProbeRead, jumperlessConfig.calibration.probe_min, probeMax, 101, 0);
-
-    nodeSelected = probeRowMap[rowProbed];
-    nodeSelectedWithOldMapping = probeRowMapByPad[rowProbedWithOldMapping];
-
-    int checkSwitch = checkSwitchPosition();
-    if (checkSwitch != lastSwitchPosition) {
-      if (checkSwitch == 0) {
-        lastSwitchPosition = 0;
-        measureOrSelect = 0;
-        measureModeOutputVoltage = jumperlessConfig.calibration.measure_mode_output_voltage;
-      } else {
-        lastSwitchPosition = 1;
-        measureOrSelect = 1;
-        probeMax = jumperlessConfig.calibration.probe_max;
-      }
-      resetEncoderPosition = true;
-    }
-
-    reading = rowProbed;
-
-    if (encoderPosition != lastEncoderPosition || reading != lastReading) {
-      lastEncoderPosition = encoderPosition;
-      if (measureOrSelect == 0) {
-        jumperlessConfig.calibration.measure_mode_output_voltage = measureModeOutputVoltage - ((float)encoderPosition / 2000.0);
-        if (jumperlessConfig.calibration.measure_mode_output_voltage < 2.8) {
-          jumperlessConfig.calibration.measure_mode_output_voltage = 2.8;
-        } else if (jumperlessConfig.calibration.measure_mode_output_voltage > 4.5) {
-          jumperlessConfig.calibration.measure_mode_output_voltage = 5.0;
-        }
-        setDac0voltage(jumperlessConfig.calibration.measure_mode_output_voltage, 1, 0, false);
-      } else {
-        jumperlessConfig.calibration.probe_max = probeMax - encoderPosition;
-        if (jumperlessConfig.calibration.probe_max < 15) {
-          jumperlessConfig.calibration.probe_max = 15;
-        }
-      }
-      Serial.printf("                                  \rraw: %d enc: %d reading: %d max: %d node: %s mode: %s v: %0.4f",
-                    lastValidProbeRead, encoderPosition, rowProbed, jumperlessConfig.calibration.probe_max,
-                    definesToChar(nodeSelected), measureOrSelect ? "measure" : "select",
-                    jumperlessConfig.calibration.measure_mode_output_voltage);
-      Serial.flush();
-    }
-
-    if (reading == -1) continue;
-
-    if (reading != lastReading && reading != -1) {
-      clearLEDsExceptRails();
-      if (nodeSelected != nodeSelectedWithOldMapping && measureOrSelect == 1) {
-        b.lightUpNode(nodeSelectedWithOldMapping, 0x050205);
-      }
-      if (measureOrSelect == 0) {
-        b.lightUpNode(nodeSelected, 0x200010);
-      } else {
-        b.lightUpNode(nodeSelected, 0x001030);
-      }
-    }
-    lastReading = reading;
-    lastNodeSelected = nodeSelected;
-    lastNodeSelectedWithOldMapping = nodeSelectedWithOldMapping;
-
-    if (encoderButtonState == HELD) done = true;
-  }
-
-  Serial.println("\n\n\r");
-  Serial.println("Saving config...");
-
-  saveConfig();
-  leaveApp(lastNetSlot);
-}
-
-void customApp(void) {
-  leds.clear();
-  b.clear();
-  delay(1000);
-  b.print("This isa demo", (uint32_t)0x002008);
-  showLEDsCore2 = 2;
-  delay(2000);
-  b.clear();
-  b.print("It will show", (uint32_t)0x002008);
-  delay(1000);
-  b.clear();
-  b.print("random stuff", (uint32_t)0x002008);
-  delay(1000);
-  b.clear();
-  b.print("look atthe FW", (uint32_t)0x002008);
-  delay(1000);
-
-  int lastNetSlot = netSlot;
-  netSlot = 8; // net slot for custom app
-  int leave = 0;
-
-  globalState.clearAllConnections();
-
-  addBridgeToState(12, 25);
-  addBridgeToState(TOP_RAIL, 52);
-  refreshConnections(-1, 1);
-
-  setTopRail((float)3.3);
-
-  addBridgeToState(RP_GPIO_1, 42);
-  addBridgeToState(RP_GPIO_2, 42);
-  refreshConnections(-1, 0);
-
-  pinMode(GPIO_1_PIN, OUTPUT);
-  pinMode(GPIO_2_PIN, INPUT);
-
-  digitalWrite(GPIO_1_PIN, HIGH);
-  int reading = digitalRead(GPIO_2_PIN);
-  Serial.print("GPIO 2 Reading: ");
-  Serial.println(reading);
-  delay(10);
-
-  digitalWrite(GPIO_1_PIN, LOW);
-  reading = digitalRead(GPIO_2_PIN);
-  Serial.print("GPIO_2_PIN: ");
-  Serial.println(reading);
-
-  removeBridgeFromState(RP_GPIO_1, 42);
-  removeBridgeFromState(RP_GPIO_2, 42);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-
-  setDacByNumber(1, 5.35);
-  addBridgeToState(DAC1, 20);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-  delay(10);
-
-  addBridgeToState(ADC0, 20);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-  waitCore2();
-
-  float voltage = readAdcVoltage(0, 8);
-  Serial.print("\n\rADC0: ");
-  Serial.println(voltage);
-
-  if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-
-  listNets();
-  listSpecialNets();
-  Serial.println("\n\n\r");
-  printPathsCompact();
-  Serial.println("\n\n\n\n\r");
-
-  removeBridgeFromState(ADC0, 20);
-  removeBridgeFromState(DAC1, 20);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-
-  addBridgeToState(ISENSE_PLUS, 9);
-  addBridgeToState(ISENSE_MINUS, 28);
-  saveStateToSlot();
-  refreshConnections();
-
-  float current_ma = INA0.getCurrent_mA();
-
-  Serial.print("current between row 19 and 28: ");
-  Serial.print(current_ma);
-  Serial.println(" mA\n\r");
-
-  removeBridgeFromState(ISENSE_PLUS, 9);
-  removeBridgeFromState(ISENSE_MINUS, 28);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-  delay(1);
-
-  if ( (encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED) || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-
-  setTopRail(4.20F);
-  addBridgeToState(TOP_RAIL, ISENSE_PLUS);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-  waitCore2();
-  delay(10);
-  float voltage2 = INA0.getBusVoltage();
-  Serial.print("top rail voltage (from INA219): ");
-  Serial.print(voltage2, 4);
-  Serial.println(" V\n\r");
-
-  removeBridgeFromState(TOP_RAIL, ISENSE_PLUS);
-  saveStateToSlot();
-  refreshConnections(-1, 0);
-
-  float probeVoltage = readAdcVoltage(7, 8);
-  Serial.print("Probe voltage: ");
-  Serial.print(probeVoltage, 4);
-  Serial.println(" V\n\r");
-
-  float probeCurrent = checkProbeCurrent();
-  Serial.print("Probe current: ");
-  Serial.print(probeCurrent, 2);
-  Serial.println(" mA\n\r");
-
-  if ((encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED) || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-
-  showLEDsCore2 = -3;
-  b.clear();
-  clearLEDsExceptRails();
-
-  b.printRawRow(0b00001, 55, 0x170010, 0xffffff);
-  b.printRawRow(0b00011, 56, 0x150012, 0xffffff);
-  b.printRawRow(0b00111, 57, 0x130013, 0xffffff);
-  b.printRawRow(0b01111, 58, 0x100015, 0xffffff);
-  b.printRawRow(0b11111, 59, 0x080018, 0xffffff);
-
-  // Friendlier text
-  for (uint8_t i = 0; i < 254; i++) {
-    hsvColor hsvTextColor = { i, 255, 30 };
-    rgbColor rgbTextColor = HsvToRgb(hsvTextColor);
-    uint32_t textColor = (uint32_t)rgbTextColor.r << 16 |
-                         (uint32_t)rgbTextColor.g << 8  |
-                         (uint32_t)rgbTextColor.b;
-    b.print( "Fuck    you!", (uint32_t)textColor );
-    showLEDsCore2 = -3;
-    delayMicroseconds(200);
-  }
-
-  if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-
-  int switchPosition = checkSwitchPosition();
-  Serial.print("Switch position: ");
-  Serial.println(switchPosition == 0 ? "Measure" : "Select");
-
-  b.clear();
-  b.print(" Tap    Rows!", (uint32_t)0x00140a);
-  showLEDsCore2 = -3;
-  delay(100);
-  showLEDsCore2 = -1;
-
-  int probeRow = -1;
-  int lastProbedRow = 0;
-
-  Serial.println("Click the probe button to exit\n\n\n\r");
-  // Use state-based button check in loop (doesn't consume events)
-  while (checkProbeButtonState() == 0) {
-    if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-    probeRow = justReadProbe();
-    if (probeRow != -1) {
-      Serial.print("\r                 \rProbed row: ");
-      printNodeOrName(probeRow);
-      b.printRawRow(0b11111, lastProbedRow - 1, 0x000000, 0xffffff);
-      b.printRawRow(0b11111, probeRow - 1, 0x172000, 0xffffff);
-      b.print(probeRow, (uint32_t)0x002008);
-      lastProbedRow = probeRow;
-      delayMicroseconds(100);
-    }
-  }
-
-  removeBridgeFromState(12, -1);
-  removeBridgeFromState(52, -1);
-  refreshConnections(-1, 0);
-
-  addBridgeToState(12, 25);
-  refreshLocalConnections(-1, 0);
-  delay(100);
-
-  removeBridgeFromState(12, -1);
-  refreshLocalConnections(-1, 0);
-  delay(100);
-
-  if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-
-  for (int i = 1; i <= 31; i++) {
-    removeBridgeFromState(1, i - 1);
-    addBridgeToState(1, i);
-    refreshLocalConnections(-1, 0);
-    showLEDsCore2 = -1;
-    waitCore2();
-  }
-
-  removeBridgeFromState(30, -1);
-  refreshLocalConnections(-1, 0);
-
-  if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-
-  for (int i = 31; i <= 60; i++) {
-    removeBridgeFromState(31, i - 1);
-    addBridgeToState(31, i);
-    refreshConnections(-1, 0);
-    showLEDsCore2 = -1;
-    if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-  }
-  removeBridgeFromState(60, -1);
-  refreshConnections(-1, 0);
-  delay(100);
-
-  sendXYraw(CHIP_K, 4, 0, 1);
-  sendXYraw(CHIP_A, 9, 1, 1);
-
-  unsigned long startTime = millis();
-  unsigned long timeout = 5000;
-  while (millis() - startTime < timeout) {
-    if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) { leaveApp(lastNetSlot); return; }
-    sendXYraw(CHIP_K, 4, 0, 1);
-    delayMicroseconds(100);
-    sendXYraw(CHIP_K, 4, 0, 0);
-    sendXYraw(CHIP_K, 15, 0, 1);
-    delayMicroseconds(100);
-    sendXYraw(CHIP_K, 15, 0, 0);
-  }
-
-  sendXYraw(CHIP_K, 4, 0, 0);
-  sendXYraw(CHIP_K, 15, 0, 0);
-  sendXYraw(CHIP_A, 9, 1, 0);
-}
-
-void xlsxGui(void) {
-  unsigned long startTime = millis();
-  unsigned long messageTime = startTime;
-  unsigned long timeout = 1000000;
-
-  String string_from_UART = "";
-  String command = "", args = "";
-  String queuedCommand = "  ";
-  bool isEchoEnabled = true;
-  bool isJumperlessReply = false;
-
-  int DT = 10;
-
-  USBSer1.println(F("Message,Jumperless GUI started"));
-  USBSer1.flush();
-
-  while (millis() - startTime < timeout) {
-    uint32_t currentMillis = millis();
-
-    if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) {
-      Serial.println(F("Exiting XLSX GUI early"));
-      break;
-    }
-
-    if (currentMillis > messageTime) {
-      messageTime = currentMillis + 1000;
-      USBSer1.dtr();
-      USBSer1.print(F("Message,Jumperless GUI is running..."));
-      USBSer1.print(F("\n"));
-      USBSer1.flush();
-      USBSer1.println(F("|Message,,Jumperless GUI is running..."));
-      USBSer1.flush();
-    }
-
-    if (USBSer1.available()) {
-      char c = USBSer1.read();
-      if (isEchoEnabled) {
-        Serial.print(c);
-        Serial.flush();
-      }
-      if ((c != '\n') && (c != '\r') && (c != '|')) {
-        string_from_UART += c;
-      } else {
-        string_from_UART.trim();
-        if (string_from_UART.length() > 0) {
-          delay(DT);
-          int index_of_first_comma = string_from_UART.indexOf(',');
-          bool isExcelCommand = false;
-          if (index_of_first_comma == 0) {
-            isExcelCommand = true;
-            string_from_UART = string_from_UART.substring(1, string_from_UART.length());
-            index_of_first_comma = string_from_UART.indexOf(',');
-          }
-          if (index_of_first_comma != -1) {
-            command = string_from_UART.substring(0, index_of_first_comma);
-            args = string_from_UART.substring(index_of_first_comma + 1);
-          } else {
-            command = string_from_UART;
-            args = "";
-          }
-
-          USBSer1.print(F("Command: "));
-          USBSer1.println(command);
-          USBSer1.print(F("Arguments: "));
-          USBSer1.println(args);
-          USBSer1.flush();
-
-          if (command == "h" || command == "help") {
-            delay(DT); USBSer1.println(F(""));
-            delay(DT); USBSer1.println(F("|'h' or 'help',, Prints this list"));
-            delay(DT); USBSer1.println(F("|'echo,<val>' ,, Prints the echo setting; <val> (optional)"));
-            delay(DT); USBSer1.println(F("|             ,, is 'on' or 'off' to set the echo setting accordingly"));
-            delay(DT); USBSer1.println(F("|'TakeOnMe'   ,, Plays Take On Me from pin 11"));
-            delay(DT); USBSer1.println(F("|'dance'      ,, progresses the 'dance' LED"));
-            delay(DT); USBSer1.println(F("|             ,, pattern by one step"));
-            delay(DT); USBSer1.println(F("|'send,<val>' ,, Sends a single-character command "));
-            delay(DT); USBSer1.println(F("|             ,, to Jumperless (<val> = n, q, or Q)"));
-            delay(DT); USBSer1.println(F("|'P0_?,<val>' ,, Sends <val> as 'f' command to Jumperless; prints"));
-            delay(DT); USBSer1.println(F("|             ,, an abridged result; then sends 'n' to"));
-            delay(DT); USBSer1.println(F("|             ,, Jumperless and prints an Excel-compatible result;"));
-            delay(DT); USBSer1.println(F("|             ,, <val> = '' will clear all connections"));
-            delay(DT); USBSer1.println(F("|             ,, P0_H/P0_L sets GPIO 0 HIGH/LOW respectively"));
-            delay(DT); USBSer1.println(F("|             ,, TBD..."));
-          } else if (command == "echo") {
-            if (args == "") {
-              USBSer1.print(F("Serial echo is currently "));
-              USBSer1.println(isEchoEnabled ? F("enabled") : F("disabled"));
-            } else if (args == "on") {
-              isEchoEnabled = true;
-            } else if (args == "off") {
-              isEchoEnabled = false;
-            } else {
-              USBSer1.println(F("The echo command only accepts the arguments 'on' and 'off'."));
+String normalizeSpaces( const char* s ) {
+    if ( !s )
+        return String( );
+    String in( s );
+    in.trim( );
+    String out;
+    out.reserve( in.length( ) );
+    bool lastSpace = false;
+    for ( size_t i = 0; i < in.length( ); ++i ) {
+        char c = in[ i ];
+        if ( c == ' ' ) {
+            if ( !lastSpace ) {
+                out += ' ';
+                lastSpace = true;
             }
-            delay(DT);
-          } else {
-            USBSer1.print(F("Unknown command: "));
-            if (isExcelCommand) USBSer1.print(F(","));
-            USBSer1.println(string_from_UART);
-            delay(DT);
-          }
-          USBSer1.flush();
-          string_from_UART = "";
-        }
-      }
-    }
-  }
-  Serial.println(F("XLSX GUI Done!"));
-  Serial.flush();
-  USBSer1.println(F("XLSX GUI Done!"));
-  USBSer1.flush();
-  return;
-}
-
-void bounceStartup(void) {
-  Serial.print("\n\rPress any key to exit\n\n\r");
-  leds.clear();
-  pauseCore2 = 1;
-
-  int bounceDelay = 300;
-  resetEncoderPosition = true;
-  while (1) {
-    drawAnimatedImage(0, bounceDelay);
-    if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) break;
-    delayMicroseconds(bounceDelay);
-    drawAnimatedImage(1, bounceDelay);
-    if (digitalRead(BUTTON_ENC) == 0 || Serial.available() > 0) break;
-  }
-  pauseCore2 = 0;
-  showLEDsCore2 = -1;
-  waitCore2();
-}
-
-void scanBoard(void) {
-  int countLoop = 0;
-  int countMult = 18;
-  refreshConnections(-1, 0);
-
-  Serial.println("\n\n\r");
-
-  int lastRow = 0;
-  int lastFloat = 0;
-  int lastNode = 0;
-  int leave = 0;
-
-  while (Serial.available() == 0 && leave == 0) {
-    for (int i = 1; i < 96; i++) {
-      if (i == 84 || i == NANO_RESET_0 || i == NANO_RESET_1) continue;
-      if ((i > 60 && i < 70) || i == 17) continue;
-
-      struct rowLEDs currentRow = getRowLEDdata(i);
-      float measuredVoltage = measureVoltage(2, i, true);
-
-      if (measuredVoltage == 0xFFFFFFFF) {
-        if (lastFloat == -1 || i == 1) {
-          lastFloat = i;
-          printNodeOrName(i);
-          Serial.print(" - ");
-        }
-      } else {
-        printNodeOrName(lastRow);
-        Serial.println("\tfloating");
-        lastFloat = -1;
-        Serial.print("\t\t\t");
-        int len = printNodeOrName(i);
-        for (int j = 0; j < 3 - len; j++) Serial.print(" ");
-        Serial.print(" = ");
-        Serial.print(measuredVoltage);
-        Serial.println(" V");
-        Serial.flush();
-      }
-
-      setRowLEDdata(i, currentRow);
-
-      if (Serial.available() > 0) { leave = 1; break; }
-      if (encoderButtonState == PRESSED) { leave = 1; break; }
-
-      showLEDsCore2 = 2;
-      delay(3);
-      lastRow = i;
-    }
-
-    Serial.println("\r                   \r\n\n\r");
-    Serial.flush();
-    countLoop++;
-    if (countLoop * countMult > 95) {
-      countLoop = 0;
-      countMult -= 2;
-    }
-    if (leave == 1) break;
-  }
-}
-
-int i2cScan(int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnections) {
-  if (sdaRow < 0 || sclRow < 0) {
-    Serial.println("defaulting to \n\n\rGPIO 26 = SDA\n\rGPIO 27 = SCL");
-  } else {
-    addBridgeToState(RP_GPIO_26, sdaRow); // SDA
-    addBridgeToState(RP_GPIO_27, sclRow); // SCL
-    refreshConnections(-1, 1);
-    waitCore2();
-  }
-
-  oled.clear();
-  oled.print("GPIO 26 = SDA\n\r");
-  oled.print("GPIO 27 = SCL");
-  oled.show();
-  delay(20);
-
-  Wire1.end();
-  Wire1.setSDA(sdaPin);
-  Wire1.setSCL(sclPin);
-  Wire1.begin();
-  Wire1.setClock(100000);
-
-  Serial.println("\nScanning I2C bus...");
-  Serial.println("    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F ");
-
-  int nDevices = 0;
-  uint8_t addressesFound[128];
-  int addressesFoundCount = 0;
-  int addressesFoundIndices[128]; // fixed spelling
-
-  for (int baseAddr = 0; baseAddr < 128; baseAddr += 16) {
-    Serial.printf("\n\r%02X:", baseAddr / 16);
-    for (int addr = 0; addr < 16; addr++) {
-      int deviceAddr = baseAddr + addr;
-      if (deviceAddr > 0 && deviceAddr < 127) {
-        Wire1.beginTransmission(deviceAddr);
-        byte error = Wire1.endTransmission();
-        if (error == 0) {
-          Serial.printf(" %02X ", deviceAddr); // zero-padded
-          nDevices++;
-          addressesFound[addressesFoundCount] = deviceAddr;
-          addressesFoundIndices[addressesFoundCount] = baseAddr + addr;
-          addressesFoundCount++;
         } else {
-          Serial.print(" -- ");
+            out += c;
+            lastSpace = false;
         }
-      } else {
-        Serial.print(" -- ");
-      }
     }
-  }
+    return out;
+}
 
-  Serial.println("\n\nI2C Scan Results:");
-  if (nDevices == 0) {
-    Serial.println("No I2C devices found");
-    showLEDsCore2 = -3;
-    b.clear();
-    b.print("No I2C  Found", (uint32_t)0x070003);
-    delayWithButton(2000);
-    b.clear();
-    showLEDsCore2 = -1;
-  } else {
-    Serial.printf("Found %d I2C device(s)\n", nDevices);
-    showLEDsCore2 = -3;
-    b.clear();
-    showLEDsCore2 = -3;
-    if (addressesFoundCount == 1) {
-      b.print("Found", (uint32_t)0x000b01, (uint32_t)0x000000, 0, 0, 3);
-      b.print(addressToHexString(addressesFound[0]), (uint32_t)0x000a05, (uint32_t)0x000000, 1, 1);
-    } else if (addressesFoundCount > 1) {
-      b.print(addressToHexString(addressesFound[0]), (uint32_t)0x000a05, (uint32_t)0x000000, 1, 1);
-      b.print(addressToHexString(addressesFound[1]), (uint32_t)0x000808, (uint32_t)0x000000, 1, 1);
+void runApp( int index, char* name ) {
+    const int APP_COUNT = NUM_APPS;
+
+    // Try to resolve by name
+    if ( index < 0 || index >= APP_COUNT ) {
+        if ( name ) {
+            String want = normalizeSpaces( name );
+            for ( int i = 0; i < APP_COUNT; ++i ) {
+                if ( !apps[ i ].works || !apps[ i ].action )
+                    continue;
+                if ( normalizeSpaces( apps[ i ].name ).equalsIgnoreCase( want ) ) {
+                    index = i;
+                    break;
+                }
+            }
+        }
     }
-    delayWithButton(2000);
+
+    // Validate
+    if ( index < 0 || index >= APP_COUNT || !apps[ index ].works || !apps[ index ].action ) {
+        Serial.println( F( "App not found" ) );
+        return;
+    }
+
+    // Ensure we have a display name
+    if ( !name )
+        name = apps[ index ].name;
+
+    Serial.println( "Running app: " + normalizeSpaces( name ) );
+    Serial.println( "Index: " + String( index ) );
+
+    // Direct dispatch (no giant switch)
+    apps[ index ].action( );
+}
+
+void microPythonREPLapp( void ) {
+    enterMicroPythonREPL( global_mp_stream );
+}
+
+void leaveApp( int lastNetSlot ) {
+    globalState.clearAllConnections( );
+    netSlot = lastNetSlot;
+    refreshConnections( -1, 0, 1 );
+}
+
+void fileManagerApp( void ) { filesystemApp( true ); }
+
+void probeCalibApp( void ) {
+    b.clear( );
+
+    cycleTerminalColor( true, 5.0, true );
+    Serial.println( "Probe Calibration App" );
+    cycleTerminalColor( );
+    Serial.println( "\n\rTap rows with the probe and rotate the clickweel until they're lighting up the correct row" );
+    cycleTerminalColor( );
+    Serial.println( "be sure to check nano header rows too" );
+    cycleTerminalColor( );
+    Serial.println( "Hold the clickwheel when you're done\n\n\r" );
+    cycleTerminalColor( );
+
+    bool done = false;
+
+    b.clear( );
+    int lastNetSlot = netSlot;
+    netSlot = 8;
+    globalState.clearAllConnections( );
+
+    refreshConnections( -1, 0 );
+    routableBufferPower( 1, 1, 1 );
+    resetEncoderPosition = true;
+    int lastEncoderPosition = encoderPosition;
+    int reading = 0;
+    int lastReading = -1;
+
+    int probeMax = jumperlessConfig.calibration.probe_max;
+
+    int nodeSelected = -1;
+    int lastNodeSelected = -1;
+
+    int nodeSelectedWithOldMapping = -1;
+    int lastNodeSelectedWithOldMapping = -1;
+
+    int lastValidProbeRead = -1;
+    int lastSwitchPosition = -1;
+
+    int measureOrSelect = 0;
+
+    float measureModeOutputVoltage = jumperlessConfig.calibration.measure_mode_output_voltage;
+
+    while ( done == false ) {
+        int probeRead = readProbeRaw( 0, true );
+        if ( probeRead != -1 )
+            lastValidProbeRead = probeRead;
+
+        int rowProbed = map( lastValidProbeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 );
+        int rowProbedWithOldMapping = map( lastValidProbeRead, jumperlessConfig.calibration.probe_min, probeMax, 101, 0 );
+
+        nodeSelected = probeRowMap[ rowProbed ];
+        nodeSelectedWithOldMapping = probeRowMapByPad[ rowProbedWithOldMapping ];
+
+        int checkSwitch = checkSwitchPosition( );
+        if ( checkSwitch != lastSwitchPosition ) {
+            if ( checkSwitch == 0 ) {
+                lastSwitchPosition = 0;
+                measureOrSelect = 0;
+                measureModeOutputVoltage = jumperlessConfig.calibration.measure_mode_output_voltage;
+            } else {
+                lastSwitchPosition = 1;
+                measureOrSelect = 1;
+                probeMax = jumperlessConfig.calibration.probe_max;
+            }
+            resetEncoderPosition = true;
+        }
+
+        reading = rowProbed;
+
+        if ( encoderPosition != lastEncoderPosition || reading != lastReading ) {
+            lastEncoderPosition = encoderPosition;
+            if ( measureOrSelect == 0 ) {
+                jumperlessConfig.calibration.measure_mode_output_voltage = measureModeOutputVoltage - ( (float)encoderPosition / 2000.0 );
+                if ( jumperlessConfig.calibration.measure_mode_output_voltage < 2.8 ) {
+                    jumperlessConfig.calibration.measure_mode_output_voltage = 2.8;
+                } else if ( jumperlessConfig.calibration.measure_mode_output_voltage > 4.5 ) {
+                    jumperlessConfig.calibration.measure_mode_output_voltage = 5.0;
+                }
+                setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 1, 0, false );
+            } else {
+                jumperlessConfig.calibration.probe_max = probeMax - encoderPosition;
+                if ( jumperlessConfig.calibration.probe_max < 15 ) {
+                    jumperlessConfig.calibration.probe_max = 15;
+                }
+            }
+            Serial.printf( "                                  \rraw: %d enc: %d reading: %d max: %d node: %s mode: %s v: %0.4f",
+                           lastValidProbeRead, encoderPosition, rowProbed, jumperlessConfig.calibration.probe_max,
+                           definesToChar( nodeSelected ), measureOrSelect ? "measure" : "select",
+                           jumperlessConfig.calibration.measure_mode_output_voltage );
+            Serial.flush( );
+        }
+
+        if ( reading == -1 )
+            continue;
+
+        if ( reading != lastReading && reading != -1 ) {
+            clearLEDsExceptRails( );
+            if ( nodeSelected != nodeSelectedWithOldMapping && measureOrSelect == 1 ) {
+                b.lightUpNode( nodeSelectedWithOldMapping, 0x050205 );
+            }
+            if ( measureOrSelect == 0 ) {
+                b.lightUpNode( nodeSelected, 0x200010 );
+            } else {
+                b.lightUpNode( nodeSelected, 0x001030 );
+            }
+        }
+        lastReading = reading;
+        lastNodeSelected = nodeSelected;
+        lastNodeSelectedWithOldMapping = nodeSelectedWithOldMapping;
+
+        if ( encoderButtonState == HELD )
+            done = true;
+    }
+
+    Serial.println( "\n\n\r" );
+    Serial.println( "Saving config..." );
+
+    saveConfig( );
+    leaveApp( lastNetSlot );
+}
+
+void customApp( void ) {
+    leds.clear( );
+    b.clear( );
+    delay( 1000 );
+    b.print( "This isa demo", (uint32_t)0x002008 );
+    showLEDsCore2 = 2;
+    delay( 2000 );
+    b.clear( );
+    b.print( "It will show", (uint32_t)0x002008 );
+    delay( 1000 );
+    b.clear( );
+    b.print( "random stuff", (uint32_t)0x002008 );
+    delay( 1000 );
+    b.clear( );
+    b.print( "look atthe FW", (uint32_t)0x002008 );
+    delay( 1000 );
+
+    int lastNetSlot = netSlot;
+    netSlot = 8; // net slot for custom app
+    int leave = 0;
+
+    globalState.clearAllConnections( );
+
+    addBridgeToState( 12, 25 );
+    addBridgeToState( TOP_RAIL, 52 );
+    refreshConnections( -1, 1 );
+
+    setTopRail( (float)3.3 );
+
+    addBridgeToState( RP_GPIO_1, 42 );
+    addBridgeToState( RP_GPIO_2, 42 );
+    refreshConnections( -1, 0 );
+
+    pinMode( GPIO_1_PIN, OUTPUT );
+    pinMode( GPIO_2_PIN, INPUT );
+
+    digitalWrite( GPIO_1_PIN, HIGH );
+    int reading = digitalRead( GPIO_2_PIN );
+    Serial.print( "GPIO 2 Reading: " );
+    Serial.println( reading );
+    delay( 10 );
+
+    digitalWrite( GPIO_1_PIN, LOW );
+    reading = digitalRead( GPIO_2_PIN );
+    Serial.print( "GPIO_2_PIN: " );
+    Serial.println( reading );
+
+    removeBridgeFromState( RP_GPIO_1, 42 );
+    removeBridgeFromState( RP_GPIO_2, 42 );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+
+    setDacByNumber( 1, 5.35 );
+    addBridgeToState( DAC1, 20 );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+    delay( 10 );
+
+    addBridgeToState( ADC0, 20 );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+    waitCore2( );
+
+    float voltage = readAdcVoltage( 0, 8 );
+    Serial.print( "\n\rADC0: " );
+    Serial.println( voltage );
+
+    if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+        leaveApp( lastNetSlot );
+        return;
+    }
+
+    listNets( );
+    listSpecialNets( );
+    Serial.println( "\n\n\r" );
+    printPathsCompact( );
+    Serial.println( "\n\n\n\n\r" );
+
+    removeBridgeFromState( ADC0, 20 );
+    removeBridgeFromState( DAC1, 20 );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+
+    addBridgeToState( ISENSE_PLUS, 9 );
+    addBridgeToState( ISENSE_MINUS, 28 );
+    saveStateToSlot( );
+    refreshConnections( );
+
+    float current_ma = INA0.getCurrent_mA( );
+
+    Serial.print( "current between row 19 and 28: " );
+    Serial.print( current_ma );
+    Serial.println( " mA\n\r" );
+
+    removeBridgeFromState( ISENSE_PLUS, 9 );
+    removeBridgeFromState( ISENSE_MINUS, 28 );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+    delay( 1 );
+
+    if ( ( encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED ) || Serial.available( ) > 0 ) {
+        leaveApp( lastNetSlot );
+        return;
+    }
+
+    setTopRail( 4.20F );
+    addBridgeToState( TOP_RAIL, ISENSE_PLUS );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+    waitCore2( );
+    delay( 10 );
+    float voltage2 = INA0.getBusVoltage( );
+    Serial.print( "top rail voltage (from INA219): " );
+    Serial.print( voltage2, 4 );
+    Serial.println( " V\n\r" );
+
+    removeBridgeFromState( TOP_RAIL, ISENSE_PLUS );
+    saveStateToSlot( );
+    refreshConnections( -1, 0 );
+
+    float probeVoltage = readAdcVoltage( 7, 8 );
+    Serial.print( "Probe voltage: " );
+    Serial.print( probeVoltage, 4 );
+    Serial.println( " V\n\r" );
+
+    float probeCurrent = checkProbeCurrent( );
+    Serial.print( "Probe current: " );
+    Serial.print( probeCurrent, 2 );
+    Serial.println( " mA\n\r" );
+
+    if ( ( encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED ) || Serial.available( ) > 0 ) {
+        leaveApp( lastNetSlot );
+        return;
+    }
+
+    showLEDsCore2 = -3;
+    b.clear( );
+    clearLEDsExceptRails( );
+
+    b.printRawRow( 0b00001, 55, 0x170010, 0xffffff );
+    b.printRawRow( 0b00011, 56, 0x150012, 0xffffff );
+    b.printRawRow( 0b00111, 57, 0x130013, 0xffffff );
+    b.printRawRow( 0b01111, 58, 0x100015, 0xffffff );
+    b.printRawRow( 0b11111, 59, 0x080018, 0xffffff );
+
+    // Friendlier text
+    for ( uint8_t i = 0; i < 254; i++ ) {
+        hsvColor hsvTextColor = { i, 255, 30 };
+        rgbColor rgbTextColor = HsvToRgb( hsvTextColor );
+        uint32_t textColor = (uint32_t)rgbTextColor.r << 16 |
+                             (uint32_t)rgbTextColor.g << 8 |
+                             (uint32_t)rgbTextColor.b;
+        b.print( "Fuck    you!", (uint32_t)textColor );
+        showLEDsCore2 = -3;
+        delayMicroseconds( 200 );
+    }
+
+    if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+        leaveApp( lastNetSlot );
+        return;
+    }
+
+    int switchPosition = checkSwitchPosition( );
+    Serial.print( "Switch position: " );
+    Serial.println( switchPosition == 0 ? "Measure" : "Select" );
+
+    b.clear( );
+    b.print( " Tap    Rows!", (uint32_t)0x00140a );
+    showLEDsCore2 = -3;
+    delay( 100 );
     showLEDsCore2 = -1;
-  }
 
-  if (leaveConnections == 0 && sdaRow != -1 && sclRow != -1) {
-    removeBridgeFromState(RP_GPIO_26, sdaRow);
-    removeBridgeFromState(RP_GPIO_27, sclRow);
-    refreshConnections(-1, 1);
-  }
+    int probeRow = -1;
+    int lastProbedRow = 0;
 
-  Wire1.end();
-  Wire1.begin();
-  if (oled.oledConnected == true) {
-    delay(500);
-    oled.clear();
-    oled.print("Found = ");
-    oled.setTextSize(1);
-    if (addressesFoundCount > 0) oled.print(addressToHexString(addressesFound[0]));
-    oled.show();
-  }
+    Serial.println( "Click the probe button to exit\n\n\n\r" );
+    // Use state-based button check in loop (doesn't consume events)
+    while ( checkProbeButtonState( ) == 0 ) {
+        if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+            leaveApp( lastNetSlot );
+            return;
+        }
+        probeRow = justReadProbe( );
+        if ( probeRow != -1 ) {
+            Serial.print( "\r                 \rProbed row: " );
+            printNodeOrName( probeRow );
+            b.printRawRow( 0b11111, lastProbedRow - 1, 0x000000, 0xffffff );
+            b.printRawRow( 0b11111, probeRow - 1, 0x172000, 0xffffff );
+            b.print( probeRow, (uint32_t)0x002008 );
+            lastProbedRow = probeRow;
+            delayMicroseconds( 100 );
+        }
+    }
 
-  return nDevices;
+    removeBridgeFromState( 12, -1 );
+    removeBridgeFromState( 52, -1 );
+    refreshConnections( -1, 0 );
+
+    addBridgeToState( 12, 25 );
+    refreshLocalConnections( -1, 0 );
+    delay( 100 );
+
+    removeBridgeFromState( 12, -1 );
+    refreshLocalConnections( -1, 0 );
+    delay( 100 );
+
+    if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+        leaveApp( lastNetSlot );
+        return;
+    }
+
+    for ( int i = 1; i <= 31; i++ ) {
+        removeBridgeFromState( 1, i - 1 );
+        addBridgeToState( 1, i );
+        refreshLocalConnections( -1, 0 );
+        showLEDsCore2 = -1;
+        waitCore2( );
+    }
+
+    removeBridgeFromState( 30, -1 );
+    refreshLocalConnections( -1, 0 );
+
+    if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+        leaveApp( lastNetSlot );
+        return;
+    }
+
+    for ( int i = 31; i <= 60; i++ ) {
+        removeBridgeFromState( 31, i - 1 );
+        addBridgeToState( 31, i );
+        refreshConnections( -1, 0 );
+        showLEDsCore2 = -1;
+        if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+            leaveApp( lastNetSlot );
+            return;
+        }
+    }
+    removeBridgeFromState( 60, -1 );
+    refreshConnections( -1, 0 );
+    delay( 100 );
+
+    sendXYraw( CHIP_K, 4, 0, 1 );
+    sendXYraw( CHIP_A, 9, 1, 1 );
+
+    unsigned long startTime = millis( );
+    unsigned long timeout = 5000;
+    while ( millis( ) - startTime < timeout ) {
+        if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+            leaveApp( lastNetSlot );
+            return;
+        }
+        sendXYraw( CHIP_K, 4, 0, 1 );
+        delayMicroseconds( 100 );
+        sendXYraw( CHIP_K, 4, 0, 0 );
+        sendXYraw( CHIP_K, 15, 0, 1 );
+        delayMicroseconds( 100 );
+        sendXYraw( CHIP_K, 15, 0, 0 );
+    }
+
+    sendXYraw( CHIP_K, 4, 0, 0 );
+    sendXYraw( CHIP_K, 15, 0, 0 );
+    sendXYraw( CHIP_A, 9, 1, 0 );
+}
+
+void xlsxGui( void ) {
+    unsigned long startTime = millis( );
+    unsigned long messageTime = startTime;
+    unsigned long timeout = 1000000;
+
+    String string_from_UART = "";
+    String command = "", args = "";
+    String queuedCommand = "  ";
+    bool isEchoEnabled = true;
+    bool isJumperlessReply = false;
+
+    int DT = 10;
+
+    USBSer1.println( F( "Message,Jumperless GUI started" ) );
+    USBSer1.flush( );
+
+    while ( millis( ) - startTime < timeout ) {
+        uint32_t currentMillis = millis( );
+
+        if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
+            Serial.println( F( "Exiting XLSX GUI early" ) );
+            break;
+        }
+
+        if ( currentMillis > messageTime ) {
+            messageTime = currentMillis + 1000;
+            USBSer1.dtr( );
+            USBSer1.print( F( "Message,Jumperless GUI is running..." ) );
+            USBSer1.print( F( "\n" ) );
+            USBSer1.flush( );
+            USBSer1.println( F( "|Message,,Jumperless GUI is running..." ) );
+            USBSer1.flush( );
+        }
+
+        if ( USBSer1.available( ) ) {
+            char c = USBSer1.read( );
+            if ( isEchoEnabled ) {
+                Serial.print( c );
+                Serial.flush( );
+            }
+            if ( ( c != '\n' ) && ( c != '\r' ) && ( c != '|' ) ) {
+                string_from_UART += c;
+            } else {
+                string_from_UART.trim( );
+                if ( string_from_UART.length( ) > 0 ) {
+                    delay( DT );
+                    int index_of_first_comma = string_from_UART.indexOf( ',' );
+                    bool isExcelCommand = false;
+                    if ( index_of_first_comma == 0 ) {
+                        isExcelCommand = true;
+                        string_from_UART = string_from_UART.substring( 1, string_from_UART.length( ) );
+                        index_of_first_comma = string_from_UART.indexOf( ',' );
+                    }
+                    if ( index_of_first_comma != -1 ) {
+                        command = string_from_UART.substring( 0, index_of_first_comma );
+                        args = string_from_UART.substring( index_of_first_comma + 1 );
+                    } else {
+                        command = string_from_UART;
+                        args = "";
+                    }
+
+                    USBSer1.print( F( "Command: " ) );
+                    USBSer1.println( command );
+                    USBSer1.print( F( "Arguments: " ) );
+                    USBSer1.println( args );
+                    USBSer1.flush( );
+
+                    if ( command == "h" || command == "help" ) {
+                        delay( DT );
+                        USBSer1.println( F( "" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|'h' or 'help',, Prints this list" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|'echo,<val>' ,, Prints the echo setting; <val> (optional)" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, is 'on' or 'off' to set the echo setting accordingly" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|'TakeOnMe'   ,, Plays Take On Me from pin 11" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|'dance'      ,, progresses the 'dance' LED" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, pattern by one step" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|'send,<val>' ,, Sends a single-character command " ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, to Jumperless (<val> = n, q, or Q)" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|'P0_?,<val>' ,, Sends <val> as 'f' command to Jumperless; prints" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, an abridged result; then sends 'n' to" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, Jumperless and prints an Excel-compatible result;" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, <val> = '' will clear all connections" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, P0_H/P0_L sets GPIO 0 HIGH/LOW respectively" ) );
+                        delay( DT );
+                        USBSer1.println( F( "|             ,, TBD..." ) );
+                    } else if ( command == "echo" ) {
+                        if ( args == "" ) {
+                            USBSer1.print( F( "Serial echo is currently " ) );
+                            USBSer1.println( isEchoEnabled ? F( "enabled" ) : F( "disabled" ) );
+                        } else if ( args == "on" ) {
+                            isEchoEnabled = true;
+                        } else if ( args == "off" ) {
+                            isEchoEnabled = false;
+                        } else {
+                            USBSer1.println( F( "The echo command only accepts the arguments 'on' and 'off'." ) );
+                        }
+                        delay( DT );
+                    } else {
+                        USBSer1.print( F( "Unknown command: " ) );
+                        if ( isExcelCommand )
+                            USBSer1.print( F( "," ) );
+                        USBSer1.println( string_from_UART );
+                        delay( DT );
+                    }
+                    USBSer1.flush( );
+                    string_from_UART = "";
+                }
+            }
+        }
+    }
+    Serial.println( F( "XLSX GUI Done!" ) );
+    Serial.flush( );
+    USBSer1.println( F( "XLSX GUI Done!" ) );
+    USBSer1.flush( );
+    return;
+}
+
+void bounceStartup( void ) {
+    Serial.print( "\n\rPress any key to exit\n\n\r" );
+    leds.clear( );
+    pauseCore2 = 1;
+
+    int bounceDelay = 300;
+    resetEncoderPosition = true;
+    while ( 1 ) {
+        drawAnimatedImage( 0, bounceDelay );
+        if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 )
+            break;
+        delayMicroseconds( bounceDelay );
+        drawAnimatedImage( 1, bounceDelay );
+        if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 )
+            break;
+    }
+    pauseCore2 = 0;
+    showLEDsCore2 = -1;
+    waitCore2( );
+}
+
+void scanBoard( void ) {
+    int countLoop = 0;
+    int countMult = 18;
+    refreshConnections( -1, 0 );
+
+    Serial.println( "\n\n\r" );
+
+    int lastRow = 0;
+    int lastFloat = 0;
+    int lastNode = 0;
+    int leave = 0;
+
+    while ( Serial.available( ) == 0 && leave == 0 ) {
+        for ( int i = 1; i < 96; i++ ) {
+            if ( i == 84 || i == NANO_RESET_0 || i == NANO_RESET_1 )
+                continue;
+            if ( ( i > 60 && i < 70 ) || i == 17 )
+                continue;
+
+            struct rowLEDs currentRow = getRowLEDdata( i );
+            float measuredVoltage = measureVoltage( 2, i, true );
+
+            if ( measuredVoltage == 0xFFFFFFFF ) {
+                if ( lastFloat == -1 || i == 1 ) {
+                    lastFloat = i;
+                    printNodeOrName( i );
+                    Serial.print( " - " );
+                }
+            } else {
+                printNodeOrName( lastRow );
+                Serial.println( "\tfloating" );
+                lastFloat = -1;
+                Serial.print( "\t\t\t" );
+                int len = printNodeOrName( i );
+                for ( int j = 0; j < 3 - len; j++ )
+                    Serial.print( " " );
+                Serial.print( " = " );
+                Serial.print( measuredVoltage );
+                Serial.println( " V" );
+                Serial.flush( );
+            }
+
+            setRowLEDdata( i, currentRow );
+
+            if ( Serial.available( ) > 0 ) {
+                leave = 1;
+                break;
+            }
+            if ( encoderButtonState == PRESSED ) {
+                leave = 1;
+                break;
+            }
+
+            showLEDsCore2 = 2;
+            delay( 3 );
+            lastRow = i;
+        }
+
+        Serial.println( "\r                   \r\n\n\r" );
+        Serial.flush( );
+        countLoop++;
+        if ( countLoop * countMult > 95 ) {
+            countLoop = 0;
+            countMult -= 2;
+        }
+        if ( leave == 1 )
+            break;
+    }
+}
+
+int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnections ) {
+    if ( sdaRow < 0 || sclRow < 0 ) {
+        Serial.println( "defaulting to \n\n\rGPIO 26 = SDA\n\rGPIO 27 = SCL" );
+    } else {
+        addBridgeToState( RP_GPIO_26, sdaRow ); // SDA
+        addBridgeToState( RP_GPIO_27, sclRow ); // SCL
+        refreshConnections( -1, 1 );
+        waitCore2( );
+    }
+
+    oled.clear( );
+    oled.print( "GPIO 26 = SDA\n\r" );
+    oled.print( "GPIO 27 = SCL" );
+    oled.show( );
+    delay( 20 );
+
+    Wire1.end( );
+    Wire1.setSDA( sdaPin );
+    Wire1.setSCL( sclPin );
+    Wire1.begin( );
+    Wire1.setClock( 100000 );
+
+    Serial.println( "\nScanning I2C bus..." );
+    Serial.println( "    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F " );
+
+    int nDevices = 0;
+    uint8_t addressesFound[ 128 ];
+    int addressesFoundCount = 0;
+    int addressesFoundIndices[ 128 ]; // fixed spelling
+
+    for ( int baseAddr = 0; baseAddr < 128; baseAddr += 16 ) {
+        Serial.printf( "\n\r%02X:", baseAddr / 16 );
+        for ( int addr = 0; addr < 16; addr++ ) {
+            int deviceAddr = baseAddr + addr;
+            if ( deviceAddr > 0 && deviceAddr < 127 ) {
+                Wire1.beginTransmission( deviceAddr );
+                byte error = Wire1.endTransmission( );
+                if ( error == 0 ) {
+                    Serial.printf( " %02X ", deviceAddr ); // zero-padded
+                    nDevices++;
+                    addressesFound[ addressesFoundCount ] = deviceAddr;
+                    addressesFoundIndices[ addressesFoundCount ] = baseAddr + addr;
+                    addressesFoundCount++;
+                } else {
+                    Serial.print( " -- " );
+                }
+            } else {
+                Serial.print( " -- " );
+            }
+        }
+    }
+
+    Serial.println( "\n\nI2C Scan Results:" );
+    if ( nDevices == 0 ) {
+        Serial.println( "No I2C devices found" );
+        showLEDsCore2 = -3;
+        b.clear( );
+        b.print( "No I2C  Found", (uint32_t)0x070003 );
+        delayWithButton( 2000 );
+        b.clear( );
+        showLEDsCore2 = -1;
+    } else {
+        Serial.printf( "Found %d I2C device(s)\n", nDevices );
+        showLEDsCore2 = -3;
+        b.clear( );
+        showLEDsCore2 = -3;
+        if ( addressesFoundCount == 1 ) {
+            b.print( "Found", (uint32_t)0x000b01, (uint32_t)0x000000, 0, 0, 3 );
+            b.print( addressToHexString( addressesFound[ 0 ] ), (uint32_t)0x000a05, (uint32_t)0x000000, 1, 1 );
+        } else if ( addressesFoundCount > 1 ) {
+            b.print( addressToHexString( addressesFound[ 0 ] ), (uint32_t)0x000a05, (uint32_t)0x000000, 1, 1 );
+            b.print( addressToHexString( addressesFound[ 1 ] ), (uint32_t)0x000808, (uint32_t)0x000000, 1, 1 );
+        }
+        delayWithButton( 2000 );
+        showLEDsCore2 = -1;
+    }
+
+    if ( leaveConnections == 0 && sdaRow != -1 && sclRow != -1 ) {
+        removeBridgeFromState( RP_GPIO_26, sdaRow );
+        removeBridgeFromState( RP_GPIO_27, sclRow );
+        refreshConnections( -1, 1 );
+    }
+
+    Wire1.end( );
+    Wire1.begin( );
+    if ( oled.oledConnected == true ) {
+        delay( 500 );
+        oled.clear( );
+        oled.print( "Found = " );
+        oled.setTextSize( 1 );
+        if ( addressesFoundCount > 0 )
+            oled.print( addressToHexString( addressesFound[ 0 ] ) );
+        oled.show( );
+    }
+
+    return nDevices;
 }
 
 void calibrateDacs( void ) {
-
-
-
-
-
-
 
     if ( firstStart == 1 ) {
         Serial.println( "\n\rFirst startup calibration\n\n\r" );
 
         // Ensure routing system is properly initialized after filesystem wipe
         Serial.println( "Initializing routing system for first startup..." );
-        Serial.flush();
-        initChipStatus( ); // Initialize chip mappings based on hardware revision
-        globalState.clearAllConnections();   // Clear all connections using state system
-        delay( 100 );      // Give system time to stabilize
+        Serial.flush( );
+        initChipStatus( );                  // Initialize chip mappings based on hardware revision
+        globalState.clearAllConnections( ); // Clear all connections using state system
+        delay( 100 );                       // Give system time to stabilize
         Serial.println( "Routing system initialized." );
     } else {
         // Serial.println("Calibration");
-        globalState.clearAllConnections();
+        globalState.clearAllConnections( );
     }
     // delay(3000);
     float setVoltage = 0.0;
@@ -824,7 +883,7 @@ void calibrateDacs( void ) {
 
     int failedToConverge = 0;
 
-    globalState.clearAllConnections();
+    globalState.clearAllConnections( );
     // for (int i = 0; i < 4; i++) {
 
     // Serial.print("netSlot: ");
@@ -846,7 +905,7 @@ void calibrateDacs( void ) {
 
     Serial.println( "**UNPLUG ANYTHING CONNECTED TO THE RAILS**\n\n\r" );
 
-    Serial.flush();
+    Serial.flush( );
     int skipZeroing = 0;
     if ( skipZeroing == 0 ) {
         for ( int d = 0; d < 4; d++ ) {
@@ -870,7 +929,7 @@ void calibrateDacs( void ) {
 
             b.print( d, dacColors[ d ], 5, 1, -1 );
             refreshPaths( );
-            globalState.clearAllConnections();
+            globalState.clearAllConnections( );
             refreshConnections( 0, 0, 1 );
 
             if ( firstStart == 1 ) {
@@ -916,7 +975,6 @@ void calibrateDacs( void ) {
             }
             printPathsCompact( );
 
-           
             // Serial.print("\n\n\r\tDAC ");
             // Serial.println(d);
 
@@ -1050,7 +1108,8 @@ void calibrateDacs( void ) {
                 }
             }
 
-            if (giveUp >= 40) failedToConverge++;
+            if ( giveUp >= 40 )
+                failedToConverge++;
         }
 
         // ADC calibration - use DAC 1 to calibrate all ADCs
@@ -1091,7 +1150,7 @@ void calibrateDacs( void ) {
             b.print( adcName, dacColors[ d % 4 ], 0x000000, 0, 1, 3 );
 
             // Use DAC 1 to calibrate all ADCs (it's working properly)
-            globalState.clearAllConnections();
+            globalState.clearAllConnections( );
             // refreshConnections(0, 0, 1);
 
             // Always use DAC 1 as the voltage source
@@ -1307,44 +1366,40 @@ void calibrateDacs( void ) {
         Serial.print( adcZero[ 7 ] );
         Serial.print( "\t" );
         Serial.println( adcSpread[ 7 ] );
-        delay(10);
-        checkProbeCurrentZero();
+        delay( 10 );
+        checkProbeCurrentZero( );
         saveDacCalibration( );
     }
     setRailsAndDACs( );
 
-    if (failedToConverge == 0) {
-        changeTerminalColor(84, true); // Green
+    if ( failedToConverge == 0 ) {
+        changeTerminalColor( 84, true ); // Green
     } else {
-        changeTerminalColor(196, true); // Red
+        changeTerminalColor( 196, true ); // Red
     }
-  
 
     // Print big block text for PASS or FAIL
-    if (failedToConverge == 0) {
-        Serial.println("\r\n");
-        Serial.println("███████   █████   ███████ ███████");
-        Serial.println("██    ██ ██   ██  ██      ██     ");
-        Serial.println("███████  ███████  ███████ ███████");
-        Serial.println("██       ██   ██       ██      ██");
-        Serial.println("██       ██   ██  ███████ ███████");
-        Serial.println("\r\n");
+    if ( failedToConverge == 0 ) {
+        Serial.println( "\r\n" );
+        Serial.println( "███████   █████   ███████ ███████" );
+        Serial.println( "██    ██ ██   ██  ██      ██     " );
+        Serial.println( "███████  ███████  ███████ ███████" );
+        Serial.println( "██       ██   ██       ██      ██" );
+        Serial.println( "██       ██   ██  ███████ ███████" );
+        Serial.println( "\r\n" );
     } else {
-        Serial.println("\r\n");
-        Serial.println("███████  █████  ██ ██     ");
-        Serial.println("██      ██   ██ ██ ██     ");
-        Serial.println("█████   ███████ ██ ██     ");
-        Serial.println("██      ██   ██ ██ ██     ");
-        Serial.println("██      ██   ██ ██ ███████");
-        Serial.println("\r\n");
+        Serial.println( "\r\n" );
+        Serial.println( "███████  █████  ██ ██     " );
+        Serial.println( "██      ██   ██ ██ ██     " );
+        Serial.println( "█████   ███████ ██ ██     " );
+        Serial.println( "██      ██   ██ ██ ██     " );
+        Serial.println( "██      ██   ██ ██ ███████" );
+        Serial.println( "\r\n" );
     }
-    Serial.println();
-    Serial.print("\n\n\rFailedToConverge = ");
-    Serial.println(failedToConverge);
-    changeTerminalColor(-1);
-
-    
-
+    Serial.println( );
+    Serial.print( "\n\n\rFailedToConverge = " );
+    Serial.println( failedToConverge );
+    changeTerminalColor( -1 );
 
     Serial.println( "\n\n\rrun test? (y/n)\n\n\rmake damn sure nothing is "
                     "physically connected to the rails\n\r" );
@@ -1371,9 +1426,7 @@ void calibrateDacs( void ) {
         for ( int d = 0; d < 4; d++ ) {
             b.clear( 0 );
 
-
-
-            globalState.clearAllConnections();
+            globalState.clearAllConnections( );
             // refreshConnections(0, 0, 1);
             if ( firstStart == 1 ) {
                 delay( 8 );
@@ -1463,7 +1516,7 @@ void calibrateDacs( void ) {
                 }
                 Serial.print( "\tADC measured: " );
 
-                if (abs(reading - setVoltage) > tolerance && i <= 7) {
+                if ( abs( reading - setVoltage ) > tolerance && i <= 7 ) {
                     failedToConverge++;
                 }
                 // if (i < 0) {
@@ -1492,7 +1545,7 @@ void calibrateDacs( void ) {
 
                     reading = INA1.getBusVoltage( );
 
-                    if (abs(reading - setVoltage) > tolerance && i  >= 0) {
+                    if ( abs( reading - setVoltage ) > tolerance && i >= 0 ) {
                         failedToConverge++;
                     }
 
@@ -1508,7 +1561,7 @@ void calibrateDacs( void ) {
 
                     reading = INA0.getBusVoltage( );
 
-                    if (abs(reading - setVoltage) > tolerance && i >= 0) {
+                    if ( abs( reading - setVoltage ) > tolerance && i >= 0 ) {
                         failedToConverge++;
                     }
                 }
@@ -1541,43 +1594,39 @@ void calibrateDacs( void ) {
     INA0.setBusADC( 0x0b );
     INA1.setBusADC( 0x0b );
     // removeBridgeFromState(ISENSE_PLUS, -1);
-    globalState.clearAllConnections();
+    globalState.clearAllConnections( );
     netSlot = lastNetSlot;
-    if (failedToConverge == 0) {
-       
+    if ( failedToConverge == 0 ) {
+
     } else {
-        
     }
-  
 
     // Print big block text for PASS or FAIL
-    if (failedToConverge < 7) {
-        changeTerminalColor(84, true); // Green
-        Serial.println("\r\n");
-        Serial.println("███████   █████   ███████ ███████");
-        Serial.println("██    ██ ██   ██  ██      ██     ");
-        Serial.println("███████  ███████  ███████ ███████");
-        Serial.println("██       ██   ██       ██      ██");
-        Serial.println("██       ██   ██  ███████ ███████");
-        Serial.println("\r\n");
+    if ( failedToConverge < 7 ) {
+        changeTerminalColor( 84, true ); // Green
+        Serial.println( "\r\n" );
+        Serial.println( "███████   █████   ███████ ███████" );
+        Serial.println( "██    ██ ██   ██  ██      ██     " );
+        Serial.println( "███████  ███████  ███████ ███████" );
+        Serial.println( "██       ██   ██       ██      ██" );
+        Serial.println( "██       ██   ██  ███████ ███████" );
+        Serial.println( "\r\n" );
     } else {
-        changeTerminalColor(196, true); // Red
-        Serial.println("\r\n");
-        Serial.println("███████  █████  ██ ██     ");
-        Serial.println("██      ██   ██ ██ ██     ");
-        Serial.println("█████   ███████ ██ ██     ");
-        Serial.println("██      ██   ██ ██ ██     ");
-        Serial.println("██      ██   ██ ██ ███████");
-        Serial.println("\r\n");
+        changeTerminalColor( 196, true ); // Red
+        Serial.println( "\r\n" );
+        Serial.println( "███████  █████  ██ ██     " );
+        Serial.println( "██      ██   ██ ██ ██     " );
+        Serial.println( "█████   ███████ ██ ██     " );
+        Serial.println( "██      ██   ██ ██ ██     " );
+        Serial.println( "██      ██   ██ ██ ███████" );
+        Serial.println( "\r\n" );
     }
-    //Serial.println();
-    Serial.print("\n\n\rFailedToConverge = ");
-    Serial.println(failedToConverge);
-    Serial.println();
-    Serial.println();
-    changeTerminalColor(-1, true);
-
-    
+    // Serial.println();
+    Serial.print( "\n\n\rFailedToConverge = " );
+    Serial.println( failedToConverge );
+    Serial.println( );
+    Serial.println( );
+    changeTerminalColor( -1, true );
 
     refreshConnections( -1 );
     routableBufferPower( 1, 0, 1 );
@@ -1587,146 +1636,892 @@ void calibrateDacs( void ) {
     if ( firstStart == 1 ) {
         initializeMicroPythonExamples( true );
 
-        delay(1300);
-        rp2040.restart();
-
+        delay( 1300 );
+        rp2040.restart( );
     }
-
 }
 
 // ---- printSerial1stuff() ----
-void printSerial1stuff(void) {
-  Serial.println("Printing Serial1 stuff");
-  Serial.flush();
+void printSerial1stuff( void ) {
+    Serial.println( "Printing Serial1 stuff" );
+    Serial.flush( );
 
-  oled.clear();
+    oled.clear( );
 
-  while (1) {
-    if (Serial.available() > 0) {
-      char c = Serial.read();
-      USBSer1.write(c);
-      USBSer1.flush();
-      oled.print(c);
-      oled.show();
-      Serial.print("sent: ");
-      Serial.println(c);
-      Serial.flush();
-      if (c == 'x') break;
+    while ( 1 ) {
+        if ( Serial.available( ) > 0 ) {
+            char c = Serial.read( );
+            USBSer1.write( c );
+            USBSer1.flush( );
+            oled.print( c );
+            oled.show( );
+            Serial.print( "sent: " );
+            Serial.println( c );
+            Serial.flush( );
+            if ( c == 'x' )
+                break;
+        }
+        if ( USBSer1.available( ) > 0 ) {
+            char c = USBSer1.read( );
+            Serial.print( "received: " );
+            Serial.println( c );
+            Serial.flush( );
+        }
     }
-    if (USBSer1.available() > 0) {
-      char c = USBSer1.read();
-      Serial.print("received: ");
-      Serial.println(c);
-      Serial.flush();
-    }
-  }
 }
 
-
-void displayImage(void) {
-  Serial.println(F("PNG Image app not implemented yet."));
+void displayImage( void ) {
+    Serial.println( F( "PNG Image app not implemented yet." ) );
 }
 
-const char* addressToHexString(uint8_t address) {
-  static char hexStr[6];
-  sprintf(hexStr, "0x%02X", address);
-  return hexStr;
+const char* addressToHexString( uint8_t address ) {
+    static char hexStr[ 6 ];
+    sprintf( hexStr, "0x%02X", address );
+    return hexStr;
 }
-
 
 // Unified RGB->JDI palette mapping
-static inline uint16_t rgbToJdi(uint8_t r, uint8_t g, uint8_t b) {
-  uint16_t col = 0;
-  if (r >= 0x50) col |= COLOR_RED;
-  if (g >= 0x80) col |= COLOR_GREEN;
-  if (b >= 0x60) col |= COLOR_BLUE; // unified threshold
-  return col;
+static inline uint16_t rgbToJdi( uint8_t r, uint8_t g, uint8_t b ) {
+    uint16_t col = 0;
+    if ( r >= 0x50 )
+        col |= COLOR_RED;
+    if ( g >= 0x80 )
+        col |= COLOR_GREEN;
+    if ( b >= 0x60 )
+        col |= COLOR_BLUE; // unified threshold
+    return col;
 }
 
-void jdiMIPdisplay(void) {
-  jdi_display.begin();
-  jdi_display.displayOn();
-  jdi_display.clearScreen();
-  jdi_display.refresh();
+void jdiMIPdisplay( void ) {
+    jdi_display.begin( );
+    jdi_display.displayOn( );
+    jdi_display.clearScreen( );
+    jdi_display.refresh( );
 
-  cycleTerminalColor(true, 5.3, true);
-  Serial.println("\n\rThis is meant to run with a JDI LPM009M360A 72x144 display");
-  Serial.println("It will bounce the startup animation and then exit\n\r");
-  cycleTerminalColor();
-  Serial.println("Connections: \n\r");
+    cycleTerminalColor( true, 5.3, true );
+    Serial.println( "\n\rThis is meant to run with a JDI LPM009M360A 72x144 display" );
+    Serial.println( "It will bounce the startup animation and then exit\n\r" );
+    cycleTerminalColor( );
+    Serial.println( "Connections: \n\r" );
 
-  Serial.println("  ┃  8  7  6  5  4  3  2  1  ┃  ");
-  Serial.println("  ┃  ▌     ▌  ▌  ▌  ▌  ▌  ▌  ┃  ");
-  Serial.println("  ┃  ▌     ▌  ▌  ▌  ▌  ▌  ▌  ┃  ");
-  Serial.println("  ┃  ▌     ▌  ▌  ▌  ▌  ▌  ▌  ┃  ");
-  Serial.println("  ┃  ▌  ╳  ▌  ▌  ▌  ▌  ▌  ▌  ┃  ");
-  Serial.println("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛  "); cycleTerminalColor();
-  Serial.println("     G  N  3  D  E  C  M  C     ");
-  Serial.println("     N  C  V  i  x  S  O  L     ");
-  Serial.println("     D     3  s  t  .  S  K     ");
-  Serial.println("     ⏚     +  p     .  I  .     ");
-  Serial.println("              .     .  .  .     "); cycleTerminalColor();
-  Serial.println("    GPIO      6     2  4  3     ");
+    Serial.println( "  ┃  8  7  6  5  4  3  2  1  ┃  " );
+    Serial.println( "  ┃  ▌     ▌  ▌  ▌  ▌  ▌  ▌  ┃  " );
+    Serial.println( "  ┃  ▌     ▌  ▌  ▌  ▌  ▌  ▌  ┃  " );
+    Serial.println( "  ┃  ▌     ▌  ▌  ▌  ▌  ▌  ▌  ┃  " );
+    Serial.println( "  ┃  ▌  ╳  ▌  ▌  ▌  ▌  ▌  ▌  ┃  " );
+    Serial.println( "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━┛  " );
+    cycleTerminalColor( );
+    Serial.println( "     G  N  3  D  E  C  M  C     " );
+    Serial.println( "     N  C  V  i  x  S  O  L     " );
+    Serial.println( "     D     3  s  t  .  S  K     " );
+    Serial.println( "     ⏚     +  p     .  I  .     " );
+    Serial.println( "              .     .  .  .     " );
+    cycleTerminalColor( );
+    Serial.println( "    GPIO      6     2  4  3     " );
 
-  Serial.println();
-  cycleTerminalColor();
-  Serial.println("GPIO 2 - CS");
-  Serial.println("GPIO 3 - SCK");
-  Serial.println("GPIO 4 - MOSI");
-  Serial.println("GPIO 6 - DISP");
-  cycleTerminalColor();
-  Serial.println("\n\rPress the encoder button or any key to exit\n\n\r");
-  cycleTerminalColor();
-  Serial.println("Paste this in if you have the display soldered to the adapter board's SMD footptint");
-  Serial.println("f { 139-106,136-79,101-80,82-100,132-77,134-76,133-75, } ");
-  cycleTerminalColor();
-  Serial.flush();
+    Serial.println( );
+    cycleTerminalColor( );
+    Serial.println( "GPIO 2 - CS" );
+    Serial.println( "GPIO 3 - SCK" );
+    Serial.println( "GPIO 4 - MOSI" );
+    Serial.println( "GPIO 6 - DISP" );
+    cycleTerminalColor( );
+    Serial.println( "\n\rPress the encoder button or any key to exit\n\n\r" );
+    cycleTerminalColor( );
+    Serial.println( "Paste this in if you have the display soldered to the adapter board's SMD footptint" );
+    Serial.println( "f { 139-106,136-79,101-80,82-100,132-77,134-76,133-75, } " );
+    cycleTerminalColor( );
+    Serial.flush( );
 
-  const int srcW = 32;
-  const int srcH = 21;
-  const int rotW = srcH;  // 90° rotation width
-  const int rotH = srcW;  // 90° rotation height
+    const int srcW = 32;
+    const int srcH = 21;
+    const int rotW = srcH; // 90° rotation width
+    const int rotH = srcW; // 90° rotation height
 
-  for (int outer = 0; outer < 100; outer++) {
-    for (int fi = 0; fi < startupFrameLEN; fi++) {
-      const uint32_t* src = startupFrameArray[fi];
-      for (int dy = 0; dy < DISPLAY_HEIGHT; dy++) {
-        int uy = (dy * rotH) / DISPLAY_HEIGHT;
-        for (int dx = 0; dx < DISPLAY_WIDTH; dx++) {
-          int ux = (dx * rotW) / DISPLAY_WIDTH;
-          int sx = srcW - 1 - uy;
-          int sy = ux;
-          uint32_t c = src[ sy * srcW + sx ];
-          uint8_t r = (c >> 16) & 0xFF;
-          uint8_t g = (c >>  8) & 0xFF;
-          uint8_t b = (c      ) & 0xFF;
-          uint16_t col = rgbToJdi(r, g, b);
-          jdi_display.drawBufferedPixel(DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col);
+    for ( int outer = 0; outer < 100; outer++ ) {
+        for ( int fi = 0; fi < startupFrameLEN; fi++ ) {
+            const uint32_t* src = startupFrameArray[ fi ];
+            for ( int dy = 0; dy < DISPLAY_HEIGHT; dy++ ) {
+                int uy = ( dy * rotH ) / DISPLAY_HEIGHT;
+                for ( int dx = 0; dx < DISPLAY_WIDTH; dx++ ) {
+                    int ux = ( dx * rotW ) / DISPLAY_WIDTH;
+                    int sx = srcW - 1 - uy;
+                    int sy = ux;
+                    uint32_t c = src[ sy * srcW + sx ];
+                    uint8_t r = ( c >> 16 ) & 0xFF;
+                    uint8_t g = ( c >> 8 ) & 0xFF;
+                    uint8_t b = ( c ) & 0xFF;
+                    uint16_t col = rgbToJdi( r, g, b );
+                    jdi_display.drawBufferedPixel( DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col );
+                }
+            }
+            jdi_display.refresh( );
         }
-      }
-      jdi_display.refresh();
-    }
-    for (int fi = startupFrameLEN - 1; fi >= 0; fi--) {
-      const uint32_t* src = startupFrameArray[fi];
-      for (int dy = 0; dy < DISPLAY_HEIGHT; dy++) {
-        int uy = (dy * rotH) / DISPLAY_HEIGHT;
-        for (int dx = 0; dx < DISPLAY_WIDTH; dx++) {
-          int ux = (dx * rotW) / DISPLAY_WIDTH;
-          int sx = srcW - 1 - uy;
-          int sy = ux;
-          uint32_t c = src[ sy * srcW + sx ];
-          uint8_t r = (c >> 16) & 0xFF;
-          uint8_t g = (c >>  8) & 0xFF;
-          uint8_t b = (c      ) & 0xFF;
-          uint16_t col = rgbToJdi(r, g, b); // same thresholds both passes
-          jdi_display.drawBufferedPixel(DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col);
+        for ( int fi = startupFrameLEN - 1; fi >= 0; fi-- ) {
+            const uint32_t* src = startupFrameArray[ fi ];
+            for ( int dy = 0; dy < DISPLAY_HEIGHT; dy++ ) {
+                int uy = ( dy * rotH ) / DISPLAY_HEIGHT;
+                for ( int dx = 0; dx < DISPLAY_WIDTH; dx++ ) {
+                    int ux = ( dx * rotW ) / DISPLAY_WIDTH;
+                    int sx = srcW - 1 - uy;
+                    int sy = ux;
+                    uint32_t c = src[ sy * srcW + sx ];
+                    uint8_t r = ( c >> 16 ) & 0xFF;
+                    uint8_t g = ( c >> 8 ) & 0xFF;
+                    uint8_t b = ( c ) & 0xFF;
+                    uint16_t col = rgbToJdi( r, g, b ); // same thresholds both passes
+                    jdi_display.drawBufferedPixel( DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col );
+                }
+            }
+            jdi_display.refresh( );
         }
-      }
-      jdi_display.refresh();
-    }
 
-    if (encoderButtonState == PRESSED || Serial.available() > 0) break;
-    delay(10);
-  }
-  return;
+        if ( encoderButtonState == PRESSED || Serial.available( ) > 0 )
+            break;
+        delay( 10 );
+    }
+    return;
 }
+
+// Global counter for DMX packet callbacks
+static volatile uint32_t g_dmx_packet_count = 0;
+
+// Callback function that gets called when a DMX packet is received
+void dmx_packet_callback( DmxInput* dmxInput ) {
+    g_dmx_packet_count++;
+}
+
+// DMX Configuration Structure
+struct DMXLightConfig {
+    // Hardware configuration
+    uint8_t tx_pin;           // GPIO pin for DMX TX (connects to RS-485 transceiver)
+    uint8_t dmx_address;      // Starting DMX address (1-512)
+    
+    // Channel mode configuration
+    enum ChannelMode {
+        MODE_6CH = 6,         // 6 channel: R, G, B, W, A, UV
+        MODE_10CH = 10        // 10 channel: Intensity, R, G, B, W, A, UV, Strobe, Function, Speed
+    } channel_mode;
+    
+    // Color values (0-255)
+    struct {
+        uint8_t red;
+        uint8_t green;
+        uint8_t blue;
+        uint8_t white;
+        uint8_t amber;
+        uint8_t uv;
+    } color;
+    
+    // Extended controls (for 10-channel mode)
+    struct {
+        uint8_t intensity;    // Master intensity (Ch1 in 10ch mode)
+        uint8_t strobe;       // Strobe speed (Ch8 in 10ch mode, 0-50: off, 51-255: slow to fast)
+        uint8_t function;     // Function select (Ch9 in 10ch mode)
+        uint8_t speed;        // Function speed (Ch10 in 10ch mode)
+    } extended;
+    
+    // Transmission settings
+    uint16_t refresh_rate_ms; // DMX refresh rate in milliseconds (typical: 25-50ms for 20-40Hz)
+    bool wireless_mode;       // True = wireless (512 bytes, no start code), False = wired (513 bytes with start code)
+};
+
+// Helper function to update DMX universe from config
+void updateDMXUniverse( uint8_t* universe, const DMXLightConfig& config ) {
+    // Universe[0] is ALWAYS the start code (0x00 for DMX512)
+    // The Pico-DMX library requires this format
+    universe[0] = 0x00;
+    
+    // DMX addresses are 1-based: address 1 = universe[1], address 2 = universe[2], etc.
+    // Fixture at DMX address 1 reads its Channel 1 from universe[1]
+    uint16_t addr = config.dmx_address; // Starting address (1-based, maps directly to array index)
+    
+    if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
+        // 6 Channel mode: R, G, B, W, A, UV
+        // For fixture at address 1: Red->universe[1], Green->universe[2], etc.
+        universe[addr] = config.color.red;      // Channel 1 at address
+        universe[addr + 1] = config.color.green;  // Channel 2
+        universe[addr + 2] = config.color.blue;   // Channel 3
+        universe[addr + 3] = config.color.white;  // Channel 4
+        universe[addr + 4] = config.color.amber;  // Channel 5
+        universe[addr + 5] = config.color.uv;     // Channel 6
+    } 
+    else if ( config.channel_mode == DMXLightConfig::MODE_10CH ) {
+        // 10 Channel mode: Intensity, R, G, B, W, A, UV, Strobe, Function, Speed
+        universe[addr] = config.extended.intensity;
+        universe[addr + 1] = config.color.red;
+        universe[addr + 2] = config.color.green;
+        universe[addr + 3] = config.color.blue;
+        universe[addr + 4] = config.color.white;
+        universe[addr + 5] = config.color.amber;
+        universe[addr + 6] = config.color.uv;
+        universe[addr + 7] = config.extended.strobe;
+        universe[addr + 8] = config.extended.function;
+        universe[addr + 9] = config.extended.speed;
+    }
+}
+
+void DMXSerialApp( void ) {
+    Serial.println( "\n=== DMX Light Controller ===" );
+    Serial.println( "Controlling RGBA[UV] DMX Light" );
+    Serial.println( "Press encoder button or 'q' to exit\n" );
+
+    // Initialize DMX configuration
+    DMXLightConfig config = {
+        .tx_pin = GPIO_1_PIN,                    // TX on GPIO 1 (hardware GPIO 20)
+        .dmx_address = 1,                        // Start at DMX address 1
+        .channel_mode = DMXLightConfig::MODE_6CH, // Use 6-channel mode
+        .color = {
+            .red = 100,     // Test with maximum value
+            .green = 0,
+            .blue = 0,
+            .white = 0,
+            .amber = 0,
+            .uv = 100
+        },
+        .extended = {
+            .intensity = 50,  // Full intensity in 10ch mode
+            .strobe = 0,       // No strobe
+            .function = 1,     // Function off (0-50 = Ch1-7 valid)
+            .speed = 0         // Speed off
+        },
+        .refresh_rate_ms = 40,  // 400ms refresh rate
+        .wireless_mode = false   // Start in wired mode (direct RS-485 connection)
+    };
+
+    // DMX universe buffer (513 bytes: 1 start code + 512 channels)
+    constexpr uint16_t UNIVERSE_SIZE = 513;
+    uint8_t universe[UNIVERSE_SIZE];
+    memset( universe, 0, UNIVERSE_SIZE );
+    universe[0] = 0x00;  // DMX512 start code
+
+    // Initialize DMX transmitter
+    DmxOutput dmxTx;
+    Serial.print( "Initializing DMX transmitter on GPIO " );
+    Serial.print( config.tx_pin );
+    Serial.println( " using PIO0..." );
+    
+    if ( dmxTx.begin( config.tx_pin, pio0 ) != DmxOutput::SUCCESS ) {
+        Serial.println( "ERROR: Failed to initialize DMX transmitter!" );
+        return;
+    }
+    Serial.println( "✓ DMX transmitter initialized" );
+    
+    // Setup GPIO 2 (hw 21) as inverted output of GPIO 1 for pseudo-differential signaling
+    // This creates DMX+ and DMX- without needing an RS-485 transceiver chip
+    Serial.print( "Setting up GPIO 2 (hw 21) as inverted output..." );
+    
+    // Create a PIO program to invert GPIO 1 onto GPIO 2
+    // We'll use PIO1 to avoid conflicts with the DMX transmitter on PIO0
+    // PIO Assembly:
+    //   .wrap_target
+    //   in pins, 1      ; Read 1 bit from GPIO 1 into ISR
+    //   mov osr, !isr   ; Invert ISR and move to OSR
+    //   out pins, 1     ; Output 1 bit from OSR to GPIO 2
+    //   .wrap
+    static const uint16_t inverter_program[] = {
+        0x4001,  // in pins, 1     - Read 1 bit from input pins
+        0xa027,  // mov osr, !isr  - Invert ISR and move to OSR
+        0x6001,  // out pins, 1    - Output 1 bit to output pins
+    };
+    
+    struct pio_program inverter = {
+        .instructions = inverter_program,
+        .length = 3,
+        .origin = -1
+    };
+    
+    // // Try to add program to PIO1
+    // if ( !pio_can_add_program( pio1, &inverter ) ) {
+    //     Serial.println( " FAILED (no PIO space)" );
+    //     Serial.println( "⚠️  Running without inverted output" );
+    // } else {
+    //     uint offset = pio_add_program( pio1, &inverter );
+    //     int sm = pio_claim_unused_sm( pio1, false );
+        
+    //     if ( sm == -1 ) {
+    //         Serial.println( " FAILED (no state machine)" );
+    //         Serial.println( "⚠️  Running without inverted output" );
+    //     } else {
+    //         // Configure GPIO 2 as output for the inverter PIO
+    //         pio_gpio_init( pio1, GPIO_2_PIN );
+    //         pio_sm_set_consecutive_pindirs( pio1, sm, GPIO_2_PIN, 1, true );   // Output
+            
+    //         // NOTE: Don't initialize GPIO 1 for PIO1 - it's already owned by PIO0 for DMX output
+    //         // We can still READ its state by mapping it as the input pin in the state machine config
+            
+    //         // Configure state machine
+    //         pio_sm_config c = pio_get_default_sm_config( );
+    //         sm_config_set_in_pins( &c, GPIO_1_PIN );      // Read GPIO 1 state (without claiming it)
+    //         sm_config_set_out_pins( &c, GPIO_2_PIN, 1 );  // Write to GPIO 2
+    //         sm_config_set_in_shift( &c, false, false, 1 ); // Shift left, no autopush, threshold 1
+    //         sm_config_set_out_shift( &c, true, false, 1 ); // Shift right, no autopull, threshold 1
+    //         sm_config_set_wrap( &c, offset, offset + 2 ); // Wrap from instruction 0 to 2
+    //         sm_config_set_clkdiv( &c, 1.0f );             // Run as fast as possible (~125MHz)
+            
+    //         // Initialize and start the state machine
+    //         pio_sm_init( pio1, sm, offset, &c );
+    //         pio_sm_set_enabled( pio1, sm, true );
+            
+    //         Serial.println( " ✓ OK" );
+    //         Serial.println( "✓ Pseudo-differential output configured" );
+    //         Serial.println( "  GPIO 1 (hw 20) = DMX+" );
+    //         Serial.println( "  GPIO 2 (hw 21) = DMX- (inverted)\n" );
+    //     }
+    // }
+
+    // Display configuration
+    Serial.println( "Configuration:" );
+    Serial.print( "  DMX Address: " );
+    Serial.println( config.dmx_address );
+    Serial.print( "  Channel Mode: " );
+    Serial.print( config.channel_mode );
+    Serial.println( " channels" );
+    Serial.print( "  Refresh Rate: " );
+    Serial.print( config.refresh_rate_ms );
+    Serial.println( "ms" );
+    Serial.print( "  Output Mode: " );
+    Serial.println( config.wireless_mode ? "Wireless (testing)" : "Wired (standard)" );
+    Serial.println( "  Note: Currently sending 513 bytes in both modes\n" );
+
+    // Test pattern selection
+    enum TestPattern {
+        PATTERN_COLOR_FADE,
+        PATTERN_RGB_CYCLE,
+        PATTERN_WHITE_STROBE,
+        PATTERN_RAINBOW,
+        PATTERN_SPECTRUM,  // New: smooth RGBA[UV] spectrum cycle
+        PATTERN_COUNT
+    };
+    TestPattern currentPattern = PATTERN_COLOR_FADE;
+    
+    Serial.println( "Commands: m = toggle mode (6/10ch), p = toggle manual/pattern, w = wired/wireless, a/z = address -/+, q = quit\n" );
+
+    // Channel names for encoder control
+    const char* channelNames6ch[] = { "Red", "Green", "Blue", "White", "Amber", "UV" };
+    const char* channelNames10ch[] = { "Intensity", "Red", "Green", "Blue", "White", "Amber", "UV", "Strobe", "Function", "Speed" };
+    
+    // Control mode: manual encoder control vs test patterns
+    bool manualMode = true;
+    uint8_t currentChannel = 0;
+    int lastEncoderPos = encoderPosition;
+    encoderButtonStates lastButtonState = IDLE;
+    
+    // Get pointer to current channel
+    auto getChannelPtr = [&]() -> uint8_t* {
+        if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
+            switch ( currentChannel ) {
+                case 0: return &config.color.red;
+                case 1: return &config.color.green;
+                case 2: return &config.color.blue;
+                case 3: return &config.color.white;
+                case 4: return &config.color.amber;
+                case 5: return &config.color.uv;
+            }
+        } else {
+            switch ( currentChannel ) {
+                case 0: return &config.extended.intensity;
+                case 1: return &config.color.red;
+                case 2: return &config.color.green;
+                case 3: return &config.color.blue;
+                case 4: return &config.color.white;
+                case 5: return &config.color.amber;
+                case 6: return &config.color.uv;
+                case 7: return &config.extended.strobe;
+                case 8: return &config.extended.function;
+                case 9: return &config.extended.speed;
+            }
+        }
+        return &config.color.red;
+    };
+    
+    auto getChannelName = [&]() -> const char* {
+        return ( config.channel_mode == DMXLightConfig::MODE_6CH ) ? channelNames6ch[currentChannel] : channelNames10ch[currentChannel];
+    };
+    
+    Serial.println( "MANUAL CONTROL MODE" );
+    Serial.println( "Live Dashboard: [Selected] channel shown in brackets\n" );
+
+    unsigned long lastTransmitTime = 0;
+    unsigned long lastDisplayTime = 0;
+    unsigned long patternTime = 0;
+    uint16_t patternStep = 0;  // Use uint16_t for values > 255
+
+    while ( true ) {
+        unsigned long now = millis( );
+        
+        // MANUAL MODE: Encoder controls individual channels
+        if ( manualMode ) {
+            // Handle encoder button (cycle channels)
+            if ( encoderButtonState != lastButtonState ) {
+                if ( encoderButtonState == PRESSED ) {
+                    uint8_t maxCh = ( config.channel_mode == DMXLightConfig::MODE_6CH ) ? 5 : 9;
+                    currentChannel = ( currentChannel + 1 ) % ( maxCh + 1 );
+                    lastEncoderPos = encoderPosition;
+                    lastDisplayTime = 0;  // Force immediate display update
+                } else if ( encoderButtonState == HELD ) {
+                    goto exit_loop;
+                }
+                lastButtonState = encoderButtonState;
+            }
+            
+            // Handle encoder rotation (adjust value) - REVERSED for intuitive control
+            int delta = lastEncoderPos - encoderPosition;  // Reversed!
+            if ( delta != 0 ) {
+                lastEncoderPos = encoderPosition;
+                
+                uint8_t* val = getChannelPtr( );
+                int newVal = *val + delta;
+                if ( newVal < 0 ) newVal = 0;
+                if ( newVal > 255 ) newVal = 255;
+                *val = newVal;
+                lastDisplayTime = 0;  // Force immediate update on change
+            }
+            
+            // Live dashboard update (throttled) - updates continuously
+            if ( now - lastDisplayTime >= 50 ) {  // Faster refresh for smoother feel
+                lastDisplayTime = now;
+                uint8_t* val = getChannelPtr( );
+                
+                // Clear line and print live dashboard
+                Serial.print( "\r                                                                                      \r" );
+                
+                // Compact bar graphs for all 6 channels (4 chars per bar)
+                auto printBar = [&]( uint8_t value, bool selected ) {
+                    int bars = value / 32;  // 0-3 bars for compact display
+                    if ( selected ) Serial.print( "[" );
+                    for ( int i = 0; i < 8; i++ ) {
+                        Serial.print( i < bars ? "█" : "░" );
+                    }
+                    if ( selected ) Serial.print( "]" );
+                    else Serial.print( " " );
+                };
+                
+                Serial.print( "R" );
+                printBar( config.color.red, currentChannel == 0 );
+                Serial.print( "G" );
+                printBar( config.color.green, currentChannel == 1 );
+                Serial.print( "B" );
+                printBar( config.color.blue, currentChannel == 2 );
+                Serial.print( "W" );
+                printBar( config.color.white, currentChannel == 3 );
+                Serial.print( "A" );
+                printBar( config.color.amber, currentChannel == 4 );
+                Serial.print( "U" );
+                printBar( config.color.uv, currentChannel == 5 );
+                
+                Serial.print( " | " );
+                Serial.print( getChannelName( ) );
+                Serial.print( ":" );
+                Serial.print( *val );
+                if ( *val < 10 ) {
+                    Serial.print( "  " );
+                } else if ( *val < 100 ) {
+                    Serial.print( " " );
+                }
+                Serial.flush( );
+            }
+        } 
+        // PATTERN MODE: Run test patterns
+        else {
+            if ( encoderButtonState == HELD ) {
+                goto exit_loop;
+            }
+            lastButtonState = encoderButtonState;
+
+        // Update test pattern
+        switch ( currentPattern ) {
+            case PATTERN_COLOR_FADE:
+                // Fade through red, green, blue, white
+                if ( now - patternTime > 120 ) {
+                    patternTime = now;
+                    if ( patternStep < 255 ) {
+                        config.color.red = patternStep;
+                        config.color.green = 0;
+                        config.color.blue = 0;
+                        config.color.white = 0;
+                    }
+                    else if ( patternStep < 510 ) {
+                        config.color.red = 510 - patternStep;
+                        config.color.green = patternStep - 255;
+                        config.color.blue = 0;
+                        config.color.white = 0;
+                    }
+                    else if ( patternStep < 765 ) {
+                        config.color.red = 0;
+                        config.color.green = 765 - patternStep;
+                        config.color.blue = patternStep - 510;
+                        config.color.white = 0;
+                    }
+                    else if ( patternStep < 1020 ) {
+                        config.color.red = 0;
+                        config.color.green = 0;
+                        config.color.blue = 1020 - patternStep;
+                        config.color.white = patternStep - 765;
+                    }
+                    else {
+                        config.color.white = 0;
+                        patternStep = 0;
+                    }
+                    patternStep++;
+                }
+                break;
+                
+            case PATTERN_RGB_CYCLE:
+                // Cycle through pure R, G, B
+                if ( now - patternTime > 1000 ) {
+                    patternTime = now;
+                    config.color = { 0, 0, 0, 0, 0, 0 };
+                    if ( patternStep == 0 ) config.color.red = 255;
+                    else if ( patternStep == 1 ) config.color.green = 255;
+                    else if ( patternStep == 2 ) config.color.blue = 255;
+                    patternStep = ( patternStep + 1 ) % 3;
+                }
+                break;
+                
+            case PATTERN_WHITE_STROBE:
+                // Strobe white light
+                if ( now - patternTime > 100 ) {
+                    patternTime = now;
+                    config.color.white = ( patternStep % 2 ) ? 255 : 0;
+                    patternStep++;
+                }
+                break;
+                
+            case PATTERN_RAINBOW:
+                // Rainbow using all colors
+                if ( now - patternTime > 15 ) {
+                    patternTime = now;
+                    config.color.red = ( uint8_t )( ( sin( patternStep * 0.02 ) + 1.0 ) * 127 );
+                    config.color.green = ( uint8_t )( ( sin( patternStep * 0.02 + 2.09 ) + 1.0 ) * 127 );
+                    config.color.blue = ( uint8_t )( ( sin( patternStep * 0.02 + 4.18 ) + 1.0 ) * 127 );
+                    patternStep++;
+                }
+                break;
+                
+            case PATTERN_SPECTRUM:
+                // Smooth spectrum cycle through Red→Amber→Green→Cyan→Blue→UV→Magenta→Red
+                // Using all 6 channels: R, G, B, W, A, UV
+                if ( now - patternTime > 15 ) {
+                    patternTime = now;
+                    
+                    // Cycle through 9 phases (0-1530 steps, 170 steps per phase)
+                    uint16_t phase = patternStep % 1530;
+                    
+                    // Reset all channels
+                    config.color.red = 0;
+                    config.color.green = 0;
+                    config.color.blue = 0;
+                    config.color.white = 0;
+                    config.color.amber = 0;
+                    config.color.uv = 0;
+                    
+                    if ( phase < 170 ) {
+                        // Phase 0: Pure Red
+                        config.color.red = 255;
+                    }
+                    else if ( phase < 340 ) {
+                        // Phase 1: Red→Amber (Orange)
+                        uint8_t t = phase - 170;
+                        config.color.red = 255 - ( t * 255 / 170 );
+                        config.color.amber = t * 255 / 170;
+                    }
+                    else if ( phase < 510 ) {
+                        // Phase 2: Pure Amber (Warm yellow)
+                        config.color.amber = 255;
+                    }
+                    else if ( phase < 680 ) {
+                        // Phase 3: Amber→Green
+                        uint8_t t = phase - 510;
+                        config.color.amber = 255 - ( t * 255 / 170 );
+                        config.color.green = t * 255 / 170;
+                    }
+                    else if ( phase < 850 ) {
+                        // Phase 4: Green→Cyan (Green+Blue)
+                        uint8_t t = phase - 680;
+                        config.color.green = 255;
+                        config.color.blue = t * 255 / 170;
+                    }
+                    else if ( phase < 1020 ) {
+                        // Phase 5: Cyan→Blue
+                        uint8_t t = phase - 850;
+                        config.color.green = 255 - ( t * 255 / 170 );
+                        config.color.blue = 255;
+                    }
+                    else if ( phase < 1190 ) {
+                        // Phase 6: Blue→UV (Deep violet)
+                        uint8_t t = phase - 1020;
+                        config.color.blue = 255 - ( t * 255 / 170 );
+                        config.color.uv = t * 255 / 170;
+                    }
+                    else if ( phase < 1360 ) {
+                        // Phase 7: Pure UV (Purple)
+                        config.color.uv = 255;
+                    }
+                    else {
+                        // Phase 8: UV→Red (Magenta)
+                        uint8_t t = phase - 1360;
+                        config.color.uv = 255 - ( t * 255 / 170 );
+                        config.color.red = t * 255 / 170;
+                    }
+                    
+                    patternStep++;
+                    if ( patternStep >= 1530 ) patternStep = 0;
+                }
+                break;
+                
+            case PATTERN_COUNT:
+            default:
+                // Should not reach here
+                break;
+        }
+        }  // End of pattern mode block
+
+        // Transmit DMX packets at configured refresh rate
+        if ( now - lastTransmitTime >= config.refresh_rate_ms ) {
+            lastTransmitTime = now;
+
+            // Update universe from config
+            updateDMXUniverse( universe, config );
+
+            // Transmit the universe
+            // CRITICAL: Wireless modules require the FULL 512 channels + start code (513 bytes total)
+            // Sending partial universes causes the wireless module to misinterpret data
+            // The Wtlx512 manual states it "Regenerates" the full DMX signal
+            
+            dmxTx.write( universe,513 );  // Send 513 bytes with start code
+            // Serial.print("Sending: ");
+            // Serial.print(universe[0]);
+            // Serial.print(" ");
+            // Serial.print(universe[1]);
+            // Serial.print(" ");
+            // Serial.print(universe[2]);
+            // Serial.print(" ");
+            // Serial.print(universe[3]);
+            // Serial.print(" ");
+            // Serial.print(universe[4]);
+            // Serial.print(" ");
+            // Serial.print(universe[5]);
+            // Serial.print(" ");
+            // Serial.print(universe[6]);
+            // Serial.print(" ");
+            // Serial.println();
+            // Wait for transmission to complete
+            while ( dmxTx.busy( ) ) {
+                // Busy wait - transmission takes ~23ms for full 512 channel universe
+            }
+        }
+
+        // Handle user commands
+        if ( Serial.available( ) > 0 ) {
+            char c = Serial.read( );
+            switch ( c ) {
+                case 'p':
+                case 'P':
+                    // Toggle between manual and pattern mode
+                    manualMode = !manualMode;
+                    if ( manualMode ) {
+                        Serial.println( "\n\n✓ MANUAL CONTROL MODE" );
+                        Serial.println( "Live Dashboard below:\n" );
+                        lastEncoderPos = encoderPosition;
+                        lastDisplayTime = 0;  // Force immediate update
+                    } else {
+                        Serial.println( "\n\n✓ TEST PATTERN MODE" );
+                        Serial.println( "Use 1-5 to select pattern:" );
+                        Serial.println( "  1=Fade  2=Cycle  3=Strobe  4=Rainbow  5=Spectrum\n" );
+                        patternStep = 0;
+                    }
+                    break;
+                    
+                case '1':
+                    if ( !manualMode ) {
+                        currentPattern = PATTERN_COLOR_FADE;
+                        patternStep = 0;
+                        Serial.println( "Pattern: Color Fade" );
+                    }
+                    break;
+                    
+                case '2':
+                    if ( !manualMode ) {
+                        currentPattern = PATTERN_RGB_CYCLE;
+                        patternStep = 0;
+                        Serial.println( "Pattern: RGB Cycle" );
+                    }
+                    break;
+                    
+                case '3':
+                    if ( !manualMode ) {
+                        currentPattern = PATTERN_WHITE_STROBE;
+                        patternStep = 0;
+                        Serial.println( "Pattern: White Strobe" );
+                    }
+                    break;
+                    
+                case '4':
+                    if ( !manualMode ) {
+                        currentPattern = PATTERN_RAINBOW;
+                        patternStep = 0;
+                        Serial.println( "Pattern: Rainbow" );
+                    }
+                    break;
+                    
+                case '5':
+                    if ( !manualMode ) {
+                        currentPattern = PATTERN_SPECTRUM;
+                        patternStep = 0;
+                        Serial.println( "Pattern: Spectrum Cycle (RGBAUV)" );
+                    }
+                    break;
+                    
+                case 'm':
+                case 'M':
+                    // Toggle between 6 and 10 channel mode
+                    if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
+                        config.channel_mode = DMXLightConfig::MODE_10CH;
+                        Serial.println( "\n\n✓ Switched to 10-channel mode\n" );
+                    } else {
+                        config.channel_mode = DMXLightConfig::MODE_6CH;
+                        Serial.println( "\n\n✓ Switched to 6-channel mode\n" );
+                    }
+                    if ( manualMode ) {
+                        currentChannel = 0;  // Reset to first channel
+                        lastDisplayTime = 0;  // Force immediate dashboard update
+                    }
+                    break;
+                    
+                case 'a':
+                case 'A':
+                    // Adjust DMX address (decrement)
+                    if ( config.dmx_address >= 1 ) {
+                        config.dmx_address--;
+                        Serial.print( "\n\n✓ DMX Address: " );
+                        Serial.print( config.dmx_address );
+                        Serial.println( "\n" );
+                    } else {
+                        Serial.println( "\n\n⚠️  Already at minimum address (0)\n" );
+                    }
+                    if ( manualMode ) {
+                        lastDisplayTime = 0;  // Force immediate dashboard update
+                    }
+                    break;
+                    
+                case 'z':
+                case 'Z':
+                    // Adjust DMX address (increment)
+                    if ( config.dmx_address < 255 ) {  // uint8_t max is 255
+                        config.dmx_address++;
+                        Serial.print( "\n\n✓ DMX Address: " );
+                        Serial.print( config.dmx_address );
+                        Serial.println( "\n" );
+                    } else {
+                        Serial.println( "\n\n⚠️  Already at maximum address (255)\n" );
+                    }
+                    if ( manualMode ) {
+                        lastDisplayTime = 0;  // Force immediate dashboard update
+                    }
+                    break;
+                    
+                case 'w':
+                case 'W':
+                    // Toggle wireless mode flag (currently both modes send 513 bytes)
+                    // This is a placeholder for future wireless-specific handling
+                    config.wireless_mode = !config.wireless_mode;
+                    Serial.print( "\n\n✓ Mode: " );
+                    Serial.println( config.wireless_mode ? "WIRELESS (testing)" : "WIRED (standard)" );
+                    Serial.println( "  Currently both modes send 513 bytes - testing in progress.\n" );
+                    if ( manualMode ) {
+                        lastDisplayTime = 0;  // Force immediate dashboard update
+                    }
+                    break;
+                    
+                case 'q':
+                case 'Q':
+                    goto exit_loop;
+            }
+        }
+
+        delay( 1 ); // Small delay to prevent tight loop
+    }
+
+exit_loop:
+    // Clean shutdown
+    dmxTx.end( );
+    Serial.flush( );
+    Serial.println( "\n✓ DMX transmitter stopped" );
+    Serial.println( "Exiting DMX Light Controller" );
+}
+
+
+
+/*
+Channel mapping:
+
+6 Channel mode:
+Ch 1: Red
+
+Ch 2: Green
+
+Ch 3: Blue
+
+Ch 4: White
+
+Ch 5: Amber
+
+Ch 6: UV
+
+
+
+
+
+12 Channel mode:
+DMX Footprint (10 ch)
+Ch 1: Intensity
+
+Ch 2: Red
+
+
+Ch 3: Green
+
+
+Ch 4: Blue
+
+
+Ch 5: White
+
+
+Ch 6: Amber
+
+
+Ch 7: UV
+
+
+Ch 8: Shutter Strobe, slow to fast
+
+
+Ch 9: Function Select 000-050: Ch1-ch7 valid
+
+
+Ch 10: Function Speed 51-100: Color output (8kinds), selected by CH10
+
+
+
+
+
+
+Function and Description
+1: A001: 001-512: DMX512 Address Code Setting-10 Channel Mode
+2: d002: 001-512: DMX512 Address Code Setting-6 Channel Mode
+3: R003: 000-255: Red dimming, dim to bright.
+4: G004: 000-255: Green dimming, dim to bright.
+5: B005: 000-255: Blue dimming, dim to bright.
+6: u006: 000-255: White dimming, dim to bright.
+7: Y007: 000-255: Amber dimming, dim to bright.
+8: P008: 000-255: Purple dimming, dim to bright.
+9: FH99: 01-99: Strobe, slow to fast.
+10: CL01: 01-08: 8 colors output.
+11: CC01: 01-99: Jump change, slow to fast.
+12: DE99: 01-99: Fade, slow to fast.
+13: CP99: 01-99: Pulse change, slow to fast.
+14: SU01: 01-09: Mode: 1-8 for color selection strobe, 9 for multi-color
+
+*/

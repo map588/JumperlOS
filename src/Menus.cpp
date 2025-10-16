@@ -390,6 +390,12 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
 
     int returnedMenuPosition = -1;
     if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
+        // Check if Highlighting wants to handle this button press (for voltage adjustment)
+        if (Highlighting::getInstance().wantsToHandleButtonPress()) {
+            // Don't consume the button press - let Highlighting handle it
+            return -1;
+        }
+        
         encoderButtonState = IDLE;
         inClickMenu = 1;
         // if (menuRead == 0) {
@@ -1910,14 +1916,9 @@ int yesNoMenu( unsigned long timeout ) {
 int selectNodeAction( int whichSelection ) {
     b.clear( );
     showLEDsCore2 = -1;
-    // delayMicroseconds(100000);
 
     int nodeSelected = -1;
     int currentlySelecting = whichSelection;
-
-    // Serial.print("\n\rCurrently Selecting: ");
-    // Serial.println(currentlySelecting);
-    // Serial.println();
 
     int highlightedNode = currentlySelecting + 13;
     uint32_t highlightedNodeColor = 0x000000;
@@ -1936,134 +1937,107 @@ int selectNodeAction( int whichSelection ) {
             highlightedNode = subMenuChoices[ currentlySelecting ];
             inNanoHeader = 1;
         } else {
-
             highlightedNode = subMenuChoices[ currentlySelecting ] + 1;
         }
         subMenuChoices[ currentlySelecting ] = -1;
         maxNumSelections++;
     }
 
-    // if (subMenuChoices[0] != -1)
-    // {
-    //   for (int i = 0; i < 8; i++)
-    //   {
-    //     if (subMenuChoices[i] == -1)
-    //     {
-    //       currentlySelecting = i;
-
-    //     highlightedNode = subMenuChoices[i-1]-1;
-    //     break;
-    //     }
-    //   }
-    // }
-    rotaryDivider = 4;
+    // Set rotary divider for good responsiveness
+    int lastDivider = rotaryDivider;
+    rotaryDivider = 3;
     delayMicroseconds( 300 );
 
-    unsigned long scrollAccelerationTimer = micros( );
-    unsigned long scrollAccelerationDelay = 29000;
+    // Position-based tracking for direct encoder reading
+    long lastEncoderPosition = encoderPosition;
+    
+    // Acceleration tracking with direction
+    unsigned long lastChangeTime = millis();
     int scrollAcceleration = 1;
-    int scrollAccelerationDirection = 0; // 0 = up, 1 = down
-    encoderDirectionStates lastScrollAccelerationDirection =
-        NONE; // 0 = up, 1 = down
+    int lastDirection = 0;  // -1=down, 0=none, 1=up
+    int consecutiveFastCount = 0;  // Track consecutive fast movements
     int accelCount = 0;
-    // Serial.println();
-    // for (int a = 0; a < 8; a++) {
-    //   Serial.print(subMenuChoices[a]);
-    //   Serial.print(", ");
-    // }
-    // Serial.println();
-    // while (1) {
-    //   for (int i = 0; i < 10; i++) {
-    //     leds.setPixelColor(bbPixelToNodesMapV5[i * 2][1],
-    //     nodeSelectionColors[i]); leds.setPixelColor(bbPixelToNodesMapV5[(i * 2)
-    //     + 1][1],
-    //                        nodeSelectionColorsHeader[i]);
-
-    //     leds.setPixelColor(i * 5, nodeSelectionColors[i]);
-    //     leds.setPixelColor((i * 5)+1, nodeSelectionColors[i]);
-    //     leds.setPixelColor((i * 5) + 2, nodeSelectionColors[i]);
-    //     leds.setPixelColor((i * 5) + 3, nodeSelectionColors[i]);
-    //     leds.setPixelColor((i * 5) + 4, nodeSelectionColors[i]);
-
-    //     leds.setPixelColor(((i+30) * 5) + 0, nodeSelectionColorsHeader[i]);
-    //     leds.setPixelColor(((i+30) * 5) + 1, nodeSelectionColorsHeader[i]);
-    //     leds.setPixelColor(((i+30) * 5) + 2, nodeSelectionColorsHeader[i]);
-    //     leds.setPixelColor(((i+30) * 5) + 3, nodeSelectionColorsHeader[i]);
-    //     leds.setPixelColor(((i+30) * 5) + 4, nodeSelectionColorsHeader[i]);
-    //   }
-    //   showLEDsCore2 = 3;
-    // }
 
     while ( nodeSelected == -1 && Serial.available( ) == 0 ) {
-        // rotaryEncoderStuff();
-        delayMicroseconds( 400 );
+        delayMicroseconds( 200 );
+        rotaryEncoderStuff();
+        
         if ( encoderButtonState == HELD || Serial.available( ) > 0 ) {
             b.clear( );
-            rotaryDivider = 4;
+            rotaryDivider = lastDivider;
             return -1;
         }
 
-        if ( encoderDirectionState == DOWN || encoderDirectionState == UP ||
-             firstTime == 1 ) {
+        // Read encoder position directly for immediate response
+        long currentEncoderPosition = encoderPosition;
+        long encoderDelta = -(currentEncoderPosition - lastEncoderPosition);
+        
+        bool needsUpdate = false;
+
+        if ( encoderDelta != 0 || firstTime == 1 ) {
 
             if ( firstTime != 1 ) {
-                // Serial.println(micros() - scrollAccelerationTimer);
-                if ( micros( ) - scrollAccelerationTimer < scrollAccelerationDelay ||
-                     abs( numberOfSteps ) >= 2 ) {
-
+                // Determine current direction from delta
+                int currentDirection = (encoderDelta > 0) ? 1 : ((encoderDelta < 0) ? -1 : 0);
+                
+                // Reset acceleration if direction changed
+                if (currentDirection != 0 && currentDirection != lastDirection) {
+                    scrollAcceleration = 1;
+                    consecutiveFastCount = 0;
+                    accelCount = 0;
+                    lastDirection = currentDirection;
+                }
+                
+                // Calculate acceleration based on delta magnitude
+                unsigned long currentTime = millis();
+                unsigned long timeSinceLastChange = currentTime - lastChangeTime;
+                int deltaMagnitude = abs(encoderDelta);
+                
+                // Fast rotation = large delta between polls
+                bool isFastRotation = (deltaMagnitude >= 3);
+                
+                if (isFastRotation) {
+                    consecutiveFastCount++;
                     accelCount++;
-                    // Serial.print(encoderRaw);
-                    // Serial.print(" ");
-                    // Serial.println(numberOfSteps);
-                    // scrollAcceleration = scrollAcceleration + accelStep;
-                    switch ( accelCount ) {
-                    case 1:
+                    
+                    // Gradually increase acceleration
+                    if (consecutiveFastCount >= 2) {
                         rotaryDivider = 2;
-
-                        break;
-
-                    case 4:
-                        scrollAcceleration = 2;
-                        // rotaryDivider = 1;
-
-                        // scrollAcceleration = 3;
-                        break;
-                    case 8:
-                        // scrollAcceleration = 24;
-                        break;
                     }
-                    // Serial.println(scrollAcceleration);
-                    if ( scrollAcceleration > 24 ) {
+                    if (accelCount >= 4) {
+                        scrollAcceleration = 2;
+                    }
+                    if (scrollAcceleration > 24) {
                         scrollAcceleration = 24;
                     }
-                } else {
+                } else if (timeSinceLastChange > 80) {
+                    // Slow/stopped - reset everything
                     scrollAcceleration = 1;
                     rotaryDivider = 3;
+                    consecutiveFastCount = 0;
                     accelCount = 0;
+                    lastDirection = 0;
+                } else {
+                    // Medium speed - reset fast count but maintain some acceleration
+                    consecutiveFastCount = 0;
                 }
-                scrollAccelerationTimer = micros( );
+                
+                lastChangeTime = currentTime;
 
-                if ( encoderDirectionState == DOWN &&
-                     lastScrollAccelerationDirection == NONE ) {
-                    // for (int i = 0; i < 30; i++) {
-                    // if (leds.getPixelColor(bbPixelToNodesMapV5[i][1]) == highlightedNodeColor) {
+                // Apply movement based on delta direction
+                if ( encoderDelta < 0 ) {
+                    // Moving down (counter-clockwise)
                     leds.setPixelColor( bbPixelToNodesMapV5[ highlightedNode - 70 ][ 1 ], 0x000000 );
 
-                    // }
-                    // leds.setPixelColor(bbPixelToNodesMapV5[i][1], 0x000000);
-                    //  }
                     highlightedNode -= scrollAcceleration;
                     if ( highlightedNode < 0 ) {
                         highlightedNode = NANO_RESET_0;
                         inNanoHeader = 1;
-                        // highlightedNode = 59;
                     }
                     if ( highlightedNode < NANO_D0 && inNanoHeader == 1 ) {
                         highlightedNode = 59;
                         inNanoHeader = 0;
 
-                        // lightUpRail();
-                        // showNets();
                         for ( int a = 0; a < 8; a++ ) {
                             if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] >= NANO_D0 ) {
                                 leds.setPixelColor(
@@ -2078,27 +2052,18 @@ int selectNodeAction( int whichSelection ) {
                         }
                     }
                     Serial.print( "\r                      \r" );
-
                     Serial.print( ">>>> " );
                     printNodeOrName( highlightedNode, 1 );
                     oled.clearPrintShow( "> ", 2, true, false );
                     oled.clearPrintShow( definesToChar( highlightedNode, 0 ), 2, true, true );
-                    // oled.clrPrintfsh(">>>> %s", definesToChar(highlightedNode, 1));
-                    // oled.show();
-                    // oled.clearPrintShow(">>>>", 3, 5, 5, true);
 
-                } else if ( encoderDirectionState == UP &&
-                            lastScrollAccelerationDirection == NONE ) {
+                } else if ( encoderDelta > 0 ) {
+                    // Moving up (clockwise)
                     leds.setPixelColor( bbPixelToNodesMapV5[ highlightedNode - 70 ][ 1 ], 0x000000 );
 
                     highlightedNode += scrollAcceleration;
 
-                    // for (int i = 0; i < 30; i++) {
-
-                    // leds.setPixelColor(bbPixelToNodesMapV5[i][1], 0x000000);
-                    //  }
                     if ( highlightedNode > 59 && inNanoHeader == 0 ) {
-
                         highlightedNode = NANO_D0;
                         inNanoHeader = 1;
                     }
@@ -2107,21 +2072,14 @@ int selectNodeAction( int whichSelection ) {
                         inNanoHeader = 0;
 
                         for ( int i = 0; i < 30; i++ ) {
-                            // if (leds.getPixelColor(bbPixelToNodesMapV5[i][1]) ==
-                            //     nodeSelectionColorsHeader[currentlySelecting]) {
                             leds.setPixelColor( bbPixelToNodesMapV5[ i ][ 1 ], 0x000000 );
-                            //   }
-                            // leds.setPixelColor(bbPixelToNodesMapV5[i][1], 0x000000);
                         }
 
-                        // lightUpRail();
-                        // showNets();
                         for ( int a = 0; a < 8; a++ ) {
                             if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] >= NANO_D0 ) {
                                 leds.setPixelColor(
                                     bbPixelToNodesMapV5[ subMenuChoices[ a ] - 70 ][ 1 ],
                                     nodeSelectionColorsHeader[ a ] );
-
                             } else if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] < 60 ) {
                                 b.printRawRow( 0b00000100, ( subMenuChoices[ a ] - 1 ), middleColor,
                                                nodeSelectionColors[ a ] );
@@ -2129,23 +2087,19 @@ int selectNodeAction( int whichSelection ) {
                         }
                     }
                     Serial.print( "\r                      \r" );
-
                     Serial.print( ">>>> " );
                     printNodeOrName( highlightedNode, 1 );
-
-                    // oled.clearPrintShow("> ", 2, true, false);
-
                     oled.clearPrintShow( definesToChar( highlightedNode, 0 ), 2, true, true );
-
-                    // oled.clrPrintfsh(">>>> %s", definesToChar(highlightedNode, 1));
                 }
             }
-            lastScrollAccelerationDirection = encoderDirectionState;
-            encoderDirectionState = NONE;
+            
+            lastEncoderPosition = currentEncoderPosition;
+            needsUpdate = true;
             firstTime = 0;
-
-            // highlightedNode -= 1;
-
+        }
+        
+        // Update LED display if value changed
+        if ( needsUpdate ) {
             int overlappingSelection = -1;
             int overlappingConnection = -1;
 
@@ -2154,7 +2108,6 @@ int selectNodeAction( int whichSelection ) {
             showLEDsCore2 = 2;
 
             if ( inNanoHeader == 1 ) {
-
                 for ( int a = 0; a < 8; a++ ) {
                     if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] >= NANO_D0 ) {
                         leds.setPixelColor( bbPixelToNodesMapV5[ subMenuChoices[ a ] - 70 ][ 1 ],
@@ -2163,17 +2116,13 @@ int selectNodeAction( int whichSelection ) {
                     } else if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] < 60 ) {
                         b.printRawRow( 0b00000100, ( subMenuChoices[ a ] - 1 ), middleColor,
                                        nodeSelectionColors[ a ] );
-                    } else { // make this not clear things that are already lit up
-                        // leds.setPixelColor(bbPixelToNodesMapV5[highlightedNode - 70][1], 0x000000);
                     }
                 }
                 leds.setPixelColor( bbPixelToNodesMapV5[ highlightedNode - 70 ][ 1 ],
                                     nodeSelectionColorsHeader[ currentlySelecting ] );
 
             } else {
-
                 if ( leds.getPixelColor( ( highlightedNode * 5 ) + 3 ) != 0x000000 ) {
-
                     overlappingConnection = highlightedNode + 1;
                 }
                 for ( int a = 0; a < 8; a++ ) {
@@ -2187,9 +2136,6 @@ int selectNodeAction( int whichSelection ) {
 
                         b.printRawRow( 0b00000100, ( subMenuChoices[ a ] - 1 ), middleColor,
                                        nodeSelectionColors[ a ] );
-
-                        // b.print(subMenuChoices[a], nodeSelectionColors[a], 0xffffff, a,
-                        // 1, 1);
                     }
                 }
 
@@ -2205,29 +2151,23 @@ int selectNodeAction( int whichSelection ) {
                     }
                     b.printRawRow( 0b00000100, ( highlightedNode + 1 ),
                                    nodeSelectionColors[ currentlySelecting ], 0x000000 );
-                    // leds.getPixelColor(((highlightedNode + 1) * 5) + 3));
                     b.printRawRow( 0b00000100, ( highlightedNode - 1 ),
                                    nodeSelectionColors[ currentlySelecting ], 0x000000 );
-                    // leds.getPixelColor(((highlightedNode - 1) * 5) + 3));
                 } else {
                     b.printRawRow( 0b00000100, ( highlightedNode ), middleColor,
                                    nodeSelectionColors[ currentlySelecting ] );
                 }
             }
-            // Serial.print("\r                        \r");
-            // Serial.print(highlightedNode + 1);
             showLEDsCore2 = 2;
-            // leds.show();
+        }
 
-        } else if ( encoderButtonState == RELEASED &&
-                    lastButtonEncoderState == PRESSED ) {
+        // Check for confirmation (short press)
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
             encoderButtonState = IDLE;
             nodeSelected = highlightedNode;
 
             if ( alreadySelected == 0 ) {
-
                 currentAction.to[ currentAction.connectIndex ] = highlightedNode + 1;
-
                 currentAction.connectIndex++;
             } else {
                 for ( int i = 0; i < 10; i++ ) {
@@ -2237,17 +2177,16 @@ int selectNodeAction( int whichSelection ) {
                         } else {
                             currentAction.to[ i ] = highlightedNode;
                         }
-
                         break;
                     }
                 }
             }
-
-        } else {
-            lastScrollAccelerationDirection = NONE;
         }
     }
-    rotaryDivider = 4;
+    
+    // Restore rotary divider
+    rotaryDivider = lastDivider;
+    
     if ( nodeSelected <= 59 && nodeSelected >= 0 ) {
         return nodeSelected + 1;
     } else {

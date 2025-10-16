@@ -623,6 +623,15 @@ void initNets(void) {
   for (int i = 0; i < 12; i++) {
     globalState.connections.chipStates[i] = chipStatusInit[i];
   }
+
+  initChipStatus();
+  // if (jumperlessConfig.hardware.revision <= 4) {
+  //   for (int i = 0; i < 12; i++) {
+  //     for (int j = 0; j < 16; j++) {
+  //       globalState.connections.chipStates[i].xMap[j] = rev4minusXmap[i][j];
+  //     }
+  //   }
+  // }
   
   // Initialize remaining nets
   for (int i = 6; i < MAX_NETS; i++) {

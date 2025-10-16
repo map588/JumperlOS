@@ -20,13 +20,14 @@ void debugFlagInit(int forceDefaults) {
 
   if (EEPROM.read(FIRSTSTARTUPADDRESS) != 0xAA || forceDefaults == 1) {
 
-    delay(1000);
+    //delay(1000);
     Serial.println("First startup");
-    delay(1000);
+    //delay(1000);
     firstStart = true;
     EEPROM.write(FIRSTSTARTUPADDRESS, 0xAA);
 
-    EEPROM.write(REVISIONADDRESS, REV);
+    EEPROM.write(REVISIONADDRESS, jumperlessConfig.hardware.revision);
+    EEPROM.write(PROBE_REVISIONADDRESS, jumperlessConfig.hardware.probe_revision);
 
     EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
     EEPROM.write(TIME_FILEPARSINGADDRESS, 0);

@@ -65,6 +65,7 @@ KevinC@ppucc.io
 
 #include "WaveGen.h" // New async wavegen
 #include "externVars.h"
+#include "SingleCharCommands.h" // Single-character command system
 
 bread b;
 
@@ -110,7 +111,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 50;
 
-const char firmwareVersion[] = "5.4.0.1"; //! remember to update this
+const char firmwareVersion[] = "5.4.0.3"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -265,6 +266,7 @@ void setup( ) {
     // NORMAL priority services - periodic tasks
     jOS.registerService(&usbPeriodicService); // NORMAL - USB housekeeping (when MSC enabled)
     jOS.registerService(&peripherals);        // NORMAL - periodic monitoring
+    jOS.registerService(&singleCharCommands); // NORMAL - command execution (synchronous, not periodic)
     
     // LOW priority services - background tasks
     jOS.registerService(&oledService);        // LOW - display updates
@@ -359,9 +361,7 @@ unsigned long mscModeRefreshInterval = 2000;
 volatile int core1passthrough = 1;
 int switchPosCount = 0;
 
-int shownMenuItems = 0;
-int menuItemCount[ 4 ] = { 0, 0, 0, 0 };
-int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
+
 
 #include <pico/stdlib.h>
 
@@ -474,101 +474,9 @@ menu:
 
     if ( dontShowMenu == 0 ) {
     forceprintmenu:
-
-        int numberOfMenuItems = menuItemCounts[ showExtraMenu ];
-        float steps =
-            (float)highSaturationBrightColorsCount / ( (float)numberOfMenuItems );
-        // Serial.print("steps = ");
-        // Serial.println(steps);
-        shownMenuItems = 0;
-        // printSpectrumOrderedColorCube();
-        cycleTerminalColor( true, steps, true, &Serial );
-        shownMenuItems += printMenuLine( "\n\n\r\t\tMenu\n\r\n\r" );
-        shownMenuItems += printMenuLine( "\t'help' for docs or [command]?\n\r" );
-        shownMenuItems += printMenuLine( "\n\r" );
-        shownMenuItems += printMenuLine( "\tm = show this menu\n\r" );
-
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\te = show extra options (%d)\n\r", showExtraMenu );
-
-        //  Serial.println();
-
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\tn = show net list\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tb = show bridge array\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tc = show crossbar status\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\ts = show all slot files\n\r" );
-        if ( showExtraMenu >= 0 ) {
-            Serial.println( );
-        }
-
-        // Serial.println();
-
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t? = show firmware version\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t' = show startup animation\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\td = set debug flags\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tl = LED brightness / test\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\b`/~ = edit / print config\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\tp = microPython REPL\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t> = send Python formatted command\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t/ = show filesystem\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\bU/u = enable/disable USB Mass Storage\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
-        // Serial.print("\tu = disable USB Mass Storage drive\n\r");
-        // cycleTerminalColor();
-
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\ty = refresh connections\n\r" );
-        // shownMenuItems++;
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t< = cycle slots\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tG = reload config.txt\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\to = load node file by slot\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tP = deinitialize MicroPython (free memory)\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tF = cycle font\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\t_ = print micros per byte\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t@ = scan I2C (@[sda],[scl] or @[row])\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\t$ = calibrate DACs\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\t= = dump oled frame buffer\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tk = show oled in terminal\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tR = show board LEDs\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\t% = list all filesystem contents\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tE = don't show this menu\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tC = disable terminal colors\n\r" );
-
-        if ( showExtraMenu >= 2 ) {
-
-            // Serial.print("\n\r");
-        }
-        Serial.println( );
-        // shownMenuItems += printMenuLine(showExtraMenu, 1, "\n\r");
-        //  Serial.print("\t$ = calibrate DACs\n\r");
-        if ( probePowerDAC == 0 ) {
-            shownMenuItems += printMenuLine( showExtraMenu, 3, "\t^ = set DAC 1 voltage\n\r" );
-        } else if ( probePowerDAC == 1 ) {
-            shownMenuItems += printMenuLine( showExtraMenu, 3, "\t^ = set DAC 0 voltage\n\r" );
-        }
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tv = get ADC reading\n\r" );
-        // Serial.println();
-
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\t# = print text from menu\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tg = print gpio state\n\r" );
-        // Serial.print("\t\b\b\b\b[0-9] = run app by index\n\r");
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\t. = connect oled\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tr = reset Arduino (rt/rb)\n\r" );
-
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\t\b\ba/A = dis/connect UART to D0/D1\n\r" );
-
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tf = load node file\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\tx = clear all connections\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t+ = add connections\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t- = remove connections\n\r" );
-        // Serial.print("\te = extra menu options\n\r");
-        // Serial.println();
-
-        Serial.println( );
-
-        Serial.flush( );
-
+        // Use the new SingleCharCommands menu system
+        singleCharCommands.printMenu(showExtraMenu);
+        
 #if debug_startup_timers == 1
         for ( int i = 1; i < 12; i++ ) {
             Serial.print( "startupTimer[" );
@@ -599,7 +507,7 @@ menu:
         // Serial.flush();
         configChanged = false;
     }
-    menuItemCount[ showExtraMenu ] = shownMenuItems;
+   
 
 dontshowmenu:
 
@@ -700,7 +608,8 @@ dontshowmenu:
         if ( Serial.available( ) > 0 ) {
             input = Serial.read( );
             // Set currentCommandLine with just the single character for backwards compatibility
-            currentCommandLine = String( input );
+            // CRITICAL: Cast to char first! String(int) creates decimal string "87", not "W"
+            currentCommandLine = String( (char)input );
         }
     }
 
@@ -749,7 +658,7 @@ dontshowmenu:
         }
         if ( Serial.available( ) > 0 ) {
             char nextChar = Serial.peek( );
-            if ( nextChar == '?' ) {
+            if ( nextChar == '?' && (input != 'A' && input != 'a')) {
                 Serial.read( ); // consume the '?'
                 showCommandHelp( input );
                 goto dontshowmenu;
@@ -758,15 +667,105 @@ dontshowmenu:
     }
 
     if ( input == ' ' || input == '\n' || input == '\r' ) {
-
         // Serial.print(input);
         // Serial.flush();
         goto dontshowmenu;
     }
 skipinput:
 
-    switch ( input ) {
+    // ========================================================================
+    // Execute command using SingleCharCommands service
+    // ========================================================================
+    {
+        inMainMenu = true;
+        CommandResult cmdResult = singleCharCommands.executeCommand((char)input, currentCommandLine);
+        inMainMenu = false;
+        
+        // Handle command result
+        switch (cmdResult) {
+            case CMD_LOAD_FILE:
+                goto loadfile;
+            case CMD_DONT_SHOW_MENU:
+                goto dontshowmenu;
+            case CMD_SHOW_MENU:
+            default:
+                // Clean up serial buffer
+                delayMicroseconds(1000);
+                while (Serial.available() > 5) {
+                    Serial.read();
+                    delayMicroseconds(1000);
+                }
+                Serial.flush();
+                goto menu;
+        }
+    }
 
+    // ========================================================================
+    // OBSOLETE CODE BELOW - KEPT FOR REFERENCE ONLY
+    // ========================================================================
+    // The giant switch statement has been refactored into SingleCharCommands
+    // All command handlers are now in SingleCharCommands.cpp with proper OOP design
+    // This code below should NEVER execute - it's kept temporarily for reference
+    // TODO: Delete lines 710-2238 (the old switch statement) after testing
+    // ========================================================================
+    
+    goto menu; // Safety: skip old code and go back to menu
+
+
+
+    loadfile:
+        loadingFile = 1;
+
+        // Just clear preview mode flag - don't restore original slot
+        // Let the normal load below handle loading the selected slot
+        SlotManager& mgr = SlotManager::getInstance( );
+        if ( mgr.isPreviewMode( ) ) {
+            // Serial.println("Clearing preview mode");
+            //  Clear preview flag without loading anything
+            mgr.clearPreviewMode( );
+        }
+
+        // Save current state if dirty before reloading to prevent data loss
+        // BUT skip this on the very first load (firstLoop == 1) to avoid overwriting
+        // the saved slot with an empty/uninitialized state
+        if ( globalState.isDirty( ) && firstLoop == 0 ) {
+         //  Serial.println( "Saving dirty state before reload" );
+            String saveError;
+            if ( mgr.saveActiveSlot( saveError ) ) {
+                if ( debugFP ) {
+                    Serial.println( "✓ Auto-saved dirty state before reload" );
+                }
+            } else if ( debugFP ) {
+                Serial.println( "Warning: Failed to auto-save: " + saveError );
+            }
+        }
+
+        // Load YAML state from slot file into globalState
+        String loadError;
+        if ( !mgr.loadSlot( netSlot, loadError ) ) {
+            //if ( debugFP ) {
+                Serial.print( "Warning: Failed to load slot " );
+                Serial.print( netSlot );
+                Serial.print( ": " );
+                Serial.println( loadError );
+                Serial.println( "Starting with empty slot" );
+           // }
+            // Empty slot is OK - just start fresh
+            mgr.clearActiveSlot( );
+        }
+
+        if ( slotChanged == 1 ) {
+            // clearChangedNetColors(0);
+            // loadChangedNetColorsFromFile( netSlot, 0 );
+        }
+
+        slotChanged = 0;
+        loadingFile = 0;
+
+        refreshConnections( -1 );
+
+        
+    /*
     case 'z': {
         handleUserFunction( );
         goto dontshowmenu;
@@ -2120,6 +2119,12 @@ skipinput:
         }
         Serial.print( "Slot " );
         Serial.println( netSlot );
+        
+        // Send slot change notification for app synchronization
+        Serial.print("SLOT_CHANGED:");
+        Serial.println(netSlot);
+        Serial.flush();
+        
         slotPreview = netSlot;
         slotChanged = 1;
 
@@ -2295,6 +2300,8 @@ skipinput:
     }
     Serial.flush( );
     goto menu;
+
+    */
 }
 
 unsigned long lastSwirlTime = 0;

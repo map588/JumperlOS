@@ -14,6 +14,9 @@
 #include "tusb.h"
 #endif
 
+// External debug flags
+extern bool debugWaitLoopTiming;
+
 // Static member initialization
 jOSmanager* jOSmanager::core1Instance = nullptr;
 
@@ -147,13 +150,28 @@ bool jOSmanager::unregisterService(Service* service) {
 void jOSmanager::serviceAll() {
     loopCounter++;
     
+    // Debug: Print service execution order every N loops
+    static unsigned long lastDebugLoop = 0;
+    bool printServiceOrder = debugWaitLoopTiming && (loopCounter % 100 == 0);
+    
+    if (printServiceOrder && loopCounter != lastDebugLoop) {
+        lastDebugLoop = loopCounter;
+        Serial.printf("\n=== Service Execution Order (Loop #%lu) ===\n", loopCounter);
+    }
+    
     for (uint8_t i = 0; i < serviceCount; i++) {
         if (!services[i].active) {
+            if (printServiceOrder) {
+                Serial.printf("  [%d] (inactive)\n", i);
+            }
             continue;
         }
         
         Service* svc = services[i].service;
         if (svc == nullptr) {
+            if (printServiceOrder) {
+                Serial.printf("  [%d] (null service)\n", i);
+            }
             continue;
         }
         
@@ -161,30 +179,46 @@ void jOSmanager::serviceAll() {
         if (blockingService != nullptr && 
             blockingService != svc && 
             svc->getPriority() != ServicePriority::CRITICAL) {
+            if (printServiceOrder) {
+                Serial.printf("  [%d] %s - SKIPPED (blocked by %s)\n", i, svc->getName(), 
+                             blockingService->getName());
+            }
             continue;
         }
         
         // Priority-based scheduling - skip services based on their priority and divisor
         ServicePriority priority = svc->getPriority();
         bool shouldRun = false;
+        const char* priorityName = "UNKNOWN";
         
         switch (priority) {
             case ServicePriority::CRITICAL:
                 shouldRun = (loopCounter % criticalDivisor == 0);
+                priorityName = "CRITICAL";
                 break;
             case ServicePriority::HIGH:
                 shouldRun = (loopCounter % highDivisor == 0);
+                priorityName = "HIGH";
                 break;
             case ServicePriority::NORMAL:
                 shouldRun = (loopCounter % normalDivisor == 0);
+                priorityName = "NORMAL";
                 break;
             case ServicePriority::LOW:
                 shouldRun = (loopCounter % lowDivisor == 0);
+                priorityName = "LOW";
                 break;
         }
         
         if (!shouldRun) {
+            if (printServiceOrder) {
+                Serial.printf("  [%d] %s (%s) - SKIPPED (scheduled)\n", i, svc->getName(), priorityName);
+            }
             continue;  // Skip this service this iteration
+        }
+        
+        if (printServiceOrder) {
+            Serial.printf("  [%d] %s (%s) - RUNNING...\n", i, svc->getName(), priorityName);
         }
         
         // Execute the service with timing
@@ -195,9 +229,10 @@ void jOSmanager::serviceAll() {
             unsigned long svcEnd = micros();
             unsigned long svcTime = svcEnd - svcStart;
             
-            // Debug: Report if any service takes more than 1ms
-            // Service names: 0=probeButton, 1=menus, 2=slotManager, 3=probing, 4=highlighting, 5=peripherals
-            if (svcTime > 1000) {
+            if (printServiceOrder) {
+                Serial.printf("       └─> completed in %lu us (status=%d)\n", svcTime, (int)status);
+            } else if (svcTime > 1000) {
+                // Debug: Report if any service takes more than 1ms (even when not printing full order)
                 Serial.printf("DEBUG:   Service #%d (%s) took %lu us\n", i, svc->getName(), svcTime);
             }
         }

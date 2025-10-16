@@ -42,14 +42,13 @@ bool slotIsValidated(int slot);
 void setSlotValidated(int slot, bool validated);
 void markSlotAsModified(int slot);
 void initializeValidationTracking(void);
-int checkIfBridgeExists(int node1, int node2 = -1, int slot = -1, int flashOrLocal = 1);
+// int checkIfBridgeExists(int node1, int node2 = -1, int slot = -1, int flashOrLocal = 1);
 
 void clearNodeFileString(void);
 void closeAllFiles(void);
 void usbFSbegin(void);
 int openFileThreadSafe(int openTypeEnum, int slot = 0, int flashOrLocal = 0);
-void createLocalNodeFile(int slot = 0);
-void saveLocalNodeFile(int slot = 0);
+
 
 // General-purpose nodeFileString backup/restore functions (DEPRECATED - use state backup below)
 void storeNodeFileBackup(void);
@@ -68,9 +67,9 @@ void inputNodeFileList(int addRotaryConnections = 0);
 void parseWokwiFileToNodeFile();
 void changeWokwiDefinesToJumperless ();
 
-int removeBridgeFromNodeFile(int node1, int node2 = -1, int slot = 0, int flashOrLocal = 0, int onlyCheck = 0);
-int addBridgeToNodeFile(int node1, int node2, int slot = 0, int flashOrLocal = 0, int allowDuplicates = 1); //returns 1 if duplicate was found
-void savePreformattedNodeFile (int source = 0, int slot = 0, int keepEncoder = 1);
+// int removeBridgeFromNodeFile(int node1, int node2 = -1, int slot = 0, int flashOrLocal = 0, int onlyCheck = 0);
+// int addBridgeToNodeFile(int node1, int node2, int slot = 0, int flashOrLocal = 0, int allowDuplicates = 1); //returns 1 if duplicate was found
+void savePreformattedNodeFile (int source = 0, int slot = 0, int keepEncoder = 1, const String& preformattedData = "");
 
 // New RAM-based state functions (preferred over file-based functions above)
 // All code should use these functions instead of addBridgeToNodeFile/removeBridgeFromNodeFile

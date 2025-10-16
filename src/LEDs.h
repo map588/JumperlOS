@@ -344,6 +344,7 @@ struct changedNetColors {
     uint32_t color;
     int node1;
     int node2 = -1;
+    bool fromBridge = false;  // true if color came from Wokwi bridge, false if manually set by user
 };
 
 extern struct changedNetColors changedNetColors[MAX_NETS];
@@ -373,6 +374,7 @@ int checkChangedNetColors(int netIndex = -1);
 int removeChangedNetColors(int node, int saveToFile = 0);
 void clearChangedNetColors(int saveToFile = 0);
 void findChangedNetColors(void);
+void rebuildChangedNetColorsFromBridges(void);  // Rebuild changedNetColors from bridge colors after net regeneration
 void printColorName(uint32_t color);
 void printColorName(int hue);
 uint32_t colorPicker(uint8_t startHue = 225, uint8_t brightness=jumperlessConfig.display.led_brightness);

@@ -74,11 +74,20 @@ public:
     int highlightNets(int probeReading, int encoderNetHighlighted = -1, int print = 1);
     int checkForReadingChanges(void);
     
+    // Persistent node actions
+    bool shouldPersistHighlight(int node);
+    bool wantsToHandleButtonPress(void);  // Returns true if button press should go to voltage adjustment
+    int handleEncoderButtonPress(void);   // Returns 1 if handled, 0 if not
+    
 private:
     Highlighting();
     ~Highlighting() = default;
     
     static Highlighting* instance;
+    
+    // Helper for voltage adjustment
+    void adjustRailVoltage(int rail);  // 0=both, 1=top, 2=bottom
+    void adjustDACVoltage(int dac);    // 0=DAC0, 1=DAC1
 };
 
 // Backward compatibility - global references to singleton members

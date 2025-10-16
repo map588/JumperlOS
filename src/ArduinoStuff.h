@@ -86,6 +86,10 @@ void resetArduino(int topBottomBoth = 2, unsigned long holdMicroseconds = 8500);
 void connectArduino(int flashOrLocal = 1, int refreshConnections = 1);
 void disconnectArduino(int flashOrLocal =  1);
 int checkIfArduinoIsConnected(void);
+int checkArduinoPresence(void);
+int checkArduinoResetPin0(void);
+int checkArduinoResetPin1(void);
+void autoConnectArduino(void);
 
 int handleSerialPassthrough(int serial = 2, int print = 0, int printPassthroughFlashing = 0, int checkForCommands = 1);
 

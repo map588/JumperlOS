@@ -194,10 +194,10 @@ void writeMenuTree(void) {
   core1busy = false;
 }
 
-void createLocalNodeFile(int slot) {
-  // MIGRATED: Now loads slot into globalState via SlotManager
-  loadSlotIntoState(slot);
-}
+// void createLocalNodeFile(int slot) {
+//   // MIGRATED: Now loads slot into globalState via SlotManager
+//   loadSlotIntoState(slot);
+// }
 
 void loadSlotIntoState(int slot) {
   // NEW: Modern replacement for openNodeFile() / createLocalNodeFile()
@@ -254,6 +254,7 @@ bool addBridgeToState(int node1, int node2, int duplicates, bool autoRefresh) {
     if (autoRefresh) {
         refreshLocalConnections(1, 1, 0);
     }
+    
     
     if (debugFP) {
         Serial.print("Added bridge to state: ");
@@ -390,15 +391,6 @@ bool saveStateToSlot(int slot) {
     return true;
 }
 
-void saveLocalNodeFile(int slot) {
-  // DEPRECATED: This function is replaced by saveStateToSlot()
-  // Redirecting to new YAML-based state system
-  if (debugFP) {
-    Serial.println("saveLocalNodeFile() is deprecated, using saveStateToSlot() instead");
-  }
-  
-  saveStateToSlot(slot);
-}
 
 
 void createSlots(int slot, int overwrite) {
@@ -504,43 +496,45 @@ void createConfigFile(int overwrite) {
   configFile.close();
 }
 
-int checkIfBridgeExists(int node1, int node2, int slot, int flashOrLocal) {
+// int checkIfBridgeExists(int node1, int node2, int slot, int flashOrLocal) {
 
-  return removeBridgeFromNodeFile(node1, node2, slot, flashOrLocal, 1);
-  if (flashOrLocal == 0) {
+//   return removeBridgeFromNodeFile(node1, node2, slot, flashOrLocal, 1);
+//   if (flashOrLocal == 0) {
 
-    openFileThreadSafe(rplus, slot);
+//     openFileThreadSafe(rplus, slot);
 
-    if (!nodeFile) {
-      if (debugFP) {
-        // Serial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
-      }
+//     if (!nodeFile) {
+//       if (debugFP) {
+//         // Serial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
+//       }
 
-      return -1;
-    } else {
-      if (debugFP)
-        Serial.println(
-            "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
-    }
+//       return -1;
+//     } else {
+//       if (debugFP)
+//         Serial.println(
+//             "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
+//     }
 
-    if (nodeFile.size() < 2) {
-      // Serial.println("empty file");
-      nodeFile.close();
-      core1busy = false;
-      return -1;
-    }
-    nodeFile.seek(0);
-    nodeFile.setTimeout(8);
+//     if (nodeFile.size() < 2) {
+//       // Serial.println("empty file");
+//       nodeFile.close();
+//       core1busy = false;
+//       return -1;
+//     }
+//     nodeFile.seek(0);
+//     nodeFile.setTimeout(8);
 
-    // nodeFile.readStringUntil
-  }
+//     // nodeFile.readStringUntil
+//   }
 
-  return 0;
-}
+//   return 0;
+// }
 
 void inputNodeFileList(int addRotaryConnections) {
-  // addRotaryConnections = 1;
-  // Serial.println("Paste the nodeFile list here\n\n\r");
+  // NEW: Parse node file lists directly into YAML slots using the state system
+  // Format: "o Slot 0 f { 8-17, 21-28, ... }"
+  
+  // Serial.println("Reading node file list from serial...");
 
   unsigned long humanTime = millis();
 
@@ -556,189 +550,275 @@ void inputNodeFileList(int addRotaryConnections) {
   int startInsertion = 0;
 
   nodeFileString.read(Serial);
-  Serial.println("nodeFileString");
-
-  nodeFileString.printTo(Serial);
-
-  // Serial.println("\n\r\n\rnodeFileString");
-
-  int lastTokenIndex = 0;
-  int tokenFound = 0;
-  uint8_t lastReads[8] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
-  uint8_t slotText[8] = {'S', 'l', 'o', 't', ' '};
-  uint8_t searchFor[3] = {'f', ' ', '{'};
-  while (core2busy == true) {
-    //   // Serial.println("waiting for core2 to finish");
-  }
-  core1busy = true;
-  nodeFileBuffer = FatFS.open("nodeFileBuffer.txt", "w+");
-  // openFileThreadSafe(wplus, slot);
-  nodeFileString.trim();
-  if (nodeFileString.endsWith("}") == 0) {
-    nodeFileString.concat(" } \n\r");
-  }
-  // Validate the input first
-  int validation_result = validateNodeFile(nodeFileString.c_str(), false);
-  if (validation_result != 0) {
-    Serial.println("◇ Input validation failed: " +
-                   String(getNodeFileValidationError(validation_result)));
-    Serial.println("◇ Correct format:");
-    Serial.println("\n\rSlot [slot number] \n\n\rf "
-                   "{ \n\r[node]-[node],\n\r[node]-[node],\n\r}\n\n\r");
-    core1busy = false;
-    return;
-  }
-
-  int openBraceIdx = nodeFileString.indexOf("{");
-
-  if (openBraceIdx == -1) {
-    Serial.println(
-        "No opening curly braces found,\n\rhere is the correct format:");
-    Serial.println("\n\n\rSlot [slot number] \n\n\rf "
-                   "{ \n\r[node]-[node],\n\r[node]-[node],\n\r}\n\n\r");
-    core1busy = false;
-    return;
-  }
-
-  // Serial.println(nodeFileString);
-  nodeFileString.printTo(nodeFileBuffer);
-
-  int index = 0;
-
-  int inFileMeat = 0;
-
-  int numberOfSlotsFound = 0;
-  int firstSlotNumber = 0;
-  int firstSlotFound = 0;
-
-  // nodeFileBuffer.seek(nodeFileBuffer.size());
-  // nodeFileBuffer.print("fuck             \n\r");
-  nodeFileBuffer.seek(0);
-  // Serial.println(" \n\n\n\r");
-  //  while (nodeFileBuffer.available())
-  //  {
-  //  Serial.write(nodeFileBuffer.read());
-  //  }
-
-  for (int i = 0; i < NUM_SLOTS;
-       i++) // this just searches for how many slots are in the pasted list
-  {
-    tokenFound = 0;
-    nodeFileBuffer.seek(index);
-    inFileMeat = 0;
-
-    while (nodeFileBuffer.available()) {
-      uint8_t c = nodeFileBuffer.read();
-      lastReads[0] = lastReads[1];
-      lastReads[1] = lastReads[2];
-      lastReads[2] = lastReads[3];
-      lastReads[3] = lastReads[4];
-      lastReads[4] = lastReads[5];
-      lastReads[5] = c;
-
-      if (lastReads[0] == slotText[0] && lastReads[1] == slotText[1] &&
-          lastReads[2] == slotText[2] && lastReads[3] == slotText[3] &&
-          lastReads[4] == slotText[4] && firstSlotFound == 0) {
-
-        firstSlotFound = 1;
-        firstSlotNumber = lastReads[5] - '0';
-
-        // break;
-      }
-
-      if (lastReads[3] == searchFor[0] && lastReads[4] == searchFor[1] &&
-          lastReads[5] == searchFor[2]) {
-        inFileMeat = 1;
-        numberOfSlotsFound++;
-      }
-      if (lastReads[2] == '}') {
-        inFileMeat = 0;
-
-        index++;
-        break;
-      }
-
-      if (inFileMeat == 1) {
-
-        // Serial.println(numberOfSlotsFound);
-      }
-      index++;
-    }
-  }
-
-  index = 0;
-  int lastSlotNumber = firstSlotNumber + numberOfSlotsFound - 1;
-
-  for (int i = firstSlotNumber; i <= lastSlotNumber;
-       i++) // this takes the pasted list fron the serial monitor and saves it
-  // to the nodeFileSlot files
-  {
-
-    if (i >= firstSlotNumber && i <= lastSlotNumber) {
-      // Serial.println(i);
-      while (core2busy == true) {
-        // Serial.println("waiting for core2 to finish");
-      }
-      core1busy = true;
-
-      nodeFile = FatFS.open("nodeFileSlot" + String(i) + ".txt", "w");
-    }
-
-    // nodeFileStringSlot.clear();
-    nodeFileBuffer.seek(index);
-
-    inFileMeat = 0;
-
-    while (nodeFileBuffer.available()) {
-      uint8_t c = nodeFileBuffer.read();
-      lastReads[0] = lastReads[1];
-      lastReads[1] = lastReads[2];
-      lastReads[2] = c;
-
-      // nodeFile.write(c);
-
-      if (lastReads[0] == searchFor[0] && lastReads[1] == searchFor[1] &&
-          lastReads[2] == searchFor[2]) {
-        inFileMeat = 1;
-      }
-      if (lastReads[1] == '}') {
-        inFileMeat = 0;
-        break;
-      }
-
-      if (inFileMeat == 1 && i >= firstSlotNumber && i <= lastSlotNumber) {
-        nodeFile.write(c);
-        // Serial.print(index);
-      }
-      index++;
-    }
-    if (i >= firstSlotNumber && i <= lastSlotNumber) {
-      nodeFile.seek(0);
-      nodeFile.close();
-      markSlotAsModified(i); // Mark slot as needing re-validation
-    }
-
-    // refreshSavedColors(i);
-    core1busy = false;
-  }
-
-  // Validate all saved slots
   if (debugFP) {
-    Serial.println("◆ Validating saved slot files...");
+    Serial.println("Raw input:");
+    nodeFileString.printTo(Serial);
+    Serial.println();
   }
-  for (int i = firstSlotNumber; i <= lastSlotNumber; i++) {
-    int validation_result = validateNodeFileSlot(i, false);
-    if (validation_result == 0) {
-      if (debugFP) {
-        Serial.println("◆ Slot " + String(i) + " validated successfully");
+
+  nodeFileString.trim();
+  
+  // NEW: Parse and save slots directly to YAML without making them active
+  // Format: "Slot 0 f { 8-17, 21-28, ... }" OR just "f { 8-17, 21-28, ... }"
+  // If no "Slot X" prefix, use the currently active slot
+  String input = nodeFileString.c_str();
+  int startIdx = 0;
+  int slotsProcessed = 0;
+  
+  // Check if input starts with "Slot" keyword
+  bool hasSlotPrefix = (input.indexOf("Slot ") == 0 || input.indexOf("slot ") == 0 ||
+                        input.indexOf("Slot ") >= 0 || input.indexOf("slot ") >= 0);
+  
+  if (!hasSlotPrefix) {
+    // No "Slot X" prefix - use active slot and parse directly
+    if (debugFP) {
+      Serial.println("◆ No slot prefix found, using active slot " + String(netSlot));
+    }
+    
+    // Find connection data between { and }
+    int openBrace = input.indexOf('{');
+    int closeBrace = input.indexOf('}', openBrace + 1);
+    
+    if (openBrace == -1 || closeBrace == -1) {
+      Serial.println("◇ Missing braces in input");
+      Serial.println("◇ Expected format: f { node-node, node-node, ... }");
+      Serial.println("◇ Or: Slot [number] f { node-node, node-node, ... }");
+      return;
+    }
+    
+    // Extract connection string
+    String connections = input.substring(openBrace + 1, closeBrace);
+    connections.trim();
+    
+    if (debugFP) {
+      Serial.println("◆ Active slot " + String(netSlot) + " connections: " + connections);
+    }
+    
+    // NEVER copy JumperlessState - work directly with the singleton
+    SlotManager& mgr = SlotManager::getInstance();
+    String errorMsg;
+    
+    // Use the active slot
+    int slotNum = netSlot;
+    
+    // Clear the active state and populate it directly (NO COPIES!)
+    mgr.getActiveState().clear();
+    
+    // Get direct reference to the active state (no copying!)
+    JumperlessState& state = mgr.getActiveState();
+    
+    // Parse connections directly into the active state
+    int connCount = 0;
+    int connIdx = 0;
+    
+    while (connIdx < connections.length()) {
+      int commaIdx = connections.indexOf(',', connIdx);
+      if (commaIdx == -1) {
+        commaIdx = connections.length();
+      }
+      
+      String conn = connections.substring(connIdx, commaIdx);
+      conn.trim();
+      
+      if (conn.length() > 0) {
+        int dashIdx = conn.indexOf('-');
+        if (dashIdx > 0 && dashIdx < conn.length() - 1) {
+          int node1 = conn.substring(0, dashIdx).toInt();
+          int node2 = conn.substring(dashIdx + 1).toInt();
+          
+          if (node1 > 0 && node2 > 0) {
+            if (state.connections.numBridges < MAX_BRIDGES) {
+              state.connections.bridges[state.connections.numBridges][0] = node1;
+              state.connections.bridges[state.connections.numBridges][1] = node2;
+              state.connections.bridges[state.connections.numBridges][2] = -1;
+              state.connections.numBridges++;
+              connCount++;
+              
+              if (debugFP) {
+                Serial.println("  Added: " + String(node1) + "-" + String(node2));
+              }
+            } else {
+              Serial.println("◇ Warning: Max bridges reached");
+              break;
+            }
+          }
+        }
+      }
+      
+      connIdx = commaIdx + 1;
+    }
+    
+    Serial.println("◆ Active slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
+    
+    // Save and apply to active slot
+    if (mgr.saveSlot(slotNum, errorMsg)) {
+     // Serial.println("  ✓ Saved to /slots/slot" + String(slotNum) + ".yaml");
+     // Serial.println("  ↻ Reloading active slot to apply changes...");
+      if (mgr.loadSlot(slotNum, errorMsg)) {
+      //  Serial.println("  ✓ Applied to hardware");
+      } else {
+        Serial.println("  ✗ Failed to apply: " + errorMsg);
       }
     } else {
-      if (debugFP) {
-        Serial.println("◇ Slot " + String(i) + " validation failed: " +
-                       String(getNodeFileValidationError(validation_result)));
+      Serial.println("  ✗ Failed to save: " + errorMsg);
+    }
+    
+    return;
+  }
+  
+  // Has "Slot X" prefix - parse multiple slots
+  while (startIdx >= 0 && startIdx < input.length()) {
+    // Find "Slot " keyword
+    int slotIdx = input.indexOf("Slot ", startIdx);
+    if (slotIdx == -1) {
+      slotIdx = input.indexOf("slot ", startIdx); // Try lowercase
+    }
+    if (slotIdx == -1) {
+      break; // No more slots found
+    }
+    
+    // Extract slot number
+    int slotNum = -1;
+    int digitIdx = slotIdx + 5; // Position after "Slot "
+    while (digitIdx < input.length() && (input[digitIdx] == ' ' || input[digitIdx] == '\t')) {
+      digitIdx++; // Skip spaces
+    }
+    if (digitIdx < input.length() && isDigit(input[digitIdx])) {
+      slotNum = input[digitIdx] - '0';
+      // Handle multi-digit slot numbers
+      digitIdx++;
+      while (digitIdx < input.length() && isDigit(input[digitIdx])) {
+        slotNum = slotNum * 10 + (input[digitIdx] - '0');
+        digitIdx++;
       }
     }
+    
+    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+      Serial.println("◇ Invalid slot number: " + String(slotNum));
+      startIdx = digitIdx;
+      continue;
+    }
+    
+    // Find connection data between { and }
+    int openBrace = input.indexOf('{', digitIdx);
+    int closeBrace = input.indexOf('}', openBrace + 1);
+    
+    if (openBrace == -1 || closeBrace == -1) {
+      Serial.println("◇ Missing braces for slot " + String(slotNum));
+      startIdx = digitIdx;
+      continue;
+    }
+    
+    // Extract connection string
+    String connections = input.substring(openBrace + 1, closeBrace);
+    connections.trim();
+    
+    if (debugFP) {
+      Serial.println("◆ Slot " + String(slotNum) + " connections: " + connections);
+    }
+    
+    // NEVER copy JumperlessState - work directly with the singleton
+    SlotManager& mgr = SlotManager::getInstance();
+    String errorMsg;
+    
+    // Remember which slot was active
+    int savedActiveSlot = mgr.getActiveSlot();
+    bool needToRestore = (savedActiveSlot != slotNum);
+    
+    // Clear the active state and populate it directly (NO COPIES!)
+    mgr.getActiveState().clear();
+    mgr.setActiveSlot(slotNum);
+    
+    // Get direct reference to the active state (no copying!)
+    JumperlessState& state = mgr.getActiveState();
+    
+    // Parse connections directly into the active state
+    // Format: "8-17, 21-28, 52-43, ..."
+    int connCount = 0;
+    int connIdx = 0;
+    
+    while (connIdx < connections.length()) {
+      // Find next comma or end
+      int commaIdx = connections.indexOf(',', connIdx);
+      if (commaIdx == -1) {
+        commaIdx = connections.length();
+      }
+      
+      String conn = connections.substring(connIdx, commaIdx);
+      conn.trim();
+      
+      if (conn.length() > 0) {
+        // Parse "node1-node2"
+        int dashIdx = conn.indexOf('-');
+        if (dashIdx > 0 && dashIdx < conn.length() - 1) {
+          int node1 = conn.substring(0, dashIdx).toInt();
+          int node2 = conn.substring(dashIdx + 1).toInt();
+          
+          if (node1 > 0 && node2 > 0) {
+            // Add bridge directly to active state (NO TEMP OBJECTS!)
+            // bridges is int[MAX_BRIDGES][3] where [i][0]=node1, [i][1]=node2, [i][2]=duplicates
+            if (state.connections.numBridges < MAX_BRIDGES) {
+              state.connections.bridges[state.connections.numBridges][0] = node1;
+              state.connections.bridges[state.connections.numBridges][1] = node2;
+              state.connections.bridges[state.connections.numBridges][2] = -1; // duplicates
+              state.connections.numBridges++;
+              connCount++;
+              
+              if (debugFP) {
+                Serial.println("  Added: " + String(node1) + "-" + String(node2));
+              }
+            } else {
+              Serial.println("◇ Warning: Max bridges reached for slot " + String(slotNum));
+              break;
+            }
+          }
+        }
+      }
+      
+      connIdx = commaIdx + 1;
+    }
+    
+    Serial.println("◆ Slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
+    
+    // Save the populated state to the slot
+    if (mgr.saveSlot(slotNum, errorMsg)) {
+      Serial.println("  ✓ Saved to /slots/slot" + String(slotNum) + ".yaml");
+      slotsProcessed++;
+      
+      // If we modified a non-active slot, reload the original active slot
+      if (needToRestore) {
+        // Reload the original active slot to restore hardware state
+        mgr.loadSlot(savedActiveSlot, errorMsg);
+      } else {
+        // We just saved the active slot, reload it to apply changes
+        Serial.println("  ↻ Reloading active slot to apply changes...");
+        if (mgr.loadSlot(slotNum, errorMsg)) {
+          Serial.println("  ✓ Applied to hardware");
+        } else {
+          Serial.println("  ✗ Failed to apply: " + errorMsg);
+        }
+      }
+    } else {
+      Serial.println("  ✗ Failed to save: " + errorMsg);
+      // Restore the original slot on failure
+      if (needToRestore) {
+        mgr.loadSlot(savedActiveSlot, errorMsg);
+      }
+    }
+    
+    // Move to next slot
+    startIdx = closeBrace + 1;
   }
+  
+  if (slotsProcessed == 0) {
+    Serial.println("◇ No valid slots found in input");
+    Serial.println("◇ Expected format: Slot [number] f { node-node, node-node, ... }");
+    return;
+  }
+  
+  Serial.println("◆ Successfully processed " + String(slotsProcessed) + " slot(s)");
+  
+  // OLD CODE REMOVED - migrated to YAML-based state system above
 }
 
 void saveCurrentSlotToSlot(int slotFrom, int slotTo, int flashOrLocalfrom,
@@ -764,7 +844,7 @@ void saveCurrentSlotToSlot(int slotFrom, int slotTo, int flashOrLocalfrom,
   mgr.setActiveSlot(slotTo);
 }
 
-void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
+void savePreformattedNodeFile(int source, int slot, int keepEncoder, const String& preformattedData) {
   // NEW: Parse input directly into RAM state (no file I/O until auto-save)
   
   specialFunctionsString.clear();
@@ -776,9 +856,38 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
       serialCommandBufferIndex = 0;
     }
 
-    // Read from serial
-    specialFunctionsString.read(Serial);
+    // Check if line buffering is enabled to determine data source
+    extern struct config jumperlessConfig;
+    bool usePreformattedData = (jumperlessConfig.display.terminal_line_buffering == 1) && 
+                                (preformattedData.length() > 1);
+    
+    if (usePreformattedData) {
+      // Line buffering mode: use the pre-parsed complete line from TermControl
+      // Skip the first character (command) and any leading whitespace
+      String dataOnly = preformattedData;
+      if (dataOnly.length() > 0) {
+        dataOnly = dataOnly.substring(1); // Skip 'f' command character
+      }
+      dataOnly.trim();
+      if (debugFP) {
+        Serial.print("DEBUG: Using preformatted data = '");
+        Serial.print(dataOnly);
+        Serial.println("'");
+      }
+      specialFunctionsString = dataOnly.c_str();
+    } else {
+      // Single-char mode: read directly from serial (old behavior)
+      if (debugFP) {
+        Serial.println("DEBUG: Reading from Serial (line buffering OFF or short line)");
+      }
+      specialFunctionsString.read(Serial);
+    }
     specialFunctionsString.trim();
+    if (debugFP) {
+      Serial.print("DEBUG: specialFunctionsString after trim = '");
+      Serial.print(specialFunctionsString);
+      Serial.println("'");
+    }
     if (specialFunctionsString.endsWith(",") == 0) {
       specialFunctionsString.concat(",\n\r");
     }
@@ -790,7 +899,13 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
     
     // Parse into RAM state instead of file
     // Clear current connections in state
+    if (debugFP) {
+      Serial.println("DEBUG: Clearing all existing connections...");
+    }
     globalState.clearAllConnections();
+    if (debugFP) {
+      Serial.println("DEBUG: All connections cleared. Starting fresh parse...");
+    }
     
     // Parse the connections from specialFunctionsString
     // Format: "1-2, 3-4, 5-6, ..."
@@ -809,38 +924,131 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
     createSafeStringFromCharArray(commaDelimiters, commaDelim);
     createSafeStringFromCharArray(dashDelimiters, dashDelim);
     
+    if (debugFP) {
+      Serial.print("DEBUG: About to parse: '");
+      Serial.print(specialFunctionsString);
+      Serial.print("' (length=");
+      Serial.print(specialFunctionsString.length());
+      Serial.println(")");
+    }
+    
     int stringIndex = 0;
     while (stringIndex >= 0) {
       stringIndex = specialFunctionsString.stoken(connBuf, stringIndex, commaDelimiters);
+      if (debugFP) {
+        Serial.print("DEBUG: stoken returned stringIndex=");
+        Serial.print(stringIndex);
+        Serial.print(", connBuf='");
+        Serial.print(connBuf);
+        Serial.println("'");
+      }
       if (stringIndex == -1) break;
       
       connBuf.trim();
-      if (connBuf.length() < 3) continue;  // Skip empty tokens
+      if (debugFP) {
+        Serial.print("DEBUG: After trim, connBuf='");
+        Serial.print(connBuf);
+        Serial.print("' (length=");
+        Serial.print(connBuf.length());
+        Serial.println(")");
+      }
+      
+      if (connBuf.length() < 3) {
+        if (debugFP) {
+          Serial.println("DEBUG: Skipping - too short");
+        }
+        continue;  // Skip empty tokens
+      }
       
       // Parse "node1-node2" format using SafeString
       int nodeIndex = 0;
       nodeIndex = connBuf.stoken(nodeBuf, nodeIndex, dashDelimiters);
-      if (nodeIndex == -1) continue;
+      if (debugFP) {
+        Serial.print("DEBUG: First stoken: nodeIndex=");
+        Serial.print(nodeIndex);
+        Serial.print(", nodeBuf='");
+        Serial.print(nodeBuf);
+        Serial.println("'");
+      }
+      if (nodeIndex == -1) {
+        if (debugFP) {
+          Serial.println("DEBUG: First token failed");
+        }
+        continue;
+      }
       
       int node1 = 0;
       nodeBuf.toInt(node1);
+      if (debugFP) {
+        Serial.print("DEBUG: node1=");
+        Serial.println(node1);
+      }
+      
+      // stoken returns the position OF the delimiter, not after it
+      // We need to skip past the delimiter (which is 1 character: '-')
+      if (nodeIndex < connBuf.length()) {
+        nodeIndex++; // Skip past the '-' delimiter
+        if (debugFP) {
+          Serial.print("DEBUG: Adjusted nodeIndex to ");
+          Serial.println(nodeIndex);
+        }
+      }
       
       nodeIndex = connBuf.stoken(nodeBuf, nodeIndex, dashDelimiters);
-      if (nodeIndex == -1) continue;
+      if (debugFP) {
+        Serial.print("DEBUG: Second stoken: nodeIndex=");
+        Serial.print(nodeIndex);
+        Serial.print(", nodeBuf='");
+        Serial.print(nodeBuf);
+        Serial.println("'");
+      }
+      if (nodeIndex == -1 && nodeBuf.length() == 0) {
+        // Only fail if we didn't get any data - if nodeIndex is -1 but nodeBuf has data,
+        // it just means this was the last token
+        if (debugFP) {
+          Serial.println("DEBUG: Second token failed - no data");
+        }
+        continue;
+      }
       
       int node2 = 0;
       nodeBuf.toInt(node2);
+      if (debugFP) {
+        Serial.print("DEBUG: node2=");
+        Serial.println(node2);
+      }
+      
+      if (debugFP) {
+        Serial.print("DEBUG: Checking if node1 > 0 && node2 > 0: ");
+        Serial.print(node1);
+        Serial.print(" > 0 && ");
+        Serial.print(node2);
+        Serial.println(" > 0");
+      }
       
       if (node1 > 0 && node2 > 0) {
+        if (debugFP) {
+          Serial.println("DEBUG: Calling addBridgeToState()");
+        }
         // Add to RAM state (no auto-refresh for batch operation)
         if (addBridgeToState(node1, node2, -1, false)) {
           connCount++;
           if (debugFP) {
+            Serial.print("DEBUG: Successfully added connection, connCount=");
+            Serial.println(connCount);
             Serial.print("Parsed: ");
             Serial.print(node1);
             Serial.print("-");
             Serial.println(node2);
           }
+        } else {
+          if (debugFP) {
+            Serial.println("DEBUG: addBridgeToState() returned false");
+          }
+        }
+      } else {
+        if (debugFP) {
+          Serial.println("DEBUG: Skipping - node1 or node2 is zero or negative");
         }
       }
     }
@@ -852,7 +1060,7 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder) {
     // Mark as dirty and refresh once at the end (batch optimization)
     if (connCount > 0) {
       globalState.markDirty();
-      refreshLocalConnections(1, 1, 0);
+      refreshLocalConnections(-1, 1, 1);
     }
     
   }
@@ -1075,533 +1283,533 @@ int lastRemovedNodes[20] = {-1};
 int lastRemovedNodesIndex = 0;
 bool disconnectedNodeNewData = false;
 
-int removeBridgeFromNodeFile(int node1, int node2, int slot, int flashOrLocal,
-                             int onlyCheck) {
-  // Reset the lastRemovedNodes buffer
-  lastRemovedNodesIndex = 0;
-  for (int i = 0; i < 20; i++) {
-    lastRemovedNodes[i] = -1;
-  }
-  disconnectedNodeNewData = false;
-
-  unsigned long timerStart = millis();
-  unsigned long timerEnd[5] = {0, 0, 0, 0, 0};
-
-
-  if (onlyCheck == 0) {
-  for (int i = 0; i < 8; i++) { // idk if I should do this here but YOLO
-    if (node1 == RP_GPIO_1 + i || node2 == RP_GPIO_1 + i) {
-      if (gpioNet[i] != -2) {
-        gpioNet[i] = -1;
-      }
-    }
-  }
-  }
-  // Serial.print("Slot = ");
-  // Serial.println(slot);
-  if (flashOrLocal == 0) {
-
-    openFileThreadSafe(rplus, slot);
-
-    if (!nodeFile) {
-      if (debugFP) {
-        // Serial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
-      }
-
-      return -1;
-    } else {
-      if (debugFP)
-        Serial.println(
-            "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
-    }
-
-    if (nodeFile.size() < 2) {
-      // Serial.println("empty file");
-      nodeFile.close();
-      core1busy = false;
-      return -1;
-    }
-    nodeFile.seek(0);
-    nodeFile.setTimeout(8);
-  }
-  if (onlyCheck == 1) {
-    // Serial.print("Checking for bridge between ");
-    // Serial.print(node1);
-    // Serial.print(" and ");
-    // Serial.println(node2);
-  }
-  timerEnd[0] = millis() - timerStart;
-
-  for (int i = 0; i < 120; i++) {
-    slicedLines[i] = " ";
-  }
-  slicedLinesIndex = 0;
-  int numberOfLines = 0;
-  // nodeFileString.clear();
-  String lineBufString = "";
-  // nodeFileString.printTo(Serial);
-  // Serial.println(" ");
-  // Serial.print("nodeFileString = ");
-  // Serial.println(nodeFileString);
-  // core1busy = true;
-  createSafeString(lineBufSafe, 40);
-  int lineIdx = 0;
-  int charIdx = 0;
-  for (int i = 0; i < 120; i++) {
-    slicedLines[lineIdx] = " ";
-
-    if (flashOrLocal == 0) {
-      lineBufString = nodeFile.readStringUntil(',');
-
-    } else {
-      charIdx = nodeFileString.stoken(lineBufSafe, charIdx, ",");
-      lineBufString = lineBufSafe.c_str();
-      if (charIdx == -1) {
-        numberOfLines = lineIdx;
-        // Serial.print ("\n\r\t\t\t\tt\t\tnumberOfLines = ");
-        // Serial.println(numberOfLines);
-        //  Serial.println("end of file char idx");
-
-        break;
-      }
-    }
-    // Serial.print("lineBufSafe = ");
-    // Serial.println(lineBufSafe);
-    // Serial.print("lineBufString = ");
-    // Serial.println(lineBufString);
-
-    lineBufString.trim();
-    lineBufString.replace(" ", "");
-    // Serial.print("$");
-    // Serial.print(lineBufString);
-    // Serial.println("$");
-
-    if (lineBufString.length() < 3 || lineBufString == " ") {
-      numberOfLines = lineIdx;
-      // Serial.print ("numberOfLines = ");
-      // Serial.println(numberOfLines);
-      //  Serial.println("end of file");
-
-      break;
-    }
-    slicedLines[lineIdx].concat(lineBufString);
-
-    // Serial.print("#");
-    // Serial.print(slicedLines[lineIdx]);
-    // Serial.println("#");
-    slicedLines[lineIdx].replace("\n", "");
-    slicedLines[lineIdx].replace("\r", "");
-
-    slicedLines[lineIdx].replace("{", "");
-    slicedLines[lineIdx].replace("}", "");
-    slicedLines[lineIdx].replace(",", "");
-    // slicedLines[lineIdx].trim();
-    slicedLines[lineIdx].replace("-", " - ");
-    slicedLines[lineIdx].concat(" , ");
-    // Serial.print("*");
-    // Serial.print(slicedLines[lineIdx]);
-    // Serial.println("*");
-
-    lineIdx++;
-  }
-  timerEnd[1] = millis() - timerStart;
-  numberOfLines = lineIdx;
-  // Serial.print("numberOfLines = ");
-  // Serial.println(numberOfLines);
-  // Serial.print("nodeFileString = ");
-  // Serial.println(nodeFileString);
-  // nodeFileString.clear();
-  // nodeFile.close();
-  // Serial.println(nodeFileString);
-  // Serial.print("lineIdx = ");
-  // Serial.println(lineIdx);
-  char nodeAsChar[40];
-  itoa(node1, nodeAsChar, 10);
-  String paddedNode1 = " ";
-  String paddedNode2 = " ";
-
-  paddedNode1.concat(nodeAsChar);
-  paddedNode1.concat(" ");
-  // Serial.print("paddedNode1 = *");
-  // Serial.print(paddedNode1);
-  // Serial.println("*");
-
-  if (node2 != -1) {
-    itoa(node2, nodeAsChar, 10);
-
-    paddedNode2.concat(nodeAsChar);
-    paddedNode2.concat(" ");
-    // Serial.print("paddedNode2 = *");
-    // Serial.print(paddedNode2);
-    // Serial.println("*");
-  }
-
-  // nodeFile.truncate(0);
-
-  timerEnd[2] = millis() - timerStart;
-
-  if (flashOrLocal == 0) {
-    nodeFile.close();
-    openFileThreadSafe(w, slot);
-    // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
-    nodeFile.print("{");
-  } else {
-    nodeFileString.clear();
-    nodeFileString.concat("{ ");
-  }
-  // nodeFile.print(" { \n\r");
-  // Serial.print("numberOfLines = ");
-  // Serial.println(numberOfLines);
-  int removedLines = 0;
-
-  for (int i = 0; i < numberOfLines; i++) {
-    // Serial.print("\n\rslicedLines[");
-
-    // Serial.print(i);
-    // Serial.print("] = ");
-    // Serial.println(slicedLines[i]);
-    // delay(10);
-    // Serial.println(millis()-timerStart);
-    int remove = 0;
-
-    if (node2 == -1 && slicedLines[i].indexOf(paddedNode1) != -1) {
-      if (onlyCheck == 0) {
-        remove = 1;
-
-        // Extract the other node in this connection
-        String lineStr = slicedLines[i];
-        lineStr.replace(" ", "");
-        int dashPos = lineStr.indexOf("-");
-
-        if (dashPos != -1) {
-          String node1Str = lineStr.substring(0, dashPos);
-          String node2Str = lineStr.substring(dashPos + 1);
-
-          int nodeA = node1Str.toInt();
-          int nodeB = node2Str.toInt();
-
-          // Add the other node to our list
-          int otherNode = (nodeA == node1) ? nodeB : nodeA;
-
-          // Store in the buffer if we have space
-          if (lastRemovedNodesIndex < 20 && otherNode > 0) {
-            lastRemovedNodes[lastRemovedNodesIndex++] = otherNode;
-            disconnectedNodeNewData = true;
-          }
-        }
-      }
-
-      removedLines++;
-    } else if (slicedLines[i].indexOf(paddedNode1) != -1 &&
-               slicedLines[i].indexOf(paddedNode2) != -1) {
-      if (onlyCheck == 0) {
-        remove = 1;
-
-        // When removing a specific connection, add the other node
-        if (lastRemovedNodesIndex < 20) {
-          lastRemovedNodes[lastRemovedNodesIndex++] = node2;
-          disconnectedNodeNewData = true;
-        }
-      }
-
-      removedLines++;
-    }
-    if (remove == 0) {
-      remove = 0;
-      slicedLines[i].replace(" ", "");
-
-      if (flashOrLocal == 0) {
-        nodeFile.print(slicedLines[i]);
-      } else {
-        // nodeFileString.concat(slicedLines[i]);
-
-        for (int j = 0; j < 39; j++) {
-
-          nodeAsChar[j] = ' ';
-        }
-        // Serial.print("nodeAsChar1 = ");
-        // Serial.println(nodeAsChar);
-
-        slicedLines[i].toCharArray(nodeAsChar, 40);
-        // Serial.print("nodeAsChar2 = *");
-        // Serial.print(nodeAsChar);
-        // Serial.println("*");
-        slicedLines[i].replace(",", "");
-        slicedLines[i].replace(" ", "");
-        slicedLines[i].concat(",");
-        nodeFileString.concat(nodeAsChar);
-        nodeFileString.replace(" ", "");
-        //     Serial.print("sliceLines[i].length() = ");
-        //     Serial.println(slicedLines[i].length());
-        //         Serial.print("nodeFileString = ");
-        // Serial.println(nodeFileString);
-        nodeFileString.replace("{ ", "");
-        nodeFileString.replace(" } ", "");
-        nodeFileString.replace("{", "");
-        nodeFileString.replace("}", "");
-        nodeFileString.prefix("{ ");
-        // nodeFileString.concat(" } ");
-        //  Serial.print("nodeFileString = ");
-        //  Serial.println(nodeFileString);
-      }
-    }
-    //     Serial.print("slicedLines[");
-    //       Serial.print(i);
-    //       Serial.print("] = ");
-    //  Serial.println(slicedLines[i]);
-  }
-
-  if (flashOrLocal == 0) {
-    nodeFile.print(" } ");
-    nodeFile.close();
-    if (onlyCheck == 0) { // Only mark as modified if we actually changed something
-      markSlotAsModified(slot);
-    }
-  } else {
-    nodeFileString.concat(" } ");
-    // Serial.print("nodeFileString = ");
-    // Serial.println(nodeFileString);
-  }
-
-  // for (int i = 0; i <= numberOfLines; i++) {
-  //   Serial.print("\n\rslicedLines[");
-  //   Serial.print(i);
-  //   Serial.print("] = ");
-  //   Serial.println(slicedLines[i]);
-
-  // }
-  core1busy = false;
-
-  if (onlyCheck == 0) {
-    removeChangedNetColors(node1, 1);
-    if (node2 != -1) {
-      removeChangedNetColors(node2, 0);
-    }
-  }
-
-  timerEnd[3] = millis() - timerStart;
-  // Serial.print("timerEnd[0] = ");
-
-  //   Serial.println(timerEnd[0]);
-  //   Serial.print("timerEnd[1] = ");
-  //   Serial.println(timerEnd[1]);
-  //   Serial.print("timerEnd[3] = ");
-  //   Serial.println(timerEnd[3]);
-  return removedLines;
-}
-
-int addBridgeToNodeFile(int node1, int node2, int slot, int flashOrLocal,
-                        int allowDuplicates) {
-
-  // Serial.print("nodeFileStringAdd = ");
-  // Serial.println(nodeFileString);
-  unsigned long timerStart[5];
-  timerStart[0] = micros();
-  if (flashOrLocal == 0) {
-    // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r+");
-
-    openFileThreadSafe(rplus, slot);
-    // Serial.println(nodeFile);
-    // Serial.print("Slot = ");
-    // Serial.println(slot);
-    if (!nodeFile) {
-      // if (debugFP) {
-      // Serial.println("Failed to open nodeFile (addBridgeToNodeFile)");
-      //  }
-      // reateSlots(slot, 0);
-      //  delay(10);
-      //  nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt",
-      //  "w+"); nodeFile.print("{ ");
-      openFileThreadSafe(w, slot);
-      nodeFile.print("{ } ");
-      // return;
-    } else {
-      if (debugFP)
-        Serial.println(
-            "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
-    }
-    //     while (nodeFile.available()) {
-    //     Serial.write(nodeFile.read());
-    //   }
-    //   nodeFile.seek(0);
-    nodeFile.setTimeout(15);
-  }
-
-  // Serial.print("flashOrLocal = ");
-  // Serial.println(flashOrLocal);
-
-  for (int i = 0; i < 120; i++) {
-    slicedLines[i] = " ";
-  }
-  timerStart[1] = micros();
-
-  int numberOfLines = 0;
-  // Serial.print("nodeFileString = ");
-  // Serial.println(nodeFileString);
-  // nodeFileString.printTo(Serial);
-  // Serial.println(" ");
-  String lineBufString = "";
-
-  createSafeString(lineBufSafe, 30);
-  int lineIdx = 0;
-  int charIdx = 0;
-  nodeFileString.trim();
-
-  for (int i = 0; i < 120; i++) {
-
-    slicedLines[lineIdx] = " ";
-    // if (i == 0 && nodeFileString.startsWith("{") == -1 && flashOrLocal == 1)
-    // {
-    //   slicedLines[0].concat("{");
-
-    // }
-
-    if (flashOrLocal == 0) {
-      lineBufString = nodeFile.readStringUntil(',');
-
-    } else {
-      charIdx = nodeFileString.stoken(lineBufSafe, charIdx, ",");
-      // if (charIdx == -1 || lineBufSafe == "}") {
-      //   numberOfLines = lineIdx;
-      //   break;
-      // }
-      lineBufString = lineBufSafe.c_str();
-    }
-
-    // Serial.print("lineBufSafe = ");
-    // Serial.println(lineBufSafe);
-    // Serial.print("lineBufString = ");
-    // Serial.println(lineBufString);
-
-    lineBufString.trim();
-    lineBufString.replace(" ", "");
-
-    if (lineBufString.length() < 3 || lineBufString == " ") {
-      // Serial.println("end of file");
-      numberOfLines = lineIdx;
-      break;
-    }
-    slicedLines[lineIdx].concat(lineBufString);
-
-    slicedLines[lineIdx].replace("\n", "");
-    slicedLines[lineIdx].replace("\r", "");
-
-    slicedLines[lineIdx].replace("{", "");
-    slicedLines[lineIdx].replace("}", "");
-    slicedLines[lineIdx].replace(",", "");
-    slicedLines[lineIdx].concat(",");
-
-    // Serial.print("lineBufString = ");
-    // Serial.println(lineBufString);
-    // slicedLines[lineIdx].trim();
-
-    // Serial.print("*");
-    // Serial.print(slicedLines[lineIdx]);
-    // Serial.println("*");
-
-    lineIdx++;
-  }
-  timerStart[2] = micros();
-  numberOfLines = lineIdx;
-
-  // Serial.print("\n\rnumberOfLines = ");
-  // Serial.println(numberOfLines);
-
-  // nodeFileString.clear();
-  // nodeFile.close();
-  // Serial.println(nodeFileString);
-
-  char nodeAsChar[40];
-  itoa(node1, nodeAsChar, 10);
-  String addNode1 = "";
-  String addNode2 = "";
-
-  addNode1.concat(nodeAsChar);
-  addNode1.concat("-");
-
-  itoa(node2, nodeAsChar, 10);
-
-  addNode2.concat(nodeAsChar);
-  addNode2.concat(",");
-
-  addNode1.concat(addNode2);
-
-  addNode1.toCharArray(nodeAsChar, addNode1.length() + 1);
-  nodeAsChar[addNode1.length()] = '\0';
-
-  // createSafeString(addNodeSafe, 40);
-
-  int duplicateFound = 0;
-
-  if (flashOrLocal == 0) {
-    // Serial.println("flash");
-    openFileThreadSafe(wplus, slot);
-    // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w+");
-    nodeFile.print("{ ");
-
-    for (int i = 0; i < numberOfLines; i++) {
-
-      if (slicedLines[i].indexOf(addNode1) != -1) {
-        duplicateFound = 1;
-        // Serial.println("Duplicate found (flash)");
-      }
-
-      nodeFile.print(slicedLines[i]);
-    }
-
-    if (duplicateFound == 0 || allowDuplicates == 1) {
-      nodeFile.print(addNode1);
-    }
-    nodeFile.print(" } ");
-    // nodeFile.seek(0);
-
-    nodeFile.close();
-    markSlotAsModified(slot); // Mark slot as needing re-validation
-
-  } else {
-    //  Serial.println("local");
-    // Serial.print("nodeFileString1 = ");
-    // Serial.println(nodeFileString);
-    // Serial.print("addNode1 = ");
-    // Serial.println(addNode1);
-
-    if (nodeFileString.indexOf(nodeAsChar, 0) != -1) {
-      duplicateFound = 1;
-      // Serial.println("Duplicate found (local)");
-    }
-
-    nodeFileString.replace('\n', "");
-    nodeFileString.replace('\r', "");
-    nodeFileString.replace(' ', "");
-    nodeFileString.replace('{', "");
-    nodeFileString.replace('}', "");
-
-    // Serial.print("\n\n\rduplicateFound = ");
-    //     Serial.println(duplicateFound);
-    //     Serial.print("nodeAsChar = ");
-    //     Serial.println(nodeAsChar);
-
-    if (duplicateFound == 0 || allowDuplicates == 1) {
-      // nodeFileString.concat(addNode1);
-      nodeFileString.concat(nodeAsChar, addNode1.length());
-    }
-
-    nodeFileString.prefix("{ ");
-    nodeFileString.concat(" } ");
-
-    //     Serial.print("nodeFileStringAdd = ");
-    // Serial.println(nodeFileString);
-  }
-  timerStart[3] = micros();
-
-  // for (int i = 0; i < 4; i++) {
-  //   Serial.print("timerStart[");
-  //   Serial.print(i);
-  //   Serial.print("] = ");
-  //   Serial.println(timerStart[i] - timerStart[0]);
-  // }
-  return duplicateFound;
-}
+// int removeBridgeFromNodeFile(int node1, int node2, int slot, int flashOrLocal,
+//                              int onlyCheck) {
+//   // Reset the lastRemovedNodes buffer
+//   lastRemovedNodesIndex = 0;
+//   for (int i = 0; i < 20; i++) {
+//     lastRemovedNodes[i] = -1;
+//   }
+//   disconnectedNodeNewData = false;
+
+//   unsigned long timerStart = millis();
+//   unsigned long timerEnd[5] = {0, 0, 0, 0, 0};
+
+
+//   if (onlyCheck == 0) {
+//   for (int i = 0; i < 8; i++) { // idk if I should do this here but YOLO
+//     if (node1 == RP_GPIO_1 + i || node2 == RP_GPIO_1 + i) {
+//       if (gpioNet[i] != -2) {
+//         gpioNet[i] = -1;
+//       }
+//     }
+//   }
+//   }
+//   // Serial.print("Slot = ");
+//   // Serial.println(slot);
+//   if (flashOrLocal == 0) {
+
+//     openFileThreadSafe(rplus, slot);
+
+//     if (!nodeFile) {
+//       if (debugFP) {
+//         // Serial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
+//       }
+
+//       return -1;
+//     } else {
+//       if (debugFP)
+//         Serial.println(
+//             "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
+//     }
+
+//     if (nodeFile.size() < 2) {
+//       // Serial.println("empty file");
+//       nodeFile.close();
+//       core1busy = false;
+//       return -1;
+//     }
+//     nodeFile.seek(0);
+//     nodeFile.setTimeout(8);
+//   }
+//   if (onlyCheck == 1) {
+//     // Serial.print("Checking for bridge between ");
+//     // Serial.print(node1);
+//     // Serial.print(" and ");
+//     // Serial.println(node2);
+//   }
+//   timerEnd[0] = millis() - timerStart;
+
+//   for (int i = 0; i < 120; i++) {
+//     slicedLines[i] = " ";
+//   }
+//   slicedLinesIndex = 0;
+//   int numberOfLines = 0;
+//   // nodeFileString.clear();
+//   String lineBufString = "";
+//   // nodeFileString.printTo(Serial);
+//   // Serial.println(" ");
+//   // Serial.print("nodeFileString = ");
+//   // Serial.println(nodeFileString);
+//   // core1busy = true;
+//   createSafeString(lineBufSafe, 40);
+//   int lineIdx = 0;
+//   int charIdx = 0;
+//   for (int i = 0; i < 120; i++) {
+//     slicedLines[lineIdx] = " ";
+
+//     if (flashOrLocal == 0) {
+//       lineBufString = nodeFile.readStringUntil(',');
+
+//     } else {
+//       charIdx = nodeFileString.stoken(lineBufSafe, charIdx, ",");
+//       lineBufString = lineBufSafe.c_str();
+//       if (charIdx == -1) {
+//         numberOfLines = lineIdx;
+//         // Serial.print ("\n\r\t\t\t\tt\t\tnumberOfLines = ");
+//         // Serial.println(numberOfLines);
+//         //  Serial.println("end of file char idx");
+
+//         break;
+//       }
+//     }
+//     // Serial.print("lineBufSafe = ");
+//     // Serial.println(lineBufSafe);
+//     // Serial.print("lineBufString = ");
+//     // Serial.println(lineBufString);
+
+//     lineBufString.trim();
+//     lineBufString.replace(" ", "");
+//     // Serial.print("$");
+//     // Serial.print(lineBufString);
+//     // Serial.println("$");
+
+//     if (lineBufString.length() < 3 || lineBufString == " ") {
+//       numberOfLines = lineIdx;
+//       // Serial.print ("numberOfLines = ");
+//       // Serial.println(numberOfLines);
+//       //  Serial.println("end of file");
+
+//       break;
+//     }
+//     slicedLines[lineIdx].concat(lineBufString);
+
+//     // Serial.print("#");
+//     // Serial.print(slicedLines[lineIdx]);
+//     // Serial.println("#");
+//     slicedLines[lineIdx].replace("\n", "");
+//     slicedLines[lineIdx].replace("\r", "");
+
+//     slicedLines[lineIdx].replace("{", "");
+//     slicedLines[lineIdx].replace("}", "");
+//     slicedLines[lineIdx].replace(",", "");
+//     // slicedLines[lineIdx].trim();
+//     slicedLines[lineIdx].replace("-", " - ");
+//     slicedLines[lineIdx].concat(" , ");
+//     // Serial.print("*");
+//     // Serial.print(slicedLines[lineIdx]);
+//     // Serial.println("*");
+
+//     lineIdx++;
+//   }
+//   timerEnd[1] = millis() - timerStart;
+//   numberOfLines = lineIdx;
+//   // Serial.print("numberOfLines = ");
+//   // Serial.println(numberOfLines);
+//   // Serial.print("nodeFileString = ");
+//   // Serial.println(nodeFileString);
+//   // nodeFileString.clear();
+//   // nodeFile.close();
+//   // Serial.println(nodeFileString);
+//   // Serial.print("lineIdx = ");
+//   // Serial.println(lineIdx);
+//   char nodeAsChar[40];
+//   itoa(node1, nodeAsChar, 10);
+//   String paddedNode1 = " ";
+//   String paddedNode2 = " ";
+
+//   paddedNode1.concat(nodeAsChar);
+//   paddedNode1.concat(" ");
+//   // Serial.print("paddedNode1 = *");
+//   // Serial.print(paddedNode1);
+//   // Serial.println("*");
+
+//   if (node2 != -1) {
+//     itoa(node2, nodeAsChar, 10);
+
+//     paddedNode2.concat(nodeAsChar);
+//     paddedNode2.concat(" ");
+//     // Serial.print("paddedNode2 = *");
+//     // Serial.print(paddedNode2);
+//     // Serial.println("*");
+//   }
+
+//   // nodeFile.truncate(0);
+
+//   timerEnd[2] = millis() - timerStart;
+
+//   if (flashOrLocal == 0) {
+//     nodeFile.close();
+//     openFileThreadSafe(w, slot);
+//     // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
+//     nodeFile.print("{");
+//   } else {
+//     nodeFileString.clear();
+//     nodeFileString.concat("{ ");
+//   }
+//   // nodeFile.print(" { \n\r");
+//   // Serial.print("numberOfLines = ");
+//   // Serial.println(numberOfLines);
+//   int removedLines = 0;
+
+//   for (int i = 0; i < numberOfLines; i++) {
+//     // Serial.print("\n\rslicedLines[");
+
+//     // Serial.print(i);
+//     // Serial.print("] = ");
+//     // Serial.println(slicedLines[i]);
+//     // delay(10);
+//     // Serial.println(millis()-timerStart);
+//     int remove = 0;
+
+//     if (node2 == -1 && slicedLines[i].indexOf(paddedNode1) != -1) {
+//       if (onlyCheck == 0) {
+//         remove = 1;
+
+//         // Extract the other node in this connection
+//         String lineStr = slicedLines[i];
+//         lineStr.replace(" ", "");
+//         int dashPos = lineStr.indexOf("-");
+
+//         if (dashPos != -1) {
+//           String node1Str = lineStr.substring(0, dashPos);
+//           String node2Str = lineStr.substring(dashPos + 1);
+
+//           int nodeA = node1Str.toInt();
+//           int nodeB = node2Str.toInt();
+
+//           // Add the other node to our list
+//           int otherNode = (nodeA == node1) ? nodeB : nodeA;
+
+//           // Store in the buffer if we have space
+//           if (lastRemovedNodesIndex < 20 && otherNode > 0) {
+//             lastRemovedNodes[lastRemovedNodesIndex++] = otherNode;
+//             disconnectedNodeNewData = true;
+//           }
+//         }
+//       }
+
+//       removedLines++;
+//     } else if (slicedLines[i].indexOf(paddedNode1) != -1 &&
+//                slicedLines[i].indexOf(paddedNode2) != -1) {
+//       if (onlyCheck == 0) {
+//         remove = 1;
+
+//         // When removing a specific connection, add the other node
+//         if (lastRemovedNodesIndex < 20) {
+//           lastRemovedNodes[lastRemovedNodesIndex++] = node2;
+//           disconnectedNodeNewData = true;
+//         }
+//       }
+
+//       removedLines++;
+//     }
+//     if (remove == 0) {
+//       remove = 0;
+//       slicedLines[i].replace(" ", "");
+
+//       if (flashOrLocal == 0) {
+//         nodeFile.print(slicedLines[i]);
+//       } else {
+//         // nodeFileString.concat(slicedLines[i]);
+
+//         for (int j = 0; j < 39; j++) {
+
+//           nodeAsChar[j] = ' ';
+//         }
+//         // Serial.print("nodeAsChar1 = ");
+//         // Serial.println(nodeAsChar);
+
+//         slicedLines[i].toCharArray(nodeAsChar, 40);
+//         // Serial.print("nodeAsChar2 = *");
+//         // Serial.print(nodeAsChar);
+//         // Serial.println("*");
+//         slicedLines[i].replace(",", "");
+//         slicedLines[i].replace(" ", "");
+//         slicedLines[i].concat(",");
+//         nodeFileString.concat(nodeAsChar);
+//         nodeFileString.replace(" ", "");
+//         //     Serial.print("sliceLines[i].length() = ");
+//         //     Serial.println(slicedLines[i].length());
+//         //         Serial.print("nodeFileString = ");
+//         // Serial.println(nodeFileString);
+//         nodeFileString.replace("{ ", "");
+//         nodeFileString.replace(" } ", "");
+//         nodeFileString.replace("{", "");
+//         nodeFileString.replace("}", "");
+//         nodeFileString.prefix("{ ");
+//         // nodeFileString.concat(" } ");
+//         //  Serial.print("nodeFileString = ");
+//         //  Serial.println(nodeFileString);
+//       }
+//     }
+//     //     Serial.print("slicedLines[");
+//     //       Serial.print(i);
+//     //       Serial.print("] = ");
+//     //  Serial.println(slicedLines[i]);
+//   }
+
+//   if (flashOrLocal == 0) {
+//     nodeFile.print(" } ");
+//     nodeFile.close();
+//     if (onlyCheck == 0) { // Only mark as modified if we actually changed something
+//       markSlotAsModified(slot);
+//     }
+//   } else {
+//     nodeFileString.concat(" } ");
+//     // Serial.print("nodeFileString = ");
+//     // Serial.println(nodeFileString);
+//   }
+
+//   // for (int i = 0; i <= numberOfLines; i++) {
+//   //   Serial.print("\n\rslicedLines[");
+//   //   Serial.print(i);
+//   //   Serial.print("] = ");
+//   //   Serial.println(slicedLines[i]);
+
+//   // }
+//   core1busy = false;
+
+//   if (onlyCheck == 0) {
+//     removeChangedNetColors(node1, 1);
+//     if (node2 != -1) {
+//       removeChangedNetColors(node2, 0);
+//     }
+//   }
+
+//   timerEnd[3] = millis() - timerStart;
+//   // Serial.print("timerEnd[0] = ");
+
+//   //   Serial.println(timerEnd[0]);
+//   //   Serial.print("timerEnd[1] = ");
+//   //   Serial.println(timerEnd[1]);
+//   //   Serial.print("timerEnd[3] = ");
+//   //   Serial.println(timerEnd[3]);
+//   return removedLines;
+// }
+
+// int addBridgeToNodeFile(int node1, int node2, int slot, int flashOrLocal,
+//                         int allowDuplicates) {
+
+//   // Serial.print("nodeFileStringAdd = ");
+//   // Serial.println(nodeFileString);
+//   unsigned long timerStart[5];
+//   timerStart[0] = micros();
+//   if (flashOrLocal == 0) {
+//     // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r+");
+
+//     openFileThreadSafe(rplus, slot);
+//     // Serial.println(nodeFile);
+//     // Serial.print("Slot = ");
+//     // Serial.println(slot);
+//     if (!nodeFile) {
+//       // if (debugFP) {
+//       // Serial.println("Failed to open nodeFile (addBridgeToNodeFile)");
+//       //  }
+//       // reateSlots(slot, 0);
+//       //  delay(10);
+//       //  nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt",
+//       //  "w+"); nodeFile.print("{ ");
+//       openFileThreadSafe(w, slot);
+//       nodeFile.print("{ } ");
+//       // return;
+//     } else {
+//       if (debugFP)
+//         Serial.println(
+//             "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
+//     }
+//     //     while (nodeFile.available()) {
+//     //     Serial.write(nodeFile.read());
+//     //   }
+//     //   nodeFile.seek(0);
+//     nodeFile.setTimeout(15);
+//   }
+
+//   // Serial.print("flashOrLocal = ");
+//   // Serial.println(flashOrLocal);
+
+//   for (int i = 0; i < 120; i++) {
+//     slicedLines[i] = " ";
+//   }
+//   timerStart[1] = micros();
+
+//   int numberOfLines = 0;
+//   // Serial.print("nodeFileString = ");
+//   // Serial.println(nodeFileString);
+//   // nodeFileString.printTo(Serial);
+//   // Serial.println(" ");
+//   String lineBufString = "";
+
+//   createSafeString(lineBufSafe, 30);
+//   int lineIdx = 0;
+//   int charIdx = 0;
+//   nodeFileString.trim();
+
+//   for (int i = 0; i < 120; i++) {
+
+//     slicedLines[lineIdx] = " ";
+//     // if (i == 0 && nodeFileString.startsWith("{") == -1 && flashOrLocal == 1)
+//     // {
+//     //   slicedLines[0].concat("{");
+
+//     // }
+
+//     if (flashOrLocal == 0) {
+//       lineBufString = nodeFile.readStringUntil(',');
+
+//     } else {
+//       charIdx = nodeFileString.stoken(lineBufSafe, charIdx, ",");
+//       // if (charIdx == -1 || lineBufSafe == "}") {
+//       //   numberOfLines = lineIdx;
+//       //   break;
+//       // }
+//       lineBufString = lineBufSafe.c_str();
+//     }
+
+//     // Serial.print("lineBufSafe = ");
+//     // Serial.println(lineBufSafe);
+//     // Serial.print("lineBufString = ");
+//     // Serial.println(lineBufString);
+
+//     lineBufString.trim();
+//     lineBufString.replace(" ", "");
+
+//     if (lineBufString.length() < 3 || lineBufString == " ") {
+//       // Serial.println("end of file");
+//       numberOfLines = lineIdx;
+//       break;
+//     }
+//     slicedLines[lineIdx].concat(lineBufString);
+
+//     slicedLines[lineIdx].replace("\n", "");
+//     slicedLines[lineIdx].replace("\r", "");
+
+//     slicedLines[lineIdx].replace("{", "");
+//     slicedLines[lineIdx].replace("}", "");
+//     slicedLines[lineIdx].replace(",", "");
+//     slicedLines[lineIdx].concat(",");
+
+//     // Serial.print("lineBufString = ");
+//     // Serial.println(lineBufString);
+//     // slicedLines[lineIdx].trim();
+
+//     // Serial.print("*");
+//     // Serial.print(slicedLines[lineIdx]);
+//     // Serial.println("*");
+
+//     lineIdx++;
+//   }
+//   timerStart[2] = micros();
+//   numberOfLines = lineIdx;
+
+//   // Serial.print("\n\rnumberOfLines = ");
+//   // Serial.println(numberOfLines);
+
+//   // nodeFileString.clear();
+//   // nodeFile.close();
+//   // Serial.println(nodeFileString);
+
+//   char nodeAsChar[40];
+//   itoa(node1, nodeAsChar, 10);
+//   String addNode1 = "";
+//   String addNode2 = "";
+
+//   addNode1.concat(nodeAsChar);
+//   addNode1.concat("-");
+
+//   itoa(node2, nodeAsChar, 10);
+
+//   addNode2.concat(nodeAsChar);
+//   addNode2.concat(",");
+
+//   addNode1.concat(addNode2);
+
+//   addNode1.toCharArray(nodeAsChar, addNode1.length() + 1);
+//   nodeAsChar[addNode1.length()] = '\0';
+
+//   // createSafeString(addNodeSafe, 40);
+
+//   int duplicateFound = 0;
+
+//   if (flashOrLocal == 0) {
+//     // Serial.println("flash");
+//     openFileThreadSafe(wplus, slot);
+//     // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w+");
+//     nodeFile.print("{ ");
+
+//     for (int i = 0; i < numberOfLines; i++) {
+
+//       if (slicedLines[i].indexOf(addNode1) != -1) {
+//         duplicateFound = 1;
+//         // Serial.println("Duplicate found (flash)");
+//       }
+
+//       nodeFile.print(slicedLines[i]);
+//     }
+
+//     if (duplicateFound == 0 || allowDuplicates == 1) {
+//       nodeFile.print(addNode1);
+//     }
+//     nodeFile.print(" } ");
+//     // nodeFile.seek(0);
+
+//     nodeFile.close();
+//     markSlotAsModified(slot); // Mark slot as needing re-validation
+
+//   } else {
+//     //  Serial.println("local");
+//     // Serial.print("nodeFileString1 = ");
+//     // Serial.println(nodeFileString);
+//     // Serial.print("addNode1 = ");
+//     // Serial.println(addNode1);
+
+//     if (nodeFileString.indexOf(nodeAsChar, 0) != -1) {
+//       duplicateFound = 1;
+//       // Serial.println("Duplicate found (local)");
+//     }
+
+//     nodeFileString.replace('\n', "");
+//     nodeFileString.replace('\r', "");
+//     nodeFileString.replace(' ', "");
+//     nodeFileString.replace('{', "");
+//     nodeFileString.replace('}', "");
+
+//     // Serial.print("\n\n\rduplicateFound = ");
+//     //     Serial.println(duplicateFound);
+//     //     Serial.print("nodeAsChar = ");
+//     //     Serial.println(nodeAsChar);
+
+//     if (duplicateFound == 0 || allowDuplicates == 1) {
+//       // nodeFileString.concat(addNode1);
+//       nodeFileString.concat(nodeAsChar, addNode1.length());
+//     }
+
+//     nodeFileString.prefix("{ ");
+//     nodeFileString.concat(" } ");
+
+//     //     Serial.print("nodeFileStringAdd = ");
+//     // Serial.println(nodeFileString);
+//   }
+//   timerStart[3] = micros();
+
+//   // for (int i = 0; i < 4; i++) {
+//   //   Serial.print("timerStart[");
+//   //   Serial.print(i);
+//   //   Serial.print("] = ");
+//   //   Serial.println(timerStart[i] - timerStart[0]);
+//   // }
+//   return duplicateFound;
+// }
 
 createSafeString(serialString, 100);
 createSafeString(dash, 2);

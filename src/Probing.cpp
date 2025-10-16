@@ -1,14 +1,14 @@
 #include "Probing.h"
 #include "CH446Q.h"
 #include "FileParsing.h"
-#include "JumperlessDefines.h"
 #include "JumperlOS.h"
+#include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
-#include "States.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
+#include "States.h"
 // #include "AdcUsb.h"
 #include "Commands.h"
 #include "Graphics.h"
@@ -26,8 +26,8 @@
 #include "PersistentStuff.h"
 #include "Python_Proper.h"
 #include "config.h"
-#include "oled.h"
 #include "externVars.h"
+#include "oled.h"
 
 // Button timing constants
 #define BUTTON_SETTLE_US 22
@@ -41,20 +41,20 @@
 // Static member initialization
 ProbeButton* ProbeButton::instance = nullptr;
 
-ProbeButton& ProbeButton::getInstance() {
-    if (instance == nullptr) {
-        instance = new ProbeButton();
+ProbeButton& ProbeButton::getInstance( ) {
+    if ( instance == nullptr ) {
+        instance = new ProbeButton( );
     }
     return *instance;
 }
 
-ProbeButton::ProbeButton() {
+ProbeButton::ProbeButton( ) {
     // Initialize button state
 }
 
 /**
  * @brief High-frequency service method - checks button hardware with new blocking behavior
- * 
+ *
  * New behavior:
  * 1. Checks hardware frequently (respects rate limiting)
  * 2. When press detected: blocks subsequent presses for blockDurationMs (default 1s)
@@ -63,48 +63,48 @@ ProbeButton::ProbeButton() {
  * 5. Holding button registers once (block prevents re-trigger)
  * 6. Tracks continuous hold time and sets CONNECT_HELD/REMOVE_HELD flags
  */
-ServiceStatus ProbeButton::service() {
+ServiceStatus ProbeButton::service( ) {
     lastStatus = ServiceStatus::IDLE;
-    
+
     // Rate limiting - only check hardware at specified interval
-    unsigned long now = millis();
-    if (now - lastCheckTime < checkIntervalMs) {
-        return lastStatus;  // Not time to check yet
+    unsigned long now = millis( );
+    if ( now - lastCheckTime < checkIntervalMs ) {
+        return lastStatus; // Not time to check yet
     }
     lastCheckTime = now;
-    
+
     // ALWAYS read hardware state
-    int newState = checkProbeButtonHardware();
+    int newState = checkProbeButtonHardware( );
 
     // Serial.print(newState);
     // Serial.print(" ");
     // Serial.println(currentButtonState);
     // Serial.flush();
-    
+
     // ========================================================================
     // BUTTON RELEASED - Clear state with debounce protection
     // ========================================================================
-    if (newState == 0) {
+    if ( newState == 0 ) {
         // Button released!
-        if (currentButtonState != 0) {
+        if ( currentButtonState != 0 ) {
             lastButtonState = currentButtonState;
             currentButtonState = 0;
             buttonChanged = true;
             lastStatus = ServiceStatus::BUSY;
         }
-        
+
         // Clear hold state immediately
         connectHeld = false;
         removeHeld = false;
         connectHoldTime = 0;
         removeHoldTime = 0;
         pressStartTime = 0;
-        
+
         // CRITICAL: Only clear block if minimum block time has elapsed
         // This prevents button bounce from causing rapid re-triggering
-        if (isBlocked && blockStartTime > 0) {
+        if ( isBlocked && blockStartTime > 0 ) {
             unsigned long blockElapsed = now - blockStartTime;
-            if (blockElapsed >= minimumBlockMs) {
+            if ( blockElapsed >= minimumBlockMs ) {
                 // Minimum block time elapsed, safe to clear for next press
                 isBlocked = false;
                 blockStartTime = 0;
@@ -117,24 +117,24 @@ ServiceStatus ProbeButton::service() {
             blockProbeButton = 0;
             blockProbeButtonTimer = 0;
         }
-        
+
         return lastStatus;
     }
-    
+
     // ========================================================================
     // BUTTON PRESSED - Handle blocking, press detection, and hold tracking
     // ========================================================================
-    
+
     // Check if block timer has expired
-    if (isBlocked && (now - blockStartTime >= blockDurationMs)) {
+    if ( isBlocked && ( now - blockStartTime >= blockDurationMs ) ) {
         isBlocked = false;
         blockStartTime = 0;
     }
-    
+
     // Detect state changes
-    bool stateChanged = (newState != currentButtonState);
-    
-    if (stateChanged) {
+    bool stateChanged = ( newState != currentButtonState );
+
+    if ( stateChanged ) {
         lastButtonState = currentButtonState;
         currentButtonState = newState;
         buttonChanged = true;
@@ -142,154 +142,154 @@ ServiceStatus ProbeButton::service() {
     } else {
         buttonChanged = false;
     }
-    
+
     // ========================================================================
     // PRESS DETECTION - Register press event if not blocked
     // ========================================================================
-    if (!isBlocked) {
+    if ( !isBlocked ) {
         // Register a press event when:
         // 1. Transitioning from RELEASED (0) to any PRESSED (1 or 2)
         // 2. Switching between different button types (1↔2)
-        if (stateChanged && newState > 0 && 
-            (lastButtonState == 0 || (lastButtonState > 0 && lastButtonState != newState))) {
-            
+        if ( stateChanged && newState > 0 &&
+             ( lastButtonState == 0 || ( lastButtonState > 0 && lastButtonState != newState ) ) ) {
+
             buttonPress = newState;
-            
+
             // Start block period
             isBlocked = true;
             blockStartTime = now;
             pressStartTime = now;
-            
+
             // Set old global blocking variables for backward compatibility
             blockProbeButton = blockDurationMs;
             blockProbeButtonTimer = now;
-            
+
             lastStatus = ServiceStatus::BUSY;
         }
     }
-    
+
     // ========================================================================
     // HOLD TRACKING - Update continuous hold time and flags
     // ========================================================================
-    if (currentButtonState > 0 && pressStartTime > 0) {
+    if ( currentButtonState > 0 && pressStartTime > 0 ) {
         unsigned long holdDuration = now - pressStartTime;
-        
-        if (currentButtonState == 2) {
+
+        if ( currentButtonState == 2 ) {
             // Connect button (2)
             connectHoldTime = holdDuration;
-            
+
             // Set hold flag if threshold reached
-            if (!connectHeld && holdDuration >= connectHoldThresholdMs) {
+            if ( !connectHeld && holdDuration >= connectHoldThresholdMs ) {
                 connectHeld = true;
                 lastStatus = ServiceStatus::BUSY;
             }
-        } else if (currentButtonState == 1) {
+        } else if ( currentButtonState == 1 ) {
             // Remove button (1)
             removeHoldTime = holdDuration;
-            
+
             // Set hold flag if threshold reached
-            if (!removeHeld && holdDuration >= removeHoldThresholdMs) {
+            if ( !removeHeld && holdDuration >= removeHoldThresholdMs ) {
                 removeHeld = true;
                 lastStatus = ServiceStatus::BUSY;
             }
         }
     }
-    
+
     return lastStatus;
 }
 
 /**
  * @brief Get button press event (consumes the event)
  */
-int ProbeButton::getButtonPress() {
+int ProbeButton::getButtonPress( ) {
     int press = buttonPress;
-    buttonPress = 0;  // Clear after reading
+    buttonPress = 0; // Clear after reading
     return press;
 }
 
 /**
  * @brief Direct hardware button check - fast and non-blocking
- * 
+ *
  * @return 0 = neither pressed, 1 = remove button, 2 = connect button
- * 
+ *
  * NOTE: Blocking logic is now handled at the service() level
  */
-int ProbeButton::checkProbeButtonHardware(void) {
+int ProbeButton::checkProbeButtonHardware( void ) {
     extern struct config jumperlessConfig;
-    
+
     // Wait if LEDs are being updated
-    while (showingProbeLEDs == 1) {
+    while ( showingProbeLEDs == 1 ) {
         // Spin wait - LEDs are fast
     }
-    
+
     core1busy = true;
     checkingButton = 1;
-    
+
     int buttonState = 0;
     int buttonState2 = 0;
     int buttonState3 = 0;
     int returnState = 0;
-    
-    gpio_function_t lastProbeButtonFunction = gpio_get_function(PROBE_LED_PIN);
-    
+
+    gpio_function_t lastProbeButtonFunction = gpio_get_function( PROBE_LED_PIN );
+
     // Get pin references from Probing singleton
-    Probing& p = Probing::getInstance();
-    
+    Probing& p = Probing::getInstance( );
+
     // Button reading sequence with proper timing
-    gpio_set_dir(BUTTON_PIN, false);
-    gpio_set_function(PROBE_LED_PIN, GPIO_FUNC_SIO);
-    gpio_disable_pulls(PROBE_LED_PIN);
-    gpio_set_dir(PROBE_LED_PIN, false);
-    delayMicroseconds(BUTTON_SETTLE_US);
-    
-    gpio_set_dir(PROBE_PIN, true);
-    gpio_put(PROBE_PIN, true);
-    gpio_set_pulls(BUTTON_PIN, false, true);
-    gpio_set_input_enabled(BUTTON_PIN, true);
-    buttonState = gpio_get(BUTTON_PIN);
-    gpio_set_input_enabled(BUTTON_PIN, false);
-    
-    delayMicroseconds(BUTTON_SETTLE_US);
-    
-    gpio_set_pulls(BUTTON_PIN, true, false);
-    gpio_set_input_enabled(BUTTON_PIN, true);
-    delayMicroseconds(BUTTON_SETTLE_US);
-    buttonState2 = gpio_get(BUTTON_PIN);
-    gpio_set_input_enabled(BUTTON_PIN, false);
-    
-    delayMicroseconds(BUTTON_SETTLE_US);
-    
-    gpio_set_pulls(BUTTON_PIN, false, false);
-    delayMicroseconds(BUTTON_SETTLE_US);
-    
-    gpio_set_dir(BUTTON_PIN, true);
-    gpio_put(BUTTON_PIN, false);
-    delayMicroseconds(BUTTON_SETTLE_SHORT_US);
-    
-    gpio_set_dir(BUTTON_PIN, false);
-    gpio_set_pulls(BUTTON_PIN, false, true);
-    gpio_set_input_enabled(BUTTON_PIN, true);
-    buttonState3 = gpio_get(BUTTON_PIN);
-    gpio_set_input_enabled(BUTTON_PIN, false);
-    
-    gpio_set_pulls(BUTTON_PIN, false, false);
-    gpio_set_function(PROBE_LED_PIN, lastProbeButtonFunction);
-    
+    gpio_set_dir( BUTTON_PIN, false );
+    gpio_set_function( PROBE_LED_PIN, GPIO_FUNC_SIO );
+    gpio_disable_pulls( PROBE_LED_PIN );
+    gpio_set_dir( PROBE_LED_PIN, false );
+    delayMicroseconds( BUTTON_SETTLE_US );
+
+    gpio_set_dir( PROBE_PIN, true );
+    gpio_put( PROBE_PIN, true );
+    gpio_set_pulls( BUTTON_PIN, false, true );
+    gpio_set_input_enabled( BUTTON_PIN, true );
+    buttonState = gpio_get( BUTTON_PIN );
+    gpio_set_input_enabled( BUTTON_PIN, false );
+
+    delayMicroseconds( BUTTON_SETTLE_US );
+
+    gpio_set_pulls( BUTTON_PIN, true, false );
+    gpio_set_input_enabled( BUTTON_PIN, true );
+    delayMicroseconds( BUTTON_SETTLE_US );
+    buttonState2 = gpio_get( BUTTON_PIN );
+    gpio_set_input_enabled( BUTTON_PIN, false );
+
+    delayMicroseconds( BUTTON_SETTLE_US );
+
+    gpio_set_pulls( BUTTON_PIN, false, false );
+    delayMicroseconds( BUTTON_SETTLE_US );
+
+    gpio_set_dir( BUTTON_PIN, true );
+    gpio_put( BUTTON_PIN, false );
+    delayMicroseconds( BUTTON_SETTLE_SHORT_US );
+
+    gpio_set_dir( BUTTON_PIN, false );
+    gpio_set_pulls( BUTTON_PIN, false, true );
+    gpio_set_input_enabled( BUTTON_PIN, true );
+    buttonState3 = gpio_get( BUTTON_PIN );
+    gpio_set_input_enabled( BUTTON_PIN, false );
+
+    gpio_set_pulls( BUTTON_PIN, false, false );
+    gpio_set_function( PROBE_LED_PIN, lastProbeButtonFunction );
+
     checkingButton = 0;
     core1busy = false;
-    
+
     // Determine button state (handles probe revision)
-    if (buttonState == 1 && buttonState2 == 1 && buttonState3 == 1) {
-        returnState = (jumperlessConfig.hardware.probe_revision >= 4) ? 2 : 1;
-    } else if (buttonState == 0 && buttonState2 == 0 && buttonState3 == 0) {
-        returnState = (jumperlessConfig.hardware.probe_revision >= 4) ? 1 : 2;
+    if ( buttonState == 1 && buttonState2 == 1 && buttonState3 == 1 ) {
+        returnState = ( jumperlessConfig.hardware.probe_revision >= 4 ) ? 2 : 1;
+    } else if ( buttonState == 0 && buttonState2 == 0 && buttonState3 == 0 ) {
+        returnState = ( jumperlessConfig.hardware.probe_revision >= 4 ) ? 1 : 2;
     }
-    
+
     return returnState;
 }
 
 // Global reference for clean syntax
-ProbeButton& probeButton = ProbeButton::getInstance();
+ProbeButton& probeButton = ProbeButton::getInstance( );
 
 // ============================================================================
 // Probing Class Implementation
@@ -298,123 +298,121 @@ ProbeButton& probeButton = ProbeButton::getInstance();
 // Static member initialization
 Probing* Probing::instance = nullptr;
 
-Probing& Probing::getInstance() {
-    if (instance == nullptr) {
-        instance = new Probing();
+Probing& Probing::getInstance( ) {
+    if ( instance == nullptr ) {
+        instance = new Probing( );
     }
     return *instance;
 }
 
-Probing::Probing() {
+Probing::Probing( ) {
     // Initialize probe row maps
-    int probeRowMapInit[108] = {
+    int probeRowMapInit[ 108 ] = {
         -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, TOP_RAIL, GND,
         BOTTOM_RAIL, GND, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
         NANO_D1, NANO_D0, NANO_RESET_1, GND, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12,
-        NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,NANO_5V, NANO_RESET_0, GND, NANO_VIN,
-        LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1
-    };
-    
-    int probeRowMapByPadInit[108] = {
+        NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7, NANO_5V, NANO_RESET_0, GND, NANO_VIN,
+        LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1 };
+
+    int probeRowMapByPadInit[ 108 ] = {
         -1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, TOP_RAIL, TOP_RAIL_GND,
         BOTTOM_RAIL, BOTTOM_RAIL_GND, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
         NANO_D1, NANO_D0, NANO_RESET_1, NANO_GND_1, NANO_D2, NANO_D3, NANO_D4, NANO_D5, NANO_D6, NANO_D7, NANO_D8, NANO_D9, NANO_D10, NANO_D11, NANO_D12,
-        NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7,NANO_5V, NANO_RESET_0, NANO_GND_0, NANO_VIN,
-        LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1
-    };
-    
-    memcpy(probeRowMap, probeRowMapInit, sizeof(probeRowMap));
-    memcpy(probeRowMapByPad, probeRowMapByPadInit, sizeof(probeRowMapByPad));
-    
+        NANO_D13, NANO_3V3, NANO_AREF, NANO_A0, NANO_A1, NANO_A2, NANO_A3, NANO_A4, NANO_A5, NANO_A6, NANO_A7, NANO_5V, NANO_RESET_0, NANO_GND_0, NANO_VIN,
+        LOGO_PAD_BOTTOM, LOGO_PAD_TOP, GPIO_PAD, DAC_PAD, ADC_PAD, BUILDING_PAD_TOP, BUILDING_PAD_BOTTOM, -1, -1, -1, -1 };
+
+    memcpy( probeRowMap, probeRowMapInit, sizeof( probeRowMap ) );
+    memcpy( probeRowMapByPad, probeRowMapByPadInit, sizeof( probeRowMapByPad ) );
+
     // Initialize other defaults
     switchPosition = 1;
-    lastSwitchPositions[0] = 1;
-    lastSwitchPositions[1] = 1;
-    lastSwitchPositions[2] = 1;
+    lastSwitchPositions[ 0 ] = 1;
+    lastSwitchPositions[ 1 ] = 1;
+    lastSwitchPositions[ 2 ] = 1;
 }
 
 /**
  * @brief Handle probe button actions and toggle logic
- * 
+ *
  * This is called from service() and handles all the probe button
  * interactions, toggle logic, and probe mode triggering.
  */
-void Probing::handleProbeButtonActions() {
+void Probing::handleProbeButtonActions( ) {
     extern unsigned long startupTimers[];
-    extern int probeToggle(void);  // Defined in Peripherals.cpp
-    extern class ProbeButton& probeButton;  // High-frequency button service
-    
+    extern int probeToggle( void );        // Defined in Peripherals.cpp
+    extern class ProbeButton& probeButton; // High-frequency button service
+
     // Handle probe toggle when brightenedNet is active
-    if (brightenedNet > 0) {
-        int probeToggleResult = probeToggle();
-        if (probeToggleResult >= 0 && brightenedNet > 0) {
+    if ( brightenedNet > 0 ) {
+        int probeToggleResult = probeToggle( );
+        if ( probeToggleResult >= 0 && brightenedNet > 0 ) {
             blockProbeButton = gpioToggleFrequency;
-            blockProbeButtonTimer = millis();
-        } else if (probeToggleResult == -5) {
-            if (firstConnection > 0) {
-                if (warningNet == brightenedNet && warningTimeout > 0) {
+            blockProbeButtonTimer = millis( );
+        } else if ( probeToggleResult == -5 ) {
+            if ( firstConnection > 0 ) {
+                if ( warningNet == brightenedNet && warningTimeout > 0 ) {
                     // Trigger probe clear mode
                     warningTimeout = 0;
                     connectOrClearProbe = 0;
                     showProbeLEDs = 2;
-                    probingTimer = millis();
-                    startupTimers[0] = millis();
-                    
+                    probingTimer = millis( );
+                    startupTimers[ 0 ] = millis( );
+
                     // Run probe mode directly instead of goto (it handles button state internally)
-                    probeMode(0, firstConnection);
-                    highlighting.clearHighlighting();
-                    
+                    probeMode( 0, firstConnection );
+                    highlighting.clearHighlighting( );
+
                 } else {
-                    highlighting.warnNet(firstConnection);
+                    highlighting.warnNet( firstConnection );
                     warningTimeout = 3800;
-                    warningTimer = millis();
+                    warningTimer = millis( );
                 }
             }
             blockProbeButton = 800;
-            blockProbeButtonTimer = millis();
-        } else if (probeToggleResult == -3 || probeToggleResult == -2) {
+            blockProbeButtonTimer = millis( );
+        } else if ( probeToggleResult == -3 || probeToggleResult == -2 ) {
             blockProbeButton = 800;
-            blockProbeButtonTimer = millis();
-        } else if (probeToggleResult == -4) {
+            blockProbeButtonTimer = millis( );
+        } else if ( probeToggleResult == -4 ) {
             firstConnection = -1;
             blockProbeButton = 800;
-            blockProbeButtonTimer = millis();
+            blockProbeButtonTimer = millis( );
         }
     } else {
         firstConnection = -1;
     }
-    
+
     // Check for button press events from high-frequency ProbeButton service
-    int buttonPress = probeButton.getButtonPress();
-    
-    if (buttonPress != 0) {
+    int buttonPress = probeButton.getButtonPress( );
+
+    if ( buttonPress != 0 ) {
         // Button was pressed - stored state changed
         lastProbeButton = buttonPress;
-        
-        if (buttonPress == 2) {
+
+        if ( buttonPress == 2 ) {
             // Connect button pressed - trigger probe connect mode
             connectOrClearProbe = 1;
             showProbeLEDs = 1;
-            probingTimer = millis();
+            probingTimer = millis( );
             brightenedNet = 0;
             core1passthrough = 0;
-            
+
             // Run probe mode directly (it handles button blocking/clearing internally)
-            probeMode(1, firstConnection);
-            highlighting.clearHighlighting();
-            
-        } else if (buttonPress == 1) {
+            probeMode( 1, firstConnection );
+            highlighting.clearHighlighting( );
+
+        } else if ( buttonPress == 1 ) {
             // Remove button pressed - trigger probe clear mode
-            startupTimers[0] = millis();
+            startupTimers[ 0 ] = millis( );
             connectOrClearProbe = 0;
             showProbeLEDs = 2;
-            probingTimer = millis();
+            probingTimer = millis( );
             brightenedNet = 0;
             core1passthrough = 0;
-            
+
             // Run probe mode directly (it handles button blocking/clearing internally)
-            probeMode(0, firstConnection);
-            highlighting.clearHighlighting();
+            probeMode( 0, firstConnection );
+            highlighting.clearHighlighting( );
         }
     }
 }
@@ -425,9 +423,9 @@ void Probing::handleProbeButtonActions() {
 
 ProbeSwitch* ProbeSwitch::instance = nullptr;
 
-ProbeSwitch& ProbeSwitch::getInstance() {
-    if (instance == nullptr) {
-        instance = new ProbeSwitch();
+ProbeSwitch& ProbeSwitch::getInstance( ) {
+    if ( instance == nullptr ) {
+        instance = new ProbeSwitch( );
     }
     return *instance;
 }
@@ -437,12 +435,12 @@ ProbeSwitch& ProbeSwitch::getInstance() {
  * Checks the 3-position switch state.
  * LOW priority - not time-critical, can run infrequently.
  */
-ServiceStatus ProbeSwitch::service() {
+ServiceStatus ProbeSwitch::service( ) {
     lastStatus = ServiceStatus::IDLE;
-    
+
     // Check switch position (cheap: digital read)
-    Probing::getInstance().checkSwitchPosition();
-    
+    Probing::getInstance( ).checkSwitchPosition( );
+
     return lastStatus;
 }
 
@@ -452,9 +450,9 @@ ServiceStatus ProbeSwitch::service() {
 
 ProbePads* ProbePads::instance = nullptr;
 
-ProbePads& ProbePads::getInstance() {
-    if (instance == nullptr) {
-        instance = new ProbePads();
+ProbePads& ProbePads::getInstance( ) {
+    if ( instance == nullptr ) {
+        instance = new ProbePads( );
     }
     return *instance;
 }
@@ -465,20 +463,20 @@ ProbePads& ProbePads::getInstance() {
  * LOW priority - expensive and not time-critical.
  * Rate-limited to 20Hz (every 50ms) to reduce overhead.
  */
-ServiceStatus ProbePads::service() {
+ServiceStatus ProbePads::service( ) {
     lastStatus = ServiceStatus::IDLE;
-    
+
     // Rate limit to 20Hz (every 50ms) - pad checking is expensive
-    unsigned long now = millis();
-    if (now - lastCheckTime < 50) {
-        return lastStatus;  // Skip this iteration
+    unsigned long now = millis( );
+    if ( now - lastCheckTime < 50 ) {
+        return lastStatus; // Skip this iteration
     }
     lastCheckTime = now;
-    
+
     // Check pads (expensive: multiple ADC readings)
-    Probing::getInstance().checkPads();
+    Probing::getInstance( ).checkPads( );
     lastStatus = ServiceStatus::BUSY;
-    
+
     return lastStatus;
 }
 
@@ -488,89 +486,89 @@ ServiceStatus ProbePads::service() {
 
 /**
  * @brief Main service method for probing system
- * 
+ *
  * This is called each loop iteration and handles:
  * - Reading probe position (HIGH priority - responsive)
  * - Probe button actions and toggle logic
- * 
+ *
  * OPTIMIZATION: Expensive operations (checkPads, checkSwitchPosition) are now
  * handled by separate LOW priority services, keeping this service fast.
  */
-ServiceStatus Probing::service() {
+ServiceStatus Probing::service( ) {
     // Update last status for base class tracking
     lastStatus = ServiceStatus::IDLE;
-    
+
     // Check if probe menu is active (blocking)
-    if (sfProbeMenu != 0 || inPadMenu != 0) {
+    if ( sfProbeMenu != 0 || inPadMenu != 0 ) {
         lastStatus = ServiceStatus::BLOCKING;
         return lastStatus;
     }
-    
+
     // Rate limiting for probe reading
     // Run probe check every ~10ms (100Hz) for responsive probing
     static unsigned long lastProbeCheckTime = 0;
-    unsigned long now = millis();
-    bool shouldCheckProbe = (now - lastProbeCheckTime >= 10);  // 10ms = 100Hz
-    
-    int probeReading = lastProbeReading;  // Use cached value by default
-    
-    if (shouldCheckProbe) {
+    unsigned long now = millis( );
+    bool shouldCheckProbe = ( now - lastProbeCheckTime >= 10 ); // 10ms = 100Hz
+
+    int probeReading = lastProbeReading; // Use cached value by default
+
+    if ( shouldCheckProbe ) {
         lastProbeCheckTime = now;
-        
+
         // Read probe position (moderately expensive: ADC + mapping)
-        probeReading = justReadProbe(true);
+        probeReading = justReadProbe( true );
         lastProbeReading = probeReading;
-        
+
         // If we did any work, mark as BUSY
-        if (probeReading > 0) {
+        if ( probeReading > 0 ) {
             lastStatus = ServiceStatus::BUSY;
         }
     }
-    
+
     // Handle probe button actions and toggle logic (always run - critical for UX)
-    handleProbeButtonActions();
-    
+    handleProbeButtonActions( );
+
     return lastStatus;
 }
 
 // Global service references
-ProbeSwitch& probeSwitch = ProbeSwitch::getInstance();
-ProbePads& probePads = ProbePads::getInstance();
+ProbeSwitch& probeSwitch = ProbeSwitch::getInstance( );
+ProbePads& probePads = ProbePads::getInstance( );
 
 // Backward compatibility - create references to singleton members
-volatile int& sfProbeMenu = Probing::getInstance().sfProbeMenu;
-unsigned long& probingTimer = Probing::getInstance().probingTimer;
-int& probePin = Probing::getInstance().probePin;
-int& buttonPin = Probing::getInstance().buttonPin;
-volatile unsigned long& blockProbeButton = Probing::getInstance().blockProbeButton;
-volatile unsigned long& blockProbeButtonTimer = Probing::getInstance().blockProbeButtonTimer;
-volatile int& connectOrClearProbe = Probing::getInstance().connectOrClearProbe;
-int& node1or2 = Probing::getInstance().node1or2;
-int& probeHighlight = Probing::getInstance().probeHighlight;
-volatile int& removeFade = Probing::getInstance().removeFade;
-volatile bool& bufferPowerConnected = Probing::getInstance().bufferPowerConnected;
-int& debugProbing = Probing::getInstance().debugProbing;
-volatile int& showingProbeLEDs = Probing::getInstance().showingProbeLEDs;
-int& switchPosition = Probing::getInstance().switchPosition;
-int& probePowerDAC = Probing::getInstance().probePowerDAC;
-int& lastProbePowerDAC = Probing::getInstance().lastProbePowerDAC;
-bool& probePowerDACChanged = Probing::getInstance().probePowerDACChanged;
-int& showProbeCurrent = Probing::getInstance().showProbeCurrent;
+volatile int& sfProbeMenu = Probing::getInstance( ).sfProbeMenu;
+unsigned long& probingTimer = Probing::getInstance( ).probingTimer;
+int& probePin = Probing::getInstance( ).probePin;
+int& buttonPin = Probing::getInstance( ).buttonPin;
+volatile unsigned long& blockProbeButton = Probing::getInstance( ).blockProbeButton;
+volatile unsigned long& blockProbeButtonTimer = Probing::getInstance( ).blockProbeButtonTimer;
+volatile int& connectOrClearProbe = Probing::getInstance( ).connectOrClearProbe;
+int& node1or2 = Probing::getInstance( ).node1or2;
+int& probeHighlight = Probing::getInstance( ).probeHighlight;
+volatile int& removeFade = Probing::getInstance( ).removeFade;
+volatile bool& bufferPowerConnected = Probing::getInstance( ).bufferPowerConnected;
+int& debugProbing = Probing::getInstance( ).debugProbing;
+volatile int& showingProbeLEDs = Probing::getInstance( ).showingProbeLEDs;
+int& switchPosition = Probing::getInstance( ).switchPosition;
+int& probePowerDAC = Probing::getInstance( ).probePowerDAC;
+int& lastProbePowerDAC = Probing::getInstance( ).lastProbePowerDAC;
+bool& probePowerDACChanged = Probing::getInstance( ).probePowerDACChanged;
+int& showProbeCurrent = Probing::getInstance( ).showProbeCurrent;
 
 // Additional references for global access
-volatile int& inPadMenu = Probing::getInstance().inPadMenu;
-volatile int& checkingButton = Probing::getInstance().checkingButton;
-int& lastProbeLEDs = Probing::getInstance().lastProbeLEDs;
+volatile int& inPadMenu = Probing::getInstance( ).inPadMenu;
+volatile int& checkingButton = Probing::getInstance( ).checkingButton;
+int& lastProbeLEDs = Probing::getInstance( ).lastProbeLEDs;
 
 // Export probe maps as references
-int (&probeRowMap)[108] = Probing::getInstance().probeRowMap;
-int (&probeRowMapByPad)[108] = Probing::getInstance().probeRowMapByPad;
+int ( &probeRowMap )[ 108 ] = Probing::getInstance( ).probeRowMap;
+int ( &probeRowMapByPad )[ 108 ] = Probing::getInstance( ).probeRowMapByPad;
 
 // Export pad settings
-int (&logoTopSetting)[2] = Probing::getInstance().logoTopSetting;
-int (&logoBottomSetting)[2] = Probing::getInstance().logoBottomSetting;
-int (&buildingTopSetting)[2] = Probing::getInstance().buildingTopSetting;
-int (&buildingBottomSetting)[2] = Probing::getInstance().buildingBottomSetting;
+int ( &logoTopSetting )[ 2 ] = Probing::getInstance( ).logoTopSetting;
+int ( &logoBottomSetting )[ 2 ] = Probing::getInstance( ).logoBottomSetting;
+int ( &buildingTopSetting )[ 2 ] = Probing::getInstance( ).buildingTopSetting;
+int ( &buildingBottomSetting )[ 2 ] = Probing::getInstance( ).buildingBottomSetting;
 
 // ============================================================================
 // Legacy Global Variables (not moved to class yet)
@@ -591,21 +589,19 @@ int nodesToConnect[ 2 ] = { -1, -1 };
 
 unsigned long probeButtonTimer = 0;
 
-int voltageSelection = SUPPLY_3V3;
-int voltageChosen = 0;
+int voltageSelection = TOP_RAIL;
+
 
 int rainbowList[ 13 ][ 3 ] = {
     { 40, 50, 80 }, { 88, 33, 70 }, { 30, 15, 45 }, { 8, 27, 45 }, { 45, 18, 19 }, { 35, 42, 5 }, { 02, 45, 35 }, { 18, 25, 45 }, { 40, 12, 45 }, { 10, 32, 45 }, { 18, 5, 43 }, { 45, 28, 13 }, { 8, 12, 8 } };
 
 int checkingPads = 0;
 
-int justAttached = 0;
+
 uint32_t deleteFade[ 13 ] = { 0x371f16, 0x28160b, 0x191307, 0x141005, 0x0f0901,
                               0x090300, 0x050200, 0x030100, 0x030000, 0x020000,
                               0x010000, 0x000000, 0x000000 };
-uint32_t deleteFadeSides[ 13 ] = { 0x030003, 0x020002, 0x010001, 0x000000, 0x000000,
-                                   0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
-                                   0x000000, 0x000000, 0x000000 };
+
 int fadeIndex = 0;
 
 int Probing::probeMode( int setOrClear, int firstConnection ) {
@@ -614,82 +610,35 @@ int Probing::probeMode( int setOrClear, int firstConnection ) {
 
     // Block button and clear any pre-existing state to prevent double-detection
     blockProbeButton = 3000;
-    blockProbeButtonTimer = millis();
-    probeButton.clearButtonState();  // Clear the button state that triggered entry
+    blockProbeButtonTimer = millis( );
+    probeButton.clearButtonState( ); // Clear the button state that triggered entry
 
 
-    if ( firstConnection > 0 ) {
-        // Serial.print("firstConnection: ");
-        // Serial.println(firstConnection);
-        // Serial.flush();
-    }
+/* clang-format off */
 
     int deleteMisses[ 20 ] = {
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
-        -1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
     };
+
+/* clang-format on */
+
     int deleteMissesIndex = 0;
 
-restartProbing:
-    // Serial.println(numberOfNets);
+    int connectionsThisSession = 0; // Track total connections made this probe mode session
 
-    // connectOrClearProbe = setOrClear;
+restartProbing:
+
     probeActive = 1;
     brightenNet( -1 );
-    // unsigned long timer[3] = {0, 0, 0};
-    // timer[0] = micros();
 
-    if ( switchPosition == 0 ) {
+    if ( switchPosition == 0 && globalState.hasConnection(probePowerDAC == 0? DAC0 : DAC1, ROUTABLE_BUFFER_IN)) {
         changeTerminalColor( 197 );
         Serial.println( "  Switch is in Measure mode!\n\r  Set switch to Select mode for best results\n\r" );
         Serial.flush( );
     }
 
-    // probingTimer = millis();
-
-    // Serial.print("Press any key to exit and commit paths (or touch probe to
-    // gpio 18)   ");
-    // Serial.print("\n\r\t  Probe Active\n\r");
-    // Serial.print("   long press  = connect (blue) / clear (red)\n\r");
-    // Serial.println("   short press = commit");
-    // timer[2] = micros();
-
-    //   Serial.print("millis() - timer[0] = ");
-    // Serial.print(millis() - timer[0]);
-    // Serial.println("\t");
-    // Serial.print("millis() - timer[1] = ");
-    // Serial.print(millis() - timer[1]);
-    // Serial.print("\t");
-    // Serial.println(timer[1] - timer[0]);
-
-    // Serial.print("millis() - timer[2] = ");
-    // Serial.print(millis() - timer[2]);
-    // Serial.print("\t");
-    // Serial.println(timer[2] - timer[1]);
-    // Serial.println();
-
-    // timer[2] = micros();
     if ( setOrClear == 1 ) {
-        // sprintf(oledBuffer, "connect  ");
-        // drawchar();
+
         changeTerminalColor( 45 );
         Serial.println( "\n\r\t connect nodes\n\r" );
         Serial.flush( );
@@ -697,10 +646,6 @@ restartProbing:
         rawOtherColors[ 1 ] = 0x4500e8;
 
     } else {
-
-        // sprintf(oledBuffer, "clear");
-        // drawchar();
-        // oled.clearPrintShow("clear nodes", 1, true, true, true);
 
         changeTerminalColor( 202 );
         Serial.println( "\n\r\t clear nodes\n\r" );
@@ -710,6 +655,8 @@ restartProbing:
     }
 
 restartProbingNoPrint:
+
+
     if ( setOrClear == 1 && firstConnection == -1 ) {
         oled.clearPrintShow( "connect nodes", 1, true, true, true );
     } else if ( setOrClear == 0 && firstConnection == -1 ) {
@@ -721,50 +668,19 @@ restartProbingNoPrint:
 
     probeHighlight = -1;
 
-    // saveLocalNodeFile();
-    //  timer[1] = micros();
-
-    // Serial.print("routableBufferPower(1, 0) = ");
-    // Serial.print(timer[1] - timer[0]);
-    // Serial.println("\t");
-
-    // Serial.flush();
-
     int numberOfLocalChanges = 0;
 
     connectOrClearProbe = setOrClear;
-    int lastRow[ 10 ];
-
-    // Serial.print(numberOfNets);
-
-    if ( numberOfNets == 0 ) {
-        // clearNodeFile(netSlot);
-    }
-
-    int probedNodes[ 40 ][ 2 ];
-    int probedNodesIndex = 0;
 
     int row[ 16 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     row[ 1 ] = -2;
     row[ 0 ] = -2;
 
-    // if (firstConnection > 0) {
-    //   row[0] = firstConnection;
-    //  /// firstConnection = -1;
-    //   }
     probeTimeout = millis( );
-
-    // timer[3] = micros();
-
-    // Serial.print("oled.clearPrintShow = ");
-    // Serial.println(timer[3] - timer[2]);
-    // Serial.flush();
 
     if ( setOrClear == 0 ) {
         probeButtonTimer = millis( );
-
-        // probingTimer = millis() -400;
     }
 
     if ( setOrClear == 1 ) {
@@ -772,14 +688,9 @@ restartProbingNoPrint:
     } else {
         showProbeLEDs = 2;
     }
-    // timer[4] = micros();
+
     connectOrClearProbe = setOrClear;
 
-    // Serial.print("setOrClear = ");
-    // Serial.println(setOrClear);
-
-    // Serial.print("showProbeLEDs = ");
-    // Serial.println(showProbeLEDs);
     showLEDsCore2 = 1;
     unsigned long doubleSelectTimeout = millis( );
     int doubleSelectCountdown = 0;
@@ -788,22 +699,13 @@ restartProbingNoPrint:
     unsigned long fadeTimer = millis( );
     int fadeClear = -1;
 
-    // Serial.print("timer[0] = ");
-    // Serial.println(timer[0]);
-    // Serial.print("timer[1] = ");
-    // Serial.println(timer[1]);
-    // Serial.println(timer[1] - timer[0]);
-    // Serial.flush();
-    // Serial.print("\n\r");
-    // Serial.println(setOrClear);
-
     //! this is the main loop for probing
     while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 6200 &&
             encoderButtonState == IDLE ) {
         delayMicroseconds( 500 );
-        
+
         // Keep critical services (like ProbeButton) running during blocking probeMode
-        jOS.serviceCritical();
+        jOS.serviceCritical( );
 
         connectedRowsIndex = 0;
 
@@ -816,20 +718,14 @@ restartProbingNoPrint:
             } else {
                 firstConnection = -3;
             }
-            // Serial.print("firstConnection = ");
-            // Serial.println(firstConnection);
-            // Serial.print("row[0] = ");
-            // Serial.println(row[0]);
-            // Serial.print("setOrClear = ");
-            // Serial.println(setOrClear);
-            // Serial.flush();
+
         } else {
 
             row[ 0 ] = readProbe( );
         }
 
         if ( row[ 0 ] == -1 ) {
-          //tuiGlue.loop();
+            // tuiGlue.loop();
         }
         // Serial.println(row[0]);
 
@@ -845,13 +741,13 @@ restartProbingNoPrint:
                 fadeTimer = millis( );
                 if ( numberOfLocalChanges > 0 ) {
 
-                    //saveStateToSlot( netSlot );
-                   // saveLocalNodeFile( netSlot );
+                    // saveStateToSlot( netSlot );
+                    // saveLocalNodeFile( netSlot );
                     // Serial.print("\n\r");
                     // Serial.print("saving local node file\n\r");
 
                     // refreshConnections();
-                    //numberOfLocalChanges = 0;
+                    // numberOfLocalChanges = 0;
                 }
             }
             // showLEDsCore2 = -1;
@@ -896,12 +792,12 @@ restartProbingNoPrint:
                     fadeClear = 1;
                     showLEDsCore2 = -1;
                     if ( numberOfLocalChanges > 0 ) {
-                       // saveLocalNodeFile( netSlot );
+                        // saveLocalNodeFile( netSlot );
                         // Serial.print("\n\r");
                         // Serial.print("saving local node file\n\r");
-                       // saveStateToSlot( netSlot );
+                        // saveStateToSlot( netSlot );
                         // refreshConnections();
-                        //numberOfLocalChanges = 0;
+                        // numberOfLocalChanges = 0;
                     }
                 }
             }
@@ -910,19 +806,37 @@ restartProbingNoPrint:
         if ( ( row[ 0 ] == -18 || row[ 0 ] == -16 ) ) { //&&
             // (millis() - probingTimer > 500)) { //&&
 
-            if ( row[ 0 ] == -18 ) {
+            // Serial.println("row[0] = " + String(row[0]));
+            // Serial.println("setOrClear = " + String(setOrClear));
+            // Serial.println("node1or2 = " + String(node1or2));
+            // Serial.println("connectionsThisSession = " + String(connectionsThisSession));
+            // Serial.println("probingTimer = " + String(probingTimer));
+            // Serial.println("probeButtonTimer = " + String(probeButtonTimer));
+            // Serial.println("probeHighlight = " + String(probeHighlight));
+            // Serial.println("showLEDsCore2 = " + String(showLEDsCore2));
+            // Serial.println("connectedRowsIndex = " + String(connectedRowsIndex));
+            // Serial.println("--------------------------------\n\r1\n\r2\n\r3\n\r4\n\r5\n\r");
+            // Serial.flush( );
 
-                if ( setOrClear == 0 ) {
+            if ( row[ 0 ] == -18 ) {//clear button
+               // Serial.println("-18 clear button\n\r");
+
+                if ( setOrClear == 0 ) {//already in clear mode
+                   // Serial.println("-18 setOrClear == 0\n\r");
                     nodesToConnect[ 0 ] = -1;
                     nodesToConnect[ 1 ] = -1;
                     node1or2 = 0;
                     // clearLEDsExceptRails();
                     probeHighlight = -1;
                     showLEDsCore2 = -1;
+                    //connectionsThisSession = 0;
+                    Serial.print( "\x1b[2K\r" ); // Clear the line and return cursor to start
 
+                    Serial.flush( );
                     // Serial.println("setOrClear == 0");
-                } else {
+                } else {//switch to clear mode
 
+                   // Serial.println("-18 setOrClear == 1\n\r");
                     setOrClear = 0;
                     probingTimer = millis( );
                     probeButtonTimer = millis( );
@@ -938,13 +852,21 @@ restartProbingNoPrint:
                     // clearLEDsExceptRails();
                     showLEDsCore2 = 1;
                     node1or2 = 0;
+
+                    //Serial.println("-18 connectionsThisSession = " + String(connectionsThisSession) + "\n\n\n\n\n\r");
+                    if ( connectionsThisSession == 0 ) {
+                        Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
+                        Serial.flush( );
+                        connectionsThisSession = 0;
+                    }
+
                     // showProbeLEDs = 1;
                     goto restartProbing;
                 }
                 // break;
-            } else if ( row[ 0 ] == -16 ) {
+            } else if ( row[ 0 ] == -16 ) {//connect button
 
-                if ( setOrClear == 1 ) {
+                if ( setOrClear == 1 ) {// already in connect mode
                     // showProbeLEDs = 2;
                     //  delay(100);
                     if ( node1or2 == 1 ) {
@@ -958,14 +880,24 @@ restartProbingNoPrint:
                         // clearLEDsExceptRails();
                         showLEDsCore2 = -2;
                         // waitCore2();
-                        Serial.print( "\r                                \r" );
-                        Serial.flush( );
-                        // Serial.println("setOrClear == 1");
+
+                         //Serial.println("-16 setOrClear == 1\n\r");
+                        // if ( connectionsThisSession == 0 ) {
+                           Serial.print( "\x1b[2K\r" ); // Clear the line and return cursor to start
+
+                            Serial.flush( );
+                           // connectionsThisSession = 0;
+                       // }
                         goto restartProbingNoPrint;
+
                     } else {
-                        // Serial.println("setOrClear == 1 && node1or2 == 0");
+
+                        //Serial.println("-16 setOrClear == 0 && node1or2 == 0\n\r");
+                        // Serial.println("setOrClear == 1 && node1or2 == 
+                        // 0");
                     }
-                } else {
+                } else { //switch to connect mode
+                   // Serial.println("-16 setOrClear == 0\n\r");
                     setOrClear = 1;
                     // showProbeLEDs = 2;
 
@@ -994,6 +926,18 @@ restartProbingNoPrint:
                         //  Serial.println(map(i, 0,deleteMissesIndex, 0, 19));
                     }
                     showLEDsCore2 = 1;
+                    if ( connectionsThisSession == 0 ) {
+                        Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
+                        Serial.flush( );
+                       
+                    } else {
+                        Serial.print( "\x1b[2K\r" ); // Clear the line and return cursor to start
+                        Serial.flush( );
+                    }
+                    connectionsThisSession = 0;
+
+                                            // Serial.println("setOrClear == 1");
+
 
                     goto restartProbing;
                 }
@@ -1182,6 +1126,7 @@ restartProbingNoPrint:
                         numberOfLocalChanges++;
                         // refreshConnections(1, 1, 0);
                         // showLEDsCore2 = -1;
+                        connectionsThisSession++;
                         break;
 
                     } else {
@@ -1189,6 +1134,7 @@ restartProbingNoPrint:
                         // Add to RAM state (local changes accumulated in RAM)
                         addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ] );
                         numberOfLocalChanges++;
+                        connectionsThisSession++;
                     }
                     brightenNet( -1 );
 
@@ -1224,13 +1170,7 @@ restartProbingNoPrint:
                     doubleSelectTimeout = millis( );
                     doubleSelectCountdown = 200;
 
-                    //             Serial.print("\n\n\rPaths: \n\r");
-                    //   printPathsCompact();
-                    //   Serial.print("\n\n\n\rChip Status: \n\r");
-                    // printChipStatus();
-                    // Serial.println("\n\n\r");
-
-                    // delay(400);
+                  
                 } else if ( setOrClear == 0 ) {
 
                     char node1Name[ 12 ];
@@ -1285,14 +1225,24 @@ restartProbingNoPrint:
                     // Remove from RAM state - let auto-save handle persistence
                     // This removes ALL connections containing nodesToConnect[0]
                     bool removed = removeBridgeFromState( nodesToConnect[ 0 ], -1 );
-                    
+                   
                     // The number of removed connections is tracked in lastRemovedNodesIndex
                     int rowsRemoved = removed ? lastRemovedNodesIndex : 0;
                     if ( removed ) {
                         numberOfLocalChanges += rowsRemoved;
+                       
                     }
+                    //if ( rowsRemoved > 0 ) {
+                       
+                        // Serial.print("connectionsThisSession: ");
+                        // Serial.print(connectionsThisSession);
+                        // Serial.flush( );
+                   // }
+
                     // waitCore2();
                     if ( rowsRemoved > 0 ) {
+                        connectionsThisSession++;
+                       //connectionsThisSession++;
                         removeFade = 10;
 
                         // goto restartProbing;
@@ -1306,6 +1256,7 @@ restartProbingNoPrint:
                                 Serial.print( ", " );
                                 charCount += 2;
                             }
+                            
                         }
                         for ( int i = 0; i < 8 - charCount; i++ ) {
                             Serial.print( " " );
@@ -1327,10 +1278,10 @@ restartProbingNoPrint:
 
                         // Serial.println(numberOfLocalChanges);
                         // clearLEDsExceptMiddle(1,60);
-                        
+
                         // NOTE: refreshLocalConnections() is already called inside removeBridgeFromState()
                         // No need to call it again here - that was causing double refresh delay!
-                        
+
                         // delay(10);
                         waitCore2( );
                         showLEDsCore2 = -1;
@@ -1444,16 +1395,22 @@ restartProbingNoPrint:
     //  Serial.print("millis() - timer[3] = ");
     //  Serial.println(millis() - timer[3]);
 
+    if ( connectionsThisSession == 0 ) {
+        Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
+        Serial.flush( );
+        connectionsThisSession = 0;
+    }
+
     Serial.flush( );
 
     // showLEDsCore2 = -1;
     // refreshLocalConnections(-1);
     // delay(10);
     if ( numberOfLocalChanges > 0 ) {
-        Serial.print( "Accumulated " );
-        Serial.print( numberOfLocalChanges );
-        Serial.println( " changes in RAM (will auto-save)" );
-        Serial.flush( );
+        // Serial.print( "Accumulated " );
+        // Serial.print( numberOfLocalChanges );
+        // Serial.println( " changes in RAM (will auto-save)" );
+        // Serial.flush( );
         // Don't save immediately - let auto-save scheduler handle it after 2 seconds
         // This keeps probing responsive
     }
@@ -1476,11 +1433,11 @@ restartProbingNoPrint:
     // while (probeButton.getButtonState() != 0) {
     //     delay(10);  // Wait for user to release button
     // }
-    
+
     // Clear any residual button state and block for safety
-    probeButton.clearButtonState();
-    blockProbeButton = 1000;  // Extra 100ms safety margin
-    blockProbeButtonTimer = millis();
+    probeButton.clearButtonState( );
+    blockProbeButton = 1000; // Extra 100ms safety margin
+    blockProbeButtonTimer = millis( );
 
     return 1;
 }
@@ -1975,23 +1932,23 @@ int Probing::delayWithButton( int delayTime ) {
     // This allows button presses to propagate to outer probe mode logic
     unsigned long skipTimer = millis( );
     int lastSeenState = 0;
-    
+
     while ( millis( ) - skipTimer < delayTime ) {
         // Check CURRENT state without consuming events
-        int currentState = probeButton.getButtonState();
-        
+        int currentState = probeButton.getButtonState( );
+
         // Detect button press (transition from 0 to pressed)
-        if (currentState != 0 && lastSeenState == 0) {
+        if ( currentState != 0 && lastSeenState == 0 ) {
             // Button just pressed - return which button it was
             // Serial.print("delayWithButton detected press: ");
             // Serial.println(currentState);
             return currentState;
         }
-        
+
         lastSeenState = currentState;
         delayMicroseconds( 100 );
     }
-    
+
     // Timeout - no button pressed
     return 0;
 }
@@ -2040,7 +1997,29 @@ int Probing::chooseDAC( int justPickOne ) {
                 if ( justPickOne == 1 ) {
                     return function;
                 }
-                setDac0voltage( voltageSelect( 5 ) );
+
+                // Use new unified voltage adjuster with probe support
+                VoltageAdjustConfig config;
+                config.minVoltage = -8.0;
+                config.maxVoltage = 8.0;
+                config.initialValue = globalState.power.dac0;
+                config.label = "DAC 0";
+                config.enableSnap = false;
+                config.liveUpdateInRange = true;
+                config.liveUpdateMin = 0.0;
+                config.liveUpdateMax = 5.0;
+                config.callback = []( float newValue, bool isLive, void* context ) {
+                    setDac0voltage( newValue, 1, 0, false );
+                    globalState.power.dac0 = newValue;
+                };
+
+                AdjustResult result = VoltageAdjuster::adjust( config );
+                if ( result == AdjustResult::CONFIRMED ) {
+                    // Save to persistent storage
+                    saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                                  globalState.power.dac0, globalState.power.dac1 );
+                }
+
                 // showNets();
                 showLEDsCore2 = -1;
                 delay( 100 );
@@ -2054,7 +2033,29 @@ int Probing::chooseDAC( int justPickOne ) {
                     return function;
                     // break;
                 }
-                setDac1voltage( voltageSelect( 8 ) );
+
+                // Use new unified voltage adjuster with probe support
+                VoltageAdjustConfig config;
+                config.minVoltage = -8.0;
+                config.maxVoltage = 8.0;
+                config.initialValue = globalState.power.dac1;
+                config.label = "DAC 1";
+                config.enableSnap = false;
+                config.liveUpdateInRange = true;
+                config.liveUpdateMin = 0.0;
+                config.liveUpdateMax = 5.0;
+                config.callback = []( float newValue, bool isLive, void* context ) {
+                    setDac1voltage( newValue, 1, 0, false );
+                    globalState.power.dac1 = newValue;
+                };
+
+                AdjustResult result = VoltageAdjuster::adjust( config );
+                if ( result == AdjustResult::CONFIRMED ) {
+                    // Save to persistent storage
+                    saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                                  globalState.power.dac0, globalState.power.dac1 );
+                }
+
                 // showNets();
                 showLEDsCore2 = -1;
                 delay( 100 );
@@ -2199,7 +2200,7 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
     // Serial.println(gpioChosen);
 
     // delay(100);
-    
+
     // Loop until option selected or button pressed to exit
     // longShortPress now uses state-based API, won't consume events
     while ( settingOption == -1 && longShortPress( 500 ) != 1 ) {
@@ -2210,7 +2211,7 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
                 gpioState[ gpioChosen - 1 ] = 4;
                 if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 0 ) {
                     globalState.config.gpioDirection[ gpioChosen - 1 ] = 1;
-                    globalState.markDirty();
+                    globalState.markDirty( );
                     configChanged = true;
                 }
                 settingOption = 4;
@@ -2220,7 +2221,7 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
                 gpioState[ gpioChosen - 1 ] = 0;
                 if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 1 ) {
                     globalState.config.gpioDirection[ gpioChosen - 1 ] = 0;
-                    globalState.markDirty();
+                    globalState.markDirty( );
                     configChanged = true;
                 }
                 settingOption = 0;
@@ -2457,7 +2458,7 @@ int Probing::chooseGPIO( int skipInputOutput ) {
             updateStateFromGPIOConfig( );
             // gpioState[gpioChosen] = 4;
             // updateGPIOConfigFromState();
-            //configChanged = true;
+            // configChanged = true;
             // printGPIOState();
             //  }
         } else if ( outIn == 0 ) {
@@ -2467,7 +2468,7 @@ int Probing::chooseGPIO( int skipInputOutput ) {
             updateStateFromGPIOConfig( );
             // gpioState[gpioChosen] = 0;
             // updateGPIOConfigFromState();
-            //configChanged = true;
+            // configChanged = true;
             // printGPIOState();
             //}
         }
@@ -2518,6 +2519,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
         int encoderReadingPos = 45;
         rotaryDivider = 4;
         while ( vSelected == -1 ) {
+            jOS.serviceCritical( );
             int reading = justReadProbe( );
             // rotaryEncoderStuff();
             int encodeEdit = 0;
@@ -2596,6 +2598,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
                 //   vSelected = 10;
                 // }
                 vSelected = 1;
+                probeButton.clearButtonState( );
                 return voltageProbe;
                 showLEDsCore2 = -1;
                 break;
@@ -2631,6 +2634,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
 
         while ( vSelected == -1 ) {
 
+            jOS.serviceCritical( );
             int reading = justReadProbe( );
             rotaryEncoderStuff( );
 
@@ -2712,6 +2716,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
                 }
                 vSelected = 1;
                 showLEDsCore2 = -1;
+                probeButton.clearButtonState( );
                 return voltageProbe;
                 break;
             }
@@ -2758,36 +2763,36 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
     }
 
     float current_mA = checkProbeCurrent( );
-    
+
     // HYSTERESIS LOGIC to prevent oscillation:
     // Use different thresholds depending on current state to create a "dead zone"
-    // 
+    //
     // State transitions:
     //   MEASURE -> SELECT: only when current > HIGH threshold (0.90 mA)
     //   SELECT -> MEASURE: only when current < LOW threshold (0.70 mA)
     //
     // This prevents oscillation because changing the LED mode affects current draw,
     // but the new current will still be within the hysteresis band so no state change occurs.
-    
+
     // Serial.print("Switch position (before): ");
     // Serial.print(switchPosition);
     // Serial.print("  Current: ");
     // Serial.println(current_mA);
-    
+
     if ( switchPosition == 0 ) {
         // Currently in MEASURE mode - only switch to SELECT if current exceeds HIGH threshold
         if ( current_mA > jumperlessConfig.calibration.probe_switch_threshold_high ) {
             switchPosition = 1;
-          //  Serial.println("Switching to SELECT mode (HIGH threshold exceeded)");
+            //  Serial.println("Switching to SELECT mode (HIGH threshold exceeded)");
         }
     } else {
         // Currently in SELECT mode - only switch to MEASURE if current falls below LOW threshold
         if ( current_mA < jumperlessConfig.calibration.probe_switch_threshold_low ) {
             switchPosition = 0;
-            //Serial.println("Switching to MEASURE mode (LOW threshold crossed)");
+            // Serial.println("Switching to MEASURE mode (LOW threshold crossed)");
         }
     }
-    
+
     // Serial.print("Switch position (after): ");
     // Serial.println(switchPosition);
 
@@ -2802,11 +2807,10 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
     //   Serial.print(" ");
     // }
     // Serial.println();
-     Serial.flush();
+    Serial.flush( );
 
     return switchPosition;
 }
-
 
 float Probing::checkProbeCurrent( void ) {
     // showProbeLEDs = 10;
@@ -2818,23 +2822,23 @@ float Probing::checkProbeCurrent( void ) {
     float lastDac = globalState.power.dac0;
 
     float current = 0.0;
-    
+
     // Wait for INA219 conversion to complete (~8.5ms with 16 sample averaging)
     // The conversion flag indicates when a new reading is ready
-    unsigned long timeout_start = millis();
-    while (!INA1.getConversionFlag() && (millis() - timeout_start < 20)) {
-        delayMicroseconds(100);
+    unsigned long timeout_start = millis( );
+    while ( !INA1.getConversionFlag( ) && ( millis( ) - timeout_start < 20 ) ) {
+        delayMicroseconds( 100 );
     }
-    
+
     // Take fewer samples since INA219 is already doing 16x averaging internally
     for ( int i = 0; i < div; i++ ) {
         // Wait for conversion flag before each read
-        timeout_start = millis();
-        while (!INA1.getConversionFlag() && (millis() - timeout_start < 20)) {
-            delayMicroseconds(100);
+        timeout_start = millis( );
+        while ( !INA1.getConversionFlag( ) && ( millis( ) - timeout_start < 20 ) ) {
+            delayMicroseconds( 100 );
         }
         current += INA1.getCurrent_mA( );
-        //delayMicroseconds( 2000 );  // Allow time for next conversion (~8.5ms needed)
+        // delayMicroseconds( 2000 );  // Allow time for next conversion (~8.5ms needed)
     }
     current = current / (float)div;
     // Serial.print("current (before zero) = ");
@@ -2846,7 +2850,7 @@ float Probing::checkProbeCurrent( void ) {
     // Serial.println(current);
     // Serial.flush();
 
-    if ( showProbeCurrent == 1) {
+    if ( showProbeCurrent == 1 ) {
         Serial.print( "                          \rProbe current: " );
         Serial.print( current );
         Serial.print( " mA" );
@@ -2886,7 +2890,7 @@ float Probing::checkProbeCurrentZero( void ) {
     showProbeLEDs = 10;
     probeLEDs.setPixelColor( 0, 0x000000 );
     probeLEDs.show( );
-    delayMicroseconds( 100);
+    delayMicroseconds( 100 );
 
     int div = 8;
 
@@ -2895,19 +2899,19 @@ float Probing::checkProbeCurrentZero( void ) {
 
     // With 16x averaging in the INA219, we can take fewer samples here
     // Wait for first conversion to complete
-    unsigned long timeout_start = millis();
-    while (!INA1.getConversionFlag() && (millis() - timeout_start < 20)) {
-        delayMicroseconds(100);
+    unsigned long timeout_start = millis( );
+    while ( !INA1.getConversionFlag( ) && ( millis( ) - timeout_start < 20 ) ) {
+        delayMicroseconds( 100 );
     }
 
     for ( int i = 0; i < div; i++ ) {
         // Wait for conversion flag before each read
-        timeout_start = millis();
-        while (!INA1.getConversionFlag() && (millis() - timeout_start < 20)) {
-            delayMicroseconds(100);
+        timeout_start = millis( );
+        while ( !INA1.getConversionFlag( ) && ( millis( ) - timeout_start < 20 ) ) {
+            delayMicroseconds( 100 );
         }
         currentSum += INA1.getCurrent_mA( );
-        //delayMicroseconds( 2000 );  // Allow time for next conversion
+        // delayMicroseconds( 2000 );  // Allow time for next conversion
     }
 
     // Serial.print("currentSum = ");
@@ -2987,17 +2991,17 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0 , 1);
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
                 // State functions already call refresh, no need to set needToRefresh
-                needToRefresh = false;  // Already refreshed by state functions
+                needToRefresh = false; // Already refreshed by state functions
             }
         } else if ( probePowerDAC == 1 ) {
             setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1);
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
                 // State functions already call refresh, no need to set needToRefresh
-                needToRefresh = false;  // Already refreshed by state functions
+                needToRefresh = false; // Already refreshed by state functions
             }
         }
 
@@ -3009,7 +3013,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
         // No need to distinguish flash vs local - state system handles it
         if ( probePowerDAC == 0 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1);
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -3021,7 +3025,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             }
         } else if ( probePowerDAC == 1 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1);
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -3068,7 +3072,6 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
     lastProbePowerDAC = probePowerDAC;
     probePowerDACChanged = false;
 }
-
 
 int probeADCmap[ 102 ];
 
@@ -3226,8 +3229,6 @@ void Probing::checkPads( void ) {
 
     padNoTouch = 0;
 
-
-
     // probeReading = probeRowMap[map(probeReading, 30, 4050, 101, 0)];
     probeReading = probeRowMap[ map( probeReading, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 ) ];
     // stopProbe();
@@ -3295,6 +3296,7 @@ void Probing::checkPads( void ) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
             changedNetColors[ brightenedNet ].color = colorPicker( hsv.h, jumperlessConfig.display.led_brightness );
             changedNetColors[ brightenedNet ].node1 = brightenedNode;
+            changedNetColors[ brightenedNet ].fromBridge = false; // User manually set this color
             netColors[ brightenedNet ] = unpackRgb( changedNetColors[ brightenedNet ].color );
             Serial.print( "changedNetColors[" );
             Serial.print( brightenedNet );
@@ -3316,6 +3318,7 @@ void Probing::checkPads( void ) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
             changedNetColors[ brightenedNet ].color = colorPicker( hsv.h, jumperlessConfig.display.led_brightness );
             changedNetColors[ brightenedNet ].node1 = brightenedNode;
+            changedNetColors[ brightenedNet ].fromBridge = false; // User manually set this color
             netColors[ brightenedNet ] = unpackRgb( changedNetColors[ brightenedNet ].color );
             Serial.print( "changedNetColors[" );
             Serial.print( brightenedNet );
@@ -3491,14 +3494,14 @@ int lastDuplicateRead = 0;
 int Probing::justReadProbe( bool allowDuplicates, int rawPad ) {
 
     // Check if probing is blocked and if the block timer has expired
-    if ( blockProbing > 0 && ( millis() - blockProbingTimer < blockProbing ) ) {
-        return -1;  // Still blocked
+    if ( blockProbing > 0 && ( millis( ) - blockProbingTimer < blockProbing ) ) {
+        return -1; // Still blocked
     }
     // Block expired, clear it
     if ( blockProbing > 0 ) {
         blockProbing = 0;
     }
-    
+
     int probeRead = readProbeRaw( 0, allowDuplicates );
 
     if ( probeRead <= 0 ) {
@@ -3514,9 +3517,9 @@ int Probing::justReadProbe( bool allowDuplicates, int rawPad ) {
     // Serial.println(rowProbed);
 
     if ( rowProbed <= 0 || rowProbed > sizeof( probeRowMap ) ) {
-        if (debugProbing == 1) {
-        Serial.print( "out of bounds of probeRowMap[" );
-        Serial.println( rowProbed );
+        if ( debugProbing == 1 ) {
+            Serial.print( "out of bounds of probeRowMap[" );
+            Serial.println( rowProbed );
         }
         return -1;
     }
@@ -3574,8 +3577,8 @@ int Probing::readProbe( ) {
     //   return -18;
     // }
     // Check if probing is blocked and if the block timer has expired
-    if ( blockProbing > 0 && ( millis() - blockProbingTimer < blockProbing ) ) {
-        return -1;  // Still blocked
+    if ( blockProbing > 0 && ( millis( ) - blockProbingTimer < blockProbing ) ) {
+        return -1; // Still blocked
     }
     // Block expired, clear it
     if ( blockProbing > 0 ) {
@@ -3612,13 +3615,13 @@ int Probing::readProbe( ) {
         }
 
         // buttonCheck = millis();
-       // Check button state (blocking is handled by ProbeButton service)
-            int buttonState = checkProbeButton( );
-            if ( buttonState == 1 ) {
-                return -18;
-            } else if ( buttonState == 2 ) {
-                return -16;
-            }
+        // Check button state (blocking is handled by ProbeButton service)
+        int buttonState = checkProbeButton( );
+        if ( buttonState == 1 ) {
+            return -18;
+        } else if ( buttonState == 2 ) {
+            return -16;
+        }
 
         // delayMicroseconds(200);
 
@@ -3869,13 +3872,7 @@ extern "C" int jl_probe_button_blocking( void ) {
     return button_state; // This should never be reached, but just in case
 }
 
-
-
-
-
-
-//!legacy functions from OG probing
-
+//! legacy functions from OG probing
 
 int Probing::selectFromLastFound( void ) {
 
@@ -4019,45 +4016,45 @@ int Probing::selectFromLastFound( void ) {
 
 int Probing::longShortPress( int pressLength ) {
     // Rewritten to use state-based API (doesn't consume button events)
-    // Returns: -1 = no press, 1 = short remove press, 2 = short connect press, 
+    // Returns: -1 = no press, 1 = short remove press, 2 = short connect press,
     //          3 = long remove press, 4 = long connect press
-    
-    unsigned long clickTimer = millis();
-    
+
+    unsigned long clickTimer = millis( );
+
     // Wait for initial button press (check state, don't consume event)
-    int initialState = probeButton.getButtonState();
-    if (initialState == 0) {
+    int initialState = probeButton.getButtonState( );
+    if ( initialState == 0 ) {
         return -1; // No button currently pressed
     }
-    
+
     // Button is pressed - track which button it was
     int whichButton = initialState; // 1=remove, 2=connect
-    
+
     // Wait to see if it's held for pressLength duration
-    while (millis() - clickTimer < pressLength) {
-        int currentState = probeButton.getButtonState();
-        
+    while ( millis( ) - clickTimer < pressLength ) {
+        int currentState = probeButton.getButtonState( );
+
         // If button released before timeout, it's a short press
-        if (currentState == 0) {
+        if ( currentState == 0 ) {
             // Serial.print("Short press detected: ");
             // Serial.println(whichButton);
             return whichButton; // Return 1 or 2 for short press
         }
-        
-        delay(5);
+
+        delay( 5 );
     }
-    
+
     // Button held for full duration - it's a long press
     // Return 3 for long remove, 4 for long connect
-    int longPressCode = (whichButton == 1) ? 3 : 4;
+    int longPressCode = ( whichButton == 1 ) ? 3 : 4;
     // Serial.print("Long press detected: ");
     // Serial.println(longPressCode);
-    
+
     // Wait for button release to avoid repeated detection
-    while (probeButton.getButtonState() != 0) {
-        delay(5);
+    while ( probeButton.getButtonState( ) != 0 ) {
+        delay( 5 );
     }
-    
+
     return longPressCode;
 }
 
@@ -4073,18 +4070,18 @@ int Probing::checkProbeButton( void ) {
     // Check for button press EVENTS, not current state
     // This prevents detecting the same press multiple times
     // Note: getButtonPress() consumes the event, so it only returns non-zero once per press
-    int press = probeButton.getButtonPress();
-    
+    int press = probeButton.getButtonPress( );
+
     // If we got a press event, return it
-    if (press != 0) {
+    if ( press != 0 ) {
         return press;
     }
-    
+
     // Otherwise check if we're in a blocking period (prevents rapid re-checking)
-    if (blockProbeButton > 0 && (millis() - blockProbeButtonTimer < blockProbeButton)) {
-        return 0;  // Still blocked, no button state
+    if ( blockProbeButton > 0 && ( millis( ) - blockProbeButtonTimer < blockProbeButton ) ) {
+        return 0; // Still blocked, no button state
     }
-    
+
     // No press event and not blocked
     return 0;
 }
@@ -4096,7 +4093,7 @@ int Probing::checkProbeButton( void ) {
 int Probing::checkProbeButtonState( void ) {
     // Simply return the current hardware state without consuming events
     // This allows the event to propagate to other parts of the code
-    return probeButton.getButtonState();
+    return probeButton.getButtonState( );
 }
 
 int Probing::readFloatingOrState( int pin, int rowBeingScanned ) { // this is the old probe reading code
@@ -4238,7 +4235,6 @@ int Probing::checkLastFound( int found ) {
 }
 
 void Probing::clearLastFound( ) {}
-
 
 int Probing::scanRows( int pin ) {
     // return readProbe();

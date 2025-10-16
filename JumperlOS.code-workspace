@@ -5,6 +5,9 @@
         },
         {
             "path": "../Jumperless-App"
+        },
+        {
+            "path": "../Jumperless-docs"
         }
     ]
 }

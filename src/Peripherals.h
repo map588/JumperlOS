@@ -339,4 +339,76 @@ int setSlowPWMDutyCycle(int gpio_pin, float duty_cycle);
 int setSlowPWMFrequency(int gpio_pin, float frequency);
 int stopSlowPWM(int gpio_pin);
 
+// ============================================================================
+// VoltageAdjuster Class - Interactive voltage adjustment via encoder
+// ============================================================================
+
+/**
+ * @brief Result of voltage adjustment operation
+ */
+enum class AdjustResult {
+    CONFIRMED,   // User confirmed the value
+    CANCELLED,   // User cancelled (long press)
+    ERROR        // Error occurred
+};
+
+/**
+ * @brief Configuration for VoltageAdjuster
+ */
+struct VoltageAdjustConfig {
+    float minVoltage = -8.0;
+    float maxVoltage = 8.0;
+    float initialValue = 0.0;
+    bool enableSnap = true;
+    bool liveUpdateInRange = true;  // Live update hardware between 0-5V
+    float liveUpdateMin = 0.0;
+    float liveUpdateMax = 5.0;
+    
+    // Visual feedback colors
+    uint32_t posColor = 0x090600;
+    uint32_t negColor = 0x04000f;
+    uint32_t threeColor = 0x140B04;
+    uint32_t fiveColor = 0x170404;
+    uint32_t maxColor = 0x180a0a;
+    uint32_t zeroColor = 0x000e02;
+    uint32_t fiveBlended = 0x0e0300;
+    uint32_t threeBlended = 0x060f00;
+    uint32_t zeroBlended = 0x060801;
+    
+    // Label to display on top row
+    const char* label = nullptr;
+    
+    // Callback function pointer with context
+    void (*callback)(float newValue, bool isLive, void* context) = nullptr;
+    void* context = nullptr;  // User-defined context passed to callback
+};
+
+/**
+ * @brief Interactive voltage adjuster using rotary encoder
+ * 
+ * Provides a reusable UI for adjusting analog voltages with:
+ * - Visual feedback via LEDs and OLED
+ * - Acceleration for fast scrolling
+ * - Optional snap to common values (3.3V, 5V, etc)
+ * - Live hardware updates within safe range
+ * - Preview-only outside safe range
+ * - Confirmation via short press, cancel via long press
+ */
+class VoltageAdjuster {
+public:
+    /**
+     * @brief Adjust a voltage interactively
+     * 
+     * @param config Configuration for the adjustment (includes optional callback)
+     * @return AdjustResult indicating how adjustment ended
+     */
+    static AdjustResult adjust(VoltageAdjustConfig& config);
+    
+private:
+    static float snapValues[3];
+    static uint32_t determineColor(float value, const VoltageAdjustConfig& config);
+    static void updateDisplay(float value, uint32_t color, const VoltageAdjustConfig& config);
+    static bool isInLiveRange(float value, const VoltageAdjustConfig& config);
+};
+
 #endif

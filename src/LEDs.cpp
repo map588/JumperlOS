@@ -9,6 +9,7 @@
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
 #include "Probing.h"
+#include "Colors.h"  // Centralized color handling
 //#include <Adafruit_GFX.h>
 // #include <Adafruit_NeoMatrix.h>
 #include <Adafruit_NeoPixel.h>
@@ -364,459 +365,7 @@ int colorDistance(rgbColor a, rgbColor b) {
   return dr * dr + dg * dg + db * db;
   }
 
-char* colorNameBuffer = (char*)malloc(10);
-
-
-
-// Reference palette
-///@brief Reference palette for color names and terminal colors
-///@param color Full brightness reference color
-///@param dimColor Specially calibrated color for dim matching
-///@param name Color name
-///@param hueStart Start of hue range (0-255)
-///@param hueEnd End of hue range (0-255)
-///@param termColor256 Terminal color for 256-color mode
-///@param termColor16 Terminal color for 16-color mode
-const NamedColor namedColors[] = {
-    {0xFF0000, 0x400000, "red       ", 253, 12, 196, 31},  // Red wraps around 0
-    {0xFFA500, 0x401000, "orange    ", 13, 28, 208, 91},
-    {0xFFBF00, 0x403000, "amber     ", 29, 35, 214, 33},
-    {0xFFFF00, 0x404000, "yellow    ", 36, 60, 226, 93},
-    {0x7FFF00, 0x104000, "chartreuse", 61, 72, 154, 92},
-    {0x00FF00, 0x003000, "green     ", 73, 94, 82, 32},
-    {0x2E8B57, 0x042040, "seafoam   ", 95, 109, 84, 96},
-    {0x00FFFF, 0x004040, "cyan      ", 110, 135, 86, 96},
-    {0x0000FF, 0x000040, "blue      ", 136, 164, 33, 36},
-    {0x4169E1, 0x050040, "royal blue", 165, 175, 27, 34},
-    {0x8A2BE2, 0x100040, "indigo    ", 176, 190, 21, 34},
-    {0x800080, 0x200040, "violet    ", 191, 205, 57, 35},
-    {0x800080, 0x200040, "purple    ", 206, 215, 12, 35},
-    {0xFFC0CB, 0x400010, "pink      ", 216, 235, 164, 95},
-    {0xFF00FF, 0x400020, "magenta   ", 236, 252, 198, 95},
-    {0xFFFFFF, 0x404040, "white     ", 0, 0, 15, 97},    // Special case, no hue range
-    {0x000000, 0x000000, "black     ", 0, 0, 0, 30},    // Special case, no hue range
-    {0x808080, 0x202020, "grey      ", 0, 0, 8, 37}     // Special case, no hue range
-  };
-
-
-
-
-// Helper: get the index of the closest palette color for a given hue
-int closestPaletteHueIdx(int hue) {
-  // First, try to find a direct match using the hue ranges
-  for (int i = 0; i < sizeof(namedColors) / sizeof(namedColors[0]); i++) {
-    // Skip special cases (white, black, grey)
-    if (namedColors[i].hueStart == 0 && namedColors[i].hueEnd == 0) {
-      continue;
-      }
-
-    // Handle normal range
-    if (namedColors[i].hueStart < namedColors[i].hueEnd) {
-      if (hue >= namedColors[i].hueStart && hue <= namedColors[i].hueEnd) {
-        return i;
-        }
-      }
-    // Handle wrapping range (e.g., red spans 250-10)
-    else if (namedColors[i].hueStart > namedColors[i].hueEnd) {
-      if (hue >= namedColors[i].hueStart || hue <= namedColors[i].hueEnd) {
-        return i;
-        }
-      }
-    }
-
-  // If no direct match found, use the closest hue distance
-  int minDist = 256;
-  int minIdx = 0;
-  // Only consider non-special colors (skip white, black, grey)
-  for (int i = 0; i < 14; i++) {
-    // Find the center of the hue range for this color
-    int centerHue;
-    if (namedColors[i].hueStart < namedColors[i].hueEnd) {
-      centerHue = (namedColors[i].hueStart + namedColors[i].hueEnd) / 2;
-      } else {
-      // Handle wrapping range (e.g., red spans 250-10)
-      centerHue = (namedColors[i].hueStart + namedColors[i].hueEnd + 255) / 2;
-      if (centerHue > 255) centerHue -= 255;
-      }
-
-    int dh = abs((int)hue - centerHue);
-    if (dh > 127) dh = 255 - dh; // wrap around hue circle
-
-    if (dh < minDist) {
-      minDist = dh;
-      minIdx = i;
-      }
-    }
-  return minIdx;
-  }
-int colorToVT100(uint32_t color, int colorDepth) {
-  if (colorDepth == 256) {
-return colorToAnsi(color);
-  }
-
-  rgbColor input = unpackRgb(color);
-  // if (abs(input.r - input.g) < 5 && abs(input.g - input.b) < 5 && abs(input.r - input.b) < 5) {
-  //   if (input.r > 4) {
-  //     return 15;
-  //     } else {
-  //     return 0;
-  //     }
-  //   }
-
-  hsvColor inputHsv = RgbToHsv(input);
-
-  if (inputHsv.s < 140) {
-    if (inputHsv.v > 6) {
-      return 15;
-      } else {
-      return 0;
-      }
-    }
-
-  //inputHsv.v = 254;
-  int hue = inputHsv.h;
-  int hueIdx = closestPaletteHueIdx(hue);
- 
-    return namedColors[hueIdx].termColor256;
-
-  }
-
-
-  int colorToAnsi(uint32_t color) {
-
-    unsigned long startTime = micros();
-    if (color == 0x000000) {
-      return 0;
-      }
-    if (color == 0xffffff) {
-      return 15;
-      }
-
-  rgbColor input = unpackRgb(color);
-  hsvColor hsv = RgbToHsv(input);
-
-
-  hsv.v = 232;
-
-  
-  
-  input = HsvToRgb(hsv);
-  
-  // Standard 16 colors (0-15)
-  static const rgbColor ansi16[16] = {
-    {0, 0, 0},       // 0: black
-    {128, 0, 0},     // 1: dark red
-    {0, 128, 0},     // 2: dark green
-    {128, 128, 0},   // 3: dark yellow
-    {0, 0, 128},     // 4: dark blue
-    {128, 0, 128},   // 5: dark magenta
-    {0, 128, 128},   // 6: dark cyan
-    {192, 192, 192}, // 7: light gray
-    {128, 128, 128}, // 8: dark gray
-    {255, 0, 0},     // 9: bright red
-    {0, 255, 0},     // 10: bright green
-    {255, 255, 0},   // 11: bright yellow
-    {0, 0, 255},     // 12: bright blue
-    {255, 0, 255},   // 13: bright magenta
-    {0, 255, 255},   // 14: bright cyan
-    {255, 255, 255}  // 15: white
-  };
-  
-  // 6x6x6 RGB cube levels (for colors 16-231)
-  static const uint8_t cubeLevels[6] = {0, 95, 135, 175, 215, 255};
-  
-  int bestColor = 0;
-  int minDistance = INT_MAX;
-  
-  // Check standard 16 colors (0-15)
-  for (int i = 0; i < 16; i++) {
-    int dr = input.r - ansi16[i].r;
-    int dg = input.g - ansi16[i].g;
-    int db = input.b - ansi16[i].b;
-    int distance = dr*dr + dg*dg + db*db;
-    
-    if (distance < minDistance) {
-      minDistance = distance;
-      bestColor = i;
-    }
-  }
-  
-  // Check 6x6x6 RGB cube (colors 16-231)
-  for (int r = 0; r < 6; r++) {
-    for (int g = 0; g < 6; g++) {
-      for (int b = 0; b < 6; b++) {
-        uint8_t cubeR = cubeLevels[r];
-        uint8_t cubeG = cubeLevels[g];
-        uint8_t cubeB = cubeLevels[b];
-        
-        int dr = input.r - cubeR;
-        int dg = input.g - cubeG;
-        int db = input.b - cubeB;
-        int distance = dr*dr + dg*dg + db*db;
-        
-        if (distance < minDistance) {
-          minDistance = distance;
-          bestColor = 16 + 36*r + 6*g + b;
-        }
-      }
-    }
-  }
-  
-  // Check grayscale ramp (colors 232-255)
-  for (int i = 0; i < 24; i++) {
-    uint8_t gray = 8 + i * 10;  // 8, 18, 28, ..., 238
-    
-    int dr = input.r - gray;
-    int dg = input.g - gray;
-    int db = input.b - gray;
-    int distance = dr*dr + dg*dg + db*db;
-    
-    if (distance < minDistance) {
-      minDistance = distance;
-      bestColor = 232 + i;
-    }
-  }
-  // Serial.print("\n\r colorToAnsi time: ");
-  // Serial.print(micros() - startTime);
-  // Serial.print("\n\r");
-  return bestColor;
-}
-
-
-
-
-
-///@brief Convert a color to a name
-///@param color Color to convert
-///@param length Length of the name
-///@return char* Name of the color
-char* colorToName(uint32_t color, int length)
-  {
-  int numColors = sizeof(namedColors) / sizeof(namedColors[0]);
-  rgbColor input = unpackRgb(color);
-
-
-
-  // Only return black if the color is exactly 0x000000
-  if (color == 0x000000) {
-    const char* black = "black";
-    strncpy(colorNameBuffer, black, strlen(black));
-    colorNameBuffer[strlen(black)] = '\0';
-    return colorNameBuffer;
-    }
-  // Return white if all channels are equal (and not zero)
-  if (input.r == input.g && input.g == input.b && input.r != 0) {
-    const char* white = "white";
-    strncpy(colorNameBuffer, white, strlen(white));
-    colorNameBuffer[strlen(white)] = '\0';
-    return colorNameBuffer;
-    }
-
-  // Convert input to HSV
-  hsvColor inputHsv = RgbToHsv(input);
-
-  // For dim colors or colors that don't match range, use the existing approach
-  // Determine if color is dim (low brightness)
-  bool isDim = inputHsv.v < 70;
-  // Serial.print("\n\r inputHsv.v: ");
-  // Serial.print(inputHsv.v);
-  // Serial.print("\n\r inputHsv.s: ");
-  // Serial.print(inputHsv.s);
-  // Serial.print("\n\r inputHsv.h: ");
-  // Serial.print(inputHsv.h);
-  // Serial.print("\n\r");
-
-
-  int minDist = 0x7FFFFFFF;
-  int minIdx = 0;
-
-  // Check if hue directly falls within a defined range
-  bool foundRange = false;
-  for (int i = 0; i < numColors; i++) {
-    // Skip special cases (white, black, grey) if we have color information
-    if (namedColors[i].hueStart == 0 && namedColors[i].hueEnd == 0) {
-      if (inputHsv.s > 40 && inputHsv.v > 30) continue;
-      }
-
-    // Handle normal range
-    if (namedColors[i].hueStart < namedColors[i].hueEnd) {
-      if (inputHsv.h >= namedColors[i].hueStart && inputHsv.h <= namedColors[i].hueEnd) {
-        minIdx = i;
-        foundRange = true;
-        break;
-        }
-      }
-    // Handle wrapping range (e.g., red spans 253-12)
-    else if (namedColors[i].hueStart > namedColors[i].hueEnd) {
-      if (inputHsv.h >= namedColors[i].hueStart || inputHsv.h <= namedColors[i].hueEnd) {
-        minIdx = i;
-        foundRange = true;
-        break;
-        }
-      }
-    }
-
-  // If no range match was found, fall back to distance calculation
-  if (!foundRange) {
-    for (int i = 0; i < numColors; i++) {
-      uint32_t refColor;
-      if (isDim) {
-        // Use dim reference colors for matching dim input colors
-        refColor = namedColors[i].dimColor;
-        } else {
-        // For brighter colors, compare with standard palette
-        refColor = namedColors[i].color;
-        }
-
-      // For very dim colors, we'll compare RGB directly 
-      if (isDim) {
-        rgbColor refRgb = unpackRgb(refColor);
-        int dr = (int)input.r - (int)refRgb.r;
-        int dg = (int)input.g - (int)refRgb.g;
-        int db = (int)input.b - (int)refRgb.b;
-        int dist = dr * dr + dg * dg + db * db;
-
-        if (dist < minDist) {
-          minDist = dist;
-          minIdx = i;
-          }
-        } else {
-        // Force brightness to max for matching to avoid brightness bias
-        hsvColor compareHsv = inputHsv;
-        compareHsv.v = 254;
-
-        rgbColor refRgb = unpackRgb(refColor);
-        hsvColor refHsv = RgbToHsv(refRgb);
-
-        // Compare hue and saturation only
-        int dh = (int)compareHsv.h - (int)refHsv.h;
-        if (dh > 127) dh = 255 - dh; // wrap around hue circle
-        if (dh < -127) dh = 255 + dh;
-
-        int ds = (int)compareHsv.s - (int)refHsv.s;
-        int dist = dh * dh + ds * ds;
-
-        if (dist < minDist) {
-          minDist = dist;
-          minIdx = i;
-          }
-        }
-      }
-    }
-
-  const char* src = namedColors[minIdx].name;
-  // Serial.print("\n\r");
-  // Serial.print(src);
-  // Serial.print("\n\r");
-  int len = strlen(src);
-  if (length == -1) {
-    // Trim trailing spaces only
-    int end = len - 1;
-    while (end >= 0 && src[end] == ' ') end--;
-    int trimmedLen = end + 1;
-    strncpy(colorNameBuffer, src, trimmedLen);
-    colorNameBuffer[trimmedLen] = '\0';
-    return colorNameBuffer;
-    } else {
-    int padLen = length > len ? length : len;
-    memset(colorNameBuffer, ' ', padLen);
-    strncpy(colorNameBuffer, src, padLen);
-    colorNameBuffer[padLen] = '\0';
-    return colorNameBuffer;
-    }
-  }
-
-///@brief Convert a rgbColor to a name
-///@param color Color to convert
-///@param length Length of the name
-///@return char* Name of the color
-char* colorToName(rgbColor color, int length) {
-  return colorToName(packRgb(color.r, color.g, color.b), length);
-  }
-
-///@brief Convert a hue to a name
-///@param hue Hue to convert
-///@param length Length of the name
-///@return char* Name of the color
-char* colorToName(int hue, int length) {
-  // Serial.print("\n\n\rhueVersion: ");
-  // Serial.print(hue);
-  // Special case: black, white, grey
-  hue = (hue) % 255;
-  if (hue < 0) return colorToName(0x000000, length); // fallback
-
-  // Find the color for this hue using direct range matching
-  for (int i = 0; i < sizeof(namedColors) / sizeof(namedColors[0]); i++) {
-    // Skip special cases (white, black, grey)
-    if (namedColors[i].hueStart == 0 && namedColors[i].hueEnd == 0) {
-      continue;
-      }
-
-    // Handle normal range
-    if (namedColors[i].hueStart < namedColors[i].hueEnd) {
-      if (hue >= namedColors[i].hueStart && hue <= namedColors[i].hueEnd) {
-        const char* src = namedColors[i].name;
-        int len = strlen(src);
-        if (length == -1) {
-          // Trim trailing spaces only
-          int end = len - 1;
-          while (end >= 0 && src[end] == ' ') end--;
-          int trimmedLen = end + 1;
-          strncpy(colorNameBuffer, src, trimmedLen);
-          colorNameBuffer[trimmedLen] = '\0';
-          return colorNameBuffer;
-          } else {
-          int padLen = length > len ? length : len;
-          memset(colorNameBuffer, ' ', padLen);
-          strncpy(colorNameBuffer, src, padLen);
-          colorNameBuffer[padLen] = '\0';
-          return colorNameBuffer;
-          }
-        }
-      }
-    // Handle wrapping range (e.g., red spans 250-10)
-    else if (namedColors[i].hueStart > namedColors[i].hueEnd) {
-      if (hue >= namedColors[i].hueStart || hue <= namedColors[i].hueEnd) {
-        const char* src = namedColors[i].name;
-        int len = strlen(src);
-        if (length == -1) {
-          // Trim trailing spaces only
-          int end = len - 1;
-          while (end >= 0 && src[end] == ' ') end--;
-          int trimmedLen = end + 1;
-          strncpy(colorNameBuffer, src, trimmedLen);
-          colorNameBuffer[trimmedLen] = '\0';
-          return colorNameBuffer;
-          } else {
-          int padLen = length > len ? length : len;
-          memset(colorNameBuffer, ' ', padLen);
-          strncpy(colorNameBuffer, src, padLen);
-          colorNameBuffer[padLen] = '\0';
-          return colorNameBuffer;
-          }
-        }
-      }
-    }
-
-  // If we get here, use the closest match
-  int idx = closestPaletteHueIdx(hue);
-  const char* src = namedColors[idx].name;
-  int len = strlen(src);
-  if (length == -1) {
-    int end = len - 1;
-    while (end >= 0 && src[end] == ' ') end--;
-    int trimmedLen = end + 1;
-    strncpy(colorNameBuffer, src, trimmedLen);
-    colorNameBuffer[trimmedLen] = '\0';
-    return colorNameBuffer;
-    } else {
-    int padLen = length > len ? length : len;
-    memset(colorNameBuffer, ' ', padLen);
-    strncpy(colorNameBuffer, src, padLen);
-    colorNameBuffer[padLen] = '\0';
-    return colorNameBuffer;
-    }
-  }
+// Color functions now in Colors.cpp - using centralized implementation
 
 
 // Declare global variables for scroll acceleration to avoid scope issues
@@ -1834,6 +1383,7 @@ void previewSlotColors(int slot, bool showVoltages) {
   
   loadBridgesFromState();  // Copy bridges from globalState to newBridge[] array
   getNodesToConnect();     // Process newBridge[] array into nets
+  rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
   bridgesToPaths();        // Computes paths from nets
   clearLEDs();  // Clear everything including rails
   // Prepare colors and light up LEDs (but don't call leds.show() - core2stuff does that)
@@ -1914,12 +1464,63 @@ void clearChangedNetColors(int saveToFile) {
     changedNetColors[i].color = 0x000000;
     changedNetColors[i].node1 = 0;
     changedNetColors[i].node2 = 0;
+    changedNetColors[i].fromBridge = false;
     }
   if (saveToFile == 1) {
     saveChangedNetColorsToFile(netSlot, 0);
     }
   }
 
+void rebuildChangedNetColorsFromBridges(void) {
+  // This function rebuilds changedNetColors from bridge colors after nets are regenerated
+  // Bridge colors are stable (indexed by node pairs), but net numbers shift when nets change
+  // We preserve manual user color changes (fromBridge==false) and only rebuild bridge-based colors
+  
+  // Step 1: Clear all bridge-based colors (keep manual user colors)
+  for (int i = 0; i < MAX_NETS; i++) {
+    if (changedNetColors[i].fromBridge) {
+      changedNetColors[i].net = 0;
+      changedNetColors[i].color = 0x000000;
+      changedNetColors[i].node1 = 0;
+      changedNetColors[i].node2 = 0;
+      changedNetColors[i].fromBridge = false;
+    }
+  }
+  
+  // Step 2: Rebuild bridge-based colors using current net assignments
+  for (int b = 0; b < globalState.connections.numBridges && b < MAX_BRIDGES; b++) {
+    int n1 = globalState.connections.bridges[b][0];
+    int n2 = globalState.connections.bridges[b][1];
+    uint32_t bColor = globalState.connections.bridgeColors[b];
+    
+    if (bColor == 0xFFFFFFFF) continue;  // No color for this bridge
+    
+    // Find which net this bridge belongs to now
+    for (int i = 6; i < MAX_NETS; i++) {
+      if (globalState.connections.nets[i].number <= 0) break;
+      
+      // Check if both nodes of the bridge are in this net
+      bool hasN1 = false;
+      bool hasN2 = false;
+      for (int n = 0; n < MAX_NODES && globalState.connections.nets[i].nodes[n] != 0; n++) {
+        if (globalState.connections.nets[i].nodes[n] == n1) hasN1 = true;
+        if (globalState.connections.nets[i].nodes[n] == n2) hasN2 = true;
+      }
+      
+      if (hasN1 && hasN2) {
+        // This bridge belongs to this net - assign the color if not already manually set
+        if (changedNetColors[i].net != i || changedNetColors[i].fromBridge) {
+          changedNetColors[i].net = i;
+          changedNetColors[i].color = bColor;
+          changedNetColors[i].node1 = n1;
+          changedNetColors[i].node2 = n2;
+          changedNetColors[i].fromBridge = true;
+        }
+        break;  // Found the net for this bridge, move to next bridge
+      }
+    }
+  }
+}
 
 int removeChangedNetColors(int node, int saveToFile) {
   int ret = 0;
@@ -1929,6 +1530,7 @@ int removeChangedNetColors(int node, int saveToFile) {
       changedNetColors[i].color = 0x000000;
       changedNetColors[i].node1 = 0;
       changedNetColors[i].node2 = 0;
+      changedNetColors[i].fromBridge = false;
       ret = 1;
       }
     }
@@ -2022,11 +1624,13 @@ int checkChangedNetColors(int netIndex) {
         changedNetColors[i].color = changedNetColors[changedNetColorIndex].color;
         changedNetColors[i].node1 = changedNetColors[changedNetColorIndex].node1;
         changedNetColors[i].node2 = changedNetColors[changedNetColorIndex].node2;
+        changedNetColors[i].fromBridge = changedNetColors[changedNetColorIndex].fromBridge;  // Preserve color source
         //changedNetColors[i].net = i;
         changedNetColors[changedNetColorIndex].net = -1;
         changedNetColors[changedNetColorIndex].color = 0x000000;
         changedNetColors[changedNetColorIndex].node1 = 0;
         changedNetColors[changedNetColorIndex].node2 = 0;
+        changedNetColors[changedNetColorIndex].fromBridge = false;
 
         //     Serial.print("swapped changedNetColors[");
         //     Serial.print(changedNetColorIndex);
@@ -2078,8 +1682,6 @@ int checkChangedNetColors(int netIndex) {
 
 uint32_t railNetColors[3] = // dim
   {  0x000f04, 0x0f0202, 0x0f0202 };
-
-
 
 void assignNetColors(int preview) {
   // numberOfNets = 60;
@@ -2400,18 +2002,8 @@ void assignNetColors(int preview) {
 
     if (preview == 0) {
 
-
-
-      if (changedNetColors[i].net == i) {
-        globalState.connections.nets[i].color = unpackRgb(changedNetColors[i].color);
-        netColors[i] = globalState.connections.nets[i].color;
-        continue;
-        //break;
-        }
-
-
-
-
+      // HIGHEST PRIORITY: Real-time measurements (ADC and GPIO readings)
+      // These show actual hardware state and override EVERYTHING else
       for (int a = 0; a < 8; a++) {
         if (i == showADCreadings[a]) {
           // netColors[i] = unpackRgb(rawOtherColors[8]);
@@ -2420,7 +2012,7 @@ void assignNetColors(int preview) {
           showingReading = 1;
           // Serial.print("showing reading: ");
           // Serial.println(i);
-          break;
+          continue; // Skip all other color sources
           }
         }
       for (int a = 0; a < 10; a++) {
@@ -2435,9 +2027,59 @@ void assignNetColors(int preview) {
           // Serial.println(gpioReadingColors[a], HEX);
 
           showingReading = 1;
-          break;
+          continue; // Skip all other color sources
           }
         }
+
+      // SECOND: Check if this net has any bridges with colors (from Wokwi import)
+      // Note: WokwiParser already handles "all green" and "black" by marking them as 0xFFFFFFFF
+      uint32_t bridgeColorForNet = 0xFFFFFFFF;
+      int bridgeColorCount = 0;
+      
+      // Check all bridges to see if any belong to this net
+      for (int b = 0; b < globalState.connections.numBridges && b < MAX_BRIDGES; b++) {
+        int n1 = globalState.connections.bridges[b][0];
+        int n2 = globalState.connections.bridges[b][1];
+        uint32_t bColor = globalState.connections.bridgeColors[b];
+        
+        // Skip if no color (0xFFFFFFFF set by parser for black/all-green cases)
+        if (bColor == 0xFFFFFFFF) continue;
+        
+        // Check if either node of this bridge is in the current net
+        bool inThisNet = false;
+        for (int n = 0; n < MAX_NODES && globalState.connections.nets[i].nodes[n] != 0; n++) {
+          if (globalState.connections.nets[i].nodes[n] == n1 || 
+              globalState.connections.nets[i].nodes[n] == n2) {
+            inThisNet = true;
+            break;
+          }
+        }
+        
+        if (inThisNet) {
+          // This bridge is in this net and has a color
+          if (bridgeColorForNet == 0xFFFFFFFF || bridgeColorForNet == bColor) {
+            bridgeColorForNet = bColor;
+            bridgeColorCount++;
+          }
+          // If there are multiple different colors, use the first one found
+        }
+      }
+      
+      // If we found a bridge color for this net, use it
+      if (bridgeColorForNet != 0xFFFFFFFF) {
+        globalState.connections.nets[i].color = unpackRgb(bridgeColorForNet);
+        netColors[i] = globalState.connections.nets[i].color;
+        continue;
+      }
+
+      // THIRD: User-defined colors
+      if (changedNetColors[i].net == i) {
+        globalState.connections.nets[i].color = unpackRgb(changedNetColors[i].color);
+        netColors[i] = globalState.connections.nets[i].color;
+        continue;
+        //break;
+        }
+
       }
     if (showingReading == 0 || preview != 0) {
 

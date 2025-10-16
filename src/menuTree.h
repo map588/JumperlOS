@@ -80,6 +80,7 @@ String menuLines[] = {
   "-File   Manager",
   "-Probe  Calib",
   "-JDI MIPdisplay",
+  "-DMX Serial",  
 
   //"-Show   Image",
  

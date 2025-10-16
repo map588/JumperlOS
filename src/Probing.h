@@ -202,7 +202,7 @@ public:
     int debugProbing = 0;
     
     volatile int showingProbeLEDs = 0;
-    int switchPosition = 0;
+int switchPosition = -1; // -1 = unknown, 0 = measure, 1 = select
     int lastSwitchPositions[3] = {0, 0, 0};
     
     int probeRowMapByPad[108];

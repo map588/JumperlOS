@@ -86,6 +86,11 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   Serial.print("refreshConnections getNodesToConnect = ");
   Serial.println(millis() - start);
 #endif
+  rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
+#ifdef DEBUG_REFRESH
+  Serial.print("refreshConnections rebuildChangedNetColorsFromBridges = ");
+  Serial.println(millis() - start);
+#endif
 //core1busy = false;
   bridgesToPaths();
 #ifdef DEBUG_REFRESH
@@ -189,6 +194,11 @@ unsigned long start2 = millis();
   Serial.print("refreshLocalConnections getNodesToConnect = ");
   Serial.println(millis() - start2);
 #endif
+  rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
+#ifdef DEBUG_REFRESH
+  Serial.print("refreshLocalConnections rebuildChangedNetColorsFromBridges = ");
+  Serial.println(millis() - start2);
+#endif
   bridgesToPaths();
 #ifdef DEBUG_REFRESH
   Serial.print("refreshLocalConnections bridgesToPaths = ");
@@ -265,6 +275,7 @@ void refreshBlind(
   openNodeFile(netSlot, 1);
   //core1busy = true;
   getNodesToConnect();
+  rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
   bridgesToPaths();
   checkChangedNetColors(-1);
   assignNetColors();

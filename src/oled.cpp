@@ -1,4 +1,5 @@
 #include "oled.h"
+#include "States.h"
 #include "configManager.h"
 #include "PersistentStuff.h"
 #include "LEDs.h"
@@ -1141,8 +1142,8 @@ void oled::oledPeriodic() {
     return;
     if (millis() - lastConnectionCheck > connectionCheckInterval && jumperlessConfig.top_oled.enabled == 1) {
         lastConnectionCheck = millis();
-        if (checkIfBridgeExists(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) == true) {
-            if (checkIfBridgeExists(jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl) == true) {
+        if (globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) == true) {
+            if (globalState.hasConnection(jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl) == true) {
                 if (checkConnection() == false) {
                     oledConnected = false;
                     if (connectionRetries < maxConnectionRetries) {
@@ -1609,9 +1610,9 @@ void oled::flushFramebuffer() {
 // ====================
 
 int oled::connect(void) {
-    if (jumperlessConfig.top_oled.enabled == 0) {
-        return 0;
-    }
+    // if (jumperlessConfig.top_oled.enabled == 0) {
+    //     return 0;
+    // }
     int found = -1;
     // Reserve pins on net map so UI shows them as I2C (not generic GPIO)
     // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -2;
@@ -1651,9 +1652,12 @@ int oled::connect(void) {
 }
 
 void oled::disconnect(void) {
-    if (jumperlessConfig.top_oled.enabled == 0) {
-        return;
-    }
+    // if (jumperlessConfig.top_oled.enabled == 0) {
+    //     return;
+    // }
+   // oledConnected = false;
+    clear(1000);
+    show(1000);
     // Use RAM-based state system
     removeBridgeFromState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row);
     removeBridgeFromState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);

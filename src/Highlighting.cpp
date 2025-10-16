@@ -14,6 +14,8 @@
 #include "config.h"
 #include "hardware/i2c.h"
 #include "oled.h"
+#include "PersistentStuff.h"
+#include "Commands.h"
 #include <Arduino.h>
 #include <cmath>
 
@@ -52,6 +54,24 @@ Highlighting::Highlighting() {
  */
 ServiceStatus Highlighting::service() {
     lastStatus = ServiceStatus::IDLE;
+    
+    // ============================================================================
+    // CRITICAL PATH: Button press check - MUST happen before encoder highlighting
+    // ============================================================================
+    // Check for encoder button press on persistent nodes (rails, DACs) FIRST
+    // This prevents encoder movements from changing highlighting before voltage adjustment
+    if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
+        if (handleEncoderButtonPress()) {
+            // Button press was handled (voltage adjustment, etc.)
+            // CRITICAL: Consume ALL encoder state so nothing else processes it
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            encoderDirectionState = NONE;  // Also consume any pending direction changes
+            lastStatus = ServiceStatus::BLOCKING;
+            return lastStatus;
+        }
+        // If not handled, button press will be processed by other systems (menus, etc.)
+    }
     
     // ============================================================================
     // CRITICAL PATH: Encoder highlighting - MUST run every loop for smooth UX
@@ -501,6 +521,7 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
     switch ( node ) {
     case ( GND ): {
         //  Serial.print("\n\rGND");
+        brightenedNode = node;  // Set brightenedNode for button handler
         brightenedNet = 1;
         brightenedRail = 1;
         // lightUpRail(-1, 1, 1, addBrightness);
@@ -508,6 +529,7 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
     }
     case ( TOP_RAIL ): {
         // Serial.print("\n\rTOP_RAIL");
+        brightenedNode = node;  // Set brightenedNode for button handler
         brightenedNet = 2;
         brightenedRail = 0;
         // lightUpRail(-1, 0, 1, addBrightness);
@@ -515,6 +537,7 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
     }
     case ( BOTTOM_RAIL ): {
         // Serial.print("\n\rBOTTOM_RAIL");
+        brightenedNode = node;  // Set brightenedNode for button handler
         brightenedNet = 3;
         brightenedRail = 2;
         // lightUpRail(-1, 2, 1, addBrightness);
@@ -582,8 +605,8 @@ int Highlighting::warnNet( int node ) {
 
 unsigned long lastWarningTimer = 0;
 unsigned long lastHighlightTimer = 0;
-unsigned long highlightTimeout = 1800;    // 3 seconds timeout for highlighted nets
-unsigned long dacHighlightTimeout = 6000; // 8 seconds timeout for DAC nets
+unsigned long highlightTimeout = 1800;           // 3 seconds timeout for regular nets
+unsigned long persistentHighlightTimeout = 30000; // 30 seconds timeout for rails, DACs, GPIO outputs
 
 unsigned long lastFirstConnectionTimer = 0;
 
@@ -626,22 +649,18 @@ void Highlighting::warnNetTimeout( int clearAll ) {
     }
 
     // Check for highlighted net timeout
-    // Skip timeout if highlighting a GPIO output, use longer timeout for DACs
-    bool skipTimeout = false;
+    // Use persistent node system to determine timeout duration
     unsigned long currentTimeout = highlightTimeout;
-
-    if ( highlightedNet == 4 || highlightedNet == 5 ) {
-        // DAC nets use longer timeout (8 seconds)
-        currentTimeout = dacHighlightTimeout;
-    } else if ( highlightedNet > 0 && anyGpioOutputConnected( highlightedNet ) != -1 ) {
-        // GPIO output nets should never timeout
-        skipTimeout = true;
+    
+    if (shouldPersistHighlight(brightenedNode)) {
+        // Persistent nodes (rails, DACs, GPIO outputs) get much longer timeout
+        currentTimeout = persistentHighlightTimeout;
     }
 
-    if ( !skipTimeout && highlightTimer > 0 && millis( ) - highlightTimer > currentTimeout ) {
-        clearHighlighting( ); // Clear all highlighting when timeout expires
+    if (highlightTimer > 0 && millis() - highlightTimer > currentTimeout) {
+        clearHighlighting(); // Clear all highlighting when timeout expires
         highlightTimer = 0;
-        lastHighlightTimer = millis( );
+        lastHighlightTimer = millis();
     }
 }
 
@@ -1321,4 +1340,320 @@ int Highlighting::checkForReadingChanges( void ) {
     }
 
     return -1; // No updates
+}
+
+// ============================================================================
+// Persistent Node Highlighting and Button Actions
+// ============================================================================
+
+/**
+ * @brief Static callback for rail voltage updates
+ */
+static void railVoltageCallback(float value, bool isLive, void* context) {
+    int rail = (int)(intptr_t)context;  // 0=both, 1=top, 2=bottom
+    
+    if (isLive) {
+        // Live update - set the hardware AND update globalState
+        switch (rail) {
+            case 0: // Both rails
+                setTopRail(value, 1, 0);  // save=1, saveEEPROM=0
+                setBotRail(value, 1, 0);
+                globalState.power.topRail = value;
+                globalState.power.bottomRail = value;
+                break;
+            case 1: // Top rail
+                setTopRail(value, 1, 0);
+                globalState.power.topRail = value;
+                break;
+            case 2: // Bottom rail
+                setBotRail(value, 1, 0);
+                globalState.power.bottomRail = value;
+                break;
+        }
+    } else {
+        // Preview only - update globalState for LED display but DON'T set hardware
+        // The LEDs read from globalState.power, so updating it will show preview
+        switch (rail) {
+            case 0: // Both rails
+                globalState.power.topRail = value;
+                globalState.power.bottomRail = value;
+                break;
+            case 1: // Top rail
+                globalState.power.topRail = value;
+                break;
+            case 2: // Bottom rail
+                globalState.power.bottomRail = value;
+                break;
+        }
+        // Force LED update to show preview
+        lightUpRail(-1, -1, 1, LEDbrightnessRail);
+    }
+}
+
+/**
+ * @brief Static callback for DAC voltage updates
+ */
+static void dacVoltageCallback(float value, bool isLive, void* context) {
+    int dac = (int)(intptr_t)context;  // 0=DAC0, 1=DAC1
+    
+    if (isLive) {
+        // Live update - set the hardware AND update globalState
+        if (dac == 0) {
+            setDac0voltage(value, 1, 0);  // save=1, saveEEPROM=0
+            globalState.power.dac0 = value;
+        } else {
+            setDac1voltage(value, 1, 0);
+            globalState.power.dac1 = value;
+        }
+    } else {
+        // Preview only - update globalState for LED display but DON'T set hardware
+        if (dac == 0) {
+            globalState.power.dac0 = value;
+        } else {
+            globalState.power.dac1 = value;
+        }
+        // Force LED update to show preview (DACs are nets 4 and 5)
+        lightUpNet(dac == 0 ? 4 : 5, -1, 1, LEDbrightnessSpecial, 0);
+    }
+}
+
+/**
+ * @brief Check if a node should persist in highlighting (not timeout)
+ * 
+ * Persistent nodes include:
+ * - Rails (GND, TOP_RAIL, BOTTOM_RAIL)
+ * - DACs (DAC0, DAC1)
+ * - GPIO outputs
+ * 
+ * @param node The node to check
+ * @return true if node should persist, false otherwise
+ */
+bool Highlighting::shouldPersistHighlight(int node) {
+    // Special nodes that persist
+    if (node == TOP_RAIL || node == BOTTOM_RAIL) {
+        return true;
+    }
+    
+    // DAC nets (4 and 5)
+    if (highlightedNet == 4 || highlightedNet == 5) {
+        return true;
+    }
+    
+    // GPIO outputs persist
+    if (highlightedNet > 0 && anyGpioOutputConnected(highlightedNet) != -1) {
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * @brief Check if Highlighting wants to handle the current button press
+ * 
+ * This is called by higher-priority services (like Menus) to check if they
+ * should defer button handling to the Highlighting system for voltage adjustment.
+ * 
+ * @return true if button press should be handled by voltage adjustment, false otherwise
+ */
+bool Highlighting::wantsToHandleButtonPress(void) {
+    // Only want to handle if a net is highlighted
+    if (highlightedNet <= 0) {
+        return false;
+    }
+    
+    // Only handle persistent nodes that can be adjusted
+    if (!shouldPersistHighlight(brightenedNode)) {
+        return false;
+    }
+    
+    // GND is persistent but not adjustable
+    if (brightenedNode == GND) {
+        return false;
+    }
+    
+    // Rails and DACs are adjustable
+    if (brightenedNode == TOP_RAIL || brightenedNode == BOTTOM_RAIL ||
+        highlightedNet == 4 || highlightedNet == 5) {
+        return true;
+    }
+    
+    // GPIO outputs - for now, don't handle (let menu open)
+    // Future: could return true here if we want to toggle GPIO on button press
+    
+    return false;
+}
+
+/**
+ * @brief Handle encoder button press when a persistent node is highlighted
+ * 
+ * Launches appropriate adjustment UI for:
+ * - Rails -> voltage adjustment
+ * - DACs -> voltage adjustment
+ * - GPIO -> (future: toggle output)
+ * 
+ * @return 1 if button press was handled, 0 if not
+ */
+int Highlighting::handleEncoderButtonPress(void) {
+    // Only handle if something is highlighted (check net, not node which can be 0 or negative)
+    if (highlightedNet <= 0) {
+        return 0;
+    }
+    
+    // Check if this is a persistent node
+    if (!shouldPersistHighlight(brightenedNode)) {
+        return 0;
+    }
+    
+    // Handle rails
+    if (brightenedNode == GND) {
+        // GND is not adjustable
+        return 0;
+    }
+    
+    if (brightenedNode == TOP_RAIL) {
+        adjustRailVoltage(1);
+        return 1;
+    }
+    
+    if (brightenedNode == BOTTOM_RAIL) {
+        adjustRailVoltage(2);
+        return 1;
+    }
+    
+    // Handle DACs
+    if (highlightedNet == 4) {
+        adjustDACVoltage(0);
+        return 1;
+    }
+    
+    if (highlightedNet == 5) {
+        adjustDACVoltage(1);
+        return 1;
+    }
+    
+    // GPIO outputs - for now, just indicate we handled it
+    // Future: could toggle output here
+    if (anyGpioOutputConnected(highlightedNet) != -1) {
+        // For now, don't do anything but consume the button press
+        // This prevents menu from opening when clicking on GPIO outputs
+        return 0;  // Return 0 so menu can still open for GPIO
+    }
+    
+    return 0;
+}
+
+/**
+ * @brief Launch voltage adjustment UI for a rail
+ * 
+ * @param rail Which rail to adjust (0=both, 1=top, 2=bottom)
+ */
+void Highlighting::adjustRailVoltage(int rail) {
+    // Save original values for cancellation
+    float origTopRail = globalState.power.topRail;
+    float origBottomRail = globalState.power.bottomRail;
+    
+    // Prepare configuration
+    VoltageAdjustConfig config;
+    config.minVoltage = -8.0;
+    config.maxVoltage = 8.0;
+    config.enableSnap = false;
+    config.liveUpdateInRange = true;
+    config.liveUpdateMin = 0.0;
+    config.liveUpdateMax = 5.0;
+    
+    // Set initial value and label based on which rail
+    switch (rail) {
+        case 0: // Both rails
+            config.initialValue = (globalState.power.topRail + globalState.power.bottomRail) / 2.0;
+            config.label = "Rails";
+            break;
+        case 1: // Top rail
+            config.initialValue = globalState.power.topRail;
+            config.label = "Top Rail";
+            break;
+        case 2: // Bottom rail
+            config.initialValue = globalState.power.bottomRail;
+            config.label = "Bot Rail";
+            break;
+    }
+    
+    // Set callback and context
+    config.callback = railVoltageCallback;
+    config.context = (void*)(intptr_t)rail;
+    
+    // Run the adjuster
+    AdjustResult result = VoltageAdjuster::adjust(config);
+    
+    if (result == AdjustResult::CONFIRMED) {
+        // User confirmed - save voltages to persistent storage
+        saveVoltages(globalState.power.topRail, globalState.power.bottomRail,
+                     globalState.power.dac0, globalState.power.dac1);
+        
+        // Re-highlight the rail to show updated voltage
+        clearHighlighting();
+        highlightNets(0, highlightedNet, 1);
+    } else {
+        // User cancelled - restore original values in globalState
+        globalState.power.topRail = origTopRail;
+        globalState.power.bottomRail = origBottomRail;
+        
+        // Hardware was already restored by VoltageAdjuster callback
+        // Re-highlight to refresh display
+        clearHighlighting();
+        highlightNets(0, highlightedNet, 1);
+    }
+    
+    showLEDsCore2 = 1;
+}
+
+/**
+ * @brief Launch voltage adjustment UI for a DAC
+ * 
+ * @param dac Which DAC to adjust (0=DAC0, 1=DAC1)
+ */
+void Highlighting::adjustDACVoltage(int dac) {
+    // Save original values for cancellation
+    float origDac0 = globalState.power.dac0;
+    float origDac1 = globalState.power.dac1;
+    
+    // Prepare configuration
+    VoltageAdjustConfig config;
+    config.minVoltage = -8.0;
+    config.maxVoltage = 8.0;
+    config.enableSnap = false;
+    config.liveUpdateInRange = true;
+    config.liveUpdateMin = 0.0;
+    config.liveUpdateMax = 5.0;
+    
+    // Set initial value and label based on which DAC
+    config.initialValue = (dac == 0) ? globalState.power.dac0 : globalState.power.dac1;
+    config.label = (dac == 0) ? "DAC 0" : "DAC 1";
+    
+    // Set callback and context
+    config.callback = dacVoltageCallback;
+    config.context = (void*)(intptr_t)dac;
+    
+    // Run the adjuster
+    AdjustResult result = VoltageAdjuster::adjust(config);
+    
+    if (result == AdjustResult::CONFIRMED) {
+        // User confirmed - save voltages to persistent storage
+        saveVoltages(globalState.power.topRail, globalState.power.bottomRail,
+                     globalState.power.dac0, globalState.power.dac1);
+        
+        // Re-highlight the DAC to show updated voltage
+        clearHighlighting();
+        highlightNets(0, highlightedNet, 1);
+    } else {
+        // User cancelled - restore original values in globalState
+        globalState.power.dac0 = origDac0;
+        globalState.power.dac1 = origDac1;
+        
+        // Hardware was already restored by VoltageAdjuster callback
+        // Re-highlight to refresh display
+        clearHighlighting();
+        highlightNets(0, highlightedNet, 1);
+    }
+    
+    showLEDsCore2 = 1;
 }

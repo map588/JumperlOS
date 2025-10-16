@@ -7,10 +7,38 @@
 #include "Peripherals.h"
 #include "PersistentStuff.h"
 #include "EkiloEditor.h"
+#include "Colors.h"
 #include "config.h"
 #include <string.h>
 #include <FatFS.h>
 #include <hardware/gpio.h>
+
+// ============================================================================
+// CRITICAL MEMORY SAFETY NOTES
+// ============================================================================
+//
+// JumperlessState and ConnectionState contain MASSIVE arrays:
+//   - bridges[192][3]        = 2,304 bytes
+//   - bridgeColors[192]      = 768 bytes
+//   - nets[60]               = ~30 KB (depends on netStruct size)
+//   - paths[192]             = ~20 KB (depends on pathStruct size)
+//   
+// TOTAL SIZE: ~50+ KB per JumperlessState instance!
+//
+// **NEVER COPY THESE OBJECTS!**
+//   - Copying exhausts limited stack memory on embedded systems
+//   - Results in crashes, hard faults, or unpredictable behavior
+//   - Always use references (&) or pointers (*)
+//   - Copy constructor and assignment operator are DELETED to enforce this
+//
+// CORRECT:   JumperlessState& state = SlotManager::getInstance().getActiveState();
+// WRONG:     JumperlessState state = SlotManager::getInstance().getActiveState();  // CRASH!
+//
+// If you need to pass state to a function:
+// CORRECT:   void processState(JumperlessState& state) { ... }
+// WRONG:     void processState(JumperlessState state) { ... }  // CRASH!
+//
+// ============================================================================
 
 extern struct config jumperlessConfig;
 extern volatile bool core1busy;
@@ -41,6 +69,10 @@ ConnectionState::ConnectionState() {
 
 void ConnectionState::clear() {
     memset(bridges, 0, sizeof(bridges));
+    // Initialize bridgeColors to 0xFFFFFFFF (no color sentinel)
+    for (int i = 0; i < MAX_BRIDGES; i++) {
+        bridgeColors[i] = 0xFFFFFFFF;
+    }
     numBridges = 0;
     numNets = 0;
     numPaths = 0;
@@ -384,8 +416,10 @@ bool JumperlessState::removeConnection(int node1, int node2, String& errorMsg) {
         connections.bridges[i][0] = connections.bridges[i + 1][0];
         connections.bridges[i][1] = connections.bridges[i + 1][1];
         connections.bridges[i][2] = connections.bridges[i + 1][2];
+        connections.bridgeColors[i] = connections.bridgeColors[i + 1];  // CRITICAL: Shift colors too!
     }
     connections.numBridges--;
+    connections.bridgeColors[connections.numBridges] = 0xFFFFFFFF;  // Clear the last color slot
     
     // Invalidate caches
     connections.invalidateCache(config.autoRefreshOnChange);
@@ -804,13 +838,22 @@ void JumperlessState::serializeBridges(String& output) const {
         
         output += "  - {n1: " + n1Name + 
                   ", n2: " + n2Name + 
-                  ", dup: " + String(connections.bridges[i][2]) + "}\n";
+                  ", dup: " + String(connections.bridges[i][2]);
+        
+        // Add color field if this bridge has a color (0xFFFFFFFF = no color)
+        if (connections.bridgeColors[i] != 0xFFFFFFFF) {
+            // Use rgbToWokwiColorName to preserve original Wokwi color names
+            String colorName = rgbToWokwiColorName(connections.bridgeColors[i]);
+            output += ", color: " + colorName;
+        }
+        
+        output += "}\n";
     }
     output += "\n";
 }
 
 bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorMsg) {
-    // Parse bridge entry: - {n1: TOP_RAIL, n2: NANO_D5, dup: 2}
+    // Parse bridge entry: - {n1: TOP_RAIL, n2: NANO_D5, dup: 2, color: red}
     // Also accepts: - {n1: 101, n2: 75, dup: 2}
     // Tolerant of incomplete lines for live editing
     String line = String(yamlContent);
@@ -824,6 +867,7 @@ bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorM
     
     // Extract values (tolerant of incomplete/missing fields)
     int n1 = -1, n2 = -1, dup = -1;
+    uint32_t color = 0xFFFFFFFF;  // Default to "no color"
     
     // Parse n1 field
     int n1Idx = line.indexOf("n1:");
@@ -880,8 +924,16 @@ bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorM
     // Parse dup field (optional)
     int dupIdx = line.indexOf("dup:");
     if (dupIdx >= 0) {
+        int commaIdx = line.indexOf(',', dupIdx);
         int braceIdx = line.indexOf('}', dupIdx);
-        int endIdx = (braceIdx > dupIdx + 4) ? braceIdx : line.length();
+        int endIdx = line.length();
+        
+        // Use the first valid delimiter
+        if (commaIdx > dupIdx + 4 && (braceIdx == -1 || commaIdx < braceIdx)) {
+            endIdx = commaIdx;
+        } else if (braceIdx > dupIdx + 4) {
+            endIdx = braceIdx;
+        }
         
         if (endIdx > dupIdx + 4) {
             String val = line.substring(dupIdx + 4, endIdx);
@@ -892,13 +944,45 @@ bool JumperlessState::deserializeBridges(const char* yamlContent, String& errorM
         }
     }
     
+    // Parse color field (optional)
+    int colorIdx = line.indexOf("color:");
+    if (colorIdx >= 0) {
+        int braceIdx = line.indexOf('}', colorIdx);
+        int endIdx = (braceIdx > colorIdx + 6) ? braceIdx : line.length();
+        
+        if (endIdx > colorIdx + 6) {
+            String val = line.substring(colorIdx + 6, endIdx);
+            val.trim();
+            if (val.length() > 0) {
+                bool parseSuccess;
+                color = parseColorValue(val, parseSuccess);
+                if (!parseSuccess) {
+                    color = 0;  // Ignore invalid colors
+                }
+            }
+        }
+    }
+    
     // Only add connection if we have both nodes
     if (n1 < 0 || n2 < 0) {
         errorMsg = "Incomplete bridge (missing n1 or n2): " + line;
         return false;
     }
     
-    return addConnection(n1, n2, errorMsg, dup);
+    // Add the connection
+    bool success = addConnection(n1, n2, errorMsg, dup);
+    
+    // Store the color if provided and connection was added
+    // 0xFFFFFFFF means no color was specified
+    if (success && color != 0xFFFFFFFF) {
+        // The bridge was just added, so it's at index (numBridges - 1)
+        int bridgeIdx = connections.numBridges - 1;
+        if (bridgeIdx >= 0 && bridgeIdx < MAX_BRIDGES) {
+            connections.bridgeColors[bridgeIdx] = color;
+        }
+    }
+    
+    return success;
 }
 
 void JumperlessState::serializeNets(String& output) const {
@@ -1493,18 +1577,38 @@ uint32_t parseColorValue(const String& colorStr, bool& success) {
     normalized.toLowerCase();
     
     success = true;
+
+   
+
     
     // Try hex format first
-    if (normalized.startsWith("0x")) {
-        return strtoul(normalized.c_str() + 2, NULL, 16);
+    if (normalized.startsWith("0x") || normalized.startsWith("#")) {
+        uint32_t color = scaleBrightness(strtoul(normalized.c_str() + 2, NULL, 16), -80   );
+        if (debugFP) {
+            Serial.printf("parsed 0x color value: %14s 0x%06X\n", normalized.c_str(), color);
+        }
+        return color;
+    
     }
     
     // Try decimal number
     if (normalized.length() > 0 && isdigit(normalized.charAt(0))) {
-        return normalized.toInt();
+        uint32_t color = scaleBrightness(normalized.toInt(), -50);
+        if (debugFP) {  
+            Serial.printf("parsed decimal color value: %14s 0x%06X\n", normalized.c_str(), color);
+        }
+        return color;
+        
     }
     
-    // Search through named colors
+    // FIRST: Try Wokwi colors (with proper brightness scaling for wire colors)
+    // This ensures consistency between Wokwi JSON import and YAML reload
+//     uint32_t wokwiColor = wokwiColorToRGB(normalized);
+//    // if (wokwiColor != 0x0a0a0a) {  // 0x0a0a0a is the "not found" default from wokwiColorToRGB
+//         return wokwiColor;
+//     //}
+    
+    // SECOND: Try internal named colors for user-assigned colors
     int numColors = sizeof(namedColors) / sizeof(namedColors[0]);
     for (int i = 0; i < numColors; i++) {
         String colorName = String(namedColors[i].name);
@@ -1512,12 +1616,21 @@ uint32_t parseColorValue(const String& colorStr, bool& success) {
         colorName.toLowerCase();
         
         if (normalized == colorName) {
-            return namedColors[i].dimColor;  // Use dimColor for LED display
+            
+            uint32_t color = scaleBrightness(namedColors[i].dimColor, -50);  // Use dimColor for LED display
+            if (debugFP) {
+                Serial.printf("parsed named color value: %14s 0x%06X\n", colorName.c_str(), color);
+            }
+            return color;
+            
         }
     }
     
     // Not found
     success = false;
+    if (debugFP) {
+        Serial.println("parsed color value: " + normalized);
+    }
     return 0x000000;
 }
 

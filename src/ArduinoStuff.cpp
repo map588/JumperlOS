@@ -19,6 +19,8 @@
 #include "configManager.h"
 #include "hardware/uart.h"
 #include "usb_interface_config.h"
+#include "States.h"
+
 // #include "SerialWrapper.h"
 
 // #include <SoftwareSerial.h>
@@ -689,7 +691,11 @@ int handleSerialPassthrough( int serial, int print, int printPassthroughFlashing
         return 0;
     }
 
-    if ( jumperlessConfig.serial_1.function == 1 && ( serial == 0 || serial == 2 ) || true ) {
+    // if (jumperlessConfig.serial_1.autoconnect_flashing == 1) {
+    //     autoConnectArduino( );
+    // }
+
+    if ( jumperlessConfig.serial_1.function == 1 && ( serial == 0 || serial == 2 ) ) {
 
         // if ( countCheck > 100000 ) {
         //     ARDUINO_DEBUG_PRINTLN( "countCheck: " + String( countCheck ) );
@@ -978,7 +984,7 @@ void connectArduino( int flashOrLocal, int refreshConnections ) {
 
     // sendPaths();
 
-    leds.show( );
+//    leds.show( );
 
     while ( checkIfArduinoIsConnected( ) == 0 ) {
     }
@@ -1000,6 +1006,7 @@ void disconnectArduino( int flashOrLocal ) {
     //   } else {
     //   refreshConnections(1, 0);
     //   }
+    
     // refreshBlind(1, 0);
     // sendPaths();
     // waitCore2();
@@ -1007,14 +1014,54 @@ void disconnectArduino( int flashOrLocal ) {
 }
 
 int checkIfArduinoIsConnected( void ) {
+    
 
-    int connected = checkIfBridgeExistsLocal( NANO_D1, RP_UART_RX );
-    connected += checkIfBridgeExistsLocal( NANO_D0, RP_UART_TX );
+        int connected = globalState.hasConnection( NANO_D1, RP_UART_RX );
+    connected += globalState.hasConnection( NANO_D0, RP_UART_TX );
     // Serial.println("connected: " + String(connected));
     if ( connected == 2 ) {
         return 1;
     }
     return 0;
+}
+
+
+int arduinoPresence = 0;
+
+int checkArduinoResetPin0( void ) {
+    // Arduino reset pin 0 should be pulled high when Arduino is present
+    pinMode( ARDUINO_RESET_0_PIN, INPUT );
+    delayMicroseconds( 10 ); // Brief delay for pin to stabilize
+    return digitalRead( ARDUINO_RESET_0_PIN );
+}
+
+int checkArduinoResetPin1( void ) {
+    // Arduino reset pin 1 should be pulled high when Arduino is present
+    pinMode( ARDUINO_RESET_1_PIN, INPUT );
+    delayMicroseconds( 10 ); // Brief delay for pin to stabilize
+    return digitalRead( ARDUINO_RESET_1_PIN );
+}
+
+int checkArduinoPresence( void ) {
+    // Check if either Arduino (top or bottom slot) is present
+    // Returns: 1 if Arduino detected, 0 if not
+    int pin0 = checkArduinoResetPin0( );
+    int pin1 = checkArduinoResetPin1( );
+    
+    // Arduino pulls reset line high via internal pullup
+    // If both are low, no Arduino is present
+    if ( pin0 == HIGH || pin1 == HIGH ) {
+        
+        return 1;
+    }
+    return 0;
+}
+
+void autoConnectArduino( void ) {
+    if ( checkArduinoPresence( ) == 1 && arduinoPresence == 0 ) {
+        arduinoPresence = 1;
+        connectArduino( 0, 1 );
+    }
 }
 
 void SetArduinoResetLine( bool state, int topBottomBoth ) {
@@ -1379,6 +1426,21 @@ void replyWithSerialInfo( int force ) {
     // Check main Serial (CDC 0) for ENQ character - responds for ALL ports
     if ( Serial.available( ) > 0 || force == 1 ) {
         char c = Serial.peek( ); // Look at the character without removing it
+        
+        // Handle DC4 (0x14) for Arduino presence check - fast response
+        if ( c == 0x14 ) {       // DC4 (Device Control 4) character
+            Serial.read( );      // Remove the DC4 character from buffer
+            
+            // Quick response for Arduino presence check
+            int isConnected = checkIfArduinoIsConnected();
+            int isPresent = checkArduinoPresence();
+            
+            Serial.print(isConnected ? "Y," : "n,");
+            Serial.println(isPresent ? "Y" : "n");
+            Serial.flush();
+            return;
+        }
+        
         if ( c == 0x05 ) {       // ENQ character
             Serial.read( );      // Remove the ENQ character from buffer
 

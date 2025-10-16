@@ -7,6 +7,7 @@
 #include "LEDs.h"
 
 #include "MatrixState.h"
+#include "RotaryEncoder.h"
 #include "States.h"
 #include "NetManager.h"
 
@@ -27,6 +28,8 @@
 #include "Highlighting.h"
 #include "LogicAnalyzer.h"
 #include "ArduinoStuff.h"
+#include "Menus.h"
+#include "LEDs.h"
 
 #include "MCP4728.h"  // New library
 
@@ -1616,11 +1619,11 @@ uint32_t measurementToColor( float measurement, float min, float max ) {
     int maxInt = 80;
     int measurementInt = measurement * 10;
 
-    if ( measurement < jumperlessConfig.dacs.limit_min ) {
-        measurement = jumperlessConfig.dacs.limit_min;
-    } else if ( measurement > jumperlessConfig.dacs.limit_max ) {
-        measurement = jumperlessConfig.dacs.limit_max;
-    }
+    // if ( measurement < jumperlessConfig.dacs.limit_min ) {
+    //     measurement = jumperlessConfig.dacs.limit_min;
+    // } else if ( measurement > jumperlessConfig.dacs.limit_max ) {
+    //     measurement = jumperlessConfig.dacs.limit_max;
+    // }
 
     int shift = 228;
     hsv.h = map( measurementInt, minInt, maxInt, 210, 10 );
@@ -2325,4 +2328,373 @@ void printPWMState( void ) {
         Serial.print( "\t" );
     }
     Serial.println( );
+}
+
+// ============================================================================
+// VoltageAdjuster Class Implementation
+// ============================================================================
+
+float VoltageAdjuster::snapValues[3] = {0.0, 3.3, 5.0};
+
+uint32_t VoltageAdjuster::determineColor(float value, const VoltageAdjustConfig& config) {
+    // Exact special values (tight ranges for snap points)
+    if (value > -0.05 && value < 0.05) {
+        return config.zeroColor;
+    }
+    if (value > 3.25 && value < 3.35) {
+        return config.threeColor;
+    }
+    if (value > 4.95 && value < 5.05) {
+        return config.fiveColor;
+    }
+    if (value > 7.95 && value < 8.55) {
+        return config.maxColor;
+    }
+    
+    // // Blended regions (approaching special values)
+    // if (value < 5.3 && value > 4.7) {
+    //     return config.fiveBlended;
+    // }
+    // if (value < 3.75 && value > 3.00) {
+    //     return config.threeBlended;
+    // }
+    // if (value < 0.55 && value > -0.55) {
+    //     return config.zeroBlended;
+    // }
+    
+    // Use gradient from logoColors8vSelect for all other values
+    // Map voltage to array index: -8V to +8V maps to indices 0-59
+    long voltageScaled = (long)(value * 10.0); // Convert to tenths of a volt
+    int colorIndex = map(voltageScaled, -80, 80, 0, 69);
+    // Serial.print("colorIndex: ");
+    // Serial.println(colorIndex);
+    // Serial.flush();
+    
+    // Clamp to valid array bounds
+    if (colorIndex < 0) colorIndex = 0;
+    if (colorIndex > 69) colorIndex = 69;
+    
+    return scaleBrightness(logoColors8vSelect[colorIndex],abs(voltageScaled)-80);
+}
+
+void VoltageAdjuster::updateDisplay(float value, uint32_t color, const VoltageAdjustConfig& config) {
+    // Format the string
+    char floatString[16];
+    if (value < 0.00) {
+        snprintf(floatString, sizeof(floatString), "%0.1f V", value);
+    } else {
+        snprintf(floatString, sizeof(floatString), " %0.1f V", value);
+    }
+    
+    // Update LED display
+    b.clear();
+    
+    // Show label on top row if provided
+    if (config.label != nullptr) {
+        if (strcmp(config.label, "Top Rail") == 0) {
+            b.print("Top", color, 0xffffff, 0, 0, -2);
+            b.print("Rail", color, 0xffffff, 3, 0, 1);
+        } else if (strcmp(config.label, "Bot Rail") == 0) {
+            b.print("Bot", color, 0xffffff, 0, 0, -2);
+            b.print("Rail", color, 0xffffff, 3, 0, 1);
+        } else if (strcmp(config.label, "Rails") == 0) {
+            b.print("Rails", color, 0xffffff, 1, 0, 2);
+        }
+    }
+    
+    // Show voltage value in middle
+    b.print(floatString, color, 0xffffff, 0, 1, 1);
+    
+    // Calculate position indicator: show where current value is in range
+    // Position indicator moves horizontally across rows 0-29 (30 positions)
+    float valueRange = config.maxVoltage - config.minVoltage;
+    float normalizedPosition = (value - config.minVoltage) / valueRange;
+    // Clamp to 0-1
+    if (normalizedPosition < 0.0) normalizedPosition = 0.0;
+    if (normalizedPosition > 1.0) normalizedPosition = 1.0;
+    // Map to row positions 0-29 (30 positions for finer resolution)
+    int rowPosition = (int)(normalizedPosition * 29.0 + 0.5);
+    if (rowPosition < 0) rowPosition = 0;
+    if (rowPosition > 29) rowPosition = 29;
+    
+    // Show position indicator as a single LED at the bottom of the calculated row
+    uint8_t indicator = 0b00000001; // Bottom-most LED in the row
+    b.printRawRow(indicator, rowPosition, 0x101010, 0xfffffe);
+    
+   // Update serial
+    Serial.print("\r                        \r");
+    Serial.print(config.label);
+    Serial.print(" ");
+    Serial.print(floatString);
+    Serial.flush();
+    
+    // Update OLED
+    oled.clearPrintShow(floatString, 2, true, true, true);
+}
+
+bool VoltageAdjuster::isInLiveRange(float value, const VoltageAdjustConfig& config) {
+    return config.liveUpdateInRange && 
+           value >= config.liveUpdateMin && 
+           value <= config.liveUpdateMax;
+}
+
+AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
+    // CRITICAL: Reset button state so we wait for a NEW button press to confirm/cancel
+    // Otherwise the button press that launched this UI will immediately confirm
+    Menus::getInstance().inClickMenu = 1;
+    encoderButtonState = IDLE;
+    lastButtonEncoderState = IDLE;
+    
+    // Store original value for cancellation
+    float originalValue = config.initialValue;
+    float currentValue = config.initialValue;
+    
+    // Snap detection
+    int snapToValue = 0;
+    
+    // Position-based tracking for direct encoder reading
+    long lastEncoderPosition = encoderPosition;
+    
+    // Acceleration tracking with direction
+    unsigned long lastChangeTime = millis();
+    float accelerationMultiplier = 1.0;
+    int lastDirection = 0;  // -1=down, 0=none, 1=up
+    int consecutiveFastCount = 0;  // Track consecutive fast movements
+    
+    // Set rotary divider for good responsiveness
+    int lastDivider = rotaryDivider;
+    rotaryDivider = 3;
+    
+    // Clear display and show initial value
+    b.clear(1);
+    uint32_t color = determineColor(currentValue, config);
+    updateDisplay(currentValue, color, config);
+    
+    // If we have a callback and we're in live range, call it immediately
+    if (config.callback && isInLiveRange(currentValue, config)) {
+        config.callback(currentValue, true, config.context);
+    }
+    
+    bool firstUpdate = true;
+    int accelCount = 0;
+    // Main adjustment loop
+    while (true) {
+        //delayMicroseconds(380);
+        rotaryEncoderStuff();
+        
+        // Read probe pads for direct voltage selection
+        int probeReading = justReadProbe(true);
+        
+        // Check if probe is touching the voltage selection area (rows 31-60)
+        if (probeReading >= 31 && probeReading <= 60) {
+            // Map probe position to voltage value based on config range
+            // Probe rows 31-60 (30 positions) map to minVoltage-maxVoltage
+            float voltageRange = config.maxVoltage - config.minVoltage;
+            float normalizedPosition = (probeReading - 31) / 29.0;  // 0.0 to 1.0
+            currentValue = config.minVoltage + (normalizedPosition * voltageRange);
+            
+            // Round to 0.1V increments
+            currentValue = roundf(currentValue * 10.0f) / 10.0f;
+            
+            // Clamp to limits
+            if (currentValue > config.maxVoltage) currentValue = config.maxVoltage;
+            if (currentValue < config.minVoltage) currentValue = config.minVoltage;
+            
+            // Update display and LEDs
+            color = determineColor(currentValue, config);
+            updateDisplay(currentValue, color, config);
+            
+            // Call callback for preview
+            if (config.callback) {
+                bool isLive = isInLiveRange(currentValue, config);
+                config.callback(currentValue, isLive, config.context);
+            }
+            
+            showLEDsCore2 = 2;
+            
+            // Reset encoder-based tracking since we're using probe now
+            lastEncoderPosition = encoderPosition;
+            accelerationMultiplier = 1.0;
+            consecutiveFastCount = 0;
+            lastDirection = 0;
+            firstUpdate = true;
+            continue;
+        }
+        
+        // Check for cancellation (long press)
+        if (encoderButtonState == HELD) {
+            // Restore original value if we have a callback
+            if (config.callback) {
+                config.callback(originalValue, true, config.context);
+            }
+            
+            rotaryDivider = lastDivider;
+            encoderButtonState = IDLE;
+            showLEDsCore2 = -1;
+            Menus::getInstance().inClickMenu = 0;
+            return AdjustResult::CANCELLED;
+        }
+        
+        // Check for confirmation (short press)
+        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
+            encoderButtonState = IDLE;
+            showLEDsCore2 = -1;
+            // Final update with callback if not already in live range
+            if (config.callback && !isInLiveRange(currentValue, config)) {
+                config.callback(currentValue, false, config.context);
+            }
+            
+            rotaryDivider = lastDivider;
+            config.initialValue = currentValue; // Update config with new value
+            Menus::getInstance().inClickMenu = 0;
+            return AdjustResult::CONFIRMED;
+        }
+        
+        // Handle serial input for cancellation
+        if (Serial.available() > 0) {
+            Serial.read(); // Consume character
+            if (config.callback) {
+                config.callback(originalValue, true, config.context);
+            }
+            rotaryDivider = lastDivider;
+            Menus::getInstance().inClickMenu = 0;
+            return AdjustResult::CANCELLED;
+        }
+        
+        // Read encoder position directly for immediate response
+        long currentEncoderPosition = encoderPosition;
+        long encoderDelta = currentEncoderPosition - lastEncoderPosition;
+        
+        bool valueChanged = false;
+        
+        // Process encoder movement
+        if (encoderDelta != 0 || firstUpdate) {
+            // Handle snap delay
+            if (snapToValue > 0 && !firstUpdate) {
+                snapToValue--;
+                // Update last position even when snapping so we don't accumulate
+                lastEncoderPosition = currentEncoderPosition;
+                continue;
+            }
+            
+            if (!firstUpdate) {
+                // Determine current direction
+                int currentDirection = (encoderDelta > 0) ? 1 : ((encoderDelta < 0) ? -1 : 0);
+                
+                // Reset acceleration if direction changed
+                if (currentDirection != 0 && currentDirection != lastDirection) {
+                    accelerationMultiplier = 1.0;
+                    consecutiveFastCount = 0;
+                    lastDirection = currentDirection;
+                }
+                
+                // Calculate acceleration based on delta magnitude and timing
+                unsigned long currentTime = millis();
+                unsigned long timeSinceLastChange = currentTime - lastChangeTime;
+                int deltaMagnitude = abs(encoderDelta);
+                
+                // Fast rotation = large delta between polls OR short time between changes
+                bool isFastRotation = (deltaMagnitude >= 4);
+                
+                if (isFastRotation) {
+                    // Fast movement detected - increment consecutive count
+                    consecutiveFastCount++;
+                    
+                    // Only accelerate after 3 consecutive fast movements in same direction
+                    if (consecutiveFastCount >= 0) {
+                        accelerationMultiplier += 3.5;
+                        if (accelerationMultiplier > 5.0) {
+                            accelerationMultiplier = 5.0;
+                        }
+                    }
+                } else if (timeSinceLastChange > 120) {
+                    // Slow/stopped - reset everything
+                    accelerationMultiplier = 1.0;
+                    consecutiveFastCount = 0;
+                    lastDirection = 0;
+                } else {
+                    // Medium/slow speed - reset fast count but maintain acceleration
+                    consecutiveFastCount = 0;
+                }
+                
+                lastChangeTime = currentTime;
+                
+                // Calculate voltage change based on encoder delta
+                // Base change per encoder click, scaled by acceleration
+                float deltaMultiplier = 0.01 * accelerationMultiplier;
+                float addToValue = encoderDelta * deltaMultiplier;
+                
+                // Apply the change
+                currentValue -= addToValue;
+  
+                // Debug output
+                // Serial.print("val=");
+                // Serial.print(currentValue, 1);
+                // Serial.print(" delta=");
+                // Serial.print(encoderDelta);
+                // Serial.print(" mult=");
+                // Serial.print(accelerationMultiplier, 1);
+                // Serial.print(" time=");
+                // Serial.print(timeSinceLastChange);
+                // Serial.print(" dir=");
+                // Serial.println(currentDirection);
+                // Serial.flush();
+            }
+            
+            lastEncoderPosition = currentEncoderPosition;
+            valueChanged = true;
+            firstUpdate = false;
+        }
+        
+        if (valueChanged) {
+            // Clamp to limits
+            if (currentValue > config.maxVoltage) {
+                currentValue = config.maxVoltage;
+            }
+            if (currentValue < config.minVoltage) {
+                currentValue = config.minVoltage;
+            }
+            
+            // // Snap to zero (in full precision)
+            // if (currentValue > -0.05 && currentValue < 0.05) {
+            //     currentValue = 0.0;
+            // }
+            
+            // Check for snap values (using full precision)
+            if (snapToValue == 0 && accelerationMultiplier == 1.0) {
+                for (int i = 0; i < 3; i++) {
+                    if (abs(currentValue) > snapValues[i] - 0.03 && 
+                        abs(currentValue) < snapValues[i] + 0.03) {
+                        snapToValue = 1;
+                        break;
+                    }
+                }
+            }
+            
+            // Round for display and hardware setting
+            float roundedValue = roundf(currentValue * 10.0f) / 10.0f;
+            if (roundedValue == -0.0) {
+                roundedValue = 0.0;
+            }
+            
+            // Update display with rounded value
+            color = determineColor(roundedValue, config);
+            updateDisplay(roundedValue, color, config);
+            
+            // ALWAYS call callback for preview (both live and non-live)
+            // Pass ROUNDED value to hardware/state
+            // This ensures LEDs show the value even outside 0-5V range
+            if (config.callback) {
+                bool isLive = isInLiveRange(roundedValue, config);
+                config.callback(roundedValue, isLive, config.context);
+            }
+            
+            showLEDsCore2 = 2;
+        }
+    }
+    
+    // Should never reach here
+    rotaryDivider = lastDivider;
+    Menus::getInstance().inClickMenu = 0;
+    return AdjustResult::ERROR;
 }

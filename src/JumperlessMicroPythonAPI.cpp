@@ -560,6 +560,7 @@ int jl_switch_slot(int slot) {
         int old_slot = netSlot;
         netSlot = slot;
         
+
         // Refresh connections for the new slot
         refreshConnections(-1);
         
@@ -665,8 +666,8 @@ bool jl_la_get_control_digital(int channel) {
 
 // OLED Functions
 int jl_oled_print(const char* text, int size) {
-    mp_hal_check_interrupt();
-    if (jumperlessConfig.top_oled.enabled == 1 && oled.isConnected()) {
+   // mp_hal_check_interrupt();
+    if (oled.isConnected()) {
         oled.clearPrintShow(text, size, true, true, true, -1, -1, 1500);
         return 1;
     } else {
@@ -675,18 +676,19 @@ int jl_oled_print(const char* text, int size) {
 }
 
 int jl_oled_clear(void) {
-    if (jumperlessConfig.top_oled.enabled == 1 && oled.isConnected()) {
-        oled.clear(1000);
-        return 1;
+    if (oled.isConnected()) {
+    oled.clear(1000);
+   oled.show(1000);
+   return 1;
     } else {
         return 0;
     }
 }
 
 int jl_oled_show(void) {
-    if (jumperlessConfig.top_oled.enabled == 1 && oled.isConnected()) {
-        oled.show(1000);
-        return 1;
+    if (oled.isConnected()) {
+   oled.show(1000);
+   return 1;
     } else {
         return 0;
     }

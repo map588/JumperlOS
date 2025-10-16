@@ -68,6 +68,8 @@ enum SourceOfTruth {
 /**
  * @brief Stores the connection topology: bridges, nets, and routing paths
  * This is the core of what makes a "slot" unique
+ * 
+ * WARNING: Contains large arrays (several KB). Avoid copying.
  */
 struct ConnectionState {
     // STORED: Essential data (saved to YAML)
@@ -76,6 +78,12 @@ struct ConnectionState {
     
     netStruct nets[MAX_NETS];  // User-defined nets (optional, for colors/names/reference)
     int numNets;  // Derived count
+    
+    // Bridge color hints (NOT saved to YAML directly, but used to color nets)
+    // Indexed by bridge index, stores RGB color
+    // Use 0xFFFFFFFF (all bits set) as sentinel for "no color specified"
+    // This allows black (0x000000) to be a valid color
+    uint32_t bridgeColors[MAX_BRIDGES];
     
     // COMPUTED: Runtime caches (NOT saved to YAML, computed from bridges/nets)
     pathStruct paths[MAX_BRIDGES];
@@ -92,6 +100,8 @@ struct ConnectionState {
     void recomputePaths();  // Calls bridgesToPaths() to rebuild paths from current state
     void syncBridgesFromNets();  // Generate bridges from net node lists
     void syncNetsFromBridges();  // Generate nets from bridges
+    
+    // Note: Copying this struct copies all arrays (~several KB). Avoid when possible.
 };
 
 /**
@@ -169,6 +179,10 @@ struct ConfigState {
 /**
  * @brief Complete Jumperless state for a single slot
  * This is the main state container that gets saved/loaded
+ * 
+ * WARNING: This class contains MASSIVE arrays (tens of KB) and must NEVER be copied!
+ * Always use references (&) or pointers (*) when passing this object around.
+ * Copy constructor and copy assignment operator are deleted to enforce this.
  */
 class JumperlessState {
 public:
@@ -181,6 +195,16 @@ public:
     int version;  // State format version for future compatibility
     
     JumperlessState();
+    
+    // CRITICAL WARNING: This object is HUGE (~50KB)! Copying exhausts stack memory.
+    // Default copy constructor/assignment are available but should RARELY be used.
+    // Prefer references: JumperlessState& state
+    // Only copy when absolutely necessary (e.g., undo/redo history)
+    //
+    // SAFE:   JumperlessState& state = globalState;           (reference, no copy)
+    // SAFE:   void func(JumperlessState& state);              (pass by reference)
+    // DANGER: JumperlessState state = globalState;            (copy, uses 50KB stack!)
+    // DANGER: void func(JumperlessState state);               (pass by value, uses 50KB stack!)
     
     // Connection management
     bool addConnection(int node1, int node2, String& errorMsg, int duplicates = -1);  // -1 = use default from config
@@ -335,6 +359,10 @@ public:
     void listSlots();
     size_t getActiveStateRAMUsage() const;
     
+    // File I/O helpers (public for direct slot file manipulation)
+    bool readSlotFile(int slotNum, String& content, String& errorMsg);
+    bool writeSlotFile(int slotNum, const String& content, String& errorMsg);
+    
 private:
     SlotManager();
     ~SlotManager() = default;
@@ -356,12 +384,10 @@ private:
     int historyCount;      // Number of valid history entries
     int historyPosition;   // Current position in history (for redo)
     
-    // File I/O helpers
+    // File name helpers
     String getSlotFilename(int slotNum) const;  // Returns .yaml filename
     String getLegacySlotFilename(int slotNum) const;  // Returns old .txt filename
     String getJSONSlotFilename(int slotNum) const;  // Returns old .json filename
-    bool readSlotFile(int slotNum, String& content, String& errorMsg);
-    bool writeSlotFile(int slotNum, const String& content, String& errorMsg);
     
     // History helpers
     void initHistory();

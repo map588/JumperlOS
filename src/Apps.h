@@ -37,5 +37,5 @@ const char* addressToHexString(uint8_t address);
 
 void printSerial1stuff(void);
 void microPythonREPLapp(void);
-
+void DMXSerialApp(void);
 #endif
