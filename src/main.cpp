@@ -40,8 +40,8 @@ KevinC@ppucc.io
 #include "HelpDocs.h"
 #include "Highlighting.h"
 #include "JulseView.h"
-#include "JumperlessDefines.h"
 #include "JumperlOS.h"
+#include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "LogicAnalyzer.h"
 #include "MatrixState.h"
@@ -63,15 +63,15 @@ KevinC@ppucc.io
 #include "user_functions.h"
 #include <hardware/adc.h>
 
-#include "WaveGen.h" // New async wavegen
-#include "externVars.h"
 #include "SingleCharCommands.h" // Single-character command system
+#include "WaveGen.h"            // New async wavegen
+#include "externVars.h"
 
 bread b;
 
 // Debug flags
 bool debugWaitLoopTiming = false;
-bool debugUSB = false;  // USB mass storage debug output
+bool debugUSB = false; // USB mass storage debug output
 
 // Tui UI/UX System
 TuiGlue tuiGlue;
@@ -111,7 +111,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 50;
 
-const char firmwareVersion[] = "5.4.0.4"; //! remember to update this
+const char firmwareVersion[] = "5.4.0.5"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -238,45 +238,43 @@ void setup( ) {
     // Serial.flush();
     //  setupLogicAnalyzer();
 
-    //tuiGlue.setSerial( &USBSer3 );
-    // Defer TuiGlue activation to first loop() call to avoid DTR wait and terminal probing delays
-    // tuiGlue.openOnDemand();
-    // Serial.println("TuiGlue initialized");
-    // Serial.flush();
+    // tuiGlue.setSerial( &USBSer3 );
+    //  Defer TuiGlue activation to first loop() call to avoid DTR wait and terminal probing delays
+    //  tuiGlue.openOnDemand();
+    //  Serial.println("TuiGlue initialized");
+    //  Serial.flush();
 
     // Initialize and register services with jOSmanager
     // Serial.println("Registering services with jOSmanager...");
-    
+
     // Wire up system services
-    termSerialService.setTermControl(&termSerial);
-    oledService.setOledDisplay(&oled);
-    
+    termSerialService.setTermControl( &termSerial );
+    oledService.setOledDisplay( &oled );
+
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
-    jOS.registerService(&probeButton);       // CRITICAL - high-frequency button checking
-    jOS.registerService(&termSerialService); // CRITICAL - terminal input (when line buffering enabled)
-    jOS.registerService(&menus);            // CRITICAL - direct user input
-    
+    jOS.registerService( &probeButton );       // CRITICAL - high-frequency button checking
+    jOS.registerService( &termSerialService ); // CRITICAL - terminal input (when line buffering enabled)
+    jOS.registerService( &menus );             // CRITICAL - direct user input
+
     // HIGH priority services - time-sensitive operations
-    jOS.registerService(&tinyUSBService);    // HIGH - USB communication
-    jOS.registerService(&slotManager);       // HIGH - states auto-save
-    jOS.registerService(&probing);           // HIGH - user interaction sensitive (probe reading)
-    jOS.registerService(&highlighting);      // HIGH - visual feedback
-    
+    jOS.registerService( &tinyUSBService ); // HIGH - USB communication
+    jOS.registerService( &slotManager );    // HIGH - states auto-save
+    jOS.registerService( &probing );        // HIGH - user interaction sensitive (probe reading)
+    jOS.registerService( &highlighting );   // HIGH - visual feedback
+
     // NORMAL priority services - periodic tasks
-    jOS.registerService(&usbPeriodicService); // NORMAL - USB housekeeping (when MSC enabled)
-    jOS.registerService(&peripherals);        // NORMAL - periodic monitoring
-    jOS.registerService(&singleCharCommands); // NORMAL - command execution (synchronous, not periodic)
-    
+    jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
+    jOS.registerService( &peripherals );        // NORMAL - periodic monitoring
+    jOS.registerService( &singleCharCommands ); // NORMAL - command execution (synchronous, not periodic)
+
     // LOW priority services - background tasks
-    jOS.registerService(&oledService);        // LOW - display updates
-    jOS.registerService(&probeSwitch);        // LOW - switch position (not time-critical)
-    jOS.registerService(&probePads);          // LOW - expensive ADC pad reading
-    
+    jOS.registerService( &oledService ); // LOW - display updates
+    jOS.registerService( &probeSwitch ); // LOW - switch position (not time-critical)
+    jOS.registerService( &probePads );   // LOW - expensive ADC pad reading
+
     // Serial.println("Service registration complete");
     // Serial.flush();
-
-
 }
 
 unsigned long startupCore2timers[ 10 ];
@@ -323,8 +321,6 @@ void setup1( ) {
     }
 
     startupCore2timers[ 7 ] = millis( );
-    
-
 }
 
 char connectFromArduino = '\0';
@@ -360,8 +356,6 @@ unsigned long mscModeRefreshInterval = 2000;
 
 volatile int core1passthrough = 1;
 int switchPosCount = 0;
-
-
 
 #include <pico/stdlib.h>
 
@@ -475,8 +469,8 @@ menu:
     if ( dontShowMenu == 0 ) {
     forceprintmenu:
         // Use the new SingleCharCommands menu system
-        singleCharCommands.printMenu(showExtraMenu);
-        
+        singleCharCommands.printMenu( showExtraMenu );
+
 #if debug_startup_timers == 1
         for ( int i = 1; i < 12; i++ ) {
             Serial.print( "startupTimer[" );
@@ -507,7 +501,6 @@ menu:
         // Serial.flush();
         configChanged = false;
     }
-   
 
 dontshowmenu:
 
@@ -527,14 +520,14 @@ dontshowmenu:
               ( jumperlessConfig.display.terminal_line_buffering == 0 && Serial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
 
-        unsigned long loopStart = debugWaitLoopTiming ? micros() : 0;
-        
+        unsigned long loopStart = debugWaitLoopTiming ? micros( ) : 0;
+
         busyTimers[ 0 ] = micros( );
-        
+
         // Service all registered subsystems via jOSmanager
         // This now includes: termSerial, tud_task, usbPeriodic, oledPeriodic, and all other services
-        jOS.serviceAll();
-        
+        jOS.serviceAll( );
+
         busyTimers[ 1 ] = micros( );
 
         // Check if logic analyzer is active (blocks normal operation)
@@ -543,7 +536,7 @@ dontshowmenu:
             continue;
         }
 
-        // Check for menu activation (goto loadfile) 
+        // Check for menu activation (goto loadfile)
         // Note: clickMenu() is called within menus.service(), but we need to detect result
         // This will be refactored when we remove gotos entirely
         if ( menus.inClickMenu != 0 ) {
@@ -552,17 +545,17 @@ dontshowmenu:
         }
 
         // Check if terminal has completed line (for line buffering mode)
-        if ( jumperlessConfig.display.terminal_line_buffering == 1 && termSerial.hasCompletedLine() ) {
+        if ( jumperlessConfig.display.terminal_line_buffering == 1 && termSerial.hasCompletedLine( ) ) {
             break; // Line is ready for processing
         }
-        
+
         busyTimers[ 9 ] = micros( );
-        
-        if (debugWaitLoopTiming) {
-            unsigned long loopEnd = micros();
-            if ((loopEnd - loopStart) > 100000) { // More than 100ms (adjust threshold as needed)
-                Serial.printf("DEBUG: *** FULL LOOP took %lu us (%.2f ms) ***\n", 
-                             loopEnd - loopStart, (loopEnd - loopStart) / 1000.0);
+
+        if ( debugWaitLoopTiming ) {
+            unsigned long loopEnd = micros( );
+            if ( ( loopEnd - loopStart ) > 100000 ) { // More than 100ms (adjust threshold as needed)
+                Serial.printf( "DEBUG: *** FULL LOOP took %lu us (%.2f ms) ***\n",
+                               loopEnd - loopStart, ( loopEnd - loopStart ) / 1000.0 );
             }
         }
 #if debug_busy_timers == 1
@@ -658,7 +651,7 @@ dontshowmenu:
         }
         if ( Serial.available( ) > 0 ) {
             char nextChar = Serial.peek( );
-            if ( nextChar == '?' && (input != 'A' && input != 'a')) {
+            if ( nextChar == '?' && ( input != 'A' && input != 'a' ) ) {
                 Serial.read( ); // consume the '?'
                 showCommandHelp( input );
                 goto dontshowmenu;
@@ -678,25 +671,25 @@ skipinput:
     // ========================================================================
     {
         inMainMenu = true;
-        CommandResult cmdResult = singleCharCommands.executeCommand((char)input, currentCommandLine);
+        CommandResult cmdResult = singleCharCommands.executeCommand( (char)input, currentCommandLine );
         inMainMenu = false;
-        
+
         // Handle command result
-        switch (cmdResult) {
-            case CMD_LOAD_FILE:
-                goto loadfile;
-            case CMD_DONT_SHOW_MENU:
-                goto dontshowmenu;
-            case CMD_SHOW_MENU:
-            default:
-                // Clean up serial buffer
-                delayMicroseconds(1000);
-                while (Serial.available() > 5) {
-                    Serial.read();
-                    delayMicroseconds(1000);
-                }
-                Serial.flush();
-                goto menu;
+        switch ( cmdResult ) {
+        case CMD_LOAD_FILE:
+            goto loadfile;
+        case CMD_DONT_SHOW_MENU:
+            goto dontshowmenu;
+        case CMD_SHOW_MENU:
+        default:
+            // Clean up serial buffer
+            delayMicroseconds( 1000 );
+            while ( Serial.available( ) > 5 ) {
+                Serial.read( );
+                delayMicroseconds( 1000 );
+            }
+            Serial.flush( );
+            goto menu;
         }
     }
 
@@ -708,63 +701,60 @@ skipinput:
     // This code below should NEVER execute - it's kept temporarily for reference
     // TODO: Delete lines 710-2238 (the old switch statement) after testing
     // ========================================================================
-    
+
     goto menu; // Safety: skip old code and go back to menu
 
+loadfile:
+    loadingFile = 1;
 
+    // Just clear preview mode flag - don't restore original slot
+    // Let the normal load below handle loading the selected slot
+    SlotManager& mgr = SlotManager::getInstance( );
+    if ( mgr.isPreviewMode( ) ) {
+        // Serial.println("Clearing preview mode");
+        //  Clear preview flag without loading anything
+        mgr.clearPreviewMode( );
+    }
 
-    loadfile:
-        loadingFile = 1;
-
-        // Just clear preview mode flag - don't restore original slot
-        // Let the normal load below handle loading the selected slot
-        SlotManager& mgr = SlotManager::getInstance( );
-        if ( mgr.isPreviewMode( ) ) {
-            // Serial.println("Clearing preview mode");
-            //  Clear preview flag without loading anything
-            mgr.clearPreviewMode( );
-        }
-
-        // Save current state if dirty before reloading to prevent data loss
-        // BUT skip this on the very first load (firstLoop == 1) to avoid overwriting
-        // the saved slot with an empty/uninitialized state
-        if ( globalState.isDirty( ) && firstLoop == 0 ) {
-         //  Serial.println( "Saving dirty state before reload" );
-            String saveError;
-            if ( mgr.saveActiveSlot( saveError ) ) {
-                if ( debugFP ) {
-                    Serial.println( "✓ Auto-saved dirty state before reload" );
-                }
-            } else if ( debugFP ) {
-                Serial.println( "Warning: Failed to auto-save: " + saveError );
+    // Save current state if dirty before reloading to prevent data loss
+    // BUT skip this on the very first load (firstLoop == 1) to avoid overwriting
+    // the saved slot with an empty/uninitialized state
+    if ( globalState.isDirty( ) && firstLoop == 0 ) {
+        //  Serial.println( "Saving dirty state before reload" );
+        String saveError;
+        if ( mgr.saveActiveSlot( saveError ) ) {
+            if ( debugFP ) {
+                Serial.println( "✓ Auto-saved dirty state before reload" );
             }
+        } else if ( debugFP ) {
+            Serial.println( "Warning: Failed to auto-save: " + saveError );
         }
+    }
 
-        // Load YAML state from slot file into globalState
-        String loadError;
-        if ( !mgr.loadSlot( netSlot, loadError ) ) {
-            //if ( debugFP ) {
-                Serial.print( "Warning: Failed to load slot " );
-                Serial.print( netSlot );
-                Serial.print( ": " );
-                Serial.println( loadError );
-                Serial.println( "Starting with empty slot" );
-           // }
-            // Empty slot is OK - just start fresh
-            mgr.clearActiveSlot( );
-        }
+    // Load YAML state from slot file into globalState
+    String loadError;
+    if ( !mgr.loadSlot( netSlot, loadError ) ) {
+        // if ( debugFP ) {
+        Serial.print( "Warning: Failed to load slot " );
+        Serial.print( netSlot );
+        Serial.print( ": " );
+        Serial.println( loadError );
+        Serial.println( "Starting with empty slot" );
+        // }
+        // Empty slot is OK - just start fresh
+        mgr.clearActiveSlot( );
+    }
 
-        if ( slotChanged == 1 ) {
-            // clearChangedNetColors(0);
-            // loadChangedNetColorsFromFile( netSlot, 0 );
-        }
+    if ( slotChanged == 1 ) {
+        // clearChangedNetColors(0);
+        // loadChangedNetColorsFromFile( netSlot, 0 );
+    }
 
-        slotChanged = 0;
-        loadingFile = 0;
+    slotChanged = 0;
+    loadingFile = 0;
 
-        refreshConnections( -1 );
+    refreshConnections( -1 );
 
-        
     /*
     case 'z': {
         handleUserFunction( );
@@ -1220,15 +1210,15 @@ skipinput:
         unsigned long mscModeTimer = millis( );
         unsigned long lastServiceCallTime = 0;
         const unsigned long SERVICE_CALL_INTERVAL = 1000;  // Call service every 1 second
-        
+
         Serial.println("◆ USB Mode: Starting service loop for live file monitoring");
         Serial.flush();
-        
+
         unsigned long loopIterations = 0;
-        
+
         while ( mscModeEnabled == true ) {
             loopIterations++;
-            
+
             // Debug every 100 iterations (~1 second)
             extern bool debugUSB;
             if (debugUSB && loopIterations % 100 == 0) {
@@ -1236,7 +1226,7 @@ skipinput:
                 Serial.println(loopIterations);
                 Serial.flush();
             }
-            
+
             // Check for serial input without blocking
             if ( Serial.available( ) > 0 ) {
                 char c = Serial.read( );
@@ -1276,7 +1266,7 @@ skipinput:
                     Serial.flush( );
                 }
             }
-            
+
             // Service SlotManager and USB while waiting for input
             if (millis() - lastServiceCallTime > SERVICE_CALL_INTERVAL) {
                 if (debugUSB) {
@@ -1290,10 +1280,10 @@ skipinput:
                 }
                 lastServiceCallTime = millis();
             }
-            
+
             // Keep USB alive
             tud_task();
-            
+
             // Small delay to prevent tight loop consuming CPU
             delay(10);
         }
@@ -2013,7 +2003,7 @@ skipinput:
         goto menu;
     }
     case '{': {
-        // Probe clear button - now handled in Probing service  
+        // Probe clear button - now handled in Probing service
         // This case is kept for backward compatibility but does nothing
         // The actual logic runs in Probing::handleProbeButtonActions()
         goto menu;
@@ -2119,12 +2109,12 @@ skipinput:
         }
         Serial.print( "Slot " );
         Serial.println( netSlot );
-        
+
         // Send slot change notification for app synchronization
         Serial.print("SLOT_CHANGED:");
         Serial.println(netSlot);
         Serial.flush();
-        
+
         slotPreview = netSlot;
         slotChanged = 1;
 
@@ -2341,8 +2331,8 @@ void loop1( ) {
 
     // Core 2 timing instrumentation (only when debug enabled)
     static unsigned long core2LoopStart = 0;
-    if (debugWaitLoopTiming) {
-        core2LoopStart = micros();
+    if ( debugWaitLoopTiming ) {
+        core2LoopStart = micros( );
     }
 
     // Only call logic analyzer if it's enabled and there's USB activity
@@ -2368,37 +2358,37 @@ void loop1( ) {
     // Route PulseView traffic to the new logic analyzer
     // OPTIMIZATION: Only poll USB when logic analyzer is actually running or recently active
     // USB polling is expensive (1-55ms!), so skip it when LA is idle
-    unsigned long t0 = debugWaitLoopTiming ? micros() : 0;
-    bool laActive = logicAnalyzer.is_running() || logicAnalyzer.is_armed();
+    unsigned long t0 = debugWaitLoopTiming ? micros( ) : 0;
+    bool laActive = logicAnalyzer.is_running( ) || logicAnalyzer.is_armed( );
     // Check if LA had recent command (but ignore initial boot where last_command_time = 0)
-    bool laRecentlyActive = (logicAnalyzer.last_command_time > 0) && 
-                            (millis() - logicAnalyzer.last_command_time < 3000);
-    
-    if (laRecentlyActive || laActive) {
+    bool laRecentlyActive = ( logicAnalyzer.last_command_time > 0 ) &&
+                            ( millis( ) - logicAnalyzer.last_command_time < 3000 );
+
+    if ( laRecentlyActive || laActive ) {
         // Only check every 20ms when potentially active
-        if (millis() - last_la_check >= 20) {
-            last_la_check = millis();
-            logicAnalyzer.handler();
+        if ( millis( ) - last_la_check >= 20 ) {
+            last_la_check = millis( );
+            logicAnalyzer.handler( );
         }
     }
-    
-    if (debugWaitLoopTiming) {
-        unsigned long t1 = micros();
-        if ((t1 - t0) > 1000) {
-            Serial.printf("CORE2: logicAnalyzer.handler() took %lu us\n", t1 - t0);
+
+    if ( debugWaitLoopTiming ) {
+        unsigned long t1 = micros( );
+        if ( ( t1 - t0 ) > 1000 ) {
+            Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t1 - t0 );
         }
     }
 
     // OPTIMIZATION: Only service wavegen when it's actually running
     // wavegen.service() contains a blocking while() loop for I2C streaming!
-    unsigned long t2 = debugWaitLoopTiming ? micros() : 0;
-    if (wavegen.isRunning()) {
+    unsigned long t2 = debugWaitLoopTiming ? micros( ) : 0;
+    if ( wavegen.isRunning( ) ) {
         wavegen.service( );
     }
-    if (debugWaitLoopTiming) {
-        unsigned long t3 = micros();
-        if ((t3 - t2) > 1000) {
-            Serial.printf("CORE2: wavegen.service() took %lu us\n", t3 - t2);
+    if ( debugWaitLoopTiming ) {
+        unsigned long t3 = micros( );
+        if ( ( t3 - t2 ) > 1000 ) {
+            Serial.printf( "CORE2: wavegen.service() took %lu us\n", t3 - t2 );
         }
     }
 
@@ -2406,12 +2396,12 @@ void loop1( ) {
         playDoom( );
         doomOn = 0;
     } else if ( pauseCore2 == 0 && logicAnalyzer.getIsRunning( ) == false ) {
-        unsigned long t4 = debugWaitLoopTiming ? micros() : 0;
+        unsigned long t4 = debugWaitLoopTiming ? micros( ) : 0;
         core2stuff( );
-        if (debugWaitLoopTiming) {
-            unsigned long t5 = micros();
-            if ((t5 - t4) > 5000) {  // Report if core2stuff takes > 5ms
-                Serial.printf("CORE2: core2stuff() took %lu us (%.2f ms)\n", t5 - t4, (t5 - t4) / 1000.0);
+        if ( debugWaitLoopTiming ) {
+            unsigned long t5 = micros( );
+            if ( ( t5 - t4 ) > 5000 ) { // Report if core2stuff takes > 5ms
+                Serial.printf( "CORE2: core2stuff() took %lu us (%.2f ms)\n", t5 - t4, ( t5 - t4 ) / 1000.0 );
             }
         }
     }
@@ -2445,14 +2435,13 @@ void loop1( ) {
     }
 
     // Core 2 total loop timing
-    if (debugWaitLoopTiming && core2LoopStart > 0) {
-        unsigned long core2LoopEnd = micros();
-        if ((core2LoopEnd - core2LoopStart) > 20000) {  // Report if loop takes > 20ms
-            Serial.printf("CORE2: *** FULL LOOP took %lu us (%.2f ms) ***\n", 
-                         core2LoopEnd - core2LoopStart, (core2LoopEnd - core2LoopStart) / 1000.0);
+    if ( debugWaitLoopTiming && core2LoopStart > 0 ) {
+        unsigned long core2LoopEnd = micros( );
+        if ( ( core2LoopEnd - core2LoopStart ) > 20000 ) { // Report if loop takes > 20ms
+            Serial.printf( "CORE2: *** FULL LOOP took %lu us (%.2f ms) ***\n",
+                           core2LoopEnd - core2LoopStart, ( core2LoopEnd - core2LoopStart ) / 1000.0 );
         }
     }
-
 }
 
 void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
@@ -2521,32 +2510,32 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                         clearBeforeSend = 0;
                     }
 
-                    unsigned long t0 = debugWaitLoopTiming ? micros() : 0;
+                    unsigned long t0 = debugWaitLoopTiming ? micros( ) : 0;
                     showNets( );
-                    if (debugWaitLoopTiming) {
-                        unsigned long t1 = micros();
-                        if ((t1 - t0) > 5000) {
-                            Serial.printf("CORE2:   showNets() took %lu us\n", t1 - t0);
-                        }
-                    }
-                    
-                    unsigned long t2 = debugWaitLoopTiming ? micros() : 0;
-                    readGPIO( ); // if want, I can make this update the LEDs like 10 times
-                                 // faster by putting outside this loop,
-                    showLEDmeasurements( );
-                    if (debugWaitLoopTiming) {
-                        unsigned long t3 = micros();
-                        if ((t3 - t2) > 2000) {
-                            Serial.printf("CORE2:   readGPIO+showLEDmeasurements() took %lu us\n", t3 - t2);
+                    if ( debugWaitLoopTiming ) {
+                        unsigned long t1 = micros( );
+                        if ( ( t1 - t0 ) > 5000 ) {
+                            Serial.printf( "CORE2:   showNets() took %lu us\n", t1 - t0 );
                         }
                     }
 
-                    unsigned long t4 = debugWaitLoopTiming ? micros() : 0;
+                    unsigned long t2 = debugWaitLoopTiming ? micros( ) : 0;
+                    readGPIO( ); // if want, I can make this update the LEDs like 10 times
+                                 // faster by putting outside this loop,
+                    showLEDmeasurements( );
+                    if ( debugWaitLoopTiming ) {
+                        unsigned long t3 = micros( );
+                        if ( ( t3 - t2 ) > 2000 ) {
+                            Serial.printf( "CORE2:   readGPIO+showLEDmeasurements() took %lu us\n", t3 - t2 );
+                        }
+                    }
+
+                    unsigned long t4 = debugWaitLoopTiming ? micros( ) : 0;
                     showAllRowAnimations( );
-                    if (debugWaitLoopTiming) {
-                        unsigned long t5 = micros();
-                        if ((t5 - t4) > 2000) {
-                            Serial.printf("CORE2:   showAllRowAnimations() took %lu us\n", t5 - t4);
+                    if ( debugWaitLoopTiming ) {
+                        unsigned long t5 = micros( );
+                        if ( ( t5 - t4 ) > 2000 ) {
+                            Serial.printf( "CORE2:   showAllRowAnimations() took %lu us\n", t5 - t4 );
                         }
                     }
 
@@ -2557,13 +2546,13 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
             core2busy = true;
 
-            unsigned long t6 = debugWaitLoopTiming ? micros() : 0;
+            unsigned long t6 = debugWaitLoopTiming ? micros( ) : 0;
             leds.show( );
-            if (debugWaitLoopTiming) {
-                unsigned long t7 = micros();
-                if ((t7 - t6) > 3000) {  // leds.show() is typically the slowest!
-                    Serial.printf("CORE2:   leds.show() took %lu us (%.2f ms) ⚠️ BLOCKING\n", 
-                                 t7 - t6, (t7 - t6) / 1000.0);
+            if ( debugWaitLoopTiming ) {
+                unsigned long t7 = micros( );
+                if ( ( t7 - t6 ) > 3000 ) { // leds.show() is typically the slowest!
+                    Serial.printf( "CORE2:   leds.show() took %lu us (%.2f ms) ⚠️ BLOCKING\n",
+                                   t7 - t6, ( t7 - t6 ) / 1000.0 );
                 }
             }
 
@@ -2571,12 +2560,12 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
             // Update probe LEDs to reflect current state
             if ( checkingButton == 0 || showProbeLEDs == 2 ) {
-                unsigned long t8 = debugWaitLoopTiming ? micros() : 0;
+                unsigned long t8 = debugWaitLoopTiming ? micros( ) : 0;
                 probeLEDhandler( );
-                if (debugWaitLoopTiming) {
-                    unsigned long t9 = micros();
-                    if ((t9 - t8) > 2000) {
-                        Serial.printf("CORE2:   probeLEDhandler() took %lu us\n", t9 - t8);
+                if ( debugWaitLoopTiming ) {
+                    unsigned long t9 = micros( );
+                    if ( ( t9 - t8 ) > 2000 ) {
+                        Serial.printf( "CORE2:   probeLEDhandler() took %lu us\n", t9 - t8 );
                     }
                 }
                 // core2busy = false;
@@ -2590,12 +2579,12 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
             swirled = 0;
             if ( inClickMenu == 1 ) {
-                unsigned long t10 = debugWaitLoopTiming ? micros() : 0;
+                unsigned long t10 = debugWaitLoopTiming ? micros( ) : 0;
                 rotaryEncoderStuff( );
-                if (debugWaitLoopTiming) {
-                    unsigned long t11 = micros();
-                    if ((t11 - t10) > 2000) {
-                        Serial.printf("CORE2:   rotaryEncoderStuff() took %lu us ⚠️ ENCODER\n", t11 - t10);
+                if ( debugWaitLoopTiming ) {
+                    unsigned long t11 = micros( );
+                    if ( ( t11 - t10 ) > 2000 ) {
+                        Serial.printf( "CORE2:   rotaryEncoderStuff() took %lu us ⚠️ ENCODER\n", t11 - t10 );
                     }
                 }
             }

@@ -1246,20 +1246,20 @@ CommandResult cmd_listFilesystem(char c, const String& line) {
 // Config commands  
 CommandResult cmd_editConfig(char c, const String& line) {
     extern volatile bool core1busy;
-    core1busy = 1;
-    waitCore2();
+   // core1busy = 1;
+   // waitCore2();
     readConfigFromSerial();
-    core1busy = 0;
+   // core1busy = 0;
     Serial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_printConfig(char c, const String& line) {
-    extern volatile bool core1busy;
-    core1busy = 1;
-    waitCore2();
+    //extern volatile bool core1busy;
+    //core1busy = 1;
+    //waitCore2();
     printConfigToSerial();
-    core1busy = 0;
+   // core1busy = 0;
     Serial.flush();
     return CMD_DONT_SHOW_MENU;
 }

@@ -4298,10 +4298,26 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           }
           
           int testX = freeXSearchOrder[targetChip][searchIdx];
-          if (freeOrSameNetX(targetChip, testX, globalState.connections.paths[i].net, allowStacking)) {
-            sharedX = testX;
-            break;
+          if (!freeOrSameNetX(targetChip, testX, globalState.connections.paths[i].net, allowStacking)) {
+            continue;
           }
+          
+          // For breadboard chips, check that inter-chip connected X positions are also free
+          if (targetChip < 8) {
+            int connectedChip = globalState.connections.chipStates[targetChip].xMap[testX];
+            if (connectedChip < 8) {
+              // This X connects to another breadboard chip - check reciprocal X
+              int reciprocalX = xMapForChipLane0(connectedChip, targetChip);
+              if (reciprocalX != -1) {
+                if (!freeOrSameNetX(connectedChip, reciprocalX, globalState.connections.paths[i].net, allowStacking)) {
+                  continue; // Connected chip's X is occupied by different net
+                }
+              }
+            }
+          }
+          
+          sharedX = testX;
+          break;
         }
         
         if (sharedX != -1) {
@@ -4310,6 +4326,20 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           bool chipSuccess = false;
           if (success) {
             chipSuccess = setChipXStatus(targetChip, sharedX, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip X");
+            
+            // For breadboard chips, also mark the connected chip's reciprocal X
+            if (chipSuccess && targetChip < 8) {
+              int connectedChip = globalState.connections.chipStates[targetChip].xMap[sharedX];
+              if (connectedChip < 8) {
+                int reciprocalX = xMapForChipLane0(connectedChip, targetChip);
+                if (reciprocalX != -1) {
+                  bool reciprocalSuccess = setChipXStatus(connectedChip, reciprocalX, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip X reciprocal");
+                  if (!reciprocalSuccess) {
+                    chipSuccess = false;
+                  }
+                }
+              }
+            }
           }
           
           if (!success || !chipSuccess) {
@@ -4345,10 +4375,26 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               }
               
               int testX = freeXSearchOrder[globalState.connections.paths[i].chip[pos]][searchIdx];
-              if (freeOrSameNetX(globalState.connections.paths[i].chip[pos], testX, globalState.connections.paths[i].net, allowStacking)) {
-                freeX = testX;
-                break;
+              if (!freeOrSameNetX(globalState.connections.paths[i].chip[pos], testX, globalState.connections.paths[i].net, allowStacking)) {
+                continue;
               }
+              
+              // For breadboard chips, check that inter-chip connected X positions are also free
+              if (globalState.connections.paths[i].chip[pos] < 8) {
+                int connectedChip = globalState.connections.chipStates[globalState.connections.paths[i].chip[pos]].xMap[testX];
+                if (connectedChip < 8) {
+                  // This X connects to another breadboard chip - check reciprocal X
+                  int reciprocalX = xMapForChipLane0(connectedChip, globalState.connections.paths[i].chip[pos]);
+                  if (reciprocalX != -1) {
+                    if (!freeOrSameNetX(connectedChip, reciprocalX, globalState.connections.paths[i].net, allowStacking)) {
+                      continue; // Connected chip's X is occupied by different net
+                    }
+                  }
+                }
+              }
+              
+              freeX = testX;
+              break;
             }
 
             if (freeX != -1) {
@@ -4356,6 +4402,20 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               bool chipXSuccess = false;
               if (pathXSuccess) {
                 chipXSuccess = setChipXStatus(globalState.connections.paths[i].chip[pos], freeX, globalState.connections.paths[i].net, "resolveUncommittedHops X");
+                
+                // For breadboard chips, also mark the connected chip's reciprocal X
+                if (chipXSuccess && globalState.connections.paths[i].chip[pos] < 8) {
+                  int connectedChip = globalState.connections.chipStates[globalState.connections.paths[i].chip[pos]].xMap[freeX];
+                  if (connectedChip < 8) {
+                    int reciprocalX = xMapForChipLane0(connectedChip, globalState.connections.paths[i].chip[pos]);
+                    if (reciprocalX != -1) {
+                      bool reciprocalSuccess = setChipXStatus(connectedChip, reciprocalX, globalState.connections.paths[i].net, "resolveUncommittedHops X reciprocal");
+                      if (!reciprocalSuccess) {
+                        chipXSuccess = false;
+                      }
+                    }
+                  }
+                }
               }
 
               if (!pathXSuccess || !chipXSuccess) {

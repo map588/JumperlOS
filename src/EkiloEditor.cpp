@@ -1507,7 +1507,7 @@ void ekilo_process_oled_update() {
     if (E.oled_update_pending && 
         !E.screen_dirty && 
         !Serial.available() && 
-        (millis() - E.oled_last_input_time) >= 50) { // 50ms delay
+        (millis() - E.oled_last_input_time) >= 10) { // 50ms delay
         
         ekilo_update_oled_context();
         E.oled_update_pending = false;
