@@ -6,7 +6,7 @@
 #include "Menus.h"
 #include "Peripherals.h"
 #include "States.h"
-#include "TermControl.h"
+#include "Jerial.h" // TermControl is now part of Jerial
 #include "oled.h"
 #include "USBfs.h"
 
@@ -152,7 +152,7 @@ void jOSmanager::serviceAll() {
     
     // Debug: Print service execution order every N loops
     static unsigned long lastDebugLoop = 0;
-    bool printServiceOrder = debugWaitLoopTiming && (loopCounter % 100 == 0);
+    bool printServiceOrder = 0;//debugWaitLoopTiming && (loopCounter % 100 == 0);
     
     if (printServiceOrder && loopCounter != lastDebugLoop) {
         lastDebugLoop = loopCounter;
@@ -346,6 +346,12 @@ void jOSmanager::setExecutionDivisors(uint8_t critical, uint8_t high,
 // TermSerialService - Terminal input handling
 TermSerialService* TermSerialService::instance = nullptr;
 
+TermSerialService::TermSerialService() : jerialInstance(nullptr) {}
+
+void TermSerialService::setTermControl(JerialClass* jerial) {
+    jerialInstance = jerial;
+}
+
 TermSerialService& TermSerialService::getInstance() {
     if (instance == nullptr) {
         instance = new TermSerialService();
@@ -364,12 +370,12 @@ ServiceStatus TermSerialService::service() {
     extern struct config jumperlessConfig;
     
     // Only service if line buffering is enabled
-    if (jumperlessConfig.display.terminal_line_buffering != 1 || termSerial == nullptr) {
+    if (jumperlessConfig.display.terminal_line_buffering != 1 || jerialInstance == nullptr) {
         return lastStatus;
     }
     
     // Service returns true when line is complete
-    if (termSerial->service()) {
+    if (jerialInstance->service()) {
         lastStatus = ServiceStatus::BUSY;
     }
     

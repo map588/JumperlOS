@@ -597,12 +597,24 @@ int rainbowList[ 13 ][ 3 ] = {
 
 int checkingPads = 0;
 
+// Special function option colors - used in encoder cursor and probe menus
+uint32_t sfOptionColors[ 12 ] = {
+    0x09000a, 0x0d0500, 0x000809, 0x040f00,
+    0x000f03, 0x00030d, 0x080a00, 0x030013,
+    0x000a03, 0x00030a, 0x040010, 0x070006,
+};
+
 
 uint32_t deleteFade[ 13 ] = { 0x371f16, 0x28160b, 0x191307, 0x141005, 0x0f0901,
                               0x090300, 0x050200, 0x030100, 0x030000, 0x020000,
                               0x010000, 0x000000, 0x000000 };
 
 int fadeIndex = 0;
+
+// Global encoder cursor position for override in LED display functions
+volatile int globalEncoderCursorNode = -1;  // -1 = cursor hidden
+volatile int globalEncoderCursorInHeader = 0;  // 1 if in nano header
+volatile uint32_t globalEncoderCursorColor = 0x4500e8;  // Cursor color
 
 int Probing::probeMode( int setOrClear, int firstConnection ) {
 
@@ -699,15 +711,604 @@ restartProbingNoPrint:
     unsigned long fadeTimer = millis( );
     int fadeClear = -1;
 
+    // Encoder support for node selection with special function zones
+    EncoderAccelerator encoderAccel = EncoderAccelerator::Slow();  // Use slow preset for precise node selection
+    long lastEncoderPosition = encoderPosition;
+    float encoderAccumulator = 0.0f;  // Fractional position accumulator
+    
+    // Navigation zones: 0=Breadboard, 1=NanoHeader, 2=Rails, 3=DAC, 4=ADC, 5=GPIO, 6=UART
+    enum CursorZone { ZONE_BREADBOARD = 0, ZONE_NANO = 1, ZONE_RAILS = 2, ZONE_DAC = 3, ZONE_ADC = 4, ZONE_GPIO = 5, ZONE_UART = 6 };
+    
+    // Static variable to persist cursor position between selections within same probe mode session
+    static int persistentEncoderCursorNode = -1;
+    static int persistentCursorZone = ZONE_BREADBOARD;
+    static int persistentSubIndex = 0;  // For multi-item zones (DAC 0/1, ADC 0-4, etc.)
+    static bool firstProbeEntry = true;  // Track first entry to reset position
+    
+    // Initialize cursor position on first entry or use persistent position
+    int encoderCursorNode = firstProbeEntry ? 14 : persistentEncoderCursorNode;  // Start at row 15 (0-indexed = 14)
+    int cursorZone = firstProbeEntry ? ZONE_BREADBOARD : persistentCursorZone;
+    int subIndex = firstProbeEntry ? 0 : persistentSubIndex;  // Index within special function zone
+    firstProbeEntry = false;  // After first use, persist position
+    
+    int lastEncoderCursorNode = -1;  // Track last position to clear it
+    int lastCursorZone = -1;
+    int lastSubIndex = -1;
+    unsigned long lastEncoderMovement = millis();  // Time of last encoder movement
+    unsigned long encoderHideTimeout = 2000;  // Hide cursor after 2 seconds of no movement
+    bool encoderCursorVisible = false;  // Whether cursor is currently shown
+    
+    // Set rotary divider for good responsiveness during probing
+    int savedRotaryDivider = rotaryDivider;
+    rotaryDivider = 3;
+    
     //! this is the main loop for probing
-    while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 6200 &&
-            encoderButtonState == IDLE ) {
-        delayMicroseconds( 500 );
+    while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 6200 ) {
+        delayMicroseconds( 200 );  // Reduced from 500 for faster encoder response
 
         // Keep critical services (like ProbeButton) running during blocking probeMode
         jOS.serviceCritical( );
+       // rotaryEncoderStuff();  // Update encoder state
 
         connectedRowsIndex = 0;
+
+        // ======= ENCODER-BASED NODE SELECTION WITH SPECIAL FUNCTION ZONES =======
+        // Check for encoder movement
+        long currentEncoderPosition = encoderPosition;
+        long encoderDelta = -(currentEncoderPosition - lastEncoderPosition);
+        
+        clearColorOverrides(1, 1, 0);
+        if (encoderDelta != 0) {
+            // Encoder moved - show cursor and reset timeout
+            lastEncoderMovement = millis();
+            encoderCursorVisible = true;
+            
+            // Get accelerated delta
+            float accelDelta = encoderAccel.getAcceleratedDelta(encoderDelta);
+            encoderAccumulator += accelDelta;
+            
+            // Convert accumulated movement to integer steps
+            int steps = (int)encoderAccumulator;
+            if (steps != 0) {
+                encoderAccumulator -= steps;  // Keep fractional part
+                
+                // Save last position for clearing (before we move)
+                lastEncoderCursorNode = encoderCursorNode;
+                lastCursorZone = cursorZone;
+                lastSubIndex = subIndex;
+                
+                // Navigate through zones
+                if (steps < 0) {
+                    // Moving down (counter-clockwise)
+                    if (cursorZone == ZONE_BREADBOARD) {
+                        encoderCursorNode += steps;
+                        if (encoderCursorNode < 0) {
+                            // Wrap to last special functions zone (UART)
+                            cursorZone = ZONE_UART;
+                            subIndex = 1;  // UART RX
+                            encoderCursorNode = -1;
+                        }
+                    } else if (cursorZone == ZONE_NANO) {
+                        encoderCursorNode += steps;
+                        if (encoderCursorNode < NANO_D0) {
+                            // Go to breadboard
+                            cursorZone = ZONE_BREADBOARD;
+                            encoderCursorNode = 59;
+                        }
+                    } else {
+                        // Navigate within special function zones
+                        subIndex += steps;
+                        if (subIndex < 0) {
+                            // Move to previous zone
+                            cursorZone--;
+                            if (cursorZone < ZONE_RAILS) {
+                                cursorZone = ZONE_NANO;
+                                encoderCursorNode = NANO_RESET_0;
+                            } else {
+                                // Set subIndex to max for new zone
+                                switch(cursorZone) {
+                                    case ZONE_RAILS: subIndex = 2; break;  // 3 rails (TOP, BOTTOM, GND)
+                                    case ZONE_DAC: subIndex = 1; break;    // 2 DACs
+                                    case ZONE_ADC: subIndex = 5; break;    // 6 ADCs (0-4, 7)
+                                    case ZONE_GPIO: subIndex = 7; break;   // 8 GPIOs
+                                    case ZONE_UART: subIndex = 1; break;   // 2 UART (TX, RX)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Moving up (clockwise)
+                    if (cursorZone == ZONE_BREADBOARD) {
+                        encoderCursorNode += steps;
+                        if (encoderCursorNode > 59) {
+                            // Go to nano header
+                            cursorZone = ZONE_NANO;
+                            encoderCursorNode = NANO_D0;
+                        }
+                    } else if (cursorZone == ZONE_NANO) {
+                        encoderCursorNode += steps;
+                        if (encoderCursorNode > NANO_RESET_0) {
+                            // Go to special functions (Rails)
+                            cursorZone = ZONE_RAILS;
+                            subIndex = 0;
+                            encoderCursorNode = -1;
+                        }
+                    } else {
+                        // Navigate within special function zones
+                        int maxSubIndex = 0;
+                        switch(cursorZone) {
+                            case ZONE_RAILS: maxSubIndex = 2; break;
+                            case ZONE_DAC: maxSubIndex = 1; break;
+                            case ZONE_ADC: maxSubIndex = 5; break;
+                            case ZONE_GPIO: maxSubIndex = 7; break;
+                            case ZONE_UART: maxSubIndex = 1; break;
+                        }
+                        
+                        subIndex += steps;
+                        if (subIndex > maxSubIndex) {
+                            // Move to next zone
+                            cursorZone++;
+                            if (cursorZone > ZONE_UART) {
+                                // Wrap back to breadboard
+                                cursorZone = ZONE_BREADBOARD;
+                                encoderCursorNode = 0;
+                            } else {
+                                subIndex = 0;
+                            }
+                        }
+                    }
+                }
+                
+                // ========== ATOMIC LED UPDATE - PAUSE CORE2 WHILE MAKING CHANGES ==========
+                pauseCore2 = 1;  // Pause Core 2 LED updates
+                
+                // 1. Clear previous highlighting if zone or subIndex changed
+                bool zoneChanged = (lastCursorZone != cursorZone);
+                bool subIndexChanged = (cursorZone >= ZONE_RAILS && lastSubIndex != subIndex);
+                
+                if (zoneChanged || subIndexChanged) {
+                    Highlighting::getInstance().clearHighlighting();
+                    clearLEDsExceptRails();
+                    b.clear();
+                    showLEDsCore2 = 2;
+                    
+                    // Clear inPadMenu when leaving special function zones
+                    if (lastCursorZone >= ZONE_RAILS && cursorZone < ZONE_RAILS) {
+                        inPadMenu = 0;
+                    }
+                }
+                
+                // 2. Clear previous cursor position only if in same zone
+                if (!zoneChanged) {
+                    if (cursorZone == ZONE_BREADBOARD && lastEncoderCursorNode >= 0 && lastEncoderCursorNode != encoderCursorNode) {
+                        b.printRawRow(0b00000100, lastEncoderCursorNode, 0x000000, 0x000000);
+                    } else if (cursorZone == ZONE_NANO && lastEncoderCursorNode >= 0 && lastEncoderCursorNode != encoderCursorNode) {
+                        int pixel = getNanoHeaderPixel(lastEncoderCursorNode);
+                        if (pixel >= 0) leds.setPixelColor(pixel, 0x000000);
+                    }
+                }
+                
+                // 3. Set cursor color based on mode
+                uint32_t cursorColor = setOrClear == 1 ? 0x4500e8 : 0x664408;
+                uint32_t dimColor = setOrClear == 1 ? 0x150050 : 0x251800;
+                globalEncoderCursorColor = cursorColor;
+                
+                // 4. Get actual node and display based on zone
+                int actualNode = -1;
+                char displayName[32] = "";
+                
+                if (cursorZone == ZONE_BREADBOARD) {
+                    actualNode = encoderCursorNode + 1;
+                    strcpy(displayName, definesToChar(actualNode, 0));
+                    b.printRawRow(0b00000100, encoderCursorNode, 0x121215, cursorColor);
+                    globalEncoderCursorNode = encoderCursorNode;
+                    globalEncoderCursorInHeader = 0;
+                } else if (cursorZone == ZONE_NANO) {
+                    actualNode = encoderCursorNode;
+                    strcpy(displayName, definesToChar(actualNode, 0));
+                    int pixel = getNanoHeaderPixel(encoderCursorNode);
+                    if (pixel >= 0) leds.setPixelColor(pixel, cursorColor);
+                    globalEncoderCursorNode = encoderCursorNode;
+                    globalEncoderCursorInHeader = 1;
+                } else if (cursorZone == ZONE_RAILS) {
+                    // Display rails: TOP_RAIL, BOTTOM_RAIL, GND - one at a time
+                    const char* railNames[3] = {"Top+", "Bot+", "GND"};
+                    const char* railDisplayNames[3] = {"TOP+", "BOT+", "GND"};
+                    int railNodes[3] = {TOP_RAIL, BOTTOM_RAIL, GND};
+                    actualNode = railNodes[subIndex];
+                    strcpy(displayName, railDisplayNames[subIndex]);
+                    
+                    // Prevent net LEDs from overwriting our text display
+                    inPadMenu = 1;
+                    
+                    // Show only the currently selected rail in the center
+                    b.print(railNames[subIndex], cursorColor, 0xFFFFFF, 1, 0, 2);
+                } else if (cursorZone == ZONE_DAC) {
+                    // Display DAC 0 and 1
+                    const int dacNodes[2] = {DAC0, DAC1};
+                    actualNode = dacNodes[subIndex];
+                    snprintf(displayName, sizeof(displayName), "DAC %d", subIndex);
+                    
+                    // Prevent net LEDs from overwriting our text display
+                    inPadMenu = 1;
+                    
+                    clearLEDsExceptRails();
+                    b.print("DAC", scaleDownBrightness(rawOtherColors[9], 4, 22), 0xFFFFFF, 1, 0, 3);
+                    
+                    // Set colorOverrides
+                    if (subIndex == 0) {
+                        DACcolorOverride0 = cursorColor;
+                        DACcolorOverride1 = dimColor;
+                        b.print("0", cursorColor, 0xFFFFFF, 0, 1, 3);
+                        b.print("1", dimColor, 0xFFFFFF, 5, 1, 0);
+                    } else {
+                        DACcolorOverride0 = dimColor;
+                        DACcolorOverride1 = cursorColor;
+                        b.print("0", dimColor, 0xFFFFFF, 0, 1, 3);
+                        b.print("1", cursorColor, 0xFFFFFF, 5, 1, 0);
+                    }
+                } else if (cursorZone == ZONE_ADC) {
+                    // Display ADC 0-4, 7 (ADC 5,6 don't exist)
+                    const int adcMap[6] = {ADC0, ADC1, ADC2, ADC3, ADC4, ADC7};
+                    const char* adcLabels[6] = {"0", "1", "2", "3", "4", "P"};  // P for probe
+                    actualNode = adcMap[subIndex];
+                    snprintf(displayName, sizeof(displayName), "ADC %s", adcLabels[subIndex]);
+                    
+                    // Prevent net LEDs from overwriting our text display
+                    inPadMenu = 1;
+                    
+                    clearLEDsExceptRails();
+                    b.print("ADC", scaleDownBrightness(rawOtherColors[8], 4, 22), 0xFFFFFF, 0, 0, 3);
+                    
+                    for (int i = 0; i < 6; i++) {
+                        uint32_t color = (i == subIndex) ? cursorColor : dimColor;
+                        b.print(adcLabels[i], color, 0xFFFFFF, i, 1, (i==0?-1:i-1));
+                    }
+                    
+                    // Set colorOverrides
+                    ADCcolorOverride0 = (subIndex <= 1) ? ((subIndex == 0) ? cursorColor : dimColor) : -2;
+                    ADCcolorOverride1 = (subIndex <= 1) ? ((subIndex == 1) ? cursorColor : dimColor) : -2;
+                } else if (cursorZone == ZONE_GPIO) {
+                    // Display GPIO 1-8
+                    actualNode = RP_GPIO_1 + subIndex;
+                    snprintf(displayName, sizeof(displayName), "GPIO %d", subIndex + 1);
+                    
+                    // Prevent net LEDs from overwriting our text display
+                    inPadMenu = 1;
+                    
+                    clearLEDsExceptRails();
+                    uint32_t inColor = (connectOrClearProbe == 0) ? 0x000000 : 0x000606;
+                    uint32_t outColor = (connectOrClearProbe == 0) ? 0x000000 : 0x060100;
+                    
+                    Serial.println("           Choose GPIO");
+                    Serial.println("  ⁱ = input, ⁰ = output\n\r");
+                    
+                    // Display GPIO 1-4 on top row using original positioning
+                    const int positions[4] = {0, 2, 4, 6};
+                    const int nudges[4] = {1, 0, -1, -2};
+                    
+                    for (int i = 0; i < 4; i++) {
+                        uint32_t numColor = (i == subIndex) ? cursorColor : dimColor;
+                        char numStr[2] = {(char)('1' + i), '\0'};
+                        b.print(numStr, numColor, 0xFFFFFF, positions[i], 0, nudges[i]);
+                        
+                        // Show input/output indicators for top row
+                        int rowBase = 2 + i*7;
+                        b.printRawRow(0b00011000, rowBase, (i==subIndex)?inColor:0x000000, 0xFFFFFF);
+                        b.printRawRow(0b00011000, rowBase + 4, (i==subIndex)?outColor:0x000000, 0xFFFFFF);
+                    }
+                    
+                    // Display GPIO 5-8 on bottom row using original positioning
+                    for (int i = 4; i < 8; i++) {
+                        uint32_t numColor = (i == subIndex) ? cursorColor : dimColor;
+                        char numStr[2] = {(char)('1' + i), '\0'};
+                        b.print(numStr, numColor, 0xFFFFFF, positions[i-4], 1, nudges[i-4]);
+                        
+                        // Show input/output indicators for bottom row
+                        int rowBase = 32 + (i-4)*7;
+                        b.printRawRow(0b00000011, rowBase, (i==subIndex)?inColor:0x000000, 0xFFFFFF);
+                        b.printRawRow(0b00000011, rowBase + 4, (i==subIndex)?outColor:0x000000, 0xFFFFFF);
+                    }
+                    
+                    // Set colorOverrides
+                    GPIOcolorOverride0 = (subIndex <= 3) ? ((subIndex < 2) ? ((subIndex == 0) ? cursorColor : dimColor) : dimColor) : -2;
+                    GPIOcolorOverride1 = (subIndex >= 4) ? ((subIndex < 6) ? ((subIndex == 4) ? cursorColor : dimColor) : dimColor) : -2;
+                } else if (cursorZone == ZONE_UART) {
+                    // Display UART TX and RX - one at a time to prevent overlap
+                    const char* uartNames[2] = {"TX", "RX"};
+                    int uartNodes[2] = {RP_UART_TX, RP_UART_RX};
+                    actualNode = uartNodes[subIndex];
+                    snprintf(displayName, sizeof(displayName), "UART %s", uartNames[subIndex]);
+                    
+                    // Prevent net LEDs from overwriting our text display
+                    inPadMenu = 1;
+                    
+                    // Show UART label and only the selected TX or RX
+                    b.print("UART", sfOptionColors[3], 0xFFFFFF, 0, 0, 0);
+                    b.print(uartNames[subIndex], cursorColor, 0xFFFFFF, 0, 1, subIndex==0?0:-1);
+                    
+                    // Set logo colorOverrides
+                    logoColorOverrideTop = (subIndex == 0) ? cursorColor : -2;
+                    logoColorOverrideBottom = (subIndex == 1) ? cursorColor : -2;
+                }
+                
+                // 5. Try highlighting nets if we're on a regular node
+                int netOnNode = 0;
+                if (actualNode > 0 && (cursorZone == ZONE_BREADBOARD || cursorZone == ZONE_NANO)) {
+                    netOnNode = Highlighting::getInstance().highlightNets(actualNode, 0, 1);
+                }
+                
+                // 6. Display name on Serial and OLED
+                if (netOnNode <= 0 || cursorZone >= ZONE_RAILS) {
+                    if (brightenedNode > 0) {
+                        Highlighting::getInstance().clearHighlighting();
+                    }
+                    
+                    Serial.print("\r                                               \r");
+                    Serial.print(">>>> ");
+                    Serial.print(displayName);
+                    Serial.flush();
+                    
+                    oled.clearPrintShow(displayName, 2, true, true);
+                }
+                
+                // 7. Save persistent cursor position
+                persistentEncoderCursorNode = encoderCursorNode;
+                persistentCursorZone = cursorZone;
+                persistentSubIndex = subIndex;
+                
+                // 8. NOW update LEDs atomically - unpause and trigger update
+                pauseCore2 = 0;  // Unpause Core 2
+                showLEDsCore2 = 2;  // Trigger single atomic update
+                
+                // ========== END ATOMIC UPDATE ==========
+                
+                // If we have first node and selecting second, show preview
+                if (node1or2 == 1 && nodesToConnect[0] > 0 && setOrClear == 1 && cursorZone <= ZONE_NANO) {
+                    int previewNode = (cursorZone == ZONE_NANO) ? encoderCursorNode : (encoderCursorNode + 1);
+                    
+                    // Visual preview: highlight both nodes without modifying state
+                    if (previewNode > 0 && previewNode != nodesToConnect[0] && 
+                        previewNode >= 1 && previewNode <= 60) {
+                        // Show first node
+                        b.printRawRow(0b00000100, nodesToConnect[0] - 1, 0x121215, 0x4500e8);
+                        // Show second node being previewed
+                        b.printRawRow(0b00000100, previewNode - 1, 0x121215, 0x00e845);
+                    }
+                }
+                
+                showLEDsCore2 = 2;
+            }
+            
+            lastEncoderPosition = currentEncoderPosition;
+        }
+        
+        // Check for encoder cursor timeout (auto-hide after 2 seconds)
+        if (encoderCursorVisible && (millis() - lastEncoderMovement) > encoderHideTimeout) {
+            // Clear the cursor position before hiding
+            if (cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0) {
+                b.printRawRow(0b00000100, encoderCursorNode, 0x000000, 0x000000);
+            } else if (cursorZone == ZONE_NANO && encoderCursorNode >= 0) {
+                int pixel = getNanoHeaderPixel(encoderCursorNode);
+                if (pixel >= 0) leds.setPixelColor(pixel, 0x000000);
+            } else if (cursorZone >= ZONE_RAILS) {
+                // Clear special function zone display
+                clearLEDsExceptRails();
+                // Clear inPadMenu flag
+                inPadMenu = 0;
+            }
+            
+            // Clear net highlighting and all color overrides
+            Highlighting::getInstance().clearHighlighting();
+            DACcolorOverride0 = -2;
+            DACcolorOverride1 = -2;
+            ADCcolorOverride0 = -2;
+            ADCcolorOverride1 = -2;
+            GPIOcolorOverride0 = -2;
+            GPIOcolorOverride1 = -2;
+            logoColorOverrideTop = -2;
+            logoColorOverrideBottom = -2;
+            
+            encoderCursorVisible = false;
+            lastEncoderCursorNode = -1;
+            lastCursorZone = -1;
+            globalEncoderCursorNode = -1;  // Clear global
+            globalEncoderCursorInHeader = 0;
+            showLEDsCore2 = 2;
+        }
+        
+        // Check for encoder button press to select node
+        // Only process encoder button if cursor is visible (otherwise it might interfere with normal operation)
+        if (encoderCursorVisible && encoderButtonState == PRESSED && lastButtonEncoderState == IDLE) {
+            // IMMEDIATELY reset button state to prevent it from triggering click menu
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            
+            // Get the actual node number based on current zone
+            int selectedNode = -1;
+            
+            if (cursorZone == ZONE_BREADBOARD) {
+                selectedNode = encoderCursorNode + 1;
+            } else if (cursorZone == ZONE_NANO) {
+                selectedNode = encoderCursorNode;
+            } else if (cursorZone == ZONE_RAILS) {
+                const int railNodes[3] = {TOP_RAIL, BOTTOM_RAIL, GND};
+                selectedNode = railNodes[subIndex];
+            } else if (cursorZone == ZONE_DAC) {
+                const int dacNodes[2] = {DAC0, DAC1};
+                selectedNode = dacNodes[subIndex];
+                
+                // For DAC, launch voltage adjuster
+                VoltageAdjustConfig config;
+                config.minVoltage = -8.0;
+                config.maxVoltage = 8.0;
+                config.enableSnap = false;
+                config.liveUpdateInRange = true;
+                config.liveUpdateMin = 0.0;
+                config.liveUpdateMax = 5.0;
+                
+                if (subIndex == 0) {
+                    // DAC 0
+                    config.initialValue = globalState.power.dac0;
+                    config.label = "DAC 0";
+                    config.callback = []( float newValue, bool isLive, void* context ) {
+                        setDac0voltage( newValue, 1, 0, false );
+                        globalState.power.dac0 = newValue;
+                    };
+                } else {
+                    // DAC 1
+                    config.initialValue = globalState.power.dac1;
+                    config.label = "DAC 1";
+                    config.callback = []( float newValue, bool isLive, void* context ) {
+                        setDac1voltage( newValue, 1, 0, false );
+                        globalState.power.dac1 = newValue;
+                    };
+                }
+                
+                AdjustResult result = VoltageAdjuster::adjust( config );
+                if ( result == AdjustResult::CONFIRMED ) {
+                    saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                                  globalState.power.dac0, globalState.power.dac1 );
+                }
+                
+                // Clear and continue without selecting node
+                encoderCursorVisible = false;
+                lastEncoderCursorNode = -1;
+                globalEncoderCursorNode = -1;
+                DACcolorOverride0 = -2;
+                DACcolorOverride1 = -2;
+                clearLEDsExceptRails();
+                showLEDsCore2 = -1;
+                continue;
+            } else if (cursorZone == ZONE_ADC) {
+                const int adcMap[6] = {ADC0, ADC1, ADC2, ADC3, ADC4, ADC7};
+                selectedNode = adcMap[subIndex];
+            } else if (cursorZone == ZONE_GPIO) {
+                selectedNode = RP_GPIO_1 + subIndex;
+                
+                // For GPIO, prompt for input/output selection if connecting
+                if (connectOrClearProbe == 1) {
+                    int gpioIndex = subIndex + 1;  // GPIO 1-8
+                    
+                    // Clear the special function display first
+                    clearLEDsExceptRails();
+                    b.clear();
+                    
+                    // Show input/output selection menu
+                    int ioSelection = chooseGPIOinputOutput(gpioIndex);
+                    
+                    // If user cancelled, don't select the node
+                    if (ioSelection == -1) {
+                        // User cancelled - clear and don't select node
+                        selectedNode = -1;
+                    }
+                }
+            } else if (cursorZone == ZONE_UART) {
+                const int uartNodes[2] = {RP_UART_TX, RP_UART_RX};
+                selectedNode = uartNodes[subIndex];
+            }
+            
+            // Treat encoder selection like a probe touch
+            if (selectedNode > 0) {
+                row[0] = selectedNode;
+                connectedRows[0] = selectedNode;
+                connectedRowsIndex = 1;
+            }
+            
+            // Clear net highlighting and color overrides
+            Highlighting::getInstance().clearHighlighting();
+            
+            // Clear all colorOverrides
+            DACcolorOverride0 = -2;
+            DACcolorOverride1 = -2;
+            ADCcolorOverride0 = -2;
+            ADCcolorOverride1 = -2;
+            GPIOcolorOverride0 = -2;
+            GPIOcolorOverride1 = -2;
+            logoColorOverrideTop = -2;
+            logoColorOverrideBottom = -2;
+            
+            // Clear inPadMenu flag
+            inPadMenu = 0;
+            
+            // Reset encoder cursor for next selection
+            encoderCursorVisible = false;
+            lastEncoderCursorNode = -1;
+            lastCursorZone = -1;
+            globalEncoderCursorNode = -1;  // Clear global (hides cursor)
+            globalEncoderCursorInHeader = 0;
+            lastEncoderMovement = millis();  // Reset timeout
+            
+            // If we selected from special function zone, reset to row 15 breadboard for next selection
+            if (cursorZone >= ZONE_RAILS) {
+                persistentEncoderCursorNode = 14;  // Row 15 (0-indexed)
+                persistentCursorZone = ZONE_BREADBOARD;
+                persistentSubIndex = 0;
+            } else {
+                // Normal breadboard/nano selection - persist position
+                persistentEncoderCursorNode = encoderCursorNode;
+                persistentCursorZone = cursorZone;
+                persistentSubIndex = subIndex;
+            }
+            
+            // Clear breadboard display and continue to normal probe processing
+            clearLEDsExceptRails();
+            showLEDsCore2 = -1;
+            
+            // Continue to normal probe processing below
+        } else {
+            row[0] = -1;  // No encoder selection this iteration
+        }
+        
+        // Check for encoder button HELD to exit probe mode
+        if (encoderButtonState == HELD) {
+            // User held encoder button - exit probe mode
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            
+            // Clear cursor LED before exiting based on zone
+            if (cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0) {
+                b.printRawRow(0b00000100, encoderCursorNode, 0x000000, 0x000000);
+            } else if (cursorZone == ZONE_NANO && encoderCursorNode >= 0) {
+                int pixel = getNanoHeaderPixel(encoderCursorNode);
+                if (pixel >= 0) leds.setPixelColor(pixel, 0x000000);
+            } else if (cursorZone >= ZONE_RAILS) {
+                clearLEDsExceptRails();
+            }
+            
+            globalEncoderCursorNode = -1;  // Clear globals on exit
+            globalEncoderCursorInHeader = 0;
+            
+            // Clear all highlighting and color overrides
+            Highlighting::getInstance().clearHighlighting();
+            DACcolorOverride0 = -2;
+            DACcolorOverride1 = -2;
+            ADCcolorOverride0 = -2;
+            ADCcolorOverride1 = -2;
+            GPIOcolorOverride0 = -2;
+            GPIOcolorOverride1 = -2;
+            logoColorOverrideTop = -2;
+            logoColorOverrideBottom = -2;
+            
+            // Clear inPadMenu flag
+            inPadMenu = 0;
+            
+            showLEDsCore2 = 2;  // Update LEDs to show cleared state
+            break;
+        }
+        
+        // CRITICAL: Always clear encoder button state when cursor not visible
+        // This prevents the encoder button from triggering the click menu
+        if (!encoderCursorVisible) {
+            if (encoderButtonState == PRESSED || encoderButtonState == RELEASED) {
+                encoderButtonState = IDLE;
+            }
+            if (lastButtonEncoderState == PRESSED || lastButtonEncoderState == RELEASED) {
+                lastButtonEncoderState = IDLE;
+            }
+        }
+        
+        // ======= END ENCODER SELECTION =======
 
         if ( firstConnection > 0 ) {
             row[ 0 ] = firstConnection;
@@ -719,9 +1320,16 @@ restartProbingNoPrint:
                 firstConnection = -3;
             }
 
-        } else {
-
+        } else if (row[0] == -1) {  // Only read physical probe if encoder didn't select
             row[ 0 ] = readProbe( );
+        }
+
+        // Handle encoder returns from readProbe() - these are handled by cursor logic above
+        if (row[0] == -19 || row[0] == -17 || row[0] == -10) {
+            // Encoder movement/button - already handled by cursor logic
+            // Reset row[0] and continue loop
+            row[0] = -1;
+            continue;
         }
 
         if ( row[ 0 ] == -1 ) {
@@ -1352,7 +1960,36 @@ restartProbingNoPrint:
 
         probeTimeout = millis( );
 
+        // NOTE: Old encoder exit code - now handled by cursor system above
+        // These should never trigger since encoder returns are filtered out
+        // But kept for safety in case cursor is disabled
         if ( encoderDirectionState == UP ) {
+            // Clear any cursor before exiting based on zone
+            if (cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0) {
+                b.printRawRow(0b00000100, encoderCursorNode, 0x000000, 0x000000);
+            } else if (cursorZone == ZONE_NANO && encoderCursorNode >= 0) {
+                int pixel = getNanoHeaderPixel(encoderCursorNode);
+                if (pixel >= 0) leds.setPixelColor(pixel, 0x000000);
+            } else if (cursorZone >= ZONE_RAILS) {
+                clearLEDsExceptRails();
+            }
+            
+            globalEncoderCursorNode = -1;
+            globalEncoderCursorInHeader = 0;
+            
+            // Clear all color overrides
+            DACcolorOverride0 = -2;
+            DACcolorOverride1 = -2;
+            ADCcolorOverride0 = -2;
+            ADCcolorOverride1 = -2;
+            GPIOcolorOverride0 = -2;
+            GPIOcolorOverride1 = -2;
+            logoColorOverrideTop = -2;
+            logoColorOverrideBottom = -2;
+            
+            // Clear inPadMenu flag
+            inPadMenu = 0;
+            
             node1or2 = 0;
             nodesToConnect[ 0 ] = -1;
             nodesToConnect[ 1 ] = -1;
@@ -1361,6 +1998,23 @@ restartProbingNoPrint:
         }
 
         if ( encoderDirectionState == DOWN ) {
+            // Clear any cursor before exiting based on zone
+            if (cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0) {
+                b.printRawRow(0b00000100, encoderCursorNode, 0x000000, 0x000000);
+            } else if (cursorZone == ZONE_NANO && encoderCursorNode >= 0) {
+                int pixel = getNanoHeaderPixel(encoderCursorNode);
+                if (pixel >= 0) leds.setPixelColor(pixel, 0x000000);
+            } else if (cursorZone >= ZONE_RAILS) {
+                clearLEDsExceptRails();
+            }
+            
+            globalEncoderCursorNode = -1;
+            globalEncoderCursorInHeader = 0;
+            
+clearColorOverrides(1, 1, 0);
+            // Clear inPadMenu flag
+            inPadMenu = 0;
+            
             node1or2 = 0;
             nodesToConnect[ 0 ] = -1;
             nodesToConnect[ 1 ] = -1;
@@ -1428,6 +2082,43 @@ restartProbingNoPrint:
     // showLEDsCore2 = -1;
     oled.showJogo32h( );
 
+    // Restore rotary divider
+    rotaryDivider = savedRotaryDivider;
+    
+    // Clear any visible cursor LED before exiting based on zone
+    if (cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0) {
+        b.printRawRow(0b00000100, encoderCursorNode, 0x000000, 0x000000);
+    } else if (cursorZone == ZONE_NANO && encoderCursorNode >= 0) {
+        int pixel = getNanoHeaderPixel(encoderCursorNode);
+        if (pixel >= 0) leds.setPixelColor(pixel, 0x000000);
+    } else if (cursorZone >= ZONE_RAILS) {
+        clearLEDsExceptRails();
+    }
+    
+    // Clear encoder cursor globals and highlighting
+    globalEncoderCursorNode = -1;
+    globalEncoderCursorInHeader = 0;
+    Highlighting::getInstance().clearHighlighting();
+    
+    // Clear all color overrides
+    DACcolorOverride0 = -2;
+    DACcolorOverride1 = -2;
+    ADCcolorOverride0 = -2;
+    ADCcolorOverride1 = -2;
+    GPIOcolorOverride0 = -2;
+    GPIOcolorOverride1 = -2;
+    logoColorOverrideTop = -2;
+    logoColorOverrideBottom = -2;
+    
+    // Clear inPadMenu flag
+    inPadMenu = 0;
+    
+    // Reset first entry flag so next entrance starts at row 15 in breadboard
+    firstProbeEntry = true;
+    
+    // Force LED update to clear cursor
+    showLEDsCore2 = 2;
+
     // Wait for button to be released before exiting
     // This prevents the press that triggered probeMode from being detected again
     // while (probeButton.getButtonState() != 0) {
@@ -1438,6 +2129,7 @@ restartProbingNoPrint:
     probeButton.clearButtonState( );
     blockProbeButton = 1000; // Extra 100ms safety margin
     blockProbeButtonTimer = millis( );
+    clearColorOverrides(1, 1, 0);
 
     return 1;
 }
@@ -1490,21 +2182,6 @@ float Probing::measureMode( int updateSpeed ) {
 }
 
 unsigned long blinkTimer = 0;
-
-uint32_t sfOptionColors[ 12 ] = {
-    0x09000a,
-    0x0d0500,
-    0x000809,
-    0x040f00,
-    0x000f03,
-    0x00030d,
-    0x080a00,
-    0x030013,
-    0x000a03,
-    0x00030a,
-    0x040010,
-    0x070006,
-};
 
 int Probing::selectSFprobeMenu( int function ) {
 
@@ -2189,54 +2866,142 @@ int Probing::chooseADC( void ) {
 
 int Probing::chooseGPIOinputOutput( int gpioChosen ) {
     int settingOption = -1;
+    int selectedOption = 0;  // 0 = input (default), 1 = output
+    
+    // Prevent net LEDs from overwriting our menu
+    inPadMenu = 1;
+    
+    // Clear LEDs before showing menu
+    clearLEDsExceptRails();
+    b.clear();
+    showLEDsCore2 = 2;
 
-    b.print( "Input", sfOptionColors[ gpioChosen + 1 % 7 ], 0xFFFFFF, 1, 0, 3 );
-    b.print( gpioChosen, sfOptionColors[ gpioChosen - 1 ], 0xFFFFFF, 0, 0, -2 );
-    b.print( "Output", sfOptionColors[ gpioChosen % 7 ], 0xFFFFFF, 0, 1, 3 );
-
-    showLEDsCore2 = -2;
-
-    // Serial.print("gpioChosen: ");
-    // Serial.println(gpioChosen);
-
-    // delay(100);
-
-    // Loop until option selected or button pressed to exit
-    // longShortPress now uses state-based API, won't consume events
-    while ( settingOption == -1 && longShortPress( 500 ) != 1 ) {
+    // Show initial display
+    char gpioNumStr[3];
+    snprintf(gpioNumStr, sizeof(gpioNumStr), "%d", gpioChosen);
+    
+    // Track encoder position for selection with accumulator
+    long lastEncPos = encoderPosition;
+    int lastSelectedOption = -1;  // Track if we need to redraw
+    int encoderAccumulator = 0;  // Accumulate encoder clicks
+    const int clicksToSwitch = 8;  // Require 8 clicks to switch
+    
+    Serial.print("GPIO ");
+    Serial.print(gpioChosen);
+    Serial.println(" - Select Input or Output");
+    Serial.println("  Encoder: rotate to select, press to confirm");
+    
+    // Initial display
+    b.clear();
+    clearLEDsExceptRails();
+    uint32_t inputColor = (selectedOption == 0) ? 0x4500e8 : 0x150050;
+    uint32_t outputColor = (selectedOption == 1) ? 0x4500e8 : 0x150050;
+    b.print( "Input", inputColor, 0xFFFFFF, 1, 0, 3 );
+    b.print( gpioNumStr, sfOptionColors[ gpioChosen - 1 ], 0xFFFFFF, 0, 0, -2 );
+    b.print( "Output", outputColor, 0xFFFFFF, 0, 1, 3 );
+    showLEDsCore2 = 2;
+    lastSelectedOption = selectedOption;
+    
+    while ( settingOption == -1 ) {
+        // Keep critical services running
+        jOS.serviceCritical();
+        
+        // Check for encoder movement and accumulate
+        long currentEncPos = encoderPosition;
+        long encDelta = currentEncPos - lastEncPos;
+        if (encDelta != 0) {
+            encoderAccumulator += encDelta;
+            lastEncPos = currentEncPos;
+            
+            // Switch option when accumulator reaches threshold
+            if (encoderAccumulator >= clicksToSwitch) {
+                selectedOption = 1;  // Output
+                encoderAccumulator = 0;
+            } else if (encoderAccumulator <= -clicksToSwitch) {
+                selectedOption = 0;  // Input
+                encoderAccumulator = 0;
+            }
+        }
+        
+        // Only update display if selection changed
+        if (selectedOption != lastSelectedOption) {
+            b.clear();
+            clearLEDsExceptRails();
+            
+            inputColor = (selectedOption == 0) ? 0x4500e8 : 0x150050;
+            outputColor = (selectedOption == 1) ? 0x4500e8 : 0x150050;
+            
+            b.print( "Input", inputColor, 0xFFFFFF, 1, 0, 3 );
+            b.print( gpioNumStr, sfOptionColors[ gpioChosen - 1 ], 0xFFFFFF, 0, 0, -2 );
+            b.print( "Output", outputColor, 0xFFFFFF, 0, 1, 3 );
+            showLEDsCore2 = 2;
+            
+            lastSelectedOption = selectedOption;
+        }
+        
+        // Check for encoder button press
+        if (encoderButtonState == PRESSED && lastButtonEncoderState == IDLE) {
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            settingOption = selectedOption;
+            break;
+        }
+        
+        // Also check for probe touch for backward compatibility
         int reading = justReadProbe( );
         if ( reading != -1 ) {
             switch ( reading ) {
             case 9 ... 29: {
-                gpioState[ gpioChosen - 1 ] = 4;
-                if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 0 ) {
-                    globalState.config.gpioDirection[ gpioChosen - 1 ] = 1;
-                    globalState.markDirty( );
-                    configChanged = true;
-                }
-                settingOption = 4;
+                settingOption = 0;  // Input
                 break;
             }
             case 35 ... 59: {
-                gpioState[ gpioChosen - 1 ] = 0;
-                if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 1 ) {
-                    globalState.config.gpioDirection[ gpioChosen - 1 ] = 0;
-                    globalState.markDirty( );
-                    configChanged = true;
-                }
-                settingOption = 0;
+                settingOption = 1;  // Output
                 break;
             }
             }
         }
+        
+        // Check for button press to exit
+        if (longShortPress( 500 ) == 1) {
+            break;
+        }
+        
+        delayMicroseconds(200);
+    }
+    
+    // Apply the selection
+    if (settingOption == 0) {
+        // Input selected
+        gpioState[ gpioChosen - 1 ] = 4;
+        if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 0 ) {
+            globalState.config.gpioDirection[ gpioChosen - 1 ] = 1;
+            globalState.markDirty( );
+            configChanged = true;
+        }
+    } else if (settingOption == 1) {
+        // Output selected
+        gpioState[ gpioChosen - 1 ] = 0;
+        if ( globalState.config.gpioDirection[ gpioChosen - 1 ] == 1 ) {
+            globalState.config.gpioDirection[ gpioChosen - 1 ] = 0;
+            globalState.markDirty( );
+            configChanged = true;
+        }
     }
 
     Serial.print( "gpioChosen (chooseGPIOinputOutput): " );
-    Serial.println( gpioChosen );
+    Serial.print( gpioChosen );
+    Serial.print( " -> " );
+    Serial.println( settingOption == 0 ? "Input" : "Output" );
     Serial.flush( );
-    // clearLEDsExceptRails();
-    // showNets();
-    // showLEDsCore2 = 1;
+    
+    clearLEDsExceptRails();
+    b.clear();
+    showLEDsCore2 = -1;
+    
+    // Clear inPadMenu flag
+    inPadMenu = 0;
+    
     return settingOption;
 }
 
@@ -3304,7 +4069,8 @@ void Probing::checkPads( void ) {
             Serial.printf( "%06x\n", changedNetColors[ brightenedNet ].color );
             clearHighlighting( );
             checkChangedNetColors( -1 );
-            assignNetColors( );
+            // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
+            showLEDsCore2 = 1;  // Trigger LED update on core 2
             // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
@@ -3326,7 +4092,8 @@ void Probing::checkPads( void ) {
             Serial.printf( "%06x\n", changedNetColors[ brightenedNet ].color );
             clearHighlighting( );
             checkChangedNetColors( -1 );
-            assignNetColors( );
+            // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
+            showLEDsCore2 = 1;  // Trigger LED update on core 2
             // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
@@ -3597,6 +4364,7 @@ int Probing::readProbe( ) {
         probeRead = readProbeRaw( );
         // rotaryEncoderStuff();
 
+        // Return encoder state for handling in main probe loop
         if ( encoderDirectionState != NONE ) {
             if ( encoderDirectionState == UP ) {
                 // Serial.println("encoder up");

@@ -110,6 +110,9 @@ void ledClass::end(void) {
 
 void ledClass::begin(void) {
 
+
+  
+
   if (jumperlessConfig.hardware.revision <= 3) {
     splitLEDs = 0;
 
@@ -275,6 +278,21 @@ struct headerStruct headerMap[30] = {
 {NANO_GND_0, 428, "GND"}, {NANO_VIN, 429, "VIN"}
 
 };
+
+/**
+ * @brief Find LED pixel index for a nano header node
+ * @param node The nano header node number (NANO_D0, NANO_A0, etc.)
+ * @return LED pixel index, or -1 if not found
+ */
+int getNanoHeaderPixel(int node) {
+    // Search through headerMap to find the pixel for this node
+    for (int i = 0; i < 30; i++) {
+        if (headerMap[i].node == node) {
+            return headerMap[i].pixel;
+        }
+    }
+    return -1;  // Not found
+}
 
 int headerMapPrintOrder[30] = {
   14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 
@@ -1388,7 +1406,7 @@ void previewSlotColors(int slot, bool showVoltages) {
   clearLEDs();  // Clear everything including rails
   // Prepare colors and light up LEDs (but don't call leds.show() - core2stuff does that)
   checkChangedNetColors(-1);
-  assignNetColors();
+  // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
   lightUpRail();  // Set rail LED colors based on globalState.power
   
   // Display voltage info if requested
@@ -1450,7 +1468,7 @@ void cancelPreview() {
     getNodesToConnect();
     bridgesToPaths();
     clearLEDsExceptRails();
-    assignNetColors();
+    // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
     showLEDsCore2 = -1;
     Serial.println("✓ Cancelled preview, returned to slot " + String(originalSlot));
   } else {
@@ -1547,6 +1565,8 @@ int checkChangedNetColors(int netIndex) {
   int changedNetColorIndex = -1;
   int nodeNetIndex = -1;
   int loop = 0;
+
+  //return 0;
 
   int ret = 0;
   if (netIndex < 0) {
@@ -2962,7 +2982,7 @@ uint8_t eightSelectHues[LOGO_COLOR_LENGTH + 11] = {
     27,  23,  19,  16,  13,  10,  7,   4,   3,   2,   1,   0,   254, 253, 251,
     248, 242, 236, 230, 224, 218, 212, 207, 202, 199, 197 };
 
-void setupSwirlColors(void) {
+void  setupSwirlColors(void) {
   rgbColor logoColorsRGB[LOGO_COLOR_LENGTH + 12];
   int fudgeMult = 1;
 

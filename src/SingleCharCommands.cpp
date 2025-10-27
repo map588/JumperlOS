@@ -16,7 +16,7 @@
 #include "FileParsing.h"
 #include "Apps.h"
 #include "Probing.h"
-#include "TermControl.h"
+#include "Jerial.h" // TermControl is now part of Jerial
 #include "externVars.h"
 #include "user_functions.h"
 #include "NetManager.h"
@@ -39,7 +39,7 @@
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
 #include "States.h"
-#include "TermControl.h"
+#include "Jerial.h" // TermControl is now part of Jerial
 #include "USBfs.h"
 #include "Debugs.h"
 #include <algorithm>
@@ -58,7 +58,7 @@ extern int dontShowMenu;
 extern int firstLoop;
 extern char connectFromArduino;
 extern String currentCommandLine;
-extern TermControl termSerial;
+extern TermControl termJerial;
 extern int termInInteractiveMode;
 extern const int highSaturationBrightColorsCount;
 extern const int highSaturationSpectrumColorsCount;
@@ -132,46 +132,46 @@ CommandResult SingleCharCommands::executeCommand(char cmdChar, const String& com
 }
 
 void SingleCharCommands::printMenu(int extraMenuLevel) {
-    if ( Serial.available( ) >
-         20 ) { // this is so if you dump a lot of data into the serial buffer, it
+    if ( Jerial.available( ) >
+         20 ) { // this is so if you dump a lot of data into the Jerial buffer, it
                 // will consume it and not keep looping
-        while ( Serial.available( ) > 0 ) {
-            char c = Serial.read( );
-            // Serial.print(c);
-            // Serial.flush();
+        while ( Jerial.available( ) > 0 ) {
+            char c = Jerial.read( );
+            // Jerial.print(c);
+            // Jerial.flush();
         }
     }
 
     if ( lastProbePowerDAC != probePowerDAC ) {
         probePowerDACChanged = true;
         // delay(1000);
-        Serial.print( "probePowerDACChanged = " );
-        Serial.println( probePowerDACChanged );
+        Jerial.print( "probePowerDACChanged = " );
+        Jerial.println( probePowerDACChanged );
         routableBufferPower( 1, 1 );
     }
 
-    // Serial.print("clearing highlighting");
-    // Serial.flush();
+    // Jerial.print("clearing highlighting");
+    // Jerial.flush();
 
     clearHighlighting( );
 
-    // Serial.print("clearHighlighting");
-    // Serial.flush();
+    // Jerial.print("clearHighlighting");
+    // Jerial.flush();
 
     if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
-        Serial.write( 0x0E ); // Turn ON interactive mode
-        Serial.print( "Turning on interactive mode\n\r" );
-        Serial.flush( );
+        Jerial.write( 0x0E ); // Turn ON interactive mode
+        Jerial.print( "Turning on interactive mode\n\r" );
+        Jerial.flush( );
         termInInteractiveMode = 1;
     } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
-        Serial.write( 0x0F ); // Turn OFF interactive mode
-        Serial.print( "Turning off interactive mode\n\r" );
-        Serial.flush( );
+        Jerial.write( 0x0F ); // Turn OFF interactive mode
+        Jerial.print( "Turning off interactive mode\n\r" );
+        Jerial.flush( );
         termInInteractiveMode = 0;
     }
-    // Serial.print("termInInteractiveMode = ");
-    // Serial.println(termInInteractiveMode);
-    // Serial.flush();
+    // Jerial.print("termInInteractiveMode = ");
+    // Jerial.println(termInInteractiveMode);
+    // Jerial.flush();
 
     int shownMenuItems = 0;
 int menuItemCount[ 4 ] = { 0, 0, 0, 0 };
@@ -183,11 +183,11 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
         int numberOfMenuItems = menuItemCounts[ showExtraMenu ];
         float steps =
             (float)highSaturationBrightColorsCount / ( (float)numberOfMenuItems );
-        // Serial.print("steps = ");
-        // Serial.println(steps);
+        // Jerial.print("steps = ");
+        // Jerial.println(steps);
         int shownMenuItems = 0;
         // printSpectrumOrderedColorCube();
-        cycleTerminalColor( true, steps, true, &Serial );
+        cycleTerminalColor( true, steps, true, &Jerial );
         shownMenuItems += printMenuLine( "\n\n\r\t\tMenu\n\r\n\r" );
         shownMenuItems += printMenuLine( "\t'help' for docs or [command]?\n\r" );
         shownMenuItems += printMenuLine( "\n\r" );
@@ -195,17 +195,17 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
 
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\te = show extra options (%d)\n\r", showExtraMenu );
 
-        //  Serial.println();
+        //  Jerial.println();
 
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\tn = show net list\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tb = show bridge array\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tc = show crossbar status\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\ts = show all slot files\n\r" );
         if ( showExtraMenu >= 0 ) {
-            Serial.println( );
+            Jerial.println( );
         }
 
-        // Serial.println();
+        // Jerial.println();
 
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t? = show firmware version\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t' = show startup animation\n\r" );
@@ -218,7 +218,7 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\bU/u = enable/disable USB Mass Storage\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
-        // Serial.print("\tu = disable USB Mass Storage drive\n\r");
+        // Jerial.print("\tu = disable USB Mass Storage drive\n\r");
         // cycleTerminalColor();
 
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\n\r" );
@@ -241,22 +241,22 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
 
         if ( showExtraMenu >= 2 ) {
 
-            // Serial.print("\n\r");
+            // Jerial.print("\n\r");
         }
-        Serial.println( );
+        Jerial.println( );
         // shownMenuItems += printMenuLine(showExtraMenu, 1, "\n\r");
-        //  Serial.print("\t$ = calibrate DACs\n\r");
+        //  Jerial.print("\t$ = calibrate DACs\n\r");
         if ( probePowerDAC == 0 ) {
             shownMenuItems += printMenuLine( showExtraMenu, 3, "\t^ = set DAC 1 voltage\n\r" );
         } else if ( probePowerDAC == 1 ) {
             shownMenuItems += printMenuLine( showExtraMenu, 3, "\t^ = set DAC 0 voltage\n\r" );
         }
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tv = get ADC reading\n\r" );
-        // Serial.println();
+        // Jerial.println();
 
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\t# = print text from menu\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tg = print gpio state\n\r" );
-        // Serial.print("\t\b\b\b\b[0-9] = run app by index\n\r");
+        // Jerial.print("\t\b\b\b\b[0-9] = run app by index\n\r");
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\t. = connect oled\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tr = reset Arduino (rt/rb)\n\r" );
 
@@ -267,12 +267,12 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\tx = clear all connections\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t+ = add connections\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t- = remove connections\n\r" );
-        // Serial.print("\te = extra menu options\n\r");
-        // Serial.println();
+        // Jerial.print("\te = extra menu options\n\r");
+        // Jerial.println();
 
-        Serial.println( );
+        Jerial.println( );
 
-        Serial.flush( );
+        Jerial.flush( );
 
         menuItemCount[ showExtraMenu ] = shownMenuItems;
     }
@@ -287,11 +287,11 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
     }
     
     float steps = (float)highSaturationBrightColorsCount / (float)(numberOfMenuItems + 5);
-    cycleTerminalColor(true, steps, true, &Serial);
+    cycleTerminalColor(true, steps, true, &Jerial);
     
-    Serial.println("\n\n\r\t\tMenu\n\r");
-    Serial.println("\t'help' for docs or [command]?\n\r");
-    Serial.println();
+    Jerial.println("\n\n\r\t\tMenu\n\r");
+    Jerial.println("\t'help' for docs or [command]?\n\r");
+    Jerial.println();
     
     // Group by category and print
     CommandCategory currentCat = CAT_CONNECTIONS;
@@ -304,63 +304,63 @@ int menuItemCounts[ 4 ] = { 14, 22, 37, 46 };
         
         // Add spacing between categories
         if (commands[i].category != currentCat) {
-            Serial.println();
+            Jerial.println();
             currentCat = commands[i].category;
             firstInCategory = true;
         }
         
-        cycleTerminalColor(true, steps, true, &Serial);
-        Serial.print("\t");
-        Serial.print(commands[i].trigger);
-        Serial.print(" = ");
-        Serial.println(commands[i].shortDesc);
+        cycleTerminalColor(true, steps, true, &Jerial);
+        Jerial.print("\t");
+        Jerial.print(commands[i].trigger);
+        Jerial.print(" = ");
+        Jerial.println(commands[i].shortDesc);
     }
     
-    Serial.println();
-    Serial.flush();
+    Jerial.println();
+    Jerial.flush();
     */
 }
 
 void SingleCharCommands::printCommandHelp(char cmdChar) {
     const Command* cmd = getCommand(cmdChar);
     if (cmd == nullptr) {
-        Serial.print("Command '");
-        Serial.print(cmdChar);
-        Serial.println("' not found");
+        Jerial.print("Command '");
+        Jerial.print(cmdChar);
+        Jerial.println("' not found");
         return;
     }
     
-    Serial.println("\n\r╭────────────────────────────────────╮");
-    Serial.print("│   Command: ");
-    Serial.print(cmd->trigger);
-    Serial.println("                      │");
-    Serial.println("╰────────────────────────────────────╯\n\r");
+    Jerial.println("\n\r╭────────────────────────────────────╮");
+    Jerial.print("│   Command: ");
+    Jerial.print(cmd->trigger);
+    Jerial.println("                      │");
+    Jerial.println("╰────────────────────────────────────╯\n\r");
     
-    Serial.print("Description: ");
-    Serial.println(cmd->shortDesc);
-    Serial.println();
+    Jerial.print("Description: ");
+    Jerial.println(cmd->shortDesc);
+    Jerial.println();
     
     if (cmd->helpText != nullptr && cmd->helpText[0] != '\0') {
-        Serial.println("Details:");
-        Serial.println(cmd->helpText);
+        Jerial.println("Details:");
+        Jerial.println(cmd->helpText);
     }
     
-    Serial.println();
+    Jerial.println();
 }
 
 void SingleCharCommands::printAllHelp(int category) {
-    Serial.println("\n\r╭────────────────────────────────────╮");
-    Serial.println("│        Command Reference           │");
-    Serial.println("╰────────────────────────────────────╯\n\r");
+    Jerial.println("\n\r╭────────────────────────────────────╮");
+    Jerial.println("│        Command Reference           │");
+    Jerial.println("╰────────────────────────────────────╯\n\r");
     
     for (int i = 0; i < commandCount; i++) {
         if (category >= 0 && commands[i].category != category) {
             continue;
         }
         
-        Serial.print(commands[i].trigger);
-        Serial.print(" - ");
-        Serial.println(commands[i].shortDesc);
+        Jerial.print(commands[i].trigger);
+        Jerial.print(" - ");
+        Jerial.println(commands[i].shortDesc);
     }
 }
 
@@ -412,7 +412,7 @@ void SingleCharCommands::sortCommands() {
 
 // int SingleCharCommands::printMenuLine(const char* text, int extraMenuLevel, MenuLevel requiredLevel) {
 //     if (extraMenuLevel >= requiredLevel) {
-//         Serial.print(text);
+//         Jerial.print(text);
 //         return 1;
 //     }
 //     return 0;
@@ -604,7 +604,7 @@ void SingleCharCommands::initializeCommands() {
         cmd_cycleFont, MENU_DEBUG, CAT_SETTINGS);
     
     // App/Special mode commands
-    registerCommand('w', "enable logic analyzer",
+    registerCommand('L', "enable logic analyzer",
         "Enable logic analyzer mode.",
         cmd_logicAnalyzer, MENU_STANDARD, CAT_APPS);
     
@@ -656,6 +656,10 @@ void SingleCharCommands::initializeCommands() {
     registerCommand('|', "eratta clear GPIO",
         "Clear GPIO eratta workaround.",
         cmd_erattaClear, MENU_DEBUG, CAT_ADVANCED);
+
+    registerCommand('w', "wavegen",
+        "Wavegen test.",
+        cmd_wavegen, MENU_DEBUG, CAT_ADVANCED);
 }
 
 // ============================================================================
@@ -674,19 +678,25 @@ CommandResult cmd_clearConnections(char c, const String& line) {
     clearNodeFile(netSlot, 0);
     refreshConnections(-1, 1, 1);
     digitalWrite(RESETPIN, LOW);
-    Serial.println("Cleared all connections");
+    Jerial.println("Cleared all connections");
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_addConnections(char c, const String& line) {
-    readStringFromSerial(jumperlessConfig.display.terminal_line_buffering == 1 ? 3 : 0, 0);
+    // Use source 3 if we have a complete command line (from line buffering or injection)
+    // Otherwise use source 0 to read interactively from Jerial
+    int source = (currentCommandLine.length() > 0) ? 3 : 0;
+    readStringFromSerial(source, 0);
     // After reading connections, they need to be loaded
     firstLoop = 0; // Prevent first-loop logic
     return CMD_LOAD_FILE;
 }
 
 CommandResult cmd_removeConnections(char c, const String& line) {
-    readStringFromSerial(jumperlessConfig.display.terminal_line_buffering == 1 ? 3 : 0, 1);
+    // Use source 3 if we have a complete command line (from line buffering or injection)
+    // Otherwise use source 0 to read interactively from Jerial
+    int source = (currentCommandLine.length() > 0) ? 3 : 0;
+    readStringFromSerial(source, 1);
     return CMD_LOAD_FILE;
 }
 
@@ -699,8 +709,8 @@ CommandResult cmd_loadNodeFile(char c, const String& line) {
     
     probeActive = 1;
     readInNodesArduino = 1;
-    // Serial.println("Loading node file...");
-    // Serial.println(line);
+    // Jerial.println("Loading node file...");
+    // Jerial.println(line);
     
     savePreformattedNodeFile(serSource, netSlot, rotaryEncoderMode, line);
     
@@ -709,15 +719,15 @@ CommandResult cmd_loadNodeFile(char c, const String& line) {
     if (validation_result == 0) {
         extern bool debugFP;
         if (debugFP) {
-            Serial.println("NodeFile validated successfully");
+            Jerial.println("NodeFile validated successfully");
         }
         refreshConnections(-1);
     } else {
         extern bool debugFP;
         if (debugFP) {
-            Serial.println("NodeFile validation failed: " + 
+            Jerial.println("NodeFile validation failed: " + 
                           String(getNodeFileValidationError(validation_result)));
-            Serial.println("Connections not refreshed due to invalid node file");
+            Jerial.println("Connections not refreshed due to invalid node file");
         }
     }
     
@@ -746,13 +756,13 @@ CommandResult cmd_cycleSlots(char c, const String& line) {
     } else {
         netSlot++;
     }
-    Serial.print("Slot ");
-    Serial.println(netSlot);
+    Jerial.print("Slot ");
+    Jerial.println(netSlot);
     
     // Send slot change notification for app synchronization
-    Serial.print("SLOT_CHANGED:");
-    Serial.println(netSlot);
-    Serial.flush();
+    Jerial.print("SLOT_CHANGED:");
+    Jerial.println(netSlot);
+    Jerial.flush();
     
     slotPreview = netSlot;
     slotChanged = 1;
@@ -790,26 +800,26 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
     }
     
     if (debugFP) {
-        Serial.println("◆ W command: netSlot=" + String(netSlot) + 
+        Jerial.println("◆ W command: netSlot=" + String(netSlot) + 
                       ", activeSlot=" + String(slotNum) +
                       ", previewMode=" + String(mgr.isPreviewMode() ? "YES" : "NO"));
-        Serial.println("  Input line: '" + line + "' (length=" + String(line.length()) + ")");
+        Jerial.println("  Input line: '" + line + "' (length=" + String(line.length()) + ")");
     }
     
     // Detect if JSON was pasted immediately (from app) vs interactive user
-    // If line contains JSON or serial data available within 100ms, it's from app
+    // If line contains JSON or Jerial data available within 100ms, it's from app
     if (line.length() > 1 && (line.indexOf('{') > 0 || line.indexOf('[') > 0)) {
         fromApp = true;
         if (debugFP) {
-            Serial.println("  Detected app paste (JSON in line)");
+            Jerial.println("  Detected app paste (JSON in line)");
         }
     } else {
         // Check if more data is coming soon (app sends it all at once)
         delay(100);
-        if (Serial.available() > 0) {
+        if (Jerial.available() > 0) {
             fromApp = true;
             if (debugFP) {
-                Serial.println("  Detected app paste (data available after 100ms)");
+                Jerial.println("  Detected app paste (data available after 100ms)");
             }
         }
     }
@@ -823,14 +833,14 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
         params.trim();
         
         if (debugFP) {
-            Serial.println("  Parsing params: '" + params + "' (length=" + String(params.length()) + 
+            Jerial.println("  Parsing params: '" + params + "' (length=" + String(params.length()) + 
                           ", first char='" + (params.length() > 0 ? String(params[0]) : "") + "')");
         }
         
         // Skip JSON content: if params starts with '{', '[', or '"', it's JSON not args
         if (params.length() > 0 && (params[0] == '{' || params[0] == '[' || params[0] == '"')) {
             if (debugFP) {
-                Serial.println("  → Detected JSON in params, ignoring - using slot " + String(slotNum));
+                Jerial.println("  → Detected JSON in params, ignoring - using slot " + String(slotNum));
             }
             // Don't parse parameters - user is pasting JSON
             // Keep slotNum at default (activeSlot)
@@ -847,7 +857,7 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
                 slotNum = slotStr.toInt();
                 waitForPaste = false;
                 if (debugFP) {
-                    Serial.println("  Parsed: filename='" + filename + "', slot=" + String(slotNum));
+                    Jerial.println("  Parsed: filename='" + filename + "', slot=" + String(slotNum));
                 }
             } else {
                 // Single parameter: filename or slot number
@@ -856,14 +866,14 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
                     slotNum = params.toInt();
                     waitForPaste = true;
                     if (debugFP) {
-                        Serial.println("  Parsed slot number: " + String(slotNum));
+                        Jerial.println("  Parsed slot number: " + String(slotNum));
                     }
                 } else {
                     // It's a filename
                     filename = params;
                     waitForPaste = false;
                     if (debugFP) {
-                        Serial.println("  Parsed filename: '" + filename + "'");
+                        Jerial.println("  Parsed filename: '" + filename + "'");
                     }
                 }
             }
@@ -871,14 +881,14 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
     }
     
     if (debugFP) {
-        Serial.println("  Final target slot: " + String(slotNum) + 
+        Jerial.println("  Final target slot: " + String(slotNum) + 
                       " (waitForPaste=" + String(waitForPaste) + 
                       ", filename='" + filename + "', fromApp=" + String(fromApp) + ")");
     }
     
     // Validate slot number
     if (slotNum < 0 || slotNum >= NUM_SLOTS) {
-        Serial.println("◇ Invalid slot number: " + String(slotNum));
+        Jerial.println("◇ Invalid slot number: " + String(slotNum));
         return CMD_SHOW_MENU;
     }
     
@@ -888,19 +898,19 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
     if (waitForPaste) {
         // Only show prompts if this is interactive (not from app)
         if (!fromApp) {
-            Serial.println("◆ Paste Wokwi diagram.json content (ends with '}')\n");
-            Serial.println("  Target slot: " + String(slotNum));
+            Jerial.println("◆ Paste Wokwi diagram.json content (ends with '}')\n");
+            Jerial.println("  Target slot: " + String(slotNum));
         } else if (debugFP) {
-            Serial.println("  Target slot: " + String(slotNum) + " (app mode - no prompt)");
+            Jerial.println("  Target slot: " + String(slotNum) + " (app mode - no prompt)");
         }
         
         // Wait for input (only show help prompt if interactive)
         unsigned long humanTime = millis();
         int shown = 0;
-        while (Serial.available() == 0) {
+        while (Jerial.available() == 0) {
             if (!fromApp && millis() - humanTime == 2000 && shown == 0) {
-                Serial.println("\n  Waiting for JSON paste...");
-                Serial.println("  (Copy from Wokwi editor: diagram.json tab)");
+                Jerial.println("\n  Waiting for JSON paste...");
+                Jerial.println("  (Copy from Wokwi editor: diagram.json tab)");
                 shown = 1;
             }
         }
@@ -914,8 +924,8 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
         int braceCount = 0;
         
         while (true) {
-            if (Serial.available() > 0) {
-                char c = Serial.read();
+            if (Jerial.available() > 0) {
+                char c = Jerial.read();
                 jsonContent += c;
                 lastCharTime = millis();
                 
@@ -928,12 +938,12 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
                     // If we found opening brace and brace count is back to 0, we're done
                     if (foundOpenBrace && braceCount == 0) {
                         if (!fromApp || debugFP) {
-                            Serial.print(".");
+                            Jerial.print(".");
                         }
                         delay(100); // Allow any trailing characters
                         // Consume any trailing whitespace/newlines
-                        while (Serial.available() > 0) {
-                            char trailing = Serial.read();
+                        while (Jerial.available() > 0) {
+                            char trailing = Jerial.read();
                             if (trailing == '\n' || trailing == '\r' || trailing == ' ') {
                                 continue;
                             } else {
@@ -947,7 +957,7 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
                 // Show progress every 256 bytes (only if interactive or debug)
                 if (!fromApp || debugFP) {
                     if (jsonContent.length() % 256 == 0) {
-                        Serial.print(".");
+                        Jerial.print(".");
                     }
                 }
             } else {
@@ -956,7 +966,7 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
                     // Check timeout (500ms after last character)
                     if (millis() - lastCharTime > 500) {
                         if (debugFP) {
-                            Serial.println("\n  Timeout: 500ms since last character");
+                            Jerial.println("\n  Timeout: 500ms since last character");
                         }
                         break;
                     }
@@ -968,7 +978,7 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
             
             // Safety: max 32KB
             if (jsonContent.length() > 32000) {
-                Serial.println("\n◇ Warning: JSON too large (>32KB), truncating");
+                Jerial.println("\n◇ Warning: JSON too large (>32KB), truncating");
                 break;
             }
         }
@@ -977,15 +987,15 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
         
         // Only show "Received" message if interactive or debug
         if (!fromApp) {
-            Serial.println("\n◆ Received " + String(jsonContent.length()) + " bytes");
+            Jerial.println("\n◆ Received " + String(jsonContent.length()) + " bytes");
         } else if (debugFP) {
-            Serial.println("◆ Received " + String(jsonContent.length()) + " bytes (from app)");
+            Jerial.println("◆ Received " + String(jsonContent.length()) + " bytes (from app)");
         }
         
         // Debug: Show what we received if debugFP is on
         if (debugFP) {
-            Serial.println("◆ First 200 chars:");
-            Serial.println(jsonContent.substring(0, 200));
+            Jerial.println("◆ First 200 chars:");
+            Jerial.println(jsonContent.substring(0, 200));
         }
         
         // Parse into target slot WITHOUT affecting active state or hardware
@@ -1005,28 +1015,28 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
             if (parseWokwiDiagram(jsonContent, mgr.getActiveState(), slotNum, errorMsg, fromApp)) {
                 if (mgr.saveSlot(slotNum, errorMsg)) {
                     if (!fromApp) {
-                        Serial.println("  ✓ Saved and applied to slot " + String(slotNum));
+                        Jerial.println("  ✓ Saved and applied to slot " + String(slotNum));
                     } else if (debugFP) {
-                        Serial.println("  ✓ Saved and applied to slot " + String(slotNum) + " (app mode)");
+                        Jerial.println("  ✓ Saved and applied to slot " + String(slotNum) + " (app mode)");
                     }
                     success = true;
                     
                     // Apply to hardware
                     if (!fromApp || debugFP) {
-                        Serial.println("  ↻ Applying to hardware...");
+                        Jerial.println("  ↻ Applying to hardware...");
                     }
                     if (mgr.loadSlot(slotNum, errorMsg)) {
                         if (!fromApp || debugFP) {
-                            Serial.println("  ✓ Applied to hardware");
+                            Jerial.println("  ✓ Applied to hardware");
                         }
                     } else {
-                        Serial.println("  ✗ Failed to apply: " + errorMsg);
+                        Jerial.println("  ✗ Failed to apply: " + errorMsg);
                     }
                 } else {
-                    Serial.println("  ✗ Failed to save: " + errorMsg);
+                    Jerial.println("  ✗ Failed to save: " + errorMsg);
                 }
             } else {
-                Serial.println("  ✗ Parse error: " + errorMsg);
+                Jerial.println("  ✗ Parse error: " + errorMsg);
             }
         } else {
             // ========== INACTIVE SLOT: Parse directly to file (ZERO-COPY) ==========
@@ -1034,34 +1044,34 @@ CommandResult cmd_parseWokwi(char c, const String& line) {
             // parseWokwiDiagramDirectToFile builds minimal YAML and writes to file
             if (parseWokwiDiagramDirectToFile(jsonContent, slotNum, errorMsg, fromApp)) {
                 if (!fromApp) {
-                    Serial.println("  ✓ Saved to inactive slot " + String(slotNum));
+                    Jerial.println("  ✓ Saved to inactive slot " + String(slotNum));
                 } else if (debugFP) {
-                    Serial.println("  ✓ Saved to inactive slot " + String(slotNum) + " (no hardware change)");
+                    Jerial.println("  ✓ Saved to inactive slot " + String(slotNum) + " (no hardware change)");
                 }
                 success = true;
             } else {
-                Serial.println("  ✗ Parse error: " + errorMsg);
+                Jerial.println("  ✗ Parse error: " + errorMsg);
             }
         }
         
     } else {
         // Load from file
-        Serial.println("◆ Parsing Wokwi diagram: " + filename);
-        Serial.println("  Target slot: " + String(slotNum));
+        Jerial.println("◆ Parsing Wokwi diagram: " + filename);
+        Jerial.println("  Target slot: " + String(slotNum));
         
         extern bool parseWokwiDiagramFromFile(const String&, int, String&);
         success = parseWokwiDiagramFromFile(filename, slotNum, errorMsg);
         
         if (success) {
-            Serial.println("◆ Wokwi diagram successfully converted and saved!");
+            Jerial.println("◆ Wokwi diagram successfully converted and saved!");
         } else {
-            Serial.println("◇ Failed to parse Wokwi diagram: " + errorMsg);
+            Jerial.println("◇ Failed to parse Wokwi diagram: " + errorMsg);
         }
     }
     
     // Only show hint if interactive and slot needs to be cycled to
     if (!fromApp && success && slotNum != netSlot) {
-        Serial.println("  Use '<' to cycle to slot " + String(slotNum) + " to activate it");
+        Jerial.println("  Use '<' to cycle to slot " + String(slotNum) + " to activate it");
     }
     
     return CMD_DONT_SHOW_MENU;
@@ -1084,15 +1094,15 @@ CommandResult cmd_showNetlist(char c, const String& line) {
     extern volatile int core1passthrough;
     couldntFindPath(1);
     core1passthrough = 0;
-    Serial.print("\n\n\rnetlist\n\r");
+    Jerial.print("\n\n\rnetlist\n\r");
     listNets(anythingInteractiveConnected(-1));
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_showBridgeArray(char c, const String& line) {
     int showDupes = 1;
-    if (Serial.available() > 0) {
-        char in = Serial.read();
+    if (Jerial.available() > 0) {
+        char in = Jerial.read();
         if (in == '0') {
             showDupes = 0;
         } else if (in == '2') {
@@ -1100,22 +1110,22 @@ CommandResult cmd_showBridgeArray(char c, const String& line) {
         }
     }
     
-    Serial.print("\n\rpathDuplicates: ");
-    Serial.println(jumperlessConfig.routing.stack_paths);
-    Serial.print("dacDuplicates: ");
-    Serial.println(jumperlessConfig.routing.stack_dacs);
-    Serial.print("railsDuplicates: ");
-    Serial.println(jumperlessConfig.routing.stack_rails);
-    Serial.print("railPriority: ");
-    Serial.println(jumperlessConfig.routing.rail_priority);
+    Jerial.print("\n\rpathDuplicates: ");
+    Jerial.println(jumperlessConfig.routing.stack_paths);
+    Jerial.print("dacDuplicates: ");
+    Jerial.println(jumperlessConfig.routing.stack_dacs);
+    Jerial.print("railsDuplicates: ");
+    Jerial.println(jumperlessConfig.routing.stack_rails);
+    Jerial.print("railPriority: ");
+    Jerial.println(jumperlessConfig.routing.rail_priority);
     couldntFindPath(1);
-    Serial.print("\n\rBridge Array\n\r");
+    Jerial.print("\n\rBridge Array\n\r");
     printBridgeArray();
-    Serial.print("\n\n\n\rPaths\n\r");
+    Jerial.print("\n\n\n\rPaths\n\r");
     printPathsCompact(showDupes);
-    Serial.print("\n\n\rChip Status\n\r");
+    Jerial.print("\n\n\rChip Status\n\r");
     printChipStatus();
-    Serial.print("\n\n\r");
+    Jerial.print("\n\n\r");
     return CMD_SHOW_MENU;
 }
 
@@ -1134,9 +1144,9 @@ CommandResult cmd_queryActiveSlot(char c, const String& line) {
     int activeSlot = mgr.getActiveSlot();
     
     // Output in a format easy for the app to parse
-    Serial.print("ACTIVE_SLOT:");
-    Serial.println(activeSlot);
-    Serial.flush();
+    Jerial.print("ACTIVE_SLOT:");
+    Jerial.println(activeSlot);
+    Jerial.flush();
     
     return CMD_DONT_SHOW_MENU;
 }
@@ -1145,22 +1155,22 @@ CommandResult cmd_queryActiveSlot(char c, const String& line) {
 CommandResult cmd_pythonREPL(char c, const String& line) {
     enterMicroPythonREPL();
     refreshConnections(-1, 1, 1);
-    Serial.write(0x0F);
+    Jerial.write(0x0F);
     extern int termInInteractiveMode;
     termInInteractiveMode = 0;
-    Serial.flush();
+    Jerial.flush();
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_pythonDeinit(char c, const String& line) {
-    Serial.println("Deinitializing MicroPython to free memory... Total memory: " + 
+    Jerial.println("Deinitializing MicroPython to free memory... Total memory: " + 
                    String(rp2040.getTotalHeap()));
-    Serial.println("Free memory: " + String(rp2040.getFreeHeap()));
+    Jerial.println("Free memory: " + String(rp2040.getFreeHeap()));
     deinitMicroPythonProper();
-    Serial.println("MicroPython deinitialized. Memory freed.");
-    Serial.println("Total memory: " + String(rp2040.getTotalHeap()));
-    Serial.println("Free memory: " + String(rp2040.getFreeHeap()));
-    Serial.println("Use 'p' to reinitialize and enter REPL again.");
+    Jerial.println("MicroPython deinitialized. Memory freed.");
+    Jerial.println("Total memory: " + String(rp2040.getTotalHeap()));
+    Jerial.println("Free memory: " + String(rp2040.getFreeHeap()));
+    Jerial.println("Use 'p' to reinitialize and enter REPL again.");
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1171,50 +1181,50 @@ CommandResult cmd_pythonCommand(char c, const String& line) {
         pythonCommand = pythonCommand.substring(1); // Remove the '>' prefix
         pythonCommand.trim();
     } else {
-        while (Serial.available() > 0) {
-            pythonCommand += Serial.readString();
+        while (Jerial.available() > 0) {
+            pythonCommand += Jerial.readString();
         }
     }
     
     if (pythonCommand.length() > 1) {
         executeSinglePythonCommand(pythonCommand.c_str());
     } else {
-        Serial.println("Usage: > <python_command>");
+        Jerial.println("Usage: > <python_command>");
     }
-    Serial.flush();
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
 // File system commands
 CommandResult cmd_showFilesystem(char c, const String& line) {
     runApp(-1, (char*)"File Manager");
-    Serial.write(0x0F);
+    Jerial.write(0x0F);
     termInInteractiveMode = 0;
-    Serial.flush();
+    Jerial.flush();
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_enableUSBStorage(char c, const String& line) {
     extern bool mscModeEnabled;
     if (mscModeEnabled == false) {
-        Serial.println("Enabling USB Mass Storage drive...");
+        Jerial.println("Enabling USB Mass Storage drive...");
         if (initUSBMassStorage()) {
-            Serial.println("USB Mass Storage enabled - device will appear as 'JUMPERLESS' drive\n\r");
-            Serial.println("\tu = disable USB Mass Storage");
-            Serial.println("\tG = reload config.txt");
-            Serial.println("\ty = refresh connections when files change");
-            Serial.println("\tS = show status");
-            Serial.println("\n\r");
-            Serial.flush();
+            Jerial.println("USB Mass Storage enabled - device will appear as 'JUMPERLESS' drive\n\r");
+            Jerial.println("\tu = disable USB Mass Storage");
+            Jerial.println("\tG = reload config.txt");
+            Jerial.println("\ty = refresh connections when files change");
+            Jerial.println("\tS = show status");
+            Jerial.println("\n\r");
+            Jerial.flush();
         } else {
-            Serial.println("USB Mass Storage initialization failed");
-            Serial.flush();
+            Jerial.println("USB Mass Storage initialization failed");
+            Jerial.flush();
         }
     } else {
-        Serial.println("USB Mass Storage is already enabled");
+        Jerial.println("USB Mass Storage is already enabled");
         printUSBMassStorageStatus();
         refreshConnections(-1);
-        Serial.flush();
+        Jerial.flush();
     }
     // Note: The USB Mass Storage loop is handled in main.cpp
     return CMD_DONT_SHOW_MENU;
@@ -1223,23 +1233,23 @@ CommandResult cmd_enableUSBStorage(char c, const String& line) {
 CommandResult cmd_disableUSBStorage(char c, const String& line) {
     extern bool mscModeEnabled;
     if (mscModeEnabled == true) {
-        Serial.println("Disabling USB Mass Storage drive...");
+        Jerial.println("Disabling USB Mass Storage drive...");
         if (disableUSBMassStorage()) {
-            Serial.println("USB Mass Storage disabled - device no longer appears as drive");
-            Serial.println("Use 'U' command to re-enable when needed");
+            Jerial.println("USB Mass Storage disabled - device no longer appears as drive");
+            Jerial.println("Use 'U' command to re-enable when needed");
         } else {
-            Serial.println("USB Mass Storage disable failed");
+            Jerial.println("USB Mass Storage disable failed");
         }
     } else {
-        Serial.println("USB Mass Storage is already disabled");
-        Serial.println("Use 'U' command to enable");
+        Jerial.println("USB Mass Storage is already disabled");
+        Jerial.println("Use 'U' command to enable");
     }
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_listFilesystem(char c, const String& line) {
     // Implementation would list all files recursively
-    Serial.println("Filesystem listing not yet implemented");
+    Jerial.println("Filesystem listing not yet implemented");
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1250,7 +1260,7 @@ CommandResult cmd_editConfig(char c, const String& line) {
    // waitCore2();
     readConfigFromSerial();
    // core1busy = 0;
-    Serial.flush();
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1260,14 +1270,14 @@ CommandResult cmd_printConfig(char c, const String& line) {
     //waitCore2();
     printConfigToSerial();
    // core1busy = 0;
-    Serial.flush();
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_reloadConfig(char c, const String& line) {
     // This is the 'G' command which has special wavegen test code
     // For now, we'll just reload the config
-    Serial.println("Reloading config.txt...");
+    Jerial.println("Reloading config.txt...");
     extern bool configChanged;
     configChanged = true;
     return CMD_SHOW_MENU;
@@ -1275,8 +1285,8 @@ CommandResult cmd_reloadConfig(char c, const String& line) {
 
 // Hardware commands
 CommandResult cmd_resetArduino(char c, const String& line) {
-    if (Serial.available() > 0) {
-        char ch = Serial.read();
+    if (Jerial.available() > 0) {
+        char ch = Jerial.read();
         if (ch == '0' || ch == '2' || ch == 't') {
             resetArduino(0);
         }
@@ -1291,8 +1301,8 @@ CommandResult cmd_resetArduino(char c, const String& line) {
 
 CommandResult cmd_connectArduino(char c, const String& line) {
     int justAsk = 0;
-    if (Serial.available() > 0) {
-        char ch = Serial.read();
+    if (Jerial.available() > 0) {
+        char ch = Jerial.read();
         if (ch == '?') {
             justAsk = 1;
             int isConnected = checkIfArduinoIsConnected();
@@ -1301,119 +1311,119 @@ CommandResult cmd_connectArduino(char c, const String& line) {
             // Response format: "connection,presence"
             // connection: Y=connected, n=not connected
             // presence: Y=detected, n=not detected
-            // NOTE: DC4 (0x14) in replyWithSerialInfo() is now the preferred method
+            // NOTE: DC4 (0x14) in replyWithJerialInfo() is now the preferred method
             // for presence checks (faster response). This A? handler is kept for
             // backwards compatibility.
-            Serial.print(isConnected ? "Y," : "n,");
-            Serial.println(isPresent ? "Y" : "n");
-            Serial.flush();
+            Jerial.print(isConnected ? "Y," : "n,");
+            Jerial.println(isPresent ? "Y" : "n");
+            Jerial.flush();
         }
     }
     if (justAsk == 0) {
         connectArduino(0);
-        Serial.println("UART connected to Arduino D0 and D1");
-        Serial.flush();
+        Jerial.println("UART connected to Arduino D0 and D1");
+        Jerial.flush();
     }
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_disconnectArduino(char c, const String& line) {
     int justAsk = 0;
-    while (Serial.available() > 0) {
-        char ch = Serial.read();
+    while (Jerial.available() > 0) {
+        char ch = Jerial.read();
         if (ch == '?') {
             if (checkIfArduinoIsConnected() == 1) {
                 justAsk = 1;
-                Serial.println("Y");
-                Serial.flush();
+                Jerial.println("Y");
+                Jerial.flush();
             } else {
                 justAsk = 1;
-                Serial.println("n");
-                Serial.flush();
+                Jerial.println("n");
+                Jerial.flush();
             }
         }
     }
     if (justAsk == 0) {
         disconnectArduino(0);
-        Serial.println("UART disconnected from Arduino D0 and D1");
-        Serial.flush();
+        Jerial.println("UART disconnected from Arduino D0 and D1");
+        Jerial.flush();
     }
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_readADC(char c, const String& line) {
-    if (Serial.available() > 0) {
-        char ch = Serial.read();
+    if (Jerial.available() > 0) {
+        char ch = Jerial.read();
         
         if (isdigit(ch)) {
             int adc = ch - '0';
             if (adc >= 0 && adc <= 4) {
-                Serial.print(" adc");
-                Serial.print(adc);
-                Serial.print(" = ");
+                Jerial.print(" adc");
+                Jerial.print(adc);
+                Jerial.print(" = ");
                 float adcVoltage = readAdcVoltage(adc, 32);
                 if (adcVoltage > 0.00) {
-                    Serial.print(" ");
+                    Jerial.print(" ");
                 }
-                Serial.println(adcVoltage);
+                Jerial.println(adcVoltage);
             }
         } else if (ch == 'i') {
-            if (Serial.available() > 0) {
-                char ch2 = Serial.read();
+            if (Jerial.available() > 0) {
+                char ch2 = Jerial.read();
                 if (ch2 == '1') {
                     extern INA219 INA1;
                     float iSense = INA1.getCurrent_mA();
-                    Serial.print("ina1 = ");
-                    Serial.print(iSense);
-                    Serial.println("mA");
+                    Jerial.print("ina1 = ");
+                    Jerial.print(iSense);
+                    Jerial.println("mA");
                 }
             } else {
                 extern INA219 INA0;
                 float iSense = INA0.getCurrent_mA();
-                Serial.print("ina0 = ");
-                Serial.print(iSense);
-                Serial.print("mA \t");
+                Jerial.print("ina0 = ");
+                Jerial.print(iSense);
+                Jerial.print("mA \t");
                 
                 iSense = INA0.getBusVoltage();
-                Serial.print(iSense);
-                Serial.print("V \t");
+                Jerial.print(iSense);
+                Jerial.print("V \t");
                 
                 iSense = INA0.getPower_mW();
-                Serial.print(iSense);
-                Serial.println("mW");
+                Jerial.print(iSense);
+                Jerial.println("mW");
             }
         } else if (ch == 'l') {
             // showReadings is defined in Peripherals.h as int&
             if (showReadings == 1) {
                 showReadings = 0;
-                Serial.println("showReadings = 0");
+                Jerial.println("showReadings = 0");
             } else {
                 showReadings = 1;
-                Serial.println("showReadings = 1");
+                Jerial.println("showReadings = 1");
             }
             chooseShownReadings();
         }
-        Serial.flush();
+        Jerial.flush();
     } else {
-        Serial.println();
+        Jerial.println();
         for (int i = 0; i < 5; i++) {
-            Serial.print("adc");
-            Serial.print(i);
-            Serial.print(" = ");
+            Jerial.print("adc");
+            Jerial.print(i);
+            Jerial.print(" = ");
             float adcVoltage = readAdcVoltage(i, 32);
             if (adcVoltage > 0.00) {
-                Serial.print(" ");
+                Jerial.print(" ");
             }
-            Serial.println(adcVoltage);
+            Jerial.println(adcVoltage);
         }
-        Serial.print("probe = ");
+        Jerial.print("probe = ");
         float probeVoltage = readAdcVoltage(7, 32);
         if (probeVoltage > 0.00) {
-            Serial.print(" ");
+            Jerial.print(" ");
         }
-        Serial.println(probeVoltage);
+        Jerial.println(probeVoltage);
     }
-    Serial.flush();
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1425,10 +1435,10 @@ CommandResult cmd_setDAC(char c, const String& line) {
     int index = 0;
     float f1 = 0.0;
     unsigned long timer = millis();
-    while (Serial.available() == 0 && millis() - timer < 1000) {
+    while (Jerial.available() == 0 && millis() - timer < 1000) {
     }
     while (index < 8) {
-        f[index] = Serial.read();
+        f[index] = Jerial.read();
         index++;
     }
     
@@ -1439,18 +1449,21 @@ CommandResult cmd_setDAC(char c, const String& line) {
         setDac1voltage(f1, 1, 1);
     }
     configChanged = true;
-    Serial.printf("DAC %d = %0.2f V\n", !probePowerDAC, f1);
-    Serial.flush();
+    Jerial.printf("DAC %d = %0.2f V\n", !probePowerDAC, f1);
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_i2cScan(char c, const String& line) {
-    Serial.flush();
+    Jerial.flush();
     
-    if (Serial.available() > 0) {
-        String input = Serial.readString();
+    if (Jerial.available() > 0) {
+        String input = Jerial.readString();
         input.trim();
-        
+        if (input.indexOf('i') != -1) {
+            i2cScan(0, 0, 26, 27, 1, 1);
+            return CMD_DONT_SHOW_MENU;
+        }
         if (input.indexOf(',') != -1) {
             // Format: @5,10 - SDA at row 5, SCL at row 10
             int commaIndex = input.indexOf(',');
@@ -1458,14 +1471,14 @@ CommandResult cmd_i2cScan(char c, const String& line) {
             int sclRow = input.substring(commaIndex + 1).toInt();
             
             changeTerminalColor(69, true);
-            Serial.print("I2C scan with SDA=");
-            Serial.print(sdaRow);
-            Serial.print(", SCL=");
-            Serial.println(sclRow);
+            Jerial.print("I2C scan with SDA=");
+            Jerial.print(sdaRow);
+            Jerial.print(", SCL=");
+            Jerial.println(sclRow);
             changeTerminalColor(38, true);
             
             if (i2cScan(sdaRow, sclRow, 26, 27, 1) > 0) {
-                Serial.println("Found devices");
+                Jerial.println("Found devices");
                 return CMD_DONT_SHOW_MENU;
             } else {
                 removeBridgeFromState(RP_GPIO_26, sdaRow, true);
@@ -1476,8 +1489,8 @@ CommandResult cmd_i2cScan(char c, const String& line) {
             int baseRow = input.toInt();
             
             changeTerminalColor(69, true);
-            Serial.print("I2C scan trying all combinations around row ");
-            Serial.println(baseRow);
+            Jerial.print("I2C scan trying all combinations around row ");
+            Jerial.println(baseRow);
             changeTerminalColor(38, true);
             
             int combinations[4][2] = {
@@ -1492,16 +1505,16 @@ CommandResult cmd_i2cScan(char c, const String& line) {
                 int sclRow = combinations[i][1];
                 
                 changeTerminalColor(202, true);
-                Serial.print("\nTrying SDA=");
-                Serial.print(sdaRow);
-                Serial.print(", SCL=");
-                Serial.print(sclRow);
-                Serial.println(":");
+                Jerial.print("\nTrying SDA=");
+                Jerial.print(sdaRow);
+                Jerial.print(", SCL=");
+                Jerial.print(sclRow);
+                Jerial.println(":");
                 changeTerminalColor(38, true);
                 int devicesFound = i2cScan(sdaRow, sclRow, 26, 27, 0);
                 if (devicesFound > 0) {
                     changeTerminalColor(199, true);
-                    Serial.printf("\n\rfound %d devices: SDA at row %d, SCL at row %d\n\r",
+                    Jerial.printf("\n\rfound %d devices: SDA at row %d, SCL at row %d\n\r",
                                 devicesFound, sdaRow, sclRow);
                     changeTerminalColor(-1);
                     return CMD_DONT_SHOW_MENU;
@@ -1511,20 +1524,20 @@ CommandResult cmd_i2cScan(char c, const String& line) {
         }
     } else {
         // Interactive mode
-        Serial.print("Enter SDA row: ");
-        Serial.flush();
-        while (Serial.available() == 0) {}
-        int rowSDA = Serial.parseInt();
-        Serial.print("Enter SCL row: ");
-        Serial.flush();
-        while (Serial.available() == 0) {}
-        int rowSCL = Serial.parseInt();
+        Jerial.print("Enter SDA row: ");
+        Jerial.flush();
+        while (Jerial.available() == 0) {}
+        int rowSDA = Jerial.parseInt();
+        Jerial.print("Enter SCL row: ");
+        Jerial.flush();
+        while (Jerial.available() == 0) {}
+        int rowSCL = Jerial.parseInt();
         
         changeTerminalColor(69, true);
-        Serial.print("I2C scan with SDA=");
-        Serial.print(rowSDA);
-        Serial.print(", SCL=");
-        Serial.println(rowSCL);
+        Jerial.print("I2C scan with SDA=");
+        Jerial.print(rowSDA);
+        Jerial.print(", SCL=");
+        Jerial.println(rowSCL);
         changeTerminalColor(38, true);
         
         if (i2cScan(rowSDA, rowSCL, 26, 27, 1) > 0) {
@@ -1544,17 +1557,17 @@ CommandResult cmd_calibrateDACs(char c, const String& line) {
     extern int dacZero[4];
     
     for (int d = 0; d < 4; d++) {
-        Serial.print("dacSpread[");
-        Serial.print(d);
-        Serial.print("] = ");
-        Serial.println(dacSpread[d]);
+        Jerial.print("dacSpread[");
+        Jerial.print(d);
+        Jerial.print("] = ");
+        Jerial.println(dacSpread[d]);
     }
     
     for (int d = 0; d < 4; d++) {
-        Serial.print("dacZero[");
-        Serial.print(d);
-        Serial.print("] = ");
-        Serial.println(dacZero[d]);
+        Jerial.print("dacZero[");
+        Jerial.print(d);
+        Jerial.print("] = ");
+        Jerial.println(dacZero[d]);
     }
     
     calibrateDacs();
@@ -1563,9 +1576,9 @@ CommandResult cmd_calibrateDACs(char c, const String& line) {
 
 // Debug commands
 CommandResult cmd_showVersion(char c, const String& line) {
-    Serial.print("Jumperless firmware version: ");
-    Serial.println(firmwareVersion);
-    Serial.flush();
+    Jerial.print("Jumperless firmware version: ");
+    Jerial.println(firmwareVersion);
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1575,53 +1588,53 @@ CommandResult cmd_setDebugFlags(char c, const String& line) {
 }
 
 CommandResult cmd_resourceStatus(char c, const String& line) {
-    Serial.println("Resource Allocation Status:");
-    Serial.println("==========================");
+    Jerial.println("Resource Allocation Status:");
+    Jerial.println("==========================");
     
-    Serial.print("Free Heap: ");
-    Serial.println(rp2040.getFreeHeap());
+    Jerial.print("Free Heap: ");
+    Jerial.println(rp2040.getFreeHeap());
     
-    Serial.println("Total memory: " + String(rp2040.getTotalHeap()));
-    Serial.println("Free memory: " + String(rp2040.getFreeHeap()));
+    Jerial.println("Total memory: " + String(rp2040.getTotalHeap()));
+    Jerial.println("Free memory: " + String(rp2040.getFreeHeap()));
     
     if (isRotaryEncoderInitialized()) {
-        Serial.println("✓ Rotary Encoder: Initialized");
+        Jerial.println("✓ Rotary Encoder: Initialized");
         printRotaryEncoderStatus();
     } else {
-        Serial.println("✗ Rotary Encoder: Not initialized");
+        Jerial.println("✗ Rotary Encoder: Not initialized");
     }
     
-    Serial.println("\nConflict Detection:");
-    Serial.println("Logic Analyzer conflicts: N/A (removed)");
+    Jerial.println("\nConflict Detection:");
+    Jerial.println("Logic Analyzer conflicts: N/A (removed)");
     
     printPIOStateMachines();
     extern int rotaryDivider;
-    Serial.print("rotary divider = ");
-    Serial.println(rotaryDivider);
+    Jerial.print("rotary divider = ");
+    Jerial.println(rotaryDivider);
     
-    Serial.println("gpio    up dn\tfunction\tfunction_hex");
+    Jerial.println("gpio    up dn\tfunction\tfunction_hex");
     for (int i = 0; i < 48; i++) {
         int pull = gpio_is_pulled_up(i);
-        Serial.print("gpio ");
-        Serial.print(i);
-        Serial.print(":  ");
+        Jerial.print("gpio ");
+        Jerial.print(i);
+        Jerial.print(":  ");
         if (i < 10) {
-            Serial.print(" ");
+            Jerial.print(" ");
         }
-        Serial.print(pull);
-        Serial.print("  ");
+        Jerial.print(pull);
+        Jerial.print("  ");
         
         pull = gpio_is_pulled_down(i);
-        Serial.print(pull);
+        Jerial.print(pull);
         
-        Serial.print("\t");
-        Serial.print(gpio_function_names[gpio_get_function(i)].name);
-        Serial.print("\t");
-        Serial.print(gpio_get_function(i), HEX);
-        Serial.println();
-        Serial.flush();
+        Jerial.print("\t");
+        Jerial.print(gpio_function_names[gpio_get_function(i)].name);
+        Jerial.print("\t");
+        Jerial.print(gpio_get_function(i), HEX);
+        Jerial.println();
+        Jerial.flush();
     }
-    Serial.println();
+    Jerial.println();
     return CMD_SHOW_MENU;
 }
 
@@ -1631,47 +1644,47 @@ CommandResult cmd_gpioState(char c, const String& line) {
 }
 
 CommandResult cmd_usbDebugMenu(char c, const String& line) {
-    Serial.println("╭─────────────────────────────────╮");
-    Serial.println("│        USB Debug Control        │");
-    Serial.println("├─────────────────────────────────┤");
-    Serial.println("│ 1. Toggle USB debug mode        │");
-    Serial.println("│ 2. Manual refresh from USB      │");
-    Serial.println("│ 3. Validate all slots           │");
-    Serial.println("│ Any other key - Cancel          │");
-    Serial.println("╰─────────────────────────────────╯");
-    Serial.print("Choose option: ");
-    Serial.flush();
+    Jerial.println("╭─────────────────────────────────╮");
+    Jerial.println("│        USB Debug Control        │");
+    Jerial.println("├─────────────────────────────────┤");
+    Jerial.println("│ 1. Toggle USB debug mode        │");
+    Jerial.println("│ 2. Manual refresh from USB      │");
+    Jerial.println("│ 3. Validate all slots           │");
+    Jerial.println("│ Any other key - Cancel          │");
+    Jerial.println("╰─────────────────────────────────╯");
+    Jerial.print("Choose option: ");
+    Jerial.flush();
     
-    while (Serial.available() == 0) {
+    while (Jerial.available() == 0) {
         delay(1);
     }
-    char choice = Serial.read();
-    Serial.println(choice);
+    char choice = Jerial.read();
+    Jerial.println(choice);
     
     switch (choice) {
     case '1':
-        Serial.println("\nToggling USB debug mode...");
+        Jerial.println("\nToggling USB debug mode...");
         extern bool usb_debug_enabled;
         setUSBDebug(!usb_debug_enabled);
         break;
     case '2':
         if (isUSBMassStorageMounted()) {
-            Serial.println("\nPerforming manual refresh from USB...");
+            Jerial.println("\nPerforming manual refresh from USB...");
             manualRefreshFromUSB();
         } else {
-            Serial.println("\nUSB drive not mounted");
+            Jerial.println("\nUSB drive not mounted");
         }
         break;
     case '3':
-        Serial.println("\nValidating all slot files...");
+        Jerial.println("\nValidating all slot files...");
         // validateAllSlots(true);
         break;
     default:
-        Serial.println("\nCancelled");
+        Jerial.println("\nCancelled");
         break;
     }
     
-    Serial.flush();
+    Jerial.flush();
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1689,7 +1702,7 @@ CommandResult cmd_ledBrightness(char c, const String& line) {
 
 CommandResult cmd_toggleOLED(char c, const String& line) {
     if (jumperlessConfig.top_oled.enabled == 0) {
-        Serial.println("oled enabled");
+        Jerial.println("oled enabled");
         oled.init();
         jumperlessConfig.top_oled.enabled = 1;
         extern bool configChanged;
@@ -1700,7 +1713,7 @@ CommandResult cmd_toggleOLED(char c, const String& line) {
         oled.oledConnected = false;
         extern bool configChanged;
         configChanged = true;
-        Serial.println("oled disconnected");
+        Jerial.println("oled disconnected");
     }
     return CMD_DONT_SHOW_MENU;
 }
@@ -1709,11 +1722,11 @@ CommandResult cmd_toggleTerminalColors(char c, const String& line) {
     extern bool disableTerminalColors;
     disableTerminalColors = !disableTerminalColors;
     if (disableTerminalColors) {
-        Serial.println("Terminal colors disabled");
+        Jerial.println("Terminal colors disabled");
     } else {
-        Serial.println("Terminal colors enabled");
+        Jerial.println("Terminal colors enabled");
     }
-    Serial.flush();
+    Jerial.flush();
     return CMD_SHOW_MENU;
 }
 
@@ -1746,18 +1759,18 @@ CommandResult cmd_cycleFont(char c, const String& line) {
 CommandResult cmd_logicAnalyzer(char c, const String& line) {
     extern bool la_enabled;
     if (la_enabled) {
-        Serial.println("Logic analyzer disabled, deinitializing...");
+        Jerial.println("Logic analyzer disabled, deinitializing...");
         la_enabled = false;
         return CMD_DONT_SHOW_MENU;
     } else {
-        changeTerminalColor(196, true, &Serial);
-        Serial.println("Logic analyzer enabled");
-        Serial.println("Note: Logic analyzer is not yet fully functional and can make a mess of your memory");
-        Serial.println("Make sure to save anything important on the file system before playing with it");
-        Serial.println("Worst case, you can use this to nuke the flash and start fresh:");
-        changeTerminalColor(39, true, &Serial);
-        Serial.println("https://github.com/Gadgetoid/pico-universal-flash-nuke/releases/latest");
-        changeTerminalColor(-1, true, &Serial);
+        changeTerminalColor(196, true, &Jerial);
+        Jerial.println("Logic analyzer enabled");
+        Jerial.println("Note: Logic analyzer is not yet fully functional and can make a mess of your memory");
+        Jerial.println("Make sure to save anything important on the file system before playing with it");
+        Jerial.println("Worst case, you can use this to nuke the flash and start fresh:");
+        changeTerminalColor(39, true, &Jerial);
+        Jerial.println("https://github.com/Gadgetoid/pico-universal-flash-nuke/releases/latest");
+        changeTerminalColor(-1, true, &Jerial);
         la_enabled = true;
     }
     return CMD_SHOW_MENU;
@@ -1784,9 +1797,9 @@ CommandResult cmd_startupAnimation(char c, const String& line) {
 
 // Advanced/Test commands
 CommandResult cmd_testStates(char c, const String& line) {
-    Serial.println("\n\r╭────────────────────────────────────╮");
-    Serial.println("│   States System Test (J command)  │");
-    Serial.println("╰────────────────────────────────────╯\n\r");
+    Jerial.println("\n\r╭────────────────────────────────────╮");
+    Jerial.println("│   States System Test (J command)  │");
+    Jerial.println("╰────────────────────────────────────╯\n\r");
     
     SlotManager& mgr = SlotManager::getInstance();
     JumperlessState& state = mgr.getActiveState();
@@ -1797,7 +1810,7 @@ CommandResult cmd_testStates(char c, const String& line) {
         commandLine.trim();
         
         if (commandLine.length() > 0) {
-            Serial.println("Parsing connections: " + commandLine);
+            Jerial.println("Parsing connections: " + commandLine);
             
             int startIdx = 0;
             int connectionsAdded = 0;
@@ -1818,17 +1831,17 @@ CommandResult cmd_testStates(char c, const String& line) {
                         int node1 = conn.substring(0, dashIdx).toInt();
                         int node2 = conn.substring(dashIdx + 1).toInt();
                         
-                        Serial.print("  Adding connection: " + String(node1) + "-" + String(node2) + "... ");
+                        Jerial.print("  Adding connection: " + String(node1) + "-" + String(node2) + "... ");
                         
                         if (state.addConnection(node1, node2, errorMsg)) {
-                            Serial.println("✓ Success");
+                            Jerial.println("✓ Success");
                             connectionsAdded++;
                         } else {
-                            Serial.println("✗ Failed");
-                            Serial.println("    Error: " + errorMsg);
+                            Jerial.println("✗ Failed");
+                            Jerial.println("    Error: " + errorMsg);
                         }
                     } else {
-                        Serial.println("  Invalid format: " + conn + " (should be N1-N2)");
+                        Jerial.println("  Invalid format: " + conn + " (should be N1-N2)");
                     }
                 }
                 
@@ -1836,84 +1849,84 @@ CommandResult cmd_testStates(char c, const String& line) {
             }
             
             if (connectionsAdded > 0) {
-                Serial.println("\n\r─── Applying to Hardware ───");
-                Serial.print("Refreshing connections... ");
+                Jerial.println("\n\r─── Applying to Hardware ───");
+                Jerial.print("Refreshing connections... ");
                 state.markDirty();
                 refreshConnections(-1);
-                Serial.println("✓ Done");
+                Jerial.println("✓ Done");
             }
             
-            Serial.println("\n\r─── Current State ───");
-            Serial.println("Connections: " + String(state.connections.numBridges));
-            Serial.println("Active Slot: " + String(mgr.getActiveSlot()));
+            Jerial.println("\n\r─── Current State ───");
+            Jerial.println("Connections: " + String(state.connections.numBridges));
+            Jerial.println("Active Slot: " + String(mgr.getActiveSlot()));
             
             if (state.connections.numBridges > 0) {
-                Serial.println("\n\rConnections in state:");
+                Jerial.println("\n\rConnections in state:");
                 for (int i = 0; i < state.connections.numBridges; i++) {
                     int n1 = state.connections.bridges[i][0];
                     int n2 = state.connections.bridges[i][1];
                     int dup = state.connections.bridges[i][2];
-                    Serial.print("  " + String(i + 1) + ". ");
-                    Serial.print(String(n1) + "-" + String(n2));
+                    Jerial.print("  " + String(i + 1) + ". ");
+                    Jerial.print(String(n1) + "-" + String(n2));
                     if (dup > 1) {
-                        Serial.print(" (x" + String(dup) + " duplicates)");
+                        Jerial.print(" (x" + String(dup) + " duplicates)");
                     }
-                    Serial.println();
+                    Jerial.println();
                 }
             }
             
-            Serial.println("\n\r─── Testing YAML Serialization ───");
+            Jerial.println("\n\r─── Testing YAML Jerialization ───");
             String yamlOutput;
             if (state.toYAML(yamlOutput)) {
-                Serial.println("YAML output:");
-                Serial.println(yamlOutput);
+                Jerial.println("YAML output:");
+                Jerial.println(yamlOutput);
                 
-                Serial.println("\n\r─── Testing Slot Save ───");
-                Serial.print("Saving to slot 7... ");
+                Jerial.println("\n\r─── Testing Slot Save ───");
+                Jerial.print("Saving to slot 7... ");
                 if (mgr.saveSlot(7, errorMsg)) {
-                    Serial.println("✓ Success");
-                    Serial.println("  File: /slots/slot7.yaml");
+                    Jerial.println("✓ Success");
+                    Jerial.println("  File: /slots/slot7.yaml");
                     
-                    Serial.print("Loading from slot 7... ");
+                    Jerial.print("Loading from slot 7... ");
                     if (mgr.loadSlot(7, errorMsg)) {
-                        Serial.println("✓ Success");
-                        Serial.println("  Loaded " + String(mgr.getActiveState().connections.numBridges) + " connections");
+                        Jerial.println("✓ Success");
+                        Jerial.println("  Loaded " + String(mgr.getActiveState().connections.numBridges) + " connections");
                     } else {
-                        Serial.println("✗ Failed");
-                        Serial.println("  Error: " + errorMsg);
+                        Jerial.println("✗ Failed");
+                        Jerial.println("  Error: " + errorMsg);
                     }
                 } else {
-                    Serial.println("✗ Failed");
-                    Serial.println("  Error: " + errorMsg);
+                    Jerial.println("✗ Failed");
+                    Jerial.println("  Error: " + errorMsg);
                 }
             } else {
-                Serial.println("Failed to serialize to YAML");
+                Jerial.println("Failed to Jerialize to YAML");
             }
             
-            Serial.println("\n\r─── Memory Usage ───");
-            Serial.println("Active state RAM: ~" + String(mgr.getActiveStateRAMUsage()) + " bytes");
-            Serial.println("State object size: ~" + String(state.estimateRAMUsage()) + " bytes");
-            Serial.println("\n\r─── Test Complete ───");
+            Jerial.println("\n\r─── Memory Usage ───");
+            Jerial.println("Active state RAM: ~" + String(mgr.getActiveStateRAMUsage()) + " bytes");
+            Jerial.println("State object size: ~" + String(state.estimateRAMUsage()) + " bytes");
+            Jerial.println("\n\r─── Test Complete ───");
         } else {
-            Serial.println("No connections specified!");
-            Serial.println("Usage: J 1-2  or  J 1-5,10-20,15-30");
+            Jerial.println("No connections specified!");
+            Jerial.println("Usage: J 1-2  or  J 1-5,10-20,15-30");
         }
     } else {
-        Serial.println("States System Test Command");
-        Serial.println("\n\rUsage:");
-        Serial.println("  J 1-2              - Add connection 1-2");
-        Serial.println("  J 1-5,10-20        - Add multiple connections");
-        Serial.println("  J 1-5,1-5,1-5      - Add duplicates (increments count)");
-        Serial.println("\n\rFeatures:");
-        Serial.println("  • Validates connections");
-        Serial.println("  • Tracks duplicate counts");
-        Serial.println("  • YAML serialization");
-        Serial.println("  • Save/load from slots");
-        Serial.println("  • Undo/redo history");
-        Serial.println("\n\rExample:");
-        Serial.println("  J 1-5              - Creates connection 1-5");
-        Serial.println("  J TOP_RAIL-10      - Connects top rail to row 10");
-        Serial.println("  J GND-32           - Connects ground to row 32");
+        Jerial.println("States System Test Command");
+        Jerial.println("\n\rUsage:");
+        Jerial.println("  J 1-2              - Add connection 1-2");
+        Jerial.println("  J 1-5,10-20        - Add multiple connections");
+        Jerial.println("  J 1-5,1-5,1-5      - Add duplicates (increments count)");
+        Jerial.println("\n\rFeatures:");
+        Jerial.println("  • Validates connections");
+        Jerial.println("  • Tracks duplicate counts");
+        Jerial.println("  • YAML Jerialization");
+        Jerial.println("  • Save/load from slots");
+        Jerial.println("  • Undo/redo history");
+        Jerial.println("\n\rExample:");
+        Jerial.println("  J 1-5              - Creates connection 1-5");
+        Jerial.println("  J TOP_RAIL-10      - Connects top rail to row 10");
+        Jerial.println("  J GND-32           - Connects ground to row 32");
     }
     
     return CMD_DONT_SHOW_MENU;
@@ -1921,45 +1934,45 @@ CommandResult cmd_testStates(char c, const String& line) {
 
 CommandResult cmd_printYAML(char c, const String& line) {
     extern JumperlessState globalState;
-    Serial.println("\n\r╭────────────────────────────────────╮");
-    Serial.println("│      Current YAML State (RAM)     │");
-    Serial.println("╰────────────────────────────────────╯\n\r");
+    Jerial.println("\n\r╭────────────────────────────────────╮");
+    Jerial.println("│      Current YAML State (RAM)     │");
+    Jerial.println("╰────────────────────────────────────╯\n\r");
     
-    Serial.print("Active Slot: ");
-    Serial.println(netSlot);
-    Serial.print("Dirty Flag: ");
-    Serial.println(globalState.isDirty() ? "YES (will auto-save)" : "NO (saved)");
+    Jerial.print("Active Slot: ");
+    Jerial.println(netSlot);
+    Jerial.print("Dirty Flag: ");
+    Jerial.println(globalState.isDirty() ? "YES (will auto-save)" : "NO (saved)");
     
     if (globalState.isDirty()) {
         unsigned long timeSince = millis() - globalState.getLastModifiedTime();
-        Serial.print("Time since last change: ");
-        Serial.print(timeSince / 1000);
-        Serial.println(" seconds");
+        Jerial.print("Time since last change: ");
+        Jerial.print(timeSince / 1000);
+        Jerial.println(" seconds");
     }
     
-    Serial.println("\n\r─── YAML Output ───\n\r");
+    Jerial.println("\n\r─── YAML Output ───\n\r");
     
     String yamlOutput;
     if (globalState.toYAML(yamlOutput)) {
-        Serial.println(yamlOutput);
+        Jerial.println(yamlOutput);
     } else {
-        Serial.println("✗ Failed to generate YAML");
+        Jerial.println("✗ Failed to generate YAML");
     }
     
-    Serial.println("\n\r─── Memory Usage ───");
-    Serial.print("Connections: ");
-    Serial.println(globalState.connections.numBridges);
-    Serial.print("State RAM: ~");
-    Serial.print(globalState.estimateRAMUsage());
-    Serial.println(" bytes");
+    Jerial.println("\n\r─── Memory Usage ───");
+    Jerial.print("Connections: ");
+    Jerial.println(globalState.connections.numBridges);
+    Jerial.print("State RAM: ~");
+    Jerial.print(globalState.estimateRAMUsage());
+    Jerial.println(" bytes");
     
-    Serial.println("\n\r");
+    Jerial.println("\n\r");
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_rawSpeedTest(char c, const String& line) {
-    Serial.println("Raw speed test...");
-    Serial.println("Read frequency on row 29\n\n\r");
+    Jerial.println("Raw speed test...");
+    Jerial.println("Read frequency on row 29\n\n\r");
     
     // pauseCore2 is defined in externVars.h as volatile bool
     pauseCore2 = true;
@@ -1971,18 +1984,18 @@ CommandResult cmd_rawSpeedTest(char c, const String& line) {
         sendXYraw(10, 0, 0, 0);
     }
     unsigned long end = micros();
-    Serial.print("Time for ");
-    Serial.print(cycles);
-    Serial.print(" on off cycles: ");
-    Serial.print(end - start);
-    Serial.println(" microseconds");
-    Serial.print("Time per cycle: ");
-    Serial.print((end - start) / cycles);
-    Serial.println(" microseconds");
-    Serial.print("Frequency: ");
-    Serial.print(((float)cycles / (float)(end - start)) * 1000);
-    Serial.println(" kHz\n\r");
-    Serial.flush();
+    Jerial.print("Time for ");
+    Jerial.print(cycles);
+    Jerial.print(" on off cycles: ");
+    Jerial.print(end - start);
+    Jerial.println(" microseconds");
+    Jerial.print("Time per cycle: ");
+    Jerial.print((end - start) / cycles);
+    Jerial.println(" microseconds");
+    Jerial.print("Frequency: ");
+    Jerial.print(((float)cycles / (float)(end - start)) * 1000);
+    Jerial.println(" kHz\n\r");
+    Jerial.flush();
     pauseCore2 = false;
     
     return CMD_SHOW_MENU;
@@ -1991,32 +2004,32 @@ CommandResult cmd_rawSpeedTest(char c, const String& line) {
 CommandResult cmd_printColorSpectrum(char c, const String& line) {
     // These are already declared at the top of the file as const
     for (int i = 0; i < highSaturationSpectrumColorsCount; i++) {
-        changeTerminalColorHighSat(i, true, &Serial, 0);
-        Serial.print(i);
-        Serial.print(": ");
+        changeTerminalColorHighSat(i, true, &Jerial, 0);
+        Jerial.print(i);
+        Jerial.print(": ");
         if (i < 10) {
-            Serial.print(" ");
+            Jerial.print(" ");
         }
-        Serial.print(highSaturationSpectrumColors[i]);
+        Jerial.print(highSaturationSpectrumColors[i]);
         
-        Serial.print("\t\t");
+        Jerial.print("\t\t");
         if (i < highSaturationBrightColorsCount) {
-            changeTerminalColorHighSat(i, true, &Serial, 1);
-            Serial.print(i);
-            Serial.print(": ");
+            changeTerminalColorHighSat(i, true, &Jerial, 1);
+            Jerial.print(i);
+            Jerial.print(": ");
             if (i < 10) {
-                Serial.print(" ");
+                Jerial.print(" ");
             }
-            Serial.print(highSaturationBrightColors[i]);
+            Jerial.print(highSaturationBrightColors[i]);
         }
-        Serial.println();
+        Jerial.println();
     }
     
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_dumpOLED(char c, const String& line) {
-    Serial.println("\n\r");
+    Jerial.println("\n\r");
     oled.dumpFrameBuffer();
     return CMD_DONT_SHOW_MENU;
 }
@@ -2027,7 +2040,7 @@ CommandResult cmd_printMicrosPerByte(char c, const String& line) {
 }
 
 CommandResult cmd_printTextFromMenu(char c, const String& line) {
-    while (Serial.available() == 0 && slotChanged == 0) {
+    while (Jerial.available() == 0 && slotChanged == 0) {
         if (slotChanged == 1) {
             // Early exit handled by slotChanged
         }
@@ -2050,8 +2063,8 @@ CommandResult cmd_wavegen(char c, const String& line) {
     return cmd_reloadConfig(c, line);
 }
 
-CommandResult cmd_dmxSerial(char c, const String& line) {
-    runApp(-1, (char*)"DMX Serial");
+CommandResult cmd_dmxJerial(char c, const String& line) {
+    runApp(-1, (char*)"DMX Jerial");
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -2062,8 +2075,14 @@ CommandResult cmd_userFunction(char c, const String& line) {
 
 CommandResult cmd_erattaClear(char c, const String& line) {
     erattaClearGPIO(-1);
-    Serial.println("Eratta cleared");
-    Serial.flush();
+    Jerial.println("Eratta cleared");
+    Jerial.flush();
+    return CMD_DONT_SHOW_MENU;
+}
+
+// Stub implementation for cmd_dmxSerial
+CommandResult cmd_dmxSerial(char c, const String& line) {
+    Jerial.println("DMX Serial functionality not yet implemented");
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -2073,26 +2092,26 @@ CommandResult cmd_uartStats(char c, const String& line) {
     //AsyncPassthrough::printStatistics();
     
     // // Offer to clear statistics
-    // Serial.print("Press 'c' to clear statistics, any other key to continue: ");
-    // Serial.flush();
+    // Jerial.print("Press 'c' to clear statistics, any other key to continue: ");
+    // Jerial.flush();
     
     // unsigned long timer = millis();
-    // while (Serial.available() == 0 && millis() - timer < 3000) {
+    // while (Jerial.available() == 0 && millis() - timer < 3000) {
     //     // Wait for input with timeout
     // }
     
-    // if (Serial.available() > 0) {
-    //     char response = Serial.read();
-    //     Serial.println(response);
+    // if (Jerial.available() > 0) {
+    //     char response = Jerial.read();
+    //     Jerial.println(response);
     //     if (response == 'c' || response == 'C') {
     //         AsyncPassthrough::clearStatistics();
-    //         Serial.println("✓ Statistics cleared");
+    //         Jerial.println("✓ Statistics cleared");
     //     }
     // } else {
-    //     Serial.println("(timeout)");
+    //     Jerial.println("(timeout)");
     // }
 #else
-    Serial.println("AsyncPassthrough is not enabled");
+    Jerial.println("AsyncPassthrough is not enabled");
 #endif
     return CMD_DONT_SHOW_MENU;
 }

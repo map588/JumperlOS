@@ -8,7 +8,7 @@
 #include "CH446Q.h"
 #include "Commands.h"
 #include "AsyncPassthrough.h"
-#include "TermControl.h"
+#include "Jerial.h" // TermControl is now part of Jerial
 #include "LEDs.h"
 #include "SyntaxHighlighting.h"
 

@@ -7,9 +7,9 @@
 
 // #include "RotaryEncoder.h"
 
-// Forward declaration for TermControl
-class TermControl;
-extern TermControl termSerial;
+// Forward declaration for Jerial
+class JerialClass;
+extern JerialClass Jerial;
 
 // Global storage for current command line (for backwards compatibility with parsers)
 extern String currentCommandLine;

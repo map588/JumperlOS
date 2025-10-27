@@ -401,6 +401,7 @@ void clearLEDs(void);
 void randomColors(void);
 void rainbowy(int, int, int wait);
 void showNets(void);
+int getNanoHeaderPixel(int node);  // Find LED pixel index for nano header node
 void assignNetColors(int preview = 0);
 void lightUpRail(int logo = -1, int railNumber = -1, int onOff = 1,
                  int brightness = -1,

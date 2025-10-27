@@ -20,7 +20,7 @@ void runApp (int index = -1, char* name = nullptr);
 
 int  i2cScan(int sdaRow = -1, int sclRow = -1,
              int sdaPin = 26, int sclPin = 27, // <-- unified defaults
-             int leaveConnections = 0);
+             int leaveConnections = 0, int internalScan = 0);
 
 void scanBoard(void);
 void calibrateDacs(void);

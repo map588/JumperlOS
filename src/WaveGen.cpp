@@ -209,10 +209,14 @@ void WaveGen::service() {
     uint32_t t0_overall = micros();
     uint32_t samples_sent_this_call = 0;
 
+    // Determine if we should use non-blocking mode (low frequency)
+    bool use_nonblocking = (_frequency_hz < WAVEGEN_NONBLOCKING_THRESHOLD_HZ);
+    uint32_t samples_to_send = use_nonblocking ? _table_size : UINT32_MAX; // One cycle for low freq, continuous for high freq
+
     // Per-sample repeated-START streaming to keep bus flow continuous and avoid
     // long buffered drains. Each sample is its own short transaction.
 
-    while (_running && !_params_changed) {
+    while (_running && !_params_changed && samples_sent_this_call < samples_to_send) {
         // Synchronous per-sample write with STOP; simpler and accurate timing
         bool ok = _dac.setChannelValue((MCP4728_channel_t)_channel,
                                        _waveform_table[_table_index]);
@@ -243,7 +247,8 @@ void WaveGen::service() {
             _samples_since_stats = 0;
             _indices_since_stats = 0;
         }
-        // Optional tiny escape hatch (disabled)
+        // For non-blocking mode, exit after one complete waveform cycle
+        // For blocking mode (high freq), continue until stopped
     }
 
     // No explicit STOP needed; each synchronous write ends with STOP
@@ -280,11 +285,10 @@ void WaveGen::setCalibrationGain(waveGen_channel_t channel, float gain) {
 }
 
 
-//! !!!!!!!!!!!!!!!
-
-#define B_PER_SAM 3.5f
-
-//!!!!!!!!!!!!!
+//! Bytes per sample calibration for I2C overhead
+//! This accounts for: address byte + command byte + 2 data bytes + protocol overhead (START/STOP/ACK)
+//! Empirically calibrated to match actual frequency output
+#define B_PER_SAM 4.67f
 
 
 

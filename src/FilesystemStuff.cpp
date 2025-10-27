@@ -10,7 +10,7 @@
 #include "oled.h"
 #include <cstring>
 #include <time.h>
-#include "TermControl.h"
+#include "Jerial.h" // TermControl is now part of Jerial
 
 // External references
 extern class oled oled;

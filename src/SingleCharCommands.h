@@ -12,6 +12,7 @@
 
 #include <Arduino.h>
 #include "JumperlOS.h"
+#include "Jerial.h"
 
 // Forward declarations
 class SingleCharCommands;

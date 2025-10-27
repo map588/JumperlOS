@@ -14,8 +14,45 @@
 
 // Arduino core
 #include <Arduino.h>
+#include "Jerial.h" // Unified serial interface
+
+// External Jerial instance
+extern JerialClass Jerial;
 
 bool asyncPassthroughEnabled = jumperlessConfig.serial_1.async_passthrough;
+
+// ============================================================================
+// Jumperless Command Tag Detection
+// ============================================================================
+
+// State machine for detecting command tags
+enum TagState {
+    TAG_SEARCHING,           // Looking for '<'
+    TAG_DETECTING,           // Reading tag name (both opening and closing)
+    TAG_IN_COMMAND           // Inside a command tag, accumulating command
+};
+
+// Tag parser state structure
+struct TagParserState {
+    TagState state;
+    char tag_buffer[32];           // Buffer for tag name
+    uint8_t tag_buffer_idx;
+    char command_buffer[512];      // Buffer for command content
+    uint16_t command_buffer_idx;
+    char current_tag[32];          // Currently open tag name
+};
+
+// Separate state machines for each direction
+static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0}, 0, {0} };
+static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0}, 0, {0} };
+
+// Supported command tags
+static const char* COMMAND_TAGS[] = {
+    "jumperlessCommand",
+    "j",
+    "jumperless"
+};
+static const uint8_t NUM_COMMAND_TAGS = 3;
 
 // ----------------------------------------------------------------------------
 // Configuration
@@ -258,14 +295,140 @@ static inline bool is_end_token_seen( uint8_t last_byte ) {
     return false;
 }
 
+// Check if a tag name matches a command tag
+static inline bool is_command_tag( const char* tag ) {
+    for ( uint8_t i = 0; i < NUM_COMMAND_TAGS; i++ ) {
+        if ( strcmp( tag, COMMAND_TAGS[i] ) == 0 ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Process a single byte through the command tag state machine
+// Returns true if byte should be forwarded, false if consumed by tag processing
+static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, const char* direction ) {
+    switch ( parser->state ) {
+        case TAG_SEARCHING:
+            if ( c == '<' ) {
+                parser->state = TAG_DETECTING;
+                parser->tag_buffer_idx = 0;
+                memset( parser->tag_buffer, 0, sizeof(parser->tag_buffer) );
+                return false; // Consume the '<'
+            }
+            return true; // Forward normal byte
+            
+        case TAG_DETECTING:
+            if ( c == '>' ) {
+                // End of opening tag
+                parser->tag_buffer[parser->tag_buffer_idx] = '\0';
+                
+                // Check if this is a closing tag (starts with '/')
+                if ( parser->tag_buffer[0] == '/' ) {
+                    // Closing tag
+                    if ( strcmp( &parser->tag_buffer[1], parser->current_tag ) == 0 ) {
+                        // Valid closing tag for current command
+                        parser->command_buffer[parser->command_buffer_idx] = '\0';
+                        
+                        // Inject command directly into Jerial as a completed line
+                        // This makes it appear as if it was typed and Enter was pressed
+                        if ( parser->command_buffer_idx > 0 ) {
+                            Jerial.injectCompletedLine(parser->command_buffer);
+                            
+                            // DEBUG: Show we injected a command
+                            Serial.print("\n\r[");
+                            Serial.print(direction);
+                            Serial.print(" INJECTED CMD: '");
+                            Serial.print(parser->command_buffer);
+                            Serial.println("']\n\r");
+                            Serial.flush();
+                        }
+                        
+                        // Reset state
+                        parser->state = TAG_SEARCHING;
+                        parser->command_buffer_idx = 0;
+                        memset( parser->current_tag, 0, sizeof(parser->current_tag) );
+                    } else {
+                        // Mismatched closing tag, treat as normal text
+                        parser->state = TAG_SEARCHING;
+                    }
+                    return false; // Consumed
+                    
+                } else if ( is_command_tag( parser->tag_buffer ) ) {
+                    // Valid opening command tag - silently accumulate command content
+                    strcpy( parser->current_tag, parser->tag_buffer );
+                    parser->state = TAG_IN_COMMAND;
+                    parser->command_buffer_idx = 0;
+                    memset( parser->command_buffer, 0, sizeof(parser->command_buffer) );
+                    return false; // Consumed
+                    
+                } else {
+                    // Not a command tag, forward the whole thing
+                    parser->state = TAG_SEARCHING;
+                    return true; // Let this '>' through
+                }
+                
+            } else if ( parser->tag_buffer_idx < sizeof(parser->tag_buffer) - 1 ) {
+                parser->tag_buffer[parser->tag_buffer_idx++] = c;
+                return false; // Consuming tag name
+                
+            } else {
+                // Tag buffer overflow, treat as normal text
+                parser->state = TAG_SEARCHING;
+                return true;
+            }
+            break;
+            
+        case TAG_IN_COMMAND:
+            if ( c == '<' ) {
+                // Possible closing tag
+                parser->state = TAG_DETECTING;
+                parser->tag_buffer_idx = 0;
+                memset( parser->tag_buffer, 0, sizeof(parser->tag_buffer) );
+                return false; // Start detecting closing tag
+                
+            } else if ( parser->command_buffer_idx < sizeof(parser->command_buffer) - 1 ) {
+                // Accumulate command content
+                parser->command_buffer[parser->command_buffer_idx++] = c;
+                return false; // Consuming command
+                
+            } else {
+                // Command buffer overflow, abort and treat as normal text
+                parser->state = TAG_SEARCHING;
+                memset( parser->current_tag, 0, sizeof(parser->current_tag) );
+                return true;
+            }
+            break;
+    }
+    
+    return true; // Default: forward
+}
+
 static inline void bridge_usb_to_uart( uint8_t itf ) {
     // Drain CDC RX and forward to UART (pico-sdk, HW FIFO)
-    uint8_t buf[ 2048 ];
-    while ( tud_cdc_n_available( itf ) ) {
+    // Process through command tag filter
+    uint8_t buf[ 64 ];  // Smaller buffer to process in chunks (less blocking)
+    uint8_t forward_buf[ 64 ];
+    
+    // Only process one small chunk per call to avoid hogging CPU
+    if ( tud_cdc_n_available( itf ) ) {
         size_t rd = tud_cdc_n_read( itf, buf, sizeof( buf ) );
-        if ( rd == 0 )
-            break;
-        uart_write_blocking( ASYNC_PASSTHROUGH_UART, buf, rd );
+        if ( rd > 0 ) {
+            size_t forward_idx = 0;
+            
+            // Process each byte through tag detector (USBSer1 → UART)
+            for ( size_t i = 0; i < rd; i++ ) {
+                if ( process_command_tag_byte( buf[i], &usb_to_uart_parser, "USB→UART" ) ) {
+                    // Byte should be forwarded to UART
+                    forward_buf[forward_idx++] = buf[i];
+                }
+            }
+            
+            // Write accumulated bytes to UART (non-blocking)
+            if ( forward_idx > 0 ) {
+                uart_write_blocking( ASYNC_PASSTHROUGH_UART, forward_buf, forward_idx );
+            }
+        }
     }
 }
 
@@ -276,6 +439,7 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     uint32_t wrote = 0;
     uint32_t avail = tud_cdc_n_write_available( itf );
     uint8_t c;
+    
     // If in forwarding mode, stream all bytes to main Serial until end token or timeout
     if ( s_forward_active ) {
         bool ended = false;
@@ -293,12 +457,19 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
             s_forward_active = false;
         }
     }
-    // Also continue normal UART->USB bridging for non-forwarded data
+    
+    // Process UART->USB data through tag parser (for Arduino-sent commands)
     while ( avail > 0 && ring_pop_byte( &c ) ) {
-        tud_cdc_n_write_char( itf, c );
-        wrote++;
-        avail--;
+        // Process through tag detector (UART → USB)
+        if ( process_command_tag_byte( c, &uart_to_usb_parser, "UART→USB" ) ) {
+            // Byte should be forwarded to USB
+            tud_cdc_n_write_char( itf, c );
+            wrote++;
+            avail--;
+        }
+        // If consumed by tag parser, don't forward to USB
     }
+    
     if ( wrote > 0 || s_uart_flush_pending ) {
         tud_cdc_n_write_flush( itf );
         tud_task(); // service USB to reduce latency under load

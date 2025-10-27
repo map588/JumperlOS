@@ -17,17 +17,10 @@
 #include "CH446Q.h"
 #include "Peripherals.h"
 #include "config.h"
-#include "TermControl.h"
+#include "Jerial.h" // Unified serial interface (includes TermControl and Jerial)
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <FatFS.h>
-#ifdef DONOTUSE_SERIALWRAPPER
-#include "SerialWrapper.h"
-#endif
-
-#ifdef DONOTUSE_SERIALWRAPPER
-#define Serial SerialWrap
-#endif
 
 volatile bool netsUpdated = true;
 
@@ -98,7 +91,7 @@ void closeAllFiles() {
 
 int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
 
-  // Serial.print("openFileThreadSafe   ");
+  // Jerial.print("openFileThreadSafe   ");
   // unsigned long start = micros();
 
 
@@ -108,9 +101,9 @@ int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
   core1request = 0;
   core1busy = true;
 
-  // Serial.println(micros() - start);
+  // Jerial.println(micros() - start);
   if (nodeFile) {
-    // Serial.println("nodeFile is open");
+    // Jerial.println("nodeFile is open");
     nodeFile.close();
   }
 
@@ -141,24 +134,24 @@ int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
 
   if (!nodeFile) {
     // if (debugFP)
-    //  Serial.println("\n\n\rFailed to open nodeFile\n\n\r");
+    //  Jerial.println("\n\n\rFailed to open nodeFile\n\n\r");
     // openFileThreadSafe(w, slot);
     core1busy = false;
     return 0;
   } else {
     if (debugFP)
-      Serial.println(
+      Jerial.println(
           "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
   }
-  // Serial.print("openFileThreadSafe done   ");
-  // Serial.println(micros() - start);
+  // Jerial.print("openFileThreadSafe done   ");
+  // Jerial.println(micros() - start);
   //core1busy = false;
   return 1;
 }
 
 void writeMenuTree(void) {
   while (core2busy == true) {
-    // Serial.println("waiting for core2 to finish");
+    // Jerial.println("waiting for core2 to finish");
   }
   core1busy = true;
   // FatFS.begin();
@@ -168,23 +161,23 @@ void writeMenuTree(void) {
   menuTreeFile = FatFS.open("/MenuTree.txt", "w");
   if (!menuTreeFile) {
 
-    Serial.println("Failed to open menuTree.txt");
+    Jerial.println("Failed to open menuTree.txt");
 
   } else {
     // if (debugFP)
     // {
-    //     Serial.println("\n\ropened menuTree.txt\n\r");
+    //     Jerial.println("\n\ropened menuTree.txt\n\r");
     // }
     // else
     // {
-    //     // Serial.println("\n\r");
+    //     // Jerial.println("\n\r");
     // }
   }
   int menuIndex = 0;
 
   // while (menuTree[menuIndex] != '\0') {
   //   menuTreeFile.print(menuTree[menuIndex]);
-  //   // Serial.print(menuTree[menuIndex]);
+  //   // Jerial.print(menuTree[menuIndex]);
   //   menuIndex++;
   // }
 
@@ -207,13 +200,13 @@ void loadSlotIntoState(int slot) {
   
   if (!mgr.loadSlot(slot, errorMsg)) {
     if (debugFP) {
-      Serial.println("Error loading slot " + String(slot) + ": " + errorMsg);
+      Jerial.println("Error loading slot " + String(slot) + ": " + errorMsg);
     }
     // Clear state on error
     globalState.clearAllConnections();
   } else {
     if (debugFP) {
-      Serial.println("✓ Loaded slot " + String(slot) + " into globalState (" + 
+      Jerial.println("✓ Loaded slot " + String(slot) + " into globalState (" + 
                     String(globalState.connections.numBridges) + " connections)");
     }
   }
@@ -241,8 +234,8 @@ bool addBridgeToState(int node1, int node2, int duplicates, bool autoRefresh) {
     
     if (!success) {
         if (debugFP) {
-            Serial.print("addBridgeToState failed: ");
-            Serial.println(errorMsg);
+            Jerial.print("addBridgeToState failed: ");
+            Jerial.println(errorMsg);
         }
         return false;
     }
@@ -257,10 +250,10 @@ bool addBridgeToState(int node1, int node2, int duplicates, bool autoRefresh) {
     
     
     if (debugFP) {
-        Serial.print("Added bridge to state: ");
-        Serial.print(node1);
-        Serial.print(" - ");
-        Serial.println(node2);
+        Jerial.print("Added bridge to state: ");
+        Jerial.print(node1);
+        Jerial.print(" - ");
+        Jerial.println(node2);
     }
     
     return true;
@@ -329,8 +322,8 @@ bool removeBridgeFromState(int node1, int node2, bool autoRefresh) {
     
     if (!success) {
         if (debugFP) {
-            Serial.print("removeBridgeFromState failed: ");
-            Serial.println(errorMsg);
+            Jerial.print("removeBridgeFromState failed: ");
+            Jerial.println(errorMsg);
         }
         return false;
     }
@@ -345,15 +338,15 @@ bool removeBridgeFromState(int node1, int node2, bool autoRefresh) {
     
     if (debugFP) {
         if (node2 == -1) {
-            Serial.print("Removed ");
-            Serial.print(removedCount);
-            Serial.print(" bridges containing node ");
-            Serial.println(node1);
+            Jerial.print("Removed ");
+            Jerial.print(removedCount);
+            Jerial.print(" bridges containing node ");
+            Jerial.println(node1);
         } else {
-            Serial.print("Removed bridge from state: ");
-            Serial.print(node1);
-            Serial.print(" - ");
-            Serial.println(node2);
+            Jerial.print("Removed bridge from state: ");
+            Jerial.print(node1);
+            Jerial.print(" - ");
+            Jerial.println(node2);
         }
     }
     
@@ -376,16 +369,16 @@ bool saveStateToSlot(int slot) {
     bool success = mgr.saveSlot(slot, errorMsg);
     
     if (!success) {
-        Serial.print("Failed to save state to slot ");
-        Serial.print(slot);
-        Serial.print(": ");
-        Serial.println(errorMsg);
+        Jerial.print("Failed to save state to slot ");
+        Jerial.print(slot);
+        Jerial.print(": ");
+        Jerial.println(errorMsg);
         return false;
     }
     
     if (debugFP) {
-        Serial.print("Saved state to slot ");
-        Serial.println(slot);
+        Jerial.print("Saved state to slot ");
+        Jerial.println(slot);
     }
     
     return true;
@@ -398,11 +391,11 @@ void createSlots(int slot, int overwrite) {
   if (!FatFS.exists("/slots")) {
     if (FatFS.mkdir("/slots")) {
       if (debugFP) {
-        Serial.println("Created /slots/ directory");
+        Jerial.println("Created /slots/ directory");
       }
     } else {
       if (debugFP) {
-        Serial.println("Failed to create /slots/ directory");
+        Jerial.println("Failed to create /slots/ directory");
       }
       return;
     }
@@ -412,11 +405,11 @@ void createSlots(int slot, int overwrite) {
   if (!FatFS.exists("/python_scripts")) {
     if (FatFS.mkdir("/python_scripts")) {
       if (debugFP) {
-        Serial.println("Created /python_scripts/ directory");
+        Jerial.println("Created /python_scripts/ directory");
       }
     } else {
       if (debugFP) {
-        Serial.println("Failed to create /python_scripts/ directory");
+        Jerial.println("Failed to create /python_scripts/ directory");
       }
     }
   }
@@ -427,11 +420,11 @@ void createSlots(int slot, int overwrite) {
     if (historyFile) {
       historyFile.close();
       if (debugFP) {
-        Serial.println("Created empty /history.txt file");
+        Jerial.println("Created empty /history.txt file");
       }
     } else {
       if (debugFP) {
-        Serial.println("Failed to create /history.txt file");
+        Jerial.println("Failed to create /history.txt file");
       }
     }
   }
@@ -447,19 +440,19 @@ void createSlots(int slot, int overwrite) {
       if (overwrite == 1) {
         // Overwrite: always create/clear the slot
         if (debugFP) {
-          Serial.println("Creating/clearing slot " + String(i));
+          Jerial.println("Creating/clearing slot " + String(i));
         }
         mgr.ensureSlotExists(i);
       } else {
         // Don't overwrite: only create if doesn't exist
         if (!FatFS.exists(yamlPath.c_str())) {
           if (debugFP) {
-            Serial.println("Creating new slot " + String(i));
+            Jerial.println("Creating new slot " + String(i));
           }
           mgr.ensureSlotExists(i);
         } else {
           if (debugFP) {
-            Serial.println("Slot " + String(i) + " already exists, skipping");
+            Jerial.println("Slot " + String(i) + " already exists, skipping");
           }
         }
       }
@@ -467,7 +460,7 @@ void createSlots(int slot, int overwrite) {
   } else {
     // Create single slot
     if (debugFP) {
-      Serial.println("Creating slot " + String(slot));
+      Jerial.println("Creating slot " + String(slot));
     }
     mgr.ensureSlotExists(slot);
   }
@@ -483,7 +476,7 @@ void createConfigFile(int overwrite) {
     }
   }
   while (core2busy == true) {
-    // Serial.println("waiting for core2 to finish");
+    // Jerial.println("waiting for core2 to finish");
   }
   core1busy = true;
 
@@ -505,18 +498,18 @@ void createConfigFile(int overwrite) {
 
 //     if (!nodeFile) {
 //       if (debugFP) {
-//         // Serial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
+//         // Jerial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
 //       }
 
 //       return -1;
 //     } else {
 //       if (debugFP)
-//         Serial.println(
+//         Jerial.println(
 //             "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
 //     }
 
 //     if (nodeFile.size() < 2) {
-//       // Serial.println("empty file");
+//       // Jerial.println("empty file");
 //       nodeFile.close();
 //       core1busy = false;
 //       return -1;
@@ -534,14 +527,14 @@ void inputNodeFileList(int addRotaryConnections) {
   // NEW: Parse node file lists directly into YAML slots using the state system
   // Format: "o Slot 0 f { 8-17, 21-28, ... }"
   
-  // Serial.println("Reading node file list from serial...");
+  // Jerial.println("Reading node file list from Jerial...");
 
   unsigned long humanTime = millis();
 
   int shown = 0;
-  while (Serial.available() == 0) {
+  while (Jerial.available() == 0) {
     if (millis() - humanTime == 400 && shown == 0) {
-      Serial.println("Paste the nodeFile list here\n\n\r");
+      Jerial.println("Paste the nodeFile list here\n\n\r");
       shown = 1;
     }
   }
@@ -549,11 +542,11 @@ void inputNodeFileList(int addRotaryConnections) {
 
   int startInsertion = 0;
 
-  nodeFileString.read(Serial);
+  nodeFileString.read(Jerial);
   if (debugFP) {
-    Serial.println("Raw input:");
-    nodeFileString.printTo(Serial);
-    Serial.println();
+    Jerial.println("Raw input:");
+    nodeFileString.printTo(Jerial);
+    Jerial.println();
   }
 
   nodeFileString.trim();
@@ -572,7 +565,7 @@ void inputNodeFileList(int addRotaryConnections) {
   if (!hasSlotPrefix) {
     // No "Slot X" prefix - use active slot and parse directly
     if (debugFP) {
-      Serial.println("◆ No slot prefix found, using active slot " + String(netSlot));
+      Jerial.println("◆ No slot prefix found, using active slot " + String(netSlot));
     }
     
     // Find connection data between { and }
@@ -580,9 +573,9 @@ void inputNodeFileList(int addRotaryConnections) {
     int closeBrace = input.indexOf('}', openBrace + 1);
     
     if (openBrace == -1 || closeBrace == -1) {
-      Serial.println("◇ Missing braces in input");
-      Serial.println("◇ Expected format: f { node-node, node-node, ... }");
-      Serial.println("◇ Or: Slot [number] f { node-node, node-node, ... }");
+      Jerial.println("◇ Missing braces in input");
+      Jerial.println("◇ Expected format: f { node-node, node-node, ... }");
+      Jerial.println("◇ Or: Slot [number] f { node-node, node-node, ... }");
       return;
     }
     
@@ -591,7 +584,7 @@ void inputNodeFileList(int addRotaryConnections) {
     connections.trim();
     
     if (debugFP) {
-      Serial.println("◆ Active slot " + String(netSlot) + " connections: " + connections);
+      Jerial.println("◆ Active slot " + String(netSlot) + " connections: " + connections);
     }
     
     // NEVER copy JumperlessState - work directly with the singleton
@@ -635,10 +628,10 @@ void inputNodeFileList(int addRotaryConnections) {
               connCount++;
               
               if (debugFP) {
-                Serial.println("  Added: " + String(node1) + "-" + String(node2));
+                Jerial.println("  Added: " + String(node1) + "-" + String(node2));
               }
             } else {
-              Serial.println("◇ Warning: Max bridges reached");
+              Jerial.println("◇ Warning: Max bridges reached");
               break;
             }
           }
@@ -649,12 +642,12 @@ void inputNodeFileList(int addRotaryConnections) {
     }
 
     if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
-      // Serial.println("Lock connection is enabled");
-      // Serial.flush();
+      // Jerial.println("Lock connection is enabled");
+      // Jerial.flush();
       if (globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) && globalState.hasConnection(jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl)) {
          // jumperlessConfig.top_oled.lock_connection = 1;
-          // Serial.println("has connection");
-          // Serial.flush();
+          // Jerial.println("has connection");
+          // Jerial.flush();
       } else {
         state.connections.bridges[state.connections.numBridges][0] = jumperlessConfig.top_oled.sda_row;
         state.connections.bridges[state.connections.numBridges][1] = jumperlessConfig.top_oled.gpio_sda;
@@ -664,25 +657,25 @@ void inputNodeFileList(int addRotaryConnections) {
         state.connections.bridges[state.connections.numBridges][1] = jumperlessConfig.top_oled.gpio_scl;
         state.connections.bridges[state.connections.numBridges][2] = -1;
         state.connections.numBridges++;
-        // Serial.println("no connection, adding bridge");
-        // Serial.flush();
+        // Jerial.println("no connection, adding bridge");
+        // Jerial.flush();
       }
   }
 
     
-   // Serial.println("◆ Active slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
+   // Jerial.println("◆ Active slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
     
     // Save and apply to active slot
     if (mgr.saveSlot(slotNum, errorMsg)) {
-     // Serial.println("  ✓ Saved to /slots/slot" + String(slotNum) + ".yaml");
-     // Serial.println("  ↻ Reloading active slot to apply changes...");
+     // Jerial.println("  ✓ Saved to /slots/slot" + String(slotNum) + ".yaml");
+     // Jerial.println("  ↻ Reloading active slot to apply changes...");
       if (mgr.loadSlot(slotNum, errorMsg)) {
-      //  Serial.println("  ✓ Applied to hardware");
+      //  Jerial.println("  ✓ Applied to hardware");
       } else {
-        Serial.println("  ✗ Failed to apply: " + errorMsg);
+        Jerial.println("  ✗ Failed to apply: " + errorMsg);
       }
     } else {
-      Serial.println("  ✗ Failed to save: " + errorMsg);
+      Jerial.println("  ✗ Failed to save: " + errorMsg);
     }
     
     return;
@@ -716,7 +709,7 @@ void inputNodeFileList(int addRotaryConnections) {
     }
     
     if (slotNum < 0 || slotNum >= NUM_SLOTS) {
-      Serial.println("◇ Invalid slot number: " + String(slotNum));
+      Jerial.println("◇ Invalid slot number: " + String(slotNum));
       startIdx = digitIdx;
       continue;
     }
@@ -726,7 +719,7 @@ void inputNodeFileList(int addRotaryConnections) {
     int closeBrace = input.indexOf('}', openBrace + 1);
     
     if (openBrace == -1 || closeBrace == -1) {
-      Serial.println("◇ Missing braces for slot " + String(slotNum));
+      Jerial.println("◇ Missing braces for slot " + String(slotNum));
       startIdx = digitIdx;
       continue;
     }
@@ -736,7 +729,7 @@ void inputNodeFileList(int addRotaryConnections) {
     connections.trim();
     
     if (debugFP) {
-      Serial.println("◆ Slot " + String(slotNum) + " connections: " + connections);
+      Jerial.println("◆ Slot " + String(slotNum) + " connections: " + connections);
     }
     
     // NEVER copy JumperlessState - work directly with the singleton
@@ -787,10 +780,10 @@ void inputNodeFileList(int addRotaryConnections) {
               connCount++;
               
               if (debugFP) {
-                Serial.println("  Added: " + String(node1) + "-" + String(node2));
+                Jerial.println("  Added: " + String(node1) + "-" + String(node2));
               }
             } else {
-              Serial.println("◇ Warning: Max bridges reached for slot " + String(slotNum));
+              Jerial.println("◇ Warning: Max bridges reached for slot " + String(slotNum));
               break;
             }
           }
@@ -800,11 +793,11 @@ void inputNodeFileList(int addRotaryConnections) {
       connIdx = commaIdx + 1;
     }
     
-    Serial.println("◆ Slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
+    Jerial.println("◆ Slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
     
     // Save the populated state to the slot
     if (mgr.saveSlot(slotNum, errorMsg)) {
-      Serial.println("  ✓ Saved to /slots/slot" + String(slotNum) + ".yaml");
+      Jerial.println("  ✓ Saved to /slots/slot" + String(slotNum) + ".yaml");
       slotsProcessed++;
       
       // If we modified a non-active slot, reload the original active slot
@@ -813,15 +806,15 @@ void inputNodeFileList(int addRotaryConnections) {
         mgr.loadSlot(savedActiveSlot, errorMsg);
       } else {
         // We just saved the active slot, reload it to apply changes
-        Serial.println("  ↻ Reloading active slot to apply changes...");
+        Jerial.println("  ↻ Reloading active slot to apply changes...");
         if (mgr.loadSlot(slotNum, errorMsg)) {
-          Serial.println("  ✓ Applied to hardware");
+          Jerial.println("  ✓ Applied to hardware");
         } else {
-          Serial.println("  ✗ Failed to apply: " + errorMsg);
+          Jerial.println("  ✗ Failed to apply: " + errorMsg);
         }
       }
     } else {
-      Serial.println("  ✗ Failed to save: " + errorMsg);
+      Jerial.println("  ✗ Failed to save: " + errorMsg);
       // Restore the original slot on failure
       if (needToRestore) {
         mgr.loadSlot(savedActiveSlot, errorMsg);
@@ -833,12 +826,12 @@ void inputNodeFileList(int addRotaryConnections) {
   }
   
   if (slotsProcessed == 0) {
-    Serial.println("◇ No valid slots found in input");
-    Serial.println("◇ Expected format: Slot [number] f { node-node, node-node, ... }");
+    Jerial.println("◇ No valid slots found in input");
+    Jerial.println("◇ Expected format: Slot [number] f { node-node, node-node, ... }");
     return;
   }
   
-  Serial.println("◆ Successfully processed " + String(slotsProcessed) + " slot(s)");
+  Jerial.println("◆ Successfully processed " + String(slotsProcessed) + " slot(s)");
   
   // OLD CODE REMOVED - migrated to YAML-based state system above
 }
@@ -851,13 +844,13 @@ void saveCurrentSlotToSlot(int slotFrom, int slotTo, int flashOrLocalfrom,
   
   // Load source slot into globalState
   if (!mgr.loadSlot(slotFrom, errorMsg)) {
-    Serial.println("Error loading slot " + String(slotFrom) + ": " + errorMsg);
+    Jerial.println("Error loading slot " + String(slotFrom) + ": " + errorMsg);
     return;
   }
   
   // Save globalState to destination slot
   if (!mgr.saveSlot(slotTo, errorMsg)) {
-    Serial.println("Error saving to slot " + String(slotTo) + ": " + errorMsg);
+    Jerial.println("Error saving to slot " + String(slotTo) + ": " + errorMsg);
     return;
   }
   
@@ -892,23 +885,23 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       }
       dataOnly.trim();
       if (debugFP) {
-        Serial.print("DEBUG: Using preformatted data = '");
-        Serial.print(dataOnly);
-        Serial.println("'");
+        Jerial.print("DEBUG: Using preformatted data = '");
+        Jerial.print(dataOnly);
+        Jerial.println("'");
       }
       specialFunctionsString = dataOnly.c_str();
     } else {
       // Single-char mode: read directly from serial (old behavior)
       if (debugFP) {
-        Serial.println("DEBUG: Reading from Serial (line buffering OFF or short line)");
+        Jerial.println("DEBUG: Reading from Serial (line buffering OFF or short line)");
       }
-      specialFunctionsString.read(Serial);
+      specialFunctionsString.read(Jerial);
     }
     specialFunctionsString.trim();
     if (debugFP) {
-      Serial.print("DEBUG: specialFunctionsString after trim = '");
-      Serial.print(specialFunctionsString);
-      Serial.println("'");
+      Jerial.print("DEBUG: specialFunctionsString after trim = '");
+      Jerial.print(specialFunctionsString);
+      Jerial.println("'");
     }
     if (specialFunctionsString.endsWith(",") == 0) {
       specialFunctionsString.concat(",\n\r");
@@ -922,11 +915,11 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
     // Parse into RAM state instead of file
     // Clear current connections in state
     if (debugFP) {
-      Serial.println("DEBUG: Clearing all existing connections...");
+      Jerial.println("DEBUG: Clearing all existing connections...");
     }
     globalState.clearAllConnections();
     if (debugFP) {
-      Serial.println("DEBUG: All connections cleared. Starting fresh parse...");
+      Jerial.println("DEBUG: All connections cleared. Starting fresh parse...");
     }
     
     // Parse the connections from specialFunctionsString
@@ -947,37 +940,37 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
     createSafeStringFromCharArray(dashDelimiters, dashDelim);
     
     if (debugFP) {
-      Serial.print("DEBUG: About to parse: '");
-      Serial.print(specialFunctionsString);
-      Serial.print("' (length=");
-      Serial.print(specialFunctionsString.length());
-      Serial.println(")");
+      Jerial.print("DEBUG: About to parse: '");
+      Jerial.print(specialFunctionsString);
+      Jerial.print("' (length=");
+      Jerial.print(specialFunctionsString.length());
+      Jerial.println(")");
     }
     
     int stringIndex = 0;
     while (stringIndex >= 0) {
       stringIndex = specialFunctionsString.stoken(connBuf, stringIndex, commaDelimiters);
       if (debugFP) {
-        Serial.print("DEBUG: stoken returned stringIndex=");
-        Serial.print(stringIndex);
-        Serial.print(", connBuf='");
-        Serial.print(connBuf);
-        Serial.println("'");
+        Jerial.print("DEBUG: stoken returned stringIndex=");
+        Jerial.print(stringIndex);
+        Jerial.print(", connBuf='");
+        Jerial.print(connBuf);
+        Jerial.println("'");
       }
       if (stringIndex == -1) break;
       
       connBuf.trim();
       if (debugFP) {
-        Serial.print("DEBUG: After trim, connBuf='");
-        Serial.print(connBuf);
-        Serial.print("' (length=");
-        Serial.print(connBuf.length());
-        Serial.println(")");
+        Jerial.print("DEBUG: After trim, connBuf='");
+        Jerial.print(connBuf);
+        Jerial.print("' (length=");
+        Jerial.print(connBuf.length());
+        Jerial.println(")");
       }
       
       if (connBuf.length() < 3) {
         if (debugFP) {
-          Serial.println("DEBUG: Skipping - too short");
+          Jerial.println("DEBUG: Skipping - too short");
         }
         continue;  // Skip empty tokens
       }
@@ -986,15 +979,15 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       int nodeIndex = 0;
       nodeIndex = connBuf.stoken(nodeBuf, nodeIndex, dashDelimiters);
       if (debugFP) {
-        Serial.print("DEBUG: First stoken: nodeIndex=");
-        Serial.print(nodeIndex);
-        Serial.print(", nodeBuf='");
-        Serial.print(nodeBuf);
-        Serial.println("'");
+        Jerial.print("DEBUG: First stoken: nodeIndex=");
+        Jerial.print(nodeIndex);
+        Jerial.print(", nodeBuf='");
+        Jerial.print(nodeBuf);
+        Jerial.println("'");
       }
       if (nodeIndex == -1) {
         if (debugFP) {
-          Serial.println("DEBUG: First token failed");
+          Jerial.println("DEBUG: First token failed");
         }
         continue;
       }
@@ -1002,8 +995,8 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       int node1 = 0;
       nodeBuf.toInt(node1);
       if (debugFP) {
-        Serial.print("DEBUG: node1=");
-        Serial.println(node1);
+        Jerial.print("DEBUG: node1=");
+        Jerial.println(node1);
       }
       
       // stoken returns the position OF the delimiter, not after it
@@ -1011,24 +1004,24 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       if (nodeIndex < connBuf.length()) {
         nodeIndex++; // Skip past the '-' delimiter
         if (debugFP) {
-          Serial.print("DEBUG: Adjusted nodeIndex to ");
-          Serial.println(nodeIndex);
+          Jerial.print("DEBUG: Adjusted nodeIndex to ");
+          Jerial.println(nodeIndex);
         }
       }
       
       nodeIndex = connBuf.stoken(nodeBuf, nodeIndex, dashDelimiters);
       if (debugFP) {
-        Serial.print("DEBUG: Second stoken: nodeIndex=");
-        Serial.print(nodeIndex);
-        Serial.print(", nodeBuf='");
-        Serial.print(nodeBuf);
-        Serial.println("'");
+        Jerial.print("DEBUG: Second stoken: nodeIndex=");
+        Jerial.print(nodeIndex);
+        Jerial.print(", nodeBuf='");
+        Jerial.print(nodeBuf);
+        Jerial.println("'");
       }
       if (nodeIndex == -1 && nodeBuf.length() == 0) {
         // Only fail if we didn't get any data - if nodeIndex is -1 but nodeBuf has data,
         // it just means this was the last token
         if (debugFP) {
-          Serial.println("DEBUG: Second token failed - no data");
+          Jerial.println("DEBUG: Second token failed - no data");
         }
         continue;
       }
@@ -1036,48 +1029,48 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       int node2 = 0;
       nodeBuf.toInt(node2);
       if (debugFP) {
-        Serial.print("DEBUG: node2=");
-        Serial.println(node2);
+        Jerial.print("DEBUG: node2=");
+        Jerial.println(node2);
       }
       
       if (debugFP) {
-        Serial.print("DEBUG: Checking if node1 > 0 && node2 > 0: ");
-        Serial.print(node1);
-        Serial.print(" > 0 && ");
-        Serial.print(node2);
-        Serial.println(" > 0");
+        Jerial.print("DEBUG: Checking if node1 > 0 && node2 > 0: ");
+        Jerial.print(node1);
+        Jerial.print(" > 0 && ");
+        Jerial.print(node2);
+        Jerial.println(" > 0");
       }
       
       if (node1 > 0 && node2 > 0) {
         if (debugFP) {
-          Serial.println("DEBUG: Calling addBridgeToState()");
+          Jerial.println("DEBUG: Calling addBridgeToState()");
         }
         // Add to RAM state (no auto-refresh for batch operation)
         if (addBridgeToState(node1, node2, -1, false)) {
           connCount++;
           if (debugFP) {
-            Serial.print("DEBUG: Successfully added connection, connCount=");
-            Serial.println(connCount);
-            Serial.print("Parsed: ");
-            Serial.print(node1);
-            Serial.print("-");
-            Serial.println(node2);
+            Jerial.print("DEBUG: Successfully added connection, connCount=");
+            Jerial.println(connCount);
+            Jerial.print("Parsed: ");
+            Jerial.print(node1);
+            Jerial.print("-");
+            Jerial.println(node2);
           }
         } else {
           if (debugFP) {
-            Serial.println("DEBUG: addBridgeToState() returned false");
+            Jerial.println("DEBUG: addBridgeToState() returned false");
           }
         }
       } else {
         if (debugFP) {
-          Serial.println("DEBUG: Skipping - node1 or node2 is zero or negative");
+          Jerial.println("DEBUG: Skipping - node1 or node2 is zero or negative");
         }
       }
     }
     
-    Serial.print("Loaded ");
-    Serial.print(connCount);
-    Serial.println(" connections into RAM (will auto-save)");
+    Jerial.print("Loaded ");
+    Jerial.print(connCount);
+    Jerial.println(" connections into RAM (will auto-save)");
     
     // Mark as dirty and refresh once at the end (batch optimization)
     if (connCount > 0) {
@@ -1095,7 +1088,7 @@ int getSlotLength(int slot, int flashOrLocal) {
   int slotLength = 0;
   if (flashOrLocal == 0) {
     while (core2busy == true) {
-      // Serial.println("waiting for core2 to finish");
+      // Jerial.println("waiting for core2 to finish");
     }
     core1busy = true;
     nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r");
@@ -1117,19 +1110,19 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
 
   if (flashOrLocal == 0) {
     while (core2busy == true) {
-      // Serial.println("waiting for core2 to finish");
+      // Jerial.println("waiting for core2 to finish");
     }
     core1busy = true;
 
     nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r");
     if (!nodeFile) {
       // if (debugFP)
-      // Serial.println("Failed to open nodeFile");
+      // Jerial.println("Failed to open nodeFile");
       core1busy = false;
       return;
     } else {
       // if (debugFP)
-      // Serial.println("\n\ropened nodeFile.txt\n\n\rloading bridges from
+      // Jerial.println("\n\ropened nodeFile.txt\n\n\rloading bridges from
       // file\n\r");
     }
     specialFunctionsString.clear();
@@ -1149,9 +1142,9 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
   }
 
   //     int newLines = 0;
-  // Serial.println(specialFunctionsString.indexOf(","));
-  // Serial.println(specialFunctionsString.charAt(specialFunctionsString.indexOf(",")+1));
-  // Serial.println(specialFunctionsString.indexOf(","));
+  // Jerial.println(specialFunctionsString.indexOf(","));
+  // Jerial.println(specialFunctionsString.charAt(specialFunctionsString.indexOf(",")+1));
+  // Jerial.println(specialFunctionsString.indexOf(","));
   if (debugFP == 0 || definesInts == 0) {
 
     // specialFunctionsString.replace("116-80, 117-82, 114-83, 85-100, 81-100,",
@@ -1249,10 +1242,10 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
 
   // specialFunctionsString.readUntilToken(specialFunctionsString, "{");
   // specialFunctionsString.removeLast(9);
-  // Serial.print("*");
+  // Jerial.print("*");
   if (printOrString == 0) {
-    Serial.println(specialFunctionsString);
-    //     Serial.println('*');
+    Jerial.println(specialFunctionsString);
+    //     Jerial.println('*');
     // specialFunctionsString.clear();
   }
 }
@@ -1327,26 +1320,26 @@ bool disconnectedNodeNewData = false;
 //     }
 //   }
 //   }
-//   // Serial.print("Slot = ");
-//   // Serial.println(slot);
+//   // Jerial.print("Slot = ");
+//   // Jerial.println(slot);
 //   if (flashOrLocal == 0) {
 
 //     openFileThreadSafe(rplus, slot);
 
 //     if (!nodeFile) {
 //       if (debugFP) {
-//         // Serial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
+//         // Jerial.println("Failed to open nodeFile (removeBridgeFromNodeFile)");
 //       }
 
 //       return -1;
 //     } else {
 //       if (debugFP)
-//         Serial.println(
+//         Jerial.println(
 //             "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
 //     }
 
 //     if (nodeFile.size() < 2) {
-//       // Serial.println("empty file");
+//       // Jerial.println("empty file");
 //       nodeFile.close();
 //       core1busy = false;
 //       return -1;
@@ -1355,10 +1348,10 @@ bool disconnectedNodeNewData = false;
 //     nodeFile.setTimeout(8);
 //   }
 //   if (onlyCheck == 1) {
-//     // Serial.print("Checking for bridge between ");
-//     // Serial.print(node1);
-//     // Serial.print(" and ");
-//     // Serial.println(node2);
+//     // Jerial.print("Checking for bridge between ");
+//     // Jerial.print(node1);
+//     // Jerial.print(" and ");
+//     // Jerial.println(node2);
 //   }
 //   timerEnd[0] = millis() - timerStart;
 
@@ -1370,9 +1363,9 @@ bool disconnectedNodeNewData = false;
 //   // nodeFileString.clear();
 //   String lineBufString = "";
 //   // nodeFileString.printTo(Serial);
-//   // Serial.println(" ");
-//   // Serial.print("nodeFileString = ");
-//   // Serial.println(nodeFileString);
+//   // Jerial.println(" ");
+//   // Jerial.print("nodeFileString = ");
+//   // Jerial.println(nodeFileString);
 //   // core1busy = true;
 //   createSafeString(lineBufSafe, 40);
 //   int lineIdx = 0;
@@ -1388,37 +1381,37 @@ bool disconnectedNodeNewData = false;
 //       lineBufString = lineBufSafe.c_str();
 //       if (charIdx == -1) {
 //         numberOfLines = lineIdx;
-//         // Serial.print ("\n\r\t\t\t\tt\t\tnumberOfLines = ");
-//         // Serial.println(numberOfLines);
-//         //  Serial.println("end of file char idx");
+//         // Jerial.print ("\n\r\t\t\t\tt\t\tnumberOfLines = ");
+//         // Jerial.println(numberOfLines);
+//         //  Jerial.println("end of file char idx");
 
 //         break;
 //       }
 //     }
-//     // Serial.print("lineBufSafe = ");
-//     // Serial.println(lineBufSafe);
-//     // Serial.print("lineBufString = ");
-//     // Serial.println(lineBufString);
+//     // Jerial.print("lineBufSafe = ");
+//     // Jerial.println(lineBufSafe);
+//     // Jerial.print("lineBufString = ");
+//     // Jerial.println(lineBufString);
 
 //     lineBufString.trim();
 //     lineBufString.replace(" ", "");
-//     // Serial.print("$");
-//     // Serial.print(lineBufString);
-//     // Serial.println("$");
+//     // Jerial.print("$");
+//     // Jerial.print(lineBufString);
+//     // Jerial.println("$");
 
 //     if (lineBufString.length() < 3 || lineBufString == " ") {
 //       numberOfLines = lineIdx;
-//       // Serial.print ("numberOfLines = ");
-//       // Serial.println(numberOfLines);
-//       //  Serial.println("end of file");
+//       // Jerial.print ("numberOfLines = ");
+//       // Jerial.println(numberOfLines);
+//       //  Jerial.println("end of file");
 
 //       break;
 //     }
 //     slicedLines[lineIdx].concat(lineBufString);
 
-//     // Serial.print("#");
-//     // Serial.print(slicedLines[lineIdx]);
-//     // Serial.println("#");
+//     // Jerial.print("#");
+//     // Jerial.print(slicedLines[lineIdx]);
+//     // Jerial.println("#");
 //     slicedLines[lineIdx].replace("\n", "");
 //     slicedLines[lineIdx].replace("\r", "");
 
@@ -1428,23 +1421,23 @@ bool disconnectedNodeNewData = false;
 //     // slicedLines[lineIdx].trim();
 //     slicedLines[lineIdx].replace("-", " - ");
 //     slicedLines[lineIdx].concat(" , ");
-//     // Serial.print("*");
-//     // Serial.print(slicedLines[lineIdx]);
-//     // Serial.println("*");
+//     // Jerial.print("*");
+//     // Jerial.print(slicedLines[lineIdx]);
+//     // Jerial.println("*");
 
 //     lineIdx++;
 //   }
 //   timerEnd[1] = millis() - timerStart;
 //   numberOfLines = lineIdx;
-//   // Serial.print("numberOfLines = ");
-//   // Serial.println(numberOfLines);
-//   // Serial.print("nodeFileString = ");
-//   // Serial.println(nodeFileString);
+//   // Jerial.print("numberOfLines = ");
+//   // Jerial.println(numberOfLines);
+//   // Jerial.print("nodeFileString = ");
+//   // Jerial.println(nodeFileString);
 //   // nodeFileString.clear();
 //   // nodeFile.close();
-//   // Serial.println(nodeFileString);
-//   // Serial.print("lineIdx = ");
-//   // Serial.println(lineIdx);
+//   // Jerial.println(nodeFileString);
+//   // Jerial.print("lineIdx = ");
+//   // Jerial.println(lineIdx);
 //   char nodeAsChar[40];
 //   itoa(node1, nodeAsChar, 10);
 //   String paddedNode1 = " ";
@@ -1452,18 +1445,18 @@ bool disconnectedNodeNewData = false;
 
 //   paddedNode1.concat(nodeAsChar);
 //   paddedNode1.concat(" ");
-//   // Serial.print("paddedNode1 = *");
-//   // Serial.print(paddedNode1);
-//   // Serial.println("*");
+//   // Jerial.print("paddedNode1 = *");
+//   // Jerial.print(paddedNode1);
+//   // Jerial.println("*");
 
 //   if (node2 != -1) {
 //     itoa(node2, nodeAsChar, 10);
 
 //     paddedNode2.concat(nodeAsChar);
 //     paddedNode2.concat(" ");
-//     // Serial.print("paddedNode2 = *");
-//     // Serial.print(paddedNode2);
-//     // Serial.println("*");
+//     // Jerial.print("paddedNode2 = *");
+//     // Jerial.print(paddedNode2);
+//     // Jerial.println("*");
 //   }
 
 //   // nodeFile.truncate(0);
@@ -1480,18 +1473,18 @@ bool disconnectedNodeNewData = false;
 //     nodeFileString.concat("{ ");
 //   }
 //   // nodeFile.print(" { \n\r");
-//   // Serial.print("numberOfLines = ");
-//   // Serial.println(numberOfLines);
+//   // Jerial.print("numberOfLines = ");
+//   // Jerial.println(numberOfLines);
 //   int removedLines = 0;
 
 //   for (int i = 0; i < numberOfLines; i++) {
-//     // Serial.print("\n\rslicedLines[");
+//     // Jerial.print("\n\rslicedLines[");
 
-//     // Serial.print(i);
-//     // Serial.print("] = ");
-//     // Serial.println(slicedLines[i]);
+//     // Jerial.print(i);
+//     // Jerial.print("] = ");
+//     // Jerial.println(slicedLines[i]);
 //     // delay(10);
-//     // Serial.println(millis()-timerStart);
+//     // Jerial.println(millis()-timerStart);
 //     int remove = 0;
 
 //     if (node2 == -1 && slicedLines[i].indexOf(paddedNode1) != -1) {
@@ -1549,36 +1542,36 @@ bool disconnectedNodeNewData = false;
 
 //           nodeAsChar[j] = ' ';
 //         }
-//         // Serial.print("nodeAsChar1 = ");
-//         // Serial.println(nodeAsChar);
+//         // Jerial.print("nodeAsChar1 = ");
+//         // Jerial.println(nodeAsChar);
 
 //         slicedLines[i].toCharArray(nodeAsChar, 40);
-//         // Serial.print("nodeAsChar2 = *");
-//         // Serial.print(nodeAsChar);
-//         // Serial.println("*");
+//         // Jerial.print("nodeAsChar2 = *");
+//         // Jerial.print(nodeAsChar);
+//         // Jerial.println("*");
 //         slicedLines[i].replace(",", "");
 //         slicedLines[i].replace(" ", "");
 //         slicedLines[i].concat(",");
 //         nodeFileString.concat(nodeAsChar);
 //         nodeFileString.replace(" ", "");
-//         //     Serial.print("sliceLines[i].length() = ");
-//         //     Serial.println(slicedLines[i].length());
-//         //         Serial.print("nodeFileString = ");
-//         // Serial.println(nodeFileString);
+//         //     Jerial.print("sliceLines[i].length() = ");
+//         //     Jerial.println(slicedLines[i].length());
+//         //         Jerial.print("nodeFileString = ");
+//         // Jerial.println(nodeFileString);
 //         nodeFileString.replace("{ ", "");
 //         nodeFileString.replace(" } ", "");
 //         nodeFileString.replace("{", "");
 //         nodeFileString.replace("}", "");
 //         nodeFileString.prefix("{ ");
 //         // nodeFileString.concat(" } ");
-//         //  Serial.print("nodeFileString = ");
-//         //  Serial.println(nodeFileString);
+//         //  Jerial.print("nodeFileString = ");
+//         //  Jerial.println(nodeFileString);
 //       }
 //     }
-//     //     Serial.print("slicedLines[");
-//     //       Serial.print(i);
-//     //       Serial.print("] = ");
-//     //  Serial.println(slicedLines[i]);
+//     //     Jerial.print("slicedLines[");
+//     //       Jerial.print(i);
+//     //       Jerial.print("] = ");
+//     //  Jerial.println(slicedLines[i]);
 //   }
 
 //   if (flashOrLocal == 0) {
@@ -1589,15 +1582,15 @@ bool disconnectedNodeNewData = false;
 //     }
 //   } else {
 //     nodeFileString.concat(" } ");
-//     // Serial.print("nodeFileString = ");
-//     // Serial.println(nodeFileString);
+//     // Jerial.print("nodeFileString = ");
+//     // Jerial.println(nodeFileString);
 //   }
 
 //   // for (int i = 0; i <= numberOfLines; i++) {
-//   //   Serial.print("\n\rslicedLines[");
-//   //   Serial.print(i);
-//   //   Serial.print("] = ");
-//   //   Serial.println(slicedLines[i]);
+//   //   Jerial.print("\n\rslicedLines[");
+//   //   Jerial.print(i);
+//   //   Jerial.print("] = ");
+//   //   Jerial.println(slicedLines[i]);
 
 //   // }
 //   core1busy = false;
@@ -1610,33 +1603,33 @@ bool disconnectedNodeNewData = false;
 //   }
 
 //   timerEnd[3] = millis() - timerStart;
-//   // Serial.print("timerEnd[0] = ");
+//   // Jerial.print("timerEnd[0] = ");
 
-//   //   Serial.println(timerEnd[0]);
-//   //   Serial.print("timerEnd[1] = ");
-//   //   Serial.println(timerEnd[1]);
-//   //   Serial.print("timerEnd[3] = ");
-//   //   Serial.println(timerEnd[3]);
+//   //   Jerial.println(timerEnd[0]);
+//   //   Jerial.print("timerEnd[1] = ");
+//   //   Jerial.println(timerEnd[1]);
+//   //   Jerial.print("timerEnd[3] = ");
+//   //   Jerial.println(timerEnd[3]);
 //   return removedLines;
 // }
 
 // int addBridgeToNodeFile(int node1, int node2, int slot, int flashOrLocal,
 //                         int allowDuplicates) {
 
-//   // Serial.print("nodeFileStringAdd = ");
-//   // Serial.println(nodeFileString);
+//   // Jerial.print("nodeFileStringAdd = ");
+//   // Jerial.println(nodeFileString);
 //   unsigned long timerStart[5];
 //   timerStart[0] = micros();
 //   if (flashOrLocal == 0) {
 //     // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r+");
 
 //     openFileThreadSafe(rplus, slot);
-//     // Serial.println(nodeFile);
-//     // Serial.print("Slot = ");
-//     // Serial.println(slot);
+//     // Jerial.println(nodeFile);
+//     // Jerial.print("Slot = ");
+//     // Jerial.println(slot);
 //     if (!nodeFile) {
 //       // if (debugFP) {
-//       // Serial.println("Failed to open nodeFile (addBridgeToNodeFile)");
+//       // Jerial.println("Failed to open nodeFile (addBridgeToNodeFile)");
 //       //  }
 //       // reateSlots(slot, 0);
 //       //  delay(10);
@@ -1647,18 +1640,18 @@ bool disconnectedNodeNewData = false;
 //       // return;
 //     } else {
 //       if (debugFP)
-//         Serial.println(
+//         Jerial.println(
 //             "\n\ropened nodeFile.txt\n\n\rloading bridges from file\n\r");
 //     }
 //     //     while (nodeFile.available()) {
-//     //     Serial.write(nodeFile.read());
+//     //     Jerial.write(nodeFile.read());
 //     //   }
 //     //   nodeFile.seek(0);
 //     nodeFile.setTimeout(15);
 //   }
 
-//   // Serial.print("flashOrLocal = ");
-//   // Serial.println(flashOrLocal);
+//   // Jerial.print("flashOrLocal = ");
+//   // Jerial.println(flashOrLocal);
 
 //   for (int i = 0; i < 120; i++) {
 //     slicedLines[i] = " ";
@@ -1666,10 +1659,10 @@ bool disconnectedNodeNewData = false;
 //   timerStart[1] = micros();
 
 //   int numberOfLines = 0;
-//   // Serial.print("nodeFileString = ");
-//   // Serial.println(nodeFileString);
+//   // Jerial.print("nodeFileString = ");
+//   // Jerial.println(nodeFileString);
 //   // nodeFileString.printTo(Serial);
-//   // Serial.println(" ");
+//   // Jerial.println(" ");
 //   String lineBufString = "";
 
 //   createSafeString(lineBufSafe, 30);
@@ -1698,16 +1691,16 @@ bool disconnectedNodeNewData = false;
 //       lineBufString = lineBufSafe.c_str();
 //     }
 
-//     // Serial.print("lineBufSafe = ");
-//     // Serial.println(lineBufSafe);
-//     // Serial.print("lineBufString = ");
-//     // Serial.println(lineBufString);
+//     // Jerial.print("lineBufSafe = ");
+//     // Jerial.println(lineBufSafe);
+//     // Jerial.print("lineBufString = ");
+//     // Jerial.println(lineBufString);
 
 //     lineBufString.trim();
 //     lineBufString.replace(" ", "");
 
 //     if (lineBufString.length() < 3 || lineBufString == " ") {
-//       // Serial.println("end of file");
+//       // Jerial.println("end of file");
 //       numberOfLines = lineIdx;
 //       break;
 //     }
@@ -1721,25 +1714,25 @@ bool disconnectedNodeNewData = false;
 //     slicedLines[lineIdx].replace(",", "");
 //     slicedLines[lineIdx].concat(",");
 
-//     // Serial.print("lineBufString = ");
-//     // Serial.println(lineBufString);
+//     // Jerial.print("lineBufString = ");
+//     // Jerial.println(lineBufString);
 //     // slicedLines[lineIdx].trim();
 
-//     // Serial.print("*");
-//     // Serial.print(slicedLines[lineIdx]);
-//     // Serial.println("*");
+//     // Jerial.print("*");
+//     // Jerial.print(slicedLines[lineIdx]);
+//     // Jerial.println("*");
 
 //     lineIdx++;
 //   }
 //   timerStart[2] = micros();
 //   numberOfLines = lineIdx;
 
-//   // Serial.print("\n\rnumberOfLines = ");
-//   // Serial.println(numberOfLines);
+//   // Jerial.print("\n\rnumberOfLines = ");
+//   // Jerial.println(numberOfLines);
 
 //   // nodeFileString.clear();
 //   // nodeFile.close();
-//   // Serial.println(nodeFileString);
+//   // Jerial.println(nodeFileString);
 
 //   char nodeAsChar[40];
 //   itoa(node1, nodeAsChar, 10);
@@ -1764,7 +1757,7 @@ bool disconnectedNodeNewData = false;
 //   int duplicateFound = 0;
 
 //   if (flashOrLocal == 0) {
-//     // Serial.println("flash");
+//     // Jerial.println("flash");
 //     openFileThreadSafe(wplus, slot);
 //     // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w+");
 //     nodeFile.print("{ ");
@@ -1773,7 +1766,7 @@ bool disconnectedNodeNewData = false;
 
 //       if (slicedLines[i].indexOf(addNode1) != -1) {
 //         duplicateFound = 1;
-//         // Serial.println("Duplicate found (flash)");
+//         // Jerial.println("Duplicate found (flash)");
 //       }
 
 //       nodeFile.print(slicedLines[i]);
@@ -1789,15 +1782,15 @@ bool disconnectedNodeNewData = false;
 //     markSlotAsModified(slot); // Mark slot as needing re-validation
 
 //   } else {
-//     //  Serial.println("local");
-//     // Serial.print("nodeFileString1 = ");
-//     // Serial.println(nodeFileString);
-//     // Serial.print("addNode1 = ");
-//     // Serial.println(addNode1);
+//     //  Jerial.println("local");
+//     // Jerial.print("nodeFileString1 = ");
+//     // Jerial.println(nodeFileString);
+//     // Jerial.print("addNode1 = ");
+//     // Jerial.println(addNode1);
 
 //     if (nodeFileString.indexOf(nodeAsChar, 0) != -1) {
 //       duplicateFound = 1;
-//       // Serial.println("Duplicate found (local)");
+//       // Jerial.println("Duplicate found (local)");
 //     }
 
 //     nodeFileString.replace('\n', "");
@@ -1806,10 +1799,10 @@ bool disconnectedNodeNewData = false;
 //     nodeFileString.replace('{', "");
 //     nodeFileString.replace('}', "");
 
-//     // Serial.print("\n\n\rduplicateFound = ");
-//     //     Serial.println(duplicateFound);
-//     //     Serial.print("nodeAsChar = ");
-//     //     Serial.println(nodeAsChar);
+//     // Jerial.print("\n\n\rduplicateFound = ");
+//     //     Jerial.println(duplicateFound);
+//     //     Jerial.print("nodeAsChar = ");
+//     //     Jerial.println(nodeAsChar);
 
 //     if (duplicateFound == 0 || allowDuplicates == 1) {
 //       // nodeFileString.concat(addNode1);
@@ -1819,16 +1812,16 @@ bool disconnectedNodeNewData = false;
 //     nodeFileString.prefix("{ ");
 //     nodeFileString.concat(" } ");
 
-//     //     Serial.print("nodeFileStringAdd = ");
-//     // Serial.println(nodeFileString);
+//     //     Jerial.print("nodeFileStringAdd = ");
+//     // Jerial.println(nodeFileString);
 //   }
 //   timerStart[3] = micros();
 
 //   // for (int i = 0; i < 4; i++) {
-//   //   Serial.print("timerStart[");
-//   //   Serial.print(i);
-//   //   Serial.print("] = ");
-//   //   Serial.println(timerStart[i] - timerStart[0]);
+//   //   Jerial.print("timerStart[");
+//   //   Jerial.print(i);
+//   //   Jerial.print("] = ");
+//   //   Jerial.println(timerStart[i] - timerStart[0]);
 //   // }
 //   return duplicateFound;
 // }
@@ -1854,7 +1847,7 @@ void readStringFromSerial(int source, int addRemove) {
   // dash.concat("-");
   // comma.concat(",");
   if (source == 0) {
-    specialFunctionsString.read(Serial);
+    specialFunctionsString.read(Jerial);
   } else if (source == 1) {
    // specialFunctionsString.read(Serial1);
   } else if (source == 3) {
@@ -1889,7 +1882,7 @@ void readStringFromSerial(int source, int addRemove) {
     // nodeFileString.read(Serial);
     int dashIndex = specialFunctionsString.indexOf("-");
     if (dashIndex == -1 && addRemove == 0) {
-      Serial.println("Invalid input");
+      Jerial.println("Invalid input");
       return;
     } else if (dashIndex == -1 && addRemove == 1) {
       singleNode = 1;
@@ -1903,9 +1896,9 @@ void readStringFromSerial(int source, int addRemove) {
     // serialString.removeLast(1);
     serialString.toInt(node1);
     // serialString.printTo(Serial);
-    // Serial.println();
+    // Jerial.println();
     // nodeFileString.printTo(Serial);
-    //  Serial.println();
+    //  Jerial.println();
     // nodeFileString.clear();
     serialString.clear();
 
@@ -1921,7 +1914,7 @@ void readStringFromSerial(int source, int addRemove) {
       }
 
       // specialFunctionsString.printTo(Serial);
-      // Serial.println();
+      // Jerial.println();
 
       if (specialFunctionsString.indexOfCharFrom("-", dashIndex + 1) != -1) {
         specialFunctionsString.removeBefore(commaIndex + 1);
@@ -1933,24 +1926,24 @@ void readStringFromSerial(int source, int addRemove) {
       }
 
       // specialFunctionsString.printTo(Serial);
-      // Serial.println();
+      // Jerial.println();
 
       serialString.toInt(node2);
       // serialString.printTo(Serial);
-      // Serial.println();
-      // Serial.print("node1 = ");
-      // Serial.println(node1);
-      Serial.print("node2 = ");
-      Serial.println(node2);
+      // Jerial.println();
+      // Jerial.print("node1 = ");
+      // Jerial.println(node1);
+      // Jerial.print("node2 = ");
+      // Jerial.println(node2);
     }
 
     if (isNodeValid(node1) != 1) {
-      Serial.println("Invalid node 1 number");
+      Jerial.println("Invalid node 1 number");
       return;
     }
 
     if (isNodeValid(node2) != 1 && (addRemove == 0)) {
-      Serial.println("Invalid node 2 number");
+      Jerial.println("Invalid node 2 number");
       return;
     }
 
@@ -1992,7 +1985,7 @@ int isNodeValid(int node) {
 // Lightning-fast validation using character parsing instead of String operations
 int validateNodeFileFast(const char* content, int contentLen, bool verbose) {
   if (contentLen < 4) {
-    if (verbose) Serial.println("◇ Content too short");
+    if (verbose) Jerial.println("◇ Content too short");
     return 1;
   }
 
@@ -2004,11 +1997,11 @@ int validateNodeFileFast(const char* content, int contentLen, bool verbose) {
   }
 
   if (openBrace == -1) {
-    if (verbose) Serial.println("◇ Missing opening brace");
+    if (verbose) Jerial.println("◇ Missing opening brace");
     return 2;
   }
   if (closeBrace == -1 || closeBrace <= openBrace) {
-    if (verbose) Serial.println("◇ Missing/invalid closing brace");
+    if (verbose) Jerial.println("◇ Missing/invalid closing brace");
     return 3;
   }
 
@@ -2067,10 +2060,10 @@ int validateNodeFileFast(const char* content, int contentLen, bool verbose) {
   }
 
   if (verbose) {
-    Serial.print("◆ Fast validation: ");
-    Serial.print(connectionCount);
-    Serial.print(" connections, ");
-    Serial.println(valid ? "VALID" : "INVALID");
+    Jerial.print("◆ Fast validation: ");
+    Jerial.print(connectionCount);
+    Jerial.print(" connections, ");
+    Jerial.println(valid ? "VALID" : "INVALID");
   }
 
   return valid ? 0 : 5;
@@ -2087,19 +2080,19 @@ int validateNodeFileSlot(int slot, bool verbose) {
   String filename = "nodeFileSlot" + String(slot) + ".txt";
 
   if (verbose) {
-    Serial.println("◆ Fast validating " + filename + "...");
+    Jerial.println("◆ Fast validating " + filename + "...");
   }
 
   if (!FatFS.exists(filename)) {
     if (verbose)
-      Serial.println("◇ Slot file does not exist");
+      Jerial.println("◇ Slot file does not exist");
     return 1; // File doesn't exist, treat as empty
   }
 
   File slotFile = FatFS.open(filename, "r");
   if (!slotFile) {
     if (verbose)
-      Serial.println("◇ Failed to open slot file");
+      Jerial.println("◇ Failed to open slot file");
     return 1;
   }
 
@@ -2108,7 +2101,7 @@ int validateNodeFileSlot(int slot, bool verbose) {
   if (fileSize > 512) {
     // File too large, probably corrupted
     slotFile.close();
-    if (verbose) Serial.println("◇ File too large");
+    if (verbose) Jerial.println("◇ File too large");
     return 5;
   }
 
@@ -2168,7 +2161,7 @@ void openNodeFile(int slot, int flashOrLocal) {
   if (flashOrLocal == 0) {
     if (!slotIsValidated(slot)) {
       if (debugFP) {
-        Serial.println("◆ Ultra-fast validating nodeFileSlot" + String(slot) + ".txt...");
+        Jerial.println("◆ Ultra-fast validating nodeFileSlot" + String(slot) + ".txt...");
       }
       
       // Do minimal validation - just check if file exists and has basic structure
@@ -2193,7 +2186,7 @@ void openNodeFile(int slot, int flashOrLocal) {
             if (!hasOpenBrace || !hasCloseBrace) {
               quickCheck.close();
               if (debugFP) {
-                Serial.println("◇ Small file missing braces, fixing");
+                Jerial.println("◇ Small file missing braces, fixing");
               }
               File fixFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
               if (fixFile) {
@@ -2234,14 +2227,14 @@ void openNodeFile(int slot, int flashOrLocal) {
             // For larger files, assume they're probably OK even if we don't find braces
             // (they might be in the middle section we didn't read)
             if (debugFP && (!hasOpenBrace || !hasCloseBrace)) {
-              Serial.println("◇ Large file, braces not found in start/end - assuming OK");
+              Jerial.println("◇ Large file, braces not found in start/end - assuming OK");
             }
           }
         }
       } else {
         // File doesn't exist, create empty one
         if (debugFP) {
-          Serial.println("◇ File doesn't exist, creating empty file");
+          Jerial.println("◇ File doesn't exist, creating empty file");
         }
         File createFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
         if (createFile) {
@@ -2253,37 +2246,37 @@ void openNodeFile(int slot, int flashOrLocal) {
       // Mark as validated after our quick check
       setSlotValidated(slot, true);
       if (debugFP) {
-        Serial.println("◆ Slot " + String(slot) + " ultra-fast validated and cached");
+        Jerial.println("◆ Slot " + String(slot) + " ultra-fast validated and cached");
       }
     } else {
       if (debugFP) {
-        Serial.println("◆ Slot " + String(slot) + " already validated (skipping)");
+        Jerial.println("◆ Slot " + String(slot) + " already validated (skipping)");
       }
     }
   }
 
-  // Serial.println(nodeFileString);
-  // Serial.println("opening nodeFileSlot" + String(slot) + ".txt");
-  // Serial.println("flashOrLocal = " + String(flashOrLocal));
+  // Jerial.println(nodeFileString);
+  // Jerial.println("opening nodeFileSlot" + String(slot) + ".txt");
+  // Jerial.println("flashOrLocal = " + String(flashOrLocal));
 
-  // Serial.println(flashOrLocal?"local":"flash");
+  // Jerial.println(flashOrLocal?"local":"flash");
 
   // while (core2busy == true) {
-  //   // Serial.println("waiting for core2 to finish");
+  //   // Jerial.println("waiting for core2 to finish");
   // }
   // core1busy = true;
   if ((nodeFileString.length() < 3 && flashOrLocal == 1) || flashOrLocal == 0) {
 
     // if (flashOrLocal == 0) {
     // multicore_lockout_start_blocking();
-    // Serial.println("opening nodeFileSlot" + String(slot) + ".txt");
+    // Jerial.println("opening nodeFileSlot" + String(slot) + ".txt");
 
     // nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r");
     openFileThreadSafe(r, slot);
     
     if (!nodeFile) {
       if (debugFP)
-        Serial.println("Failed to open nodeFile");
+        Jerial.println("Failed to open nodeFile");
 
       // createSlots(slot, 0);
       openFileThreadSafe(w, slot);
@@ -2292,14 +2285,14 @@ void openNodeFile(int slot, int flashOrLocal) {
       // return;
     } else {
       if (debugFP)
-        Serial.println("\n\ropened nodeFileSlot" + String(slot) +
+        Jerial.println("\n\ropened nodeFileSlot" + String(slot) +
                        +".txt\n\n\rloading bridges from file\n\r");
     }
 
     nodeFileString.clear();
     nodeFileString.read(nodeFile);
     // delay(10);
-    // Serial.println(nodeFileString);
+    // Jerial.println(nodeFileString);
 
     nodeFile.close();
 
@@ -2312,7 +2305,7 @@ void openNodeFile(int slot, int flashOrLocal) {
     int validation_result = validateNodeFile(nodeFileString.c_str(), false);
     if (validation_result != 0) {
       if (debugFP) {
-        Serial.println("◇ Loaded content failed validation, clearing and using "
+        Jerial.println("◇ Loaded content failed validation, clearing and using "
                        "empty file");
       }
       nodeFileString.clear();
@@ -2321,9 +2314,9 @@ void openNodeFile(int slot, int flashOrLocal) {
     }
   }
 
-  // Serial.println(nodeFileString);
-  // Serial.println();
-  //   Serial.println("nodeFileString = ");
+  // Jerial.println(nodeFileString);
+  // Jerial.println();
+  //   Jerial.println("nodeFileString = ");
   // nodeFileString.printTo(Serial);
 
   splitStringToFields();
@@ -2337,13 +2330,13 @@ void splitStringToFields() {
   int closeBraceIndex = 0;
 
   if (debugFP)
-    Serial.println("\n\rraw input file\n\r");
+    Jerial.println("\n\rraw input file\n\r");
   if (debugFP)
-    Serial.println(nodeFileString);
+    Jerial.println(nodeFileString);
   if (debugFP)
-    Serial.println("\n\rsplitting and cleaning up string\n\r");
+    Jerial.println("\n\rsplitting and cleaning up string\n\r");
   if (debugFP)
-    Serial.println("_");
+    Jerial.println("_");
 
   openBraceIndex = nodeFileString.indexOf("{");
   closeBraceIndex = nodeFileString.indexOf("}");
@@ -2363,9 +2356,9 @@ void splitStringToFields() {
     foundF = 1;
   }
 
-  // Serial.println(openBraceIndex);
-  // Serial.println(closeBraceIndex);
-  // Serial.println(fIndex);
+  // Jerial.println(openBraceIndex);
+  // Jerial.println(closeBraceIndex);
+  // Jerial.println(fIndex);
 
   if (foundF == 1) {
     nodeFileString.substring(nodeFileString, fIndex + 1,
@@ -2383,10 +2376,10 @@ void splitStringToFields() {
   specialFunctionsString.trim();
 
   if (debugFP)
-    Serial.println(specialFunctionsString);
+    Jerial.println(specialFunctionsString);
 
   if (debugFP)
-    Serial.println("^\n\r");
+    Jerial.println("^\n\r");
   /*
       nodeFileString.remove(0, closeBraceIndex + 1);
       nodeFileString.trim();
@@ -2395,9 +2388,9 @@ void splitStringToFields() {
       closeBraceIndex = nodeFileString.indexOf("}");
       //nodeFileString.substring(specialFunctionsString, openBraceIndex + 1,
      closeBraceIndex); specialFunctionsString.trim();
-      if(debugFP)Serial.println("_");
-      if(debugFP)Serial.println(specialFunctionsString);
-      if(debugFP)Serial.println("^\n\r");
+      if(debugFP)Jerial.println("_");
+      if(debugFP)Jerial.println(specialFunctionsString);
+      if(debugFP)Jerial.println("^\n\r");
       */
   replaceSFNamesWithDefinedInts();
   replaceNanoNamesWithDefinedInts();
@@ -2407,8 +2400,8 @@ void splitStringToFields() {
 void replaceSFNamesWithDefinedInts(void) {
   specialFunctionsString.toUpperCase();
   if (debugFP) {
-    Serial.println("replacing special function names with defined ints\n\r");
-    Serial.println(specialFunctionsString);
+    Jerial.println("replacing special function names with defined ints\n\r");
+    Jerial.println(specialFunctionsString);
   }
 
   specialFunctionsString.replace("GND", "100");
@@ -2541,7 +2534,7 @@ void replaceNanoNamesWithDefinedInts(
 // the names, so I'm using SafeString now and it works
 {
   if (debugFP)
-    Serial.println("replacing special function names with defined ints\n\r");
+    Jerial.println("replacing special function names with defined ints\n\r");
 
   char nanoName[10];
   for (int i = 0; i < 10; i++) {
@@ -2669,11 +2662,11 @@ void replaceNanoNamesWithDefinedInts(
   for (int i = 0; i < 10; i++) {
     nanoName[i] = ' ';
   }
-  // if(debugFP)Serial.println(bridgeString);
+  // if(debugFP)Jerial.println(bridgeString);
   if (debugFP)
-    Serial.println(specialFunctionsString);
+    Jerial.println(specialFunctionsString);
   if (debugFP)
-    Serial.println("\n\n\r");
+    Jerial.println("\n\n\r");
 }
 
 void parseStringToBridges(void) {
@@ -2688,7 +2681,7 @@ void parseStringToBridges(void) {
   newBridgeIndex = 0;
 
   if (debugFP) {
-    Serial.println("parsing bridges into array\n\r");
+    Jerial.println("parsing bridges into array\n\r");
   }
   int stringIndex = 0;
   char delimitersCh[] = "[,- \n\r";
@@ -2705,20 +2698,20 @@ void parseStringToBridges(void) {
       break;
     }
 
-    // Serial.print("buffer = ");
-    // Serial.println(buffer);
+    // Jerial.print("buffer = ");
+    // Jerial.println(buffer);
 
-    // Serial.print("stringIndex = ");
-    // Serial.println(stringIndex);
+    // Jerial.print("stringIndex = ");
+    // Jerial.println(stringIndex);
 
     buffer.toInt(globalState.connections.paths[newBridgeIndex].node1);
 
-    // Serial.print("globalState.connections.paths[newBridgeIndex].node1 = ");
-    // Serial.println(globalState.connections.paths[newBridgeIndex].node1);
+    // Jerial.print("globalState.connections.paths[newBridgeIndex].node1 = ");
+    // Jerial.println(globalState.connections.paths[newBridgeIndex].node1);
 
     if (debugFP) {
-      Serial.print("node1 = ");
-      Serial.println(globalState.connections.paths[newBridgeIndex].node1);
+      Jerial.print("node1 = ");
+      Jerial.println(globalState.connections.paths[newBridgeIndex].node1);
     }
 
     stringIndex =
@@ -2727,8 +2720,8 @@ void parseStringToBridges(void) {
     buffer.toInt(globalState.connections.paths[newBridgeIndex].node2);
 
     if (debugFP) {
-      Serial.print("node2 = ");
-      Serial.println(globalState.connections.paths[newBridgeIndex].node2);
+      Jerial.print("node2 = ");
+      Jerial.println(globalState.connections.paths[newBridgeIndex].node2);
     }
 
     readLength = stringIndex;
@@ -2741,46 +2734,46 @@ void parseStringToBridges(void) {
     newBridgeIndex++;
 
     if (debugFP) {
-      Serial.print("readLength = ");
-      Serial.println(readLength);
-      Serial.print("specialFunctionsString.length() = ");
-      Serial.println(specialFunctionsString.length());
+      Jerial.print("readLength = ");
+      Jerial.println(readLength);
+      Jerial.print("specialFunctionsString.length() = ");
+      Jerial.println(specialFunctionsString.length());
     }
 
     if (debugFP)
-      Serial.print(newBridgeIndex);
+      Jerial.print(newBridgeIndex);
     if (debugFP)
-      Serial.print("-");
+      Jerial.print("-");
     if (debugFP)
-      Serial.println(newBridge[newBridgeIndex][1]);
+      Jerial.println(newBridge[newBridgeIndex][1]);
   }
 
   newBridgeIndex = 0;
   if (debugFP)
     for (int i = 0; i < newBridgeLength; i++) {
-      Serial.print("[");
-      Serial.print(globalState.connections.paths[newBridgeIndex].node1);
-      Serial.print("-");
-      Serial.print(globalState.connections.paths[newBridgeIndex].node2);
-      Serial.print("],");
+      Jerial.print("[");
+      Jerial.print(globalState.connections.paths[newBridgeIndex].node1);
+      Jerial.print("-");
+      Jerial.print(globalState.connections.paths[newBridgeIndex].node2);
+      Jerial.print("],");
       newBridgeIndex++;
     }
   if (debugFP)
-    Serial.print("\n\rbridge pairs = ");
+    Jerial.print("\n\rbridge pairs = ");
   if (debugFP)
-    Serial.println(newBridgeLength);
+    Jerial.println(newBridgeLength);
 
   // nodeFileString.clear();
 
-  // if(debugFP)Serial.println(nodeFileString);
+  // if(debugFP)Jerial.println(nodeFileString);
   timeToFP = millis() - timeToFP;
   if (debugFPtime)
-    Serial.print("\n\rtook ");
+    Jerial.print("\n\rtook ");
 
   if (debugFPtime)
-    Serial.print(timeToFP);
+    Jerial.print(timeToFP);
   if (debugFPtime)
-    Serial.println("ms to open and parse file\n\r");
+    Jerial.println("ms to open and parse file\n\r");
 
   // printBridgeArray();
 
@@ -2816,11 +2809,11 @@ void ensureNetColorsDirectoryExists() {
   // if (!FatFS.exists("/net_colors")) {
   //   if (FatFS.mkdir("/net_colors")) {
   //     if (debugFP) {
-  //       Serial.println("Created /net_colors/ directory");
+  //       Jerial.println("Created /net_colors/ directory");
   //     }
   //   } else {
   //     if (debugFP) {
-  //       Serial.println("Failed to create /net_colors/ directory");
+  //       Jerial.println("Failed to create /net_colors/ directory");
   //     }
   //   }
   // }
@@ -2845,7 +2838,7 @@ void removeNetColorFile(int slot) {
   if (FatFS.exists(colorFileName.c_str())) {
     FatFS.remove(colorFileName.c_str());
     if (debugFP) {
-      Serial.println("Removed empty net color file: " + colorFileName);
+      Jerial.println("Removed empty net color file: " + colorFileName);
     }
   }
   setSlotHasNetColors(slot, false);
@@ -2869,7 +2862,7 @@ void markSlotAsModified(int slot) {
   // When a slot is modified, it needs re-validation
   setSlotValidated(slot, false);
   if (debugFP) {
-    Serial.println("Marked slot " + String(slot) + " as needing validation");
+    Jerial.println("Marked slot " + String(slot) + " as needing validation");
   }
 }
 
@@ -2880,7 +2873,7 @@ void initializeNetColorTracking() {
   // Check if net colors directory exists
   if (!FatFS.exists("/net_colors")) {
     if (debugFP) {
-      Serial.println("Net colors directory does not exist. No existing colors to track.");
+      Jerial.println("Net colors directory does not exist. No existing colors to track.");
     }
     return;
   }
@@ -2896,7 +2889,7 @@ void initializeNetColorTracking() {
         setSlotHasNetColors(slot, true);
         foundFiles++;
         if (debugFP) {
-          Serial.println("Found net colors for slot " + String(slot));
+          Jerial.println("Found net colors for slot " + String(slot));
         }
       }
       if (tempFile) {
@@ -2906,7 +2899,7 @@ void initializeNetColorTracking() {
   }
   
   if (debugFP) {
-    Serial.println("Initialized net color tracking. Found " + String(foundFiles) + " slots with colors.");
+    Jerial.println("Initialized net color tracking. Found " + String(foundFiles) + " slots with colors.");
   }
 }
 
@@ -2915,7 +2908,7 @@ void initializeValidationTracking() {
   slotsValidated = 0;
   
   if (debugFP) {
-    Serial.println("Initialized validation tracking. All slots marked for validation on first use.");
+    Jerial.println("Initialized validation tracking. All slots marked for validation on first use.");
   }
 }
 
@@ -2929,12 +2922,12 @@ int printDisconnectedNodes() {
   int charCount = 0;
 
   if (lastRemovedNodesIndex > 0) {
-    // Serial.print("");
+    // Jerial.print("");
     for (int i = 0; i < lastRemovedNodesIndex; i++) {
       if (lastRemovedNodes[i] != -1) {
         charCount += printNodeOrName(lastRemovedNodes[i], 1);
         if (i < lastRemovedNodesIndex - 1 && i < 3) {
-          Serial.print(", ");
+          Jerial.print(", ");
           charCount += 2;
         }
       }
@@ -2977,13 +2970,13 @@ void printAllChangedNetColorFiles(void) {
     // Only check slots that have colors according to our tracking variable
     if (slotHasNetColors(i)) {
       foundAnyColors = true;
-    //  Serial.println("Slot " + String(i) + ":");
+    //  Jerial.println("Slot " + String(i) + ":");
       printChangedNetColorFile(i, 0);
     }
   }
   
   if (!foundAnyColors) {
-   // Serial.println("No slots have net color overrides.");
+   // Jerial.println("No slots have net color overrides.");
   }
 }
 
@@ -2999,16 +2992,16 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
     core1busy = true;
 
     if (debugFP) {
-      Serial.println(
+      Jerial.println(
           "Printing cached net colors (currentColorSlotColorsString):");
     }
     if (currentColorSlotColorsString.isEmpty()) {
-    //  Serial.println("[Cache is empty or not yet loaded]");
+    //  Jerial.println("[Cache is empty or not yet loaded]");
     } else {
-      Serial.print(currentColorSlotColorsString);
+      Jerial.print(currentColorSlotColorsString);
       if (!currentColorSlotColorsString.endsWith(
               "\n")) { // Ensure a newline for cleaner output if not present
-        Serial.println();
+        Jerial.println();
       }
     }
     core1busy = false;
@@ -3018,14 +3011,14 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
   // flashOrLocal == 0, print from file
   // Fast check: if slot has no colors according to our tracking variable, skip file operations
   if (!slotHasNetColors(slot)) {
-    // Serial.println("Slot " + String(slot) + " has no net color overrides.");
+    // Jerial.println("Slot " + String(slot) + " has no net color overrides.");
     return 1; // Success - no colors is valid
   }
 
   String colorFileName = "/net_colors/netColorsSlot" + String(slot) + ".txt";
 
   if (!FatFS.exists(colorFileName.c_str())) {
-    Serial.println("Color file " + colorFileName + " does not exist.");
+    Jerial.println("Color file " + colorFileName + " does not exist.");
     // File doesn't exist but tracking says it should - clear the tracking bit
     setSlotHasNetColors(slot, false);
     return 0;
@@ -3045,25 +3038,25 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
 
   if (!::colorFile) {
     if (debugFP) {
-      Serial.println("Failed to open " + colorFileName + " for printing.");
+      Jerial.println("Failed to open " + colorFileName + " for printing.");
     }
     core1busy = false;
     return 0;
   }
 
   if (debugFP) {
-    Serial.println("Printing contents of " + colorFileName + ":");
+    Jerial.println("Printing contents of " + colorFileName + ":");
   }
 
   if (::colorFile.size() == 0) {
-    Serial.println("[File is empty]");
+    Jerial.println("[File is empty]");
   } else {
     while (::colorFile.available()) {
-      Serial.write(::colorFile.read());
+      Jerial.write(::colorFile.read());
     }
     // Ensure a newline if the file doesn't end with one for cleaner console
     // output This requires peeking or reading the last char, which is slightly
-    // complex here. Simpler: just print a newline if Serial.print didn't just
+    // complex here. Simpler: just print a newline if Jerial.print didn't just
     // do one (hard to track) For now, we assume file content includes newlines
     // or user handles formatting.
   }
@@ -3098,7 +3091,7 @@ int saveChangedNetColorsToFile(int slot, int flashOrLocal) {
 
 bool attemptNodeFileRepair(int slot) {
   if (debugFP) {
-    Serial.println("◇ Attempting to repair nodeFileSlot" + String(slot) +
+    Jerial.println("◇ Attempting to repair nodeFileSlot" + String(slot) +
                    ".txt");
   }
 
@@ -3113,7 +3106,7 @@ bool attemptNodeFileRepair(int slot) {
 
   if (openBraceIdx == -1 || closeBraceIdx == -1) {
     if (debugFP) {
-      Serial.println("◇ Missing braces, creating clean file");
+      Jerial.println("◇ Missing braces, creating clean file");
     }
     clearNodeFile(slot, 0);
     return true;
@@ -3188,12 +3181,12 @@ bool attemptNodeFileRepair(int slot) {
         validConnections++;
       } else {
         if (debugFP) {
-          Serial.println("◇ Removed invalid connection: '" + connection + "'");
+          Jerial.println("◇ Removed invalid connection: '" + connection + "'");
         }
       }
     } else {
       if (debugFP) {
-        Serial.println("◇ Removed malformed connection (no dash): '" +
+        Jerial.println("◇ Removed malformed connection (no dash): '" +
                        connection + "'");
       }
     }
@@ -3219,7 +3212,7 @@ bool attemptNodeFileRepair(int slot) {
     slotFile.close();
 
     if (debugFP) {
-      Serial.println("◆ Repaired nodeFileSlot" + String(slot) + ".txt with " +
+      Jerial.println("◆ Repaired nodeFileSlot" + String(slot) + ".txt with " +
                      String(validConnections) + " valid connections");
     }
   }
@@ -3235,13 +3228,13 @@ bool validateAndRepairNodeFile(int slot, int maxRetries) {
 
     if (validation_result == 0) {
       if (debugFP && attempt > 0) {
-        Serial.println("◆ NodeFile validation passed after repair");
+        Jerial.println("◆ NodeFile validation passed after repair");
       }
       return true; // Valid
     }
 
     if (debugFP) {
-      Serial.println(
+      Jerial.println(
           "◇ NodeFile validation failed (attempt " + String(attempt + 1) +
           "): " + String(getNodeFileValidationError(validation_result)));
     }
@@ -3249,7 +3242,7 @@ bool validateAndRepairNodeFile(int slot, int maxRetries) {
     // Attempt repair
     if (!attemptNodeFileRepair(slot)) {
       if (debugFP) {
-        Serial.println("◇ Repair attempt failed");
+        Jerial.println("◇ Repair attempt failed");
       }
       break;
     }
@@ -3257,7 +3250,7 @@ bool validateAndRepairNodeFile(int slot, int maxRetries) {
 
   // If we get here, repair failed - clear the file
   if (debugFP) {
-    Serial.println("◇ All repair attempts failed, clearing nodeFileSlot" +
+    Jerial.println("◇ All repair attempts failed, clearing nodeFileSlot" +
                    String(slot) + ".txt");
   }
   clearNodeFile(slot, 0);

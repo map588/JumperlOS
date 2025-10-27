@@ -36,7 +36,6 @@
 #define DISPLAY_WIDTH 72
 #define DISPLAY_HEIGHT 144
 
-#define HALF_WIDTH ( DISPLAY_WIDTH / 2 )
 
 #define COLOR_BLACK 0x00
 #define COLOR_BLUE 0x02
@@ -757,8 +756,8 @@ void scanBoard( void ) {
     }
 }
 
-int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnections ) {
-    if ( sdaRow < 0 || sclRow < 0 ) {
+int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnections, int internalScan ) {
+    if ( sdaRow < 0 || sclRow < 0 || internalScan == 0 ) {
         Serial.println( "defaulting to \n\n\rGPIO 26 = SDA\n\rGPIO 27 = SCL" );
     } else {
         addBridgeToState( RP_GPIO_26, sdaRow ); // SDA
@@ -767,20 +766,31 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
         waitCore2( );
     }
 
+    TwoWire *WireScan = &Wire1; // default to Wire1
+    if ( internalScan == 1 ) {
+        WireScan = &Wire; // use Wire for internal scan
+    }
+
     oled.clear( );
     oled.print( "GPIO 26 = SDA\n\r" );
     oled.print( "GPIO 27 = SCL" );
     oled.show( );
     delay( 20 );
 
-    Wire1.end( );
-    Wire1.setSDA( sdaPin );
-    Wire1.setSCL( sclPin );
-    Wire1.begin( );
-    Wire1.setClock( 100000 );
-
-    Serial.println( "\nScanning I2C bus..." );
+if ( internalScan == 0 ) {
+    WireScan->end( );
+    WireScan->setSDA( sdaPin );
+    WireScan->setSCL( sclPin );
+    WireScan->begin( );
+    WireScan->setClock( 100000 );
+}
+    if ( internalScan == 1 ) {
+    Serial.println( "\nScanning internal I2C bus..." );
     Serial.println( "    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F " );
+    } else {
+        Serial.println( "\nScanning I2C bus..." );
+        Serial.println( "    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F " );
+    }
 
     int nDevices = 0;
     uint8_t addressesFound[ 128 ];
@@ -792,8 +802,8 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
         for ( int addr = 0; addr < 16; addr++ ) {
             int deviceAddr = baseAddr + addr;
             if ( deviceAddr > 0 && deviceAddr < 127 ) {
-                Wire1.beginTransmission( deviceAddr );
-                byte error = Wire1.endTransmission( );
+                WireScan->beginTransmission( deviceAddr );
+                byte error = WireScan->endTransmission( );
                 if ( error == 0 ) {
                     Serial.printf( " %02X ", deviceAddr ); // zero-padded
                     nDevices++;
@@ -840,8 +850,10 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
         refreshConnections( -1, 1 );
     }
 
-    Wire1.end( );
-    Wire1.begin( );
+    if ( internalScan == 0 ) {
+    WireScan->end( );
+    WireScan->begin( );
+    }
     if ( oled.oledConnected == true ) {
         delay( 500 );
         oled.clear( );

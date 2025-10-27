@@ -231,8 +231,8 @@ void ekilo_init() {
     E.should_quit = 0;
     strcpy(E.statusmsg, "");
     E.statusmsg_time = 0;
-    Serial.write(0x0E);
-    Serial.flush();
+    Jerial.write(0x0E);
+    Jerial.flush();
     
     // Try to determine screen size - use conservative defaults for Arduino
     // Reduce available rows by 1 to account for persistent help header
@@ -346,29 +346,29 @@ String ekilo_get_current_buffer_content() {
 
 // Arduino-compatible key reading
 int ekilo_read_key() {
-    if (!Serial.available()) return 0;
+    if (!Jerial.available()) return 0;
     
-    char c = Serial.read();
+    char c = Jerial.read();
     
     // Handle escape sequences (arrow keys, etc.)
     if (c == ESC) {
         // Wait a bit for the rest of the sequence
         unsigned long start = millis();
-        // while (millis() - start < 12 && !Serial.available()) {
+        // while (millis() - start < 12 && !Jerial.available()) {
         //    // delayMicroseconds(1);
         // }
         
-        if (!Serial.available()) return ESC;
+        if (!Jerial.available()) return ESC;
         
         char seq[3];
-        seq[0] = Serial.read();
-        if (!Serial.available()) return ESC;
-        seq[1] = Serial.read();
+        seq[0] = Jerial.read();
+        if (!Jerial.available()) return ESC;
+        seq[1] = Jerial.read();
         
         if (seq[0] == '[') {
             if (seq[1] >= '0' && seq[1] <= '9') {
-                if (!Serial.available()) return ESC;
-                char seq2 = Serial.read();
+                if (!Jerial.available()) return ESC;
+                char seq2 = Jerial.read();
                 if (seq2 == '~') {
                     switch (seq[1]) {
                         case '1': return HOME_KEY;
@@ -1120,8 +1120,8 @@ void ekilo_write_buffer_chunked(Buffer* ab) {
         }
         
         // Write this chunk
-        Serial.write((uint8_t*)(ab->b + bytes_written), chunk_size);
-        Serial.flush();
+        Jerial.write((uint8_t*)(ab->b + bytes_written), chunk_size);
+        Jerial.flush();
         
         bytes_written += chunk_size;
         
@@ -1506,7 +1506,7 @@ void ekilo_process_oled_update() {
     // 4. Enough time has passed since last input
     if (E.oled_update_pending && 
         !E.screen_dirty && 
-        !Serial.available() && 
+        !Jerial.available() && 
         (millis() - E.oled_last_input_time) >= 10) { // 50ms delay
         
         ekilo_update_oled_context();
@@ -2119,29 +2119,29 @@ void ekilo_init_repl_mode() {
     E.repl_mode = true;
     // No need to store cursor position - XTerm alternate screen handles this
     E.screenrows = DEFAULT_EDITOR_ROWS; // Use configurable screen size in alternate buffer
-    Serial.write(0x0E);
-    Serial.flush();    
+    Jerial.write(0x0E);
+    Jerial.flush();    
     // Clear the alternate screen and position at top-left
-    Serial.print("\x1b[2J\x1b[H");
+    Jerial.print("\x1b[2J\x1b[H");
 
     
     // Print a simple header once when entering REPL mode
-    Serial.println("eKilo Editor | Ctrl-S/Ctrl-P=save & load | Ctrl-Q=quit | Wheel=navigate");
-    Serial.flush();
+    Jerial.println("eKilo Editor | Ctrl-S/Ctrl-P=save & load | Ctrl-Q=quit | Wheel=navigate");
+    Jerial.flush();
 }
 
 void ekilo_store_cursor_position() {
     // Save current cursor position using terminal escape sequence
-    Serial.print("\033[s"); // Save cursor position
-    Serial.flush();
+    Jerial.print("\033[s"); // Save cursor position
+    Jerial.flush();
     E.lines_used = 0;
 }
 
 void ekilo_restore_cursor_position() {
     if (E.repl_mode) {
         // Restore saved cursor position
-        Serial.print("\033[u"); // Restore cursor position
-        Serial.flush();
+        Jerial.print("\033[u"); // Restore cursor position
+        Jerial.flush();
     }
 }
 
@@ -2393,7 +2393,7 @@ String ekilo_inline_edit(const String& initial_content) {
         if (!render || !hl) {
             free(render);
             free(hl);
-            Serial.print(line);
+            Jerial.print(line);
             return;
         }
         
@@ -2501,17 +2501,17 @@ String ekilo_inline_edit(const String& initial_content) {
             int color = ekilo_syntax_to_color(hl[i]);
             if (color != current_color) {
                 if (current_color != -1) {
-                    Serial.print("\x1b[0m"); // Reset
+                    Jerial.print("\x1b[0m"); // Reset
                 }
                 current_color = color;
-                Serial.print("\x1b[38;5;");
-                Serial.print(color);
-                Serial.print("m");
+                Jerial.print("\x1b[38;5;");
+                Jerial.print(color);
+                Jerial.print("m");
             }
-            Serial.write(render[i]);
+            Jerial.write(render[i]);
         }
         if (current_color != -1) {
-            Serial.print("\x1b[0m"); // Reset at end
+            Jerial.print("\x1b[0m"); // Reset at end
         }
         
         free(render);
@@ -2550,10 +2550,10 @@ String ekilo_inline_edit(const String& initial_content) {
     };
     
     // Don't clear screen - we're working inline
-    Serial.println("--- Python Inline Editor Mode ---");
-    Serial.println("Ctrl+S: Accept and return | Ctrl+Q: Cancel | Arrow keys: Navigate");
-    // Serial.println("Auto-indent and syntax highlighting enabled");
-    Serial.println();
+    Jerial.println("--- Python Inline Editor Mode ---");
+    Jerial.println("Ctrl+S: Accept and return | Ctrl+Q: Cancel | Arrow keys: Navigate");
+    // Jerial.println("Auto-indent and syntax highlighting enabled");
+    Jerial.println();
     
     // Load initial content if provided
     if (initial_content.length() > 0) {
@@ -2623,19 +2623,19 @@ String ekilo_inline_edit(const String& initial_content) {
     // Display current content with syntax highlighting
     for (int i = 0; i < inline_editor.numrows; i++) {
         if (inline_editor.row[i].chars) {
-            Serial.print("... ");
+            Jerial.print("... ");
             display_line_with_syntax(inline_editor.row[i].chars, inline_editor.row[i].size, false);
-            Serial.println();
+            Jerial.println();
         }
     }
     
     // Show current prompt
     if (inline_editor.numrows == 0) {
-        Serial.print(">>> ");
+        Jerial.print(">>> ");
     } else {
-        Serial.print("... ");
+        Jerial.print("... ");
     }
-    Serial.flush();
+    Jerial.flush();
     
     // Simple editing loop - much simpler than full eKilo
     String current_line = "";
@@ -2644,21 +2644,21 @@ String ekilo_inline_edit(const String& initial_content) {
     }
     
     while (!inline_editor.should_quit) {
-        if (Serial.available()) {
-            int c = Serial.read();
+        if (Jerial.available()) {
+            int c = Jerial.read();
             
             // Handle escape sequences (arrow keys) - consume completely
             if (c == 27) { // ESC
                 // Wait for more characters and consume the entire sequence
                 unsigned long start_time = millis();
                 while (millis() - start_time < 10) { // Wait up to 10ms
-                    if (Serial.available() >= 2) break;
+                    if (Jerial.available() >= 2) break;
                     delayMicroseconds(100);
                 }
                 
-                if (Serial.available() >= 2) {
-                    char seq1 = Serial.read();
-                    char seq2 = Serial.read();
+                if (Jerial.available() >= 2) {
+                    char seq1 = Jerial.read();
+                    char seq2 = Jerial.read();
                     if (seq1 == '[') {
                         switch (seq2) {
                             case 'A': // Up arrow - navigate to previous line
@@ -2679,7 +2679,7 @@ String ekilo_inline_edit(const String& initial_content) {
                                     current_line = String(inline_editor.row[inline_editor.cy].chars);
                                     
                                     // Redraw current line
-                                    Serial.print("\r... ");
+                                    Jerial.print("\r... ");
                                     display_line_with_syntax(current_line.c_str(), current_line.length(), true);
                                 }
                                 break;
@@ -2702,7 +2702,7 @@ String ekilo_inline_edit(const String& initial_content) {
                                     current_line = String(inline_editor.row[inline_editor.cy].chars);
                                     
                                     // Redraw current line
-                                    Serial.print("\r... ");
+                                    Jerial.print("\r... ");
                                     display_line_with_syntax(current_line.c_str(), current_line.length(), true);
                                 }
                                 break;
@@ -2714,8 +2714,8 @@ String ekilo_inline_edit(const String& initial_content) {
                     }
                 } else {
                     // Consume any remaining escape sequence characters
-                    while (Serial.available() > 0) {
-                        Serial.read();
+                    while (Jerial.available() > 0) {
+                        Jerial.read();
                     }
                 }
                 continue;
@@ -2724,8 +2724,8 @@ String ekilo_inline_edit(const String& initial_content) {
             switch (c) {
                 case 19: // Ctrl+S - Accept and return content
                 {
-                    Serial.println();
-                    Serial.println("--- Content Accepted ---");
+                    Jerial.println();
+                    Jerial.println("--- Content Accepted ---");
                     
                     // Build final content string
                     String final_content = "";
@@ -2761,8 +2761,8 @@ String ekilo_inline_edit(const String& initial_content) {
                 }
                 
                 case 17: // Ctrl+Q - Cancel
-                    Serial.println();
-                    Serial.println("--- Editing Cancelled ---");
+                    Jerial.println();
+                    Jerial.println("--- Editing Cancelled ---");
                     
                     // Cleanup
                     for (int i = 0; i < inline_editor.numrows; i++) {
@@ -2777,7 +2777,7 @@ String ekilo_inline_edit(const String& initial_content) {
                 case '\r':
                 case '\n': // Enter - new line with autoindent
                 {
-                    Serial.println();
+                    Jerial.println();
                     
                     // Calculate autoindent for the next line based on current line
                     String auto_indent = calculate_python_indent(current_line);
@@ -2815,11 +2815,11 @@ String ekilo_inline_edit(const String& initial_content) {
                     current_line = auto_indent;
                     
                     // Show prompt with autoindent
-                    Serial.print("... ");
+                    Jerial.print("... ");
                     if (auto_indent.length() > 0) {
-                        Serial.print("\x1b[90m"); // Dark gray for indent
-                        Serial.print(auto_indent);
-                        Serial.print("\x1b[0m"); // Reset color
+                        Jerial.print("\x1b[90m"); // Dark gray for indent
+                        Jerial.print(auto_indent);
+                        Jerial.print("\x1b[0m"); // Reset color
                     }
                     break;
                 }
@@ -2828,13 +2828,13 @@ String ekilo_inline_edit(const String& initial_content) {
                 case 127: // Backspace
                     if (current_line.length() > 0) {
                         current_line = current_line.substring(0, current_line.length() - 1);
-                        Serial.print("\b \b"); // Erase character
+                        Jerial.print("\b \b"); // Erase character
                     }
                     break;
                 
                 case '\t': // Tab - smart Python indent (4 spaces)
                     current_line += "    ";
-                    Serial.print("\x1b[90m    \x1b[0m"); // Show indent in gray
+                    Jerial.print("\x1b[90m    \x1b[0m"); // Show indent in gray
                     break;
                 
                 default:
@@ -2848,16 +2848,16 @@ String ekilo_inline_edit(const String& initial_content) {
                         
                         if (char_count % 3 == 0 || c == ':' || c == '"' || c == '\'' || c == '#') {
                             // Redraw line with syntax highlighting for important characters
-                            Serial.print("\r... ");
+                            Jerial.print("\r... ");
                             display_line_with_syntax(current_line.c_str(), current_line.length(), true);
                         } else {
                             // Just echo the character for performance
-                            Serial.write(c);
+                            Jerial.write(c);
                         }
                     }
                     break;
             }
-            Serial.flush();
+            Jerial.flush();
         }
         delayMicroseconds(100);
     }

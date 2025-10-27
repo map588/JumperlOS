@@ -138,6 +138,7 @@ struct config {
             int i2c_address = 0x3C;
             int width = 128;
             int height = 32;
+            int rotation = 0; // 0 = 0 degrees, 1 = 90 degrees, 2 = 180 degrees, 3 = 270 degrees
             int sda_pin = 26;//the actual hardware pin number
             int scl_pin = 27;//the actual hardware pin number
             int gpio_sda = RP_GPIO_26; //the define number for the hardware pin
@@ -149,6 +150,7 @@ struct config {
             int autoconnect_check_interval = -1;
             int font = 1;
             int show_in_terminal = 0;
+            char startup_message[33] = ""; // Startup message for OLED (max 32 chars + null terminator)
         } top_oled;
     
 };

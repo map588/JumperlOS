@@ -15,6 +15,7 @@
 #include "RotaryEncoder.h"
 
 #include "USBfs.h"
+#include "externVars.h"
 
 volatile int sendAllPathsCore2 =
     0; // this signals the core 2 to send all the paths to the CH446Q
@@ -66,10 +67,19 @@ void refresh(int flashOrLocal, int ledShowOption, int fillUnused, int clean) {
 
 void refreshConnections(int ledShowOption, int fillUnused, int clean) {
 
- // waitCore2();
+  // CRITICAL: This should ONLY be called from Core 0
+  if (rp2040.cpuid() != 0) {
+    Serial.println("ERROR: refreshConnections() called from Core 2! This should only run on Core 0.");
+    return;
+  }
 
+  // CRITICAL: Wait for core 2 to finish any LED rendering before modifying shared data
+  // Core 2 reads from globalState.connections.nets[] in assignNetColors()
+  // while we're about to modify it in getNodesToConnect()
+  waitCore2();
+  pauseCore2 = true;
   unsigned long start = millis();
-  //core1busy = true;
+  core1busy = true;
   clearAllNTCC();
   //core1busy = true;
   // return;
@@ -102,19 +112,9 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   Serial.print("refreshConnections checkChangedNetColors = ");
   Serial.println(millis() - start);
 #endif
-  assignNetColors();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections assignNetColors = ");
-  Serial.println(millis() - start);
-#endif
   chooseShownReadings();
 #ifdef DEBUG_REFRESH
   Serial.print("refreshConnections chooseShownReadings = ");
-  Serial.println(millis() - start);
-#endif
-  assignTermColor();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections assignTermColor = ");
   Serial.println(millis() - start);
 #endif
   //findChangedNetColors();
@@ -126,44 +126,40 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   Serial.print("refreshConnections setGPIO = ");
   Serial.println(millis() - start);
 #endif
+  pauseCore2 = false;
+  core1busy = false;
 
-  // if (lastSlot != netSlot) {
-  //   createLocalNodeFile(netSlot);
-  //   lastSlot = netSlot;
-  // }
+  // Signal Core 2 to send paths (Core 2 handles this in loop1 -> core2stuff)
+  if (clean == 1) {
+    sendAllPathsCore2 = -1;  // -1 means clean/reset paths first
+  } else {
+    sendAllPathsCore2 = 1;   // 1 means send paths without cleaning
+  }
 
-  // Serial.print("refreshConnections: ");
-  // Serial.println(ledShowOption);
-  // Serial.print("fillUnused: ");
-  // Serial.println(fillUnused);
-  // Serial.print("clean: ");
-  // Serial.println(clean);
-  // Serial.print("jumperlessConfig.routing.stack_paths: ");
-  // Serial.println(jumperlessConfig.routing.stack_paths);
-  // Serial.print("jumperlessConfig.routing.stack_rails: ");
-  // Serial.println(jumperlessConfig.routing.stack_rails);
-  // Serial.print("jumperlessConfig.routing.stack_dacs: ");
-  // Serial.println(jumperlessConfig.routing.stack_dacs);
-
+  // CRITICAL: Wait for core 2 to actually process the sendAllPathsCore2 signal
+  // sendPaths() (in CH446Q.cpp line 160) clears sendAllPathsCore2 to 0 when done
+  // This prevents race condition where we continue before paths are physically sent
+  unsigned long pathsTimeout = millis();
+  while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 3000)) {
+    delayMicroseconds(100);
+  }
+  if (sendAllPathsCore2 != 0) {
+    Serial.println("WARNING: Core 2 did not process sendAllPathsCore2 in time!");
+    Serial.print("sendAllPathsCore2 still = ");
+    Serial.println(sendAllPathsCore2);
+  }
 
   if (ledShowOption != 0) {
-
     showLEDsCore2 = ledShowOption;
-    waitCore2();
+    waitCore2();  // Wait for core 2 to finish rendering (which calls assignNetColors)
   }
-  if (clean == 1) {
-    sendAllPathsCore2 = -1;
-    if (rp2040.cpuid() == 1) {
-      sendPaths(sendAllPathsCore2);
-      //sendAllPathsCore2 = 0;
-    } 
-    } else {
-      sendAllPathsCore2 = 1;
-      if (rp2040.cpuid() == 1) {
-        sendPaths(sendAllPathsCore2);
-        //sendAllPathsCore2 = 0;
-      }
-    }
+  
+  // Now that core 2 has computed netColors[], we can safely read them for terminal colors
+  assignTermColor();
+#ifdef DEBUG_REFRESH
+  Serial.print("refreshConnections assignTermColor = ");
+  Serial.println(millis() - start);
+#endif
 #ifdef DEBUG_REFRESH
   Serial.print("after waitCore2 time = ");  
 
@@ -178,13 +174,20 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
 
 void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
 
-  if (rp2040.cpuid() == 0) {
-   waitCore2();
+  // CRITICAL: This should ONLY be called from Core 0
+  if (rp2040.cpuid() != 0) {
+    Serial.println("ERROR: refreshLocalConnections() called from Core 2! This should only run on Core 0.");
+    return;
   }
-   
+
+  // CRITICAL: Wait for core 2 to finish any LED rendering before modifying shared data
+  // Core 2 reads from globalState.connections.nets[] in assignNetColors()
+  // while we're about to modify it in getNodesToConnect()
+  waitCore2();
+   pauseCore2 = true;
 unsigned long start2 = millis();
   clearAllNTCC();
-  //core1busy = true;
+  core1busy = true;
   
   // NEW: Load bridges from globalState instead of local files
   loadBridgesFromState();
@@ -209,19 +212,9 @@ unsigned long start2 = millis();
   Serial.print("refreshLocalConnections checkChangedNetColors = ");
   Serial.println(millis() - start2);
 #endif
-  assignNetColors();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshLocalConnections assignNetColors = ");
-  Serial.println(millis() - start2);
-#endif
   chooseShownReadings();
 #ifdef DEBUG_REFRESH
   Serial.print("refreshLocalConnections chooseShownReadings = ");
-  Serial.println(millis() - start2);
-#endif
-  assignTermColor();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshLocalConnections assignTermColor = ");
   Serial.println(millis() - start2);
 #endif
   // Restore GPIO configurations from jumperlessConfig after net processing
@@ -230,25 +223,40 @@ unsigned long start2 = millis();
   Serial.print("refreshLocalConnections time = ");
   Serial.println(millis() - start2);
 #endif
-  //core1busy = false;
-  if (ledShowOption != 0) {
+  core1busy = false;
+  pauseCore2 = false;
 
-    showLEDsCore2 = ledShowOption;
-    //waitCore2();
-  }
+  // Signal Core 2 to send paths (Core 2 handles this in loop1 -> core2stuff)
   if (clean == 1) {
-    sendAllPathsCore2 = -1;
-    if (rp2040.cpuid() == 1) {
-      sendPaths(sendAllPathsCore2);
-      //sendAllPathsCore2 = 0;
-    } 
-    } else {
-      sendAllPathsCore2 = 1;
-      if (rp2040.cpuid() == 1) {
-        sendPaths(sendAllPathsCore2);
-        //sendAllPathsCore2 = 0;
-      }
-    }
+    sendAllPathsCore2 = -1;  // -1 means clean/reset paths first
+  } else {
+    sendAllPathsCore2 = 1;   // 1 means send paths without cleaning
+  }
+
+  // CRITICAL: Wait for core 2 to actually process the sendAllPathsCore2 signal
+  // sendPaths() (in CH446Q.cpp line 160) clears sendAllPathsCore2 to 0 when done
+  // This prevents race condition where we continue before paths are physically sent
+  unsigned long pathsTimeout = millis();
+  while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 3000)) {
+    delayMicroseconds(100);
+  }
+  if (sendAllPathsCore2 != 0) {
+    Serial.println("WARNING: refreshLocalConnections - Core 2 did not process sendAllPathsCore2 in time!");
+    Serial.print("sendAllPathsCore2 still = ");
+    Serial.println(sendAllPathsCore2);
+  }
+
+  if (ledShowOption != 0) {
+    showLEDsCore2 = ledShowOption;
+    waitCore2();  // Wait for core 2 to finish rendering (which calls assignNetColors)
+  }
+  
+  // Now that core 2 has computed netColors[], we can safely read them for terminal colors
+  assignTermColor();
+#ifdef DEBUG_REFRESH
+  Serial.print("refreshLocalConnections assignTermColor = ");
+  Serial.println(millis() - start2);
+#endif
 #ifdef DEBUG_REFRESH
   Serial.print("refreshLocalConnections after waitCore2 time = ");
   Serial.println(millis() - start2);
@@ -272,7 +280,7 @@ void refreshBlind(
   //core1busy = true;
   // fillUnused = 0;
   clearAllNTCC();
-  openNodeFile(netSlot, 1);
+  //openNodeFile(netSlot, 1);
   //core1busy = true;
   getNodesToConnect();
   rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration

@@ -27,6 +27,10 @@ typedef enum {
     WAVEGEN_DAC3,
 } waveGen_channel_t;
 
+// Frequency threshold for non-blocking mode (Hz)
+// Below this frequency, service() releases control to allow other tasks to run
+#define WAVEGEN_NONBLOCKING_THRESHOLD_HZ 1000.0f
+
 /*!
  *    @brief  Class for  waveform generation
  */

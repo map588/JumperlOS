@@ -91,6 +91,12 @@ enum PositionMode {
     POS_BASELINE   // Force baseline positioning (traditional font baseline)
 };
 
+// OLED framebuffer mode for dual framebuffer support
+enum OLEDMode {
+    MODE_LARGE_TEXT,    // Menus, highlighting, big messages (textSize >= 2 or fonts > 8pt)
+    MODE_SMALL_TEXT     // File editing, terminal output (textSize == 1 or small fonts)
+};
+
 // Comprehensive text information structure
 struct TextInfo {
     uint8_t textSize;       // Current text size multiplier
@@ -212,6 +218,11 @@ public:
     void drawHighlightedChar(int16_t x, int16_t y, char c); // Highlight a single character
     void flushFramebuffer();
     
+    // Dual framebuffer mode management
+    void setMode(OLEDMode mode);
+    OLEDMode getMode() const { return currentMode; }
+    void autoDetectMode(int textSize); // Automatically detect and switch mode
+    
     // Store config
     int address = -1;
     int sda_pin = -1;
@@ -246,6 +257,34 @@ public:
 
     char scratchPad[40];
     char* getScratchPad(void);
+    
+    // Dynamic display dimensions (from config)
+    int displayWidth = 128;
+    int displayHeight = 32;
+    
+    // Dual framebuffer support
+    OLEDMode currentMode = MODE_LARGE_TEXT;
+    uint8_t* largeTextFramebuffer = nullptr;
+    uint8_t* smallTextFramebuffer = nullptr;
+    int framebufferSize = 0;
+    bool dualFramebufferEnabled = false; // Enable when needed for performance
+    
+    // Terminal emulation state for ANSI/control sequence handling
+    int termCursorX = 0;
+    int termCursorY = 0;
+    bool inEscapeSequence = false;
+    char escapeBuffer[32];
+    int escapeBufferPos = 0;
+    
+    // Control sequence parsing helpers (can be made public if needed)
+private:
+    void parseControlSequence(char c);
+    void executeEscapeSequence();
+    void moveCursorTerm(int x, int y);
+    void clearToEndOfLine();
+    void clearLine();
+    void clearToEndOfScreen();
+    void clearScreen();
 };
 
 // Global functions

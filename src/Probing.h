@@ -30,8 +30,14 @@ public:
     const char* getName() const override { return "ProbeButton"; }
     ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
     
+    //@brief Get the current button state
+    //@return 0 = neither pressed, 1 = remove button, 2 = connect button
     int getButtonState() const { return currentButtonState; }
+    //@brief Get the current button press
+    //@return 0 = no press, 1 = remove button, 2 = connect button
     int getButtonPress();
+    //@brief Check the probe button hardware
+    //@return 0 = neither pressed, 1 = remove button, 2 = connect button
     int checkProbeButtonHardware(void);
     
     // Check if either button is held continuously
@@ -311,6 +317,11 @@ extern volatile bool& bufferPowerConnected;
 extern int& debugProbing;
 extern volatile int& showingProbeLEDs;
 extern int& switchPosition;
+
+// Encoder cursor override for LED display functions
+extern volatile int globalEncoderCursorNode;      // -1 = hidden, else breadboard node
+extern volatile int globalEncoderCursorInHeader;  // 1 if in nano header
+extern volatile uint32_t globalEncoderCursorColor; // Cursor color
 extern int& probePowerDAC;
 extern int& lastProbePowerDAC;
 extern bool& probePowerDACChanged;

@@ -788,6 +788,8 @@ uint8_t gpioIdleHues[ 10 ] = { 0, 25, 50, 75, 100, 125, 150, 175, 200, 225 };
 // 0 = low, 1 = high, 2 = input
 int gpioOutput[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 volatile bool readingGPIO = false;
+volatile bool readingADC = false;
+volatile bool usingI2C = false;
 void readGPIO( void ) {
 
     if ( false ) {
@@ -1495,10 +1497,11 @@ void showLEDmeasurements( void ) {
             // Serial.println(scaledBrightness);
             //  Serial.println((color, map(brightness, LEDbrightnessSpecial,
             //  LEDbrightnessSpecial+45, -90, 100)));
-            netColors[ showADCreadings[ i ] ] = unpackRgb( color );
+            
+            // Only update the color cache - assignNetColors() will write to netColors[] and globalState
+            // This prevents race condition where both functions write to the same variables
             adcReadingColors[ i ] = color;
-
-            globalState.connections.nets[ showADCreadings[ i ] ].color = unpackRgb( color );
+            
             // drawWires(showADCreadings[0]);
             // showLEDsCore2 = 2;
         }
@@ -1895,6 +1898,14 @@ float readAdcVoltage( int channel, int samples ) {
 }
 
 int readAdc( int channel, int samples ) {
+    // Wait if another core is using the ADC
+    while ( readingADC ) {
+        tight_loop_contents( );
+    }
+    
+    // Claim the ADC for this core
+    readingADC = true;
+    
     unsigned long adcReadingAverage = 0;
     // if (channel == 0) { // I have no fucking idea why this works //future me:
     // the op amps were untamed
@@ -1904,6 +1915,7 @@ int readAdc( int channel, int samples ) {
     // }
 
     if ( channel > 8 ) {
+        readingADC = false;  // Release ADC before early return
         return 0;
     }
     unsigned long timeoutTimer = micros( );
@@ -1936,6 +1948,10 @@ int readAdc( int channel, int samples ) {
     // Serial.print("adcReading & 0xFFF0 >> 4: ");
     // Serial.println((adcReading & 0xFFF0) >> 4, DEC);
     // Serial.flush();
+    
+    // Release the ADC for other cores
+    readingADC = false;
+    
     return adcReading;
 }
 
@@ -2481,7 +2497,7 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
     while (true) {
         //delayMicroseconds(380);
         rotaryEncoderStuff();
-        
+        jOS.serviceCritical();
         // Read probe pads for direct voltage selection
         int probeReading = justReadProbe(true);
         
@@ -2522,7 +2538,7 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
         }
         
         // Check for cancellation (long press)
-        if (encoderButtonState == HELD) {
+        if (encoderButtonState == HELD || probeButton.getButtonState() == 1) {
             // Restore original value if we have a callback
             if (config.callback) {
                 config.callback(originalValue, true, config.context);
@@ -2531,14 +2547,15 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
             rotaryDivider = lastDivider;
             encoderButtonState = IDLE;
             showLEDsCore2 = -1;
+            b.clear();
             Menus::getInstance().inClickMenu = 0;
             return AdjustResult::CANCELLED;
         }
         
         // Check for confirmation (short press)
-        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
+        if ((encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || probeButton.getButtonState() == 2) {
             encoderButtonState = IDLE;
-            showLEDsCore2 = -1;
+            //showLEDsCore2 = -1;
             // Final update with callback if not already in live range
             if (config.callback && !isInLiveRange(currentValue, config)) {
                 config.callback(currentValue, false, config.context);
@@ -2547,17 +2564,22 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
             rotaryDivider = lastDivider;
             config.initialValue = currentValue; // Update config with new value
             Menus::getInstance().inClickMenu = 0;
+            showLEDsCore2 = -1;
+            b.clear();
             return AdjustResult::CONFIRMED;
         }
         
         // Handle serial input for cancellation
-        if (Serial.available() > 0) {
+        if (Serial.available() > 0 ) {
             Serial.read(); // Consume character
             if (config.callback) {
                 config.callback(originalValue, true, config.context);
             }
             rotaryDivider = lastDivider;
             Menus::getInstance().inClickMenu = 0;
+            showLEDsCore2 = -1;
+
+            b.clear();
             return AdjustResult::CANCELLED;
         }
         

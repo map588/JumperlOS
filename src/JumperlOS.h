@@ -3,6 +3,7 @@
 #define JUMPERLOS_H
 
 #include <Arduino.h>
+#include "Jerial.h"
 
 // Forward declarations
 class Service;
@@ -186,7 +187,7 @@ private:
  */
 
 // Forward declarations for external dependencies
-class TermControl;
+class JerialClass;
 class oled;
 
 /**
@@ -203,13 +204,13 @@ public:
     const char* getName() const override { return "TermSerial"; }
     ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
     
-    void setTermControl(TermControl* term) { termSerial = term; }
+    void setTermControl(JerialClass* jerial);
     
 private:
-    TermSerialService() : termSerial(nullptr) {}
+    TermSerialService();
     ~TermSerialService() = default;
     static TermSerialService* instance;
-    TermControl* termSerial;
+    JerialClass* jerialInstance;
 };
 
 /**

@@ -11,6 +11,11 @@ String menuLines[] = {
   "-*Both* *Top* *Bottom*",
   "-->v1",
 
+  "$Connect$",
+  "-*Add**Remove**",
+  "--->c2",
+  
+
 
   "Output",
   "-Limits",
@@ -144,12 +149,6 @@ String menuLines[] = {
 
 
       "OLED",
-      "-Connect",
-      //"-Dis    connect",
-      "-ConnectOn Boot",
-      "--*On**Off*",
-      "-Lock   Connect",
-      "--*On**Off*",
       "-Font",
       "--Eurostl^",
       "--Jokermn^",
@@ -160,7 +159,26 @@ String menuLines[] = {
       "--BerkMono^",
       "--Pragmtsm^",
       "--IosevkaR^",
+      "-DisplaySize",
+      "--$Width$",
+      "---*32**64**128**256**Custom*",
+      "---->i(16)(2048)",
+      "--$Height$",
+      "---*32**64**128**256**Custom*",
+      "---->i(16)(2048)",
+      "-$StartUpMessge$",
+      "--*Edit**Clear*",
+      "--->t(32)",
       "-Show in Term",
+      "--*On**Off*",
+      //"-Dis    connect",
+
+      "-Lock   Connect",
+      "--*On**Off*",
+      "-ConnectOn Boot",
+      "--*On**Off*",
+
+      "-Connect",
       //  "-Demo",
 
 

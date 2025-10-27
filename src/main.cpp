@@ -11,6 +11,7 @@ KevinC@ppucc.io
 */
 
 #include "hardware/pio.h"
+#include "Jerial.h"
 #include "pico.h"
 #define PICO_RP2350A 0
 // #include <pico/stdlib.h>
@@ -54,7 +55,7 @@ KevinC@ppucc.io
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
 #include "States.h" // New state management system
-#include "TermControl.h"
+// TermControl is now part of Jerial.h
 #include "TuiGlue.h"
 #include "USBfs.h"
 #include "configManager.h"
@@ -78,6 +79,8 @@ TuiGlue tuiGlue;
 
 // Global async waveform generator
 WaveGen wavegen;
+
+// Jerial global instance is defined in Jerial.cpp
 
 int supplySwitchPosition = 0;
 volatile bool core1busy = false;
@@ -105,13 +108,13 @@ volatile bool configLoaded = false;
 
 volatile int startupAnimationFinished = 0;
 
-unsigned long startupTimers[ 12 ];
+unsigned long startupTimers[ 16 ];
 
 volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 50;
 
-const char firmwareVersion[] = "5.4.0.5"; //! remember to update this
+const char firmwareVersion[] = "5.5.0.0"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -162,7 +165,19 @@ void setup( ) {
     }
 
     Serial.begin( 115200 );
-
+    
+    // Configure Jerial for both input and output
+    // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
+    Jerial.setInputStream(JerialEndpoint::USB_SERIAL);  // Input with terminal control
+    Jerial.addOutputStream(JerialEndpoint::USB_SERIAL); // Output to USB
+    //Jerial.addOutputStream(JerialEndpoint::USB_SER2);  // Output to Serial1
+    //Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
+    //Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
+    
+    // Enable automatic tag stripping for input
+    // This removes <j> and </j> tags from incoming USB commands to prevent weird behavior
+    Jerial.setAutoStripTags(true);
+    
     initDAC( );
     // Serial.println("DAC initialized");
     // Serial.flush();
@@ -192,14 +207,14 @@ void setup( ) {
     // Serial.println("Core2 initialized");
     // Serial.flush();
 
-    routableBufferPower( 1, 0 );
-    startupTimers[ 4 ] = millis( );
+   // routableBufferPower( 1, 0 );
+    
     // Serial.println("Routable buffer power initialized");
     // Serial.flush();
     if ( jumperlessConfig.serial_1.async_passthrough == true ) {
         AsyncPassthrough::begin( 115200 );
     }
-
+startupTimers[ 4 ] = millis( );
     drawAnimatedImage( 0 );
     startupAnimationFinished = 1;
     // Serial.println("Startup animation finished");
@@ -248,8 +263,8 @@ void setup( ) {
     // Serial.println("Registering services with jOSmanager...");
 
     // Wire up system services
-    termSerialService.setTermControl( &termSerial );
-    oledService.setOledDisplay( &oled );
+    termSerialService.setTermControl( &Jerial );
+   // oledService.setOledDisplay( &oled );
 
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
@@ -310,7 +325,7 @@ void setup1( ) {
     // flash_safe_execute_core_init();
 
     setupCore2stuff( );
-
+startupCore2timers[ 7 ] = millis( );
     while ( startupAnimationFinished == 0 ) {
         // delayMicroseconds(1);
         // if (Serial.available() > 0) {
@@ -320,7 +335,7 @@ void setup1( ) {
         //   }
     }
 
-    startupCore2timers[ 7 ] = millis( );
+    startupCore2timers[ 8 ] = millis( );
 }
 
 char connectFromArduino = '\0';
@@ -372,7 +387,7 @@ unsigned long busyPrintTime = 0;
 unsigned long busyPrintInterval = 3000;
 unsigned long busyTimers[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-TermControl termSerial( &Serial ); // Creates its own history instance
+// Jerial is now used for all serial communications (input and output)
 
 // Global storage for current command line (for backwards compatibility with parsers)
 String currentCommandLine = "";
@@ -390,7 +405,7 @@ menu:
             if ( autoCalibrationNeeded == true ) {
                 Serial.println( "New calibration options detected in config.txt. "
                                 "Running automatic calibration..." );
-                delay( 2000 );
+                delay( 3000 );
             }
             calibrateDacs( );
             firstStart = false;
@@ -402,19 +417,38 @@ menu:
 
         // routableBufferPower(1, 1);
 
+        // Serial.println("waiting for core 2 to finish initializing " + String(millis()));
+        // while (core2initFinished == 0) {
+        //     delayMicroseconds(1000);
+        //     Serial.println("core2initFinished = 0 waiting for core 2 to finish initializing " + String(millis()));
+        //     Serial.flush();
+        // }
+
+        // // CRITICAL: Also wait for loop1() to actually start before proceeding
+        // // This prevents race condition where we set sendAllPathsCore2 before loop1() can process it
+        // Serial.println("waiting for core 2 loop to start " + String(millis()));
+        // while (core2loopStarted == 0) {
+        //     delayMicroseconds(1000);
+        // }
+        // Serial.println("core 2 loop started " + String(millis()));
+
         goto loadfile;
     }
 
     if ( firstLoop == 2 ) {
         // Serial.println("initializing oled");
         // Serial.flush();
+        // Serial.println("millis = " + String(millis()));
 
         if ( jumperlessConfig.top_oled.connect_on_boot == 1 ) {
-            // Serial.println("Initializing OLED");
+             //Serial.println("Initializing OLED");
             oled.init( );
         }
+        // Serial.println("millis = " + String(millis()));
         // Serial.println("oled initialized");
         // Serial.flush();
+
+        //Jerial.addInputSource(JerialEndpoint::SERIAL1);
 
         // runApp(-1, "jdi MIPdisplay");
 
@@ -425,31 +459,31 @@ menu:
 #endif
     }
 
-    if ( Serial.available( ) >
+    if ( Jerial.available( ) >
          20 ) { // this is so if you dump a lot of data into the serial buffer, it
                 // will consume it and not keep looping
-        while ( Serial.available( ) > 0 ) {
-            char c = Serial.read( );
-            // Serial.print(c);
-            // Serial.flush();
+        while ( Jerial.available( ) > 0 ) {
+            char c = Jerial.read( );
+            // Jerial.print(c);
+            // Jerial.flush();
         }
     }
 
     if ( lastProbePowerDAC != probePowerDAC ) {
         probePowerDACChanged = true;
         // delay(1000);
-        Serial.print( "probePowerDACChanged = " );
-        Serial.println( probePowerDACChanged );
+        Jerial.print( "probePowerDACChanged = " );
+        Jerial.println( probePowerDACChanged );
         routableBufferPower( 1, 1 );
     }
 
-    // Serial.print("clearing highlighting");
-    // Serial.flush();
+    // Jerial.print("clearing highlighting");
+    // Jerial.flush();
 
     clearHighlighting( );
 
-    // Serial.print("clearHighlighting");
-    // Serial.flush();
+    // Jerial.print("clearHighlighting");
+    // Jerial.flush();
 
     if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
         Serial.write( 0x0E ); // Turn ON interactive mode
@@ -470,9 +504,11 @@ menu:
     forceprintmenu:
         // Use the new SingleCharCommands menu system
         singleCharCommands.printMenu( showExtraMenu );
+        // USBSer2.print( "printMenu" );
+        // USBSer2.flush( );
 
 #if debug_startup_timers == 1
-        for ( int i = 1; i < 12; i++ ) {
+        for ( int i = 1; i < 16; i++ ) {
             Serial.print( "startupTimer[" );
             Serial.print( i - 1 );
             Serial.print( " - " );
@@ -495,7 +531,7 @@ menu:
     }
 
     if ( configChanged == true && millis( ) > 3000 ) {
-        Serial.print( "config changed, saving..." );
+        Jerial.print( "config changed, saving..." );
         saveConfig( );
         // Serial.println("\r                             \rconfig saved!\n\r");
         // Serial.flush();
@@ -514,9 +550,11 @@ dontshowmenu:
 #endif
     busyPrintTime = millis( );
 
+
+
     //! This is the main busy wait loop waiting for input
 
-    while ( ( ( jumperlessConfig.display.terminal_line_buffering == 1 && !termSerial.hasCompletedLine( ) ) ||
+    while ( ( ( jumperlessConfig.display.terminal_line_buffering == 1 && !Jerial.hasCompletedLine( ) ) ||
               ( jumperlessConfig.display.terminal_line_buffering == 0 && Serial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
 
@@ -525,8 +563,24 @@ dontshowmenu:
         busyTimers[ 0 ] = micros( );
 
         // Service all registered subsystems via jOSmanager
-        // This now includes: termSerial, tud_task, usbPeriodic, oledPeriodic, and all other services
+        // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services
         jOS.serviceAll( );
+
+        // CRITICAL: Handle Arduino flashing (DTR pulse detection) on Core 0
+        // This MUST run on Core 0 because it can call refreshLocalConnections()
+        // via flashArduino() -> connectArduino() -> refresh() chain
+        static unsigned long lastSecondSerialCheck = 0;
+        if (millis() - lastSecondSerialCheck > 10) {
+            lastSecondSerialCheck = millis();
+            
+            // Handle async passthrough (if enabled)
+            if (jumperlessConfig.serial_1.async_passthrough == true) {
+                AsyncPassthrough::task();
+            }
+            
+            // Handle Arduino flashing and serial passthrough
+            secondSerialHandler();
+        }
 
         busyTimers[ 1 ] = micros( );
 
@@ -544,9 +598,9 @@ dontshowmenu:
             goto loadfile;
         }
 
-        // Check if terminal has completed line (for line buffering mode)
-        if ( jumperlessConfig.display.terminal_line_buffering == 1 && termSerial.hasCompletedLine( ) ) {
-            break; // Line is ready for processing
+        // Check if terminal has completed line (includes injected commands - works regardless of buffering mode)
+        if ( Jerial.hasCompletedLine() ) {
+            break; // Line is ready for processing (could be user input or injected command)
         }
 
         busyTimers[ 9 ] = micros( );
@@ -580,24 +634,24 @@ dontshowmenu:
 #endif
         if ( jumperlessConfig.display.terminal_line_buffering == 1 ) {
             // Optionally service again at the end of the loop body
-            termSerial.service( );
+            Jerial.service( );
         }
     }
-    if ( jumperlessConfig.display.terminal_line_buffering == 1 ) {
-        // Only proceed when a full line is ready; then parse it
-        if ( termSerial.hasCompletedLine( ) ) {
-            String cmdLine = termSerial.getCompletedLine( ); // Get and consume the line
-            cmdLine.trim( );
-            currentCommandLine = cmdLine; // Store for backwards compatibility with parsers
+    // Check for completed lines first (includes both injected and buffered input)
+    // This works regardless of line buffering mode - injected commands always work
+    if ( Jerial.hasCompletedLine( ) ) {
+        String cmdLine = Jerial.getCompletedLine( ); // Get and consume the line
+        cmdLine.trim( );
+        currentCommandLine = cmdLine; // Store for backwards compatibility with parsers
 
-            if ( cmdLine.length( ) > 0 ) {
-                input = cmdLine[ 0 ];
-            } else {
-                input = '\n';
-            }
+        if ( cmdLine.length( ) > 0 ) {
+            input = cmdLine[ 0 ];
+        } else {
+            input = '\n';
         }
-    } else {
-        // Fallback mode: read single character like the old method
+    } else if ( jumperlessConfig.display.terminal_line_buffering != 1 ) {
+        // Only read single character if NOT in line buffering mode
+        // (line buffering mode already handled by Jerial.service() above)
         if ( Serial.available( ) > 0 ) {
             input = Serial.read( );
             // Set currentCommandLine with just the single character for backwards compatibility
@@ -706,21 +760,28 @@ skipinput:
 
 loadfile:
     loadingFile = 1;
-
+// Serial.println("loadingFile" + String(millis()));
+// Serial.flush();
+startupTimers[ 10 ] = millis( );
     // Just clear preview mode flag - don't restore original slot
     // Let the normal load below handle loading the selected slot
     SlotManager& mgr = SlotManager::getInstance( );
     if ( mgr.isPreviewMode( ) ) {
         // Serial.println("Clearing preview mode");
+        // Serial.flush();
         //  Clear preview flag without loading anything
         mgr.clearPreviewMode( );
     }
-
+startupTimers[ 11 ] = millis( );
     // Save current state if dirty before reloading to prevent data loss
     // BUT skip this on the very first load (firstLoop == 1) to avoid overwriting
     // the saved slot with an empty/uninitialized state
+    // Serial.println("globalState.isDirty( ) = " + String(globalState.isDirty( )));
+    // Serial.println("firstLoop = " + String(firstLoop));
+    // Serial.flush();
     if ( globalState.isDirty( ) && firstLoop == 0 ) {
-        //  Serial.println( "Saving dirty state before reload" );
+        // Serial.println( "Saving dirty state before reload" );
+        // Serial.flush();
         String saveError;
         if ( mgr.saveActiveSlot( saveError ) ) {
             if ( debugFP ) {
@@ -730,7 +791,7 @@ loadfile:
             Serial.println( "Warning: Failed to auto-save: " + saveError );
         }
     }
-
+startupTimers[ 12 ] = millis( );
     // Load YAML state from slot file into globalState
     String loadError;
     if ( !mgr.loadSlot( netSlot, loadError ) ) {
@@ -744,7 +805,7 @@ loadfile:
         // Empty slot is OK - just start fresh
         mgr.clearActiveSlot( );
     }
-
+startupTimers[ 13 ] = millis( );
     if ( slotChanged == 1 ) {
         // clearChangedNetColors(0);
         // loadChangedNetColorsFromFile( netSlot, 0 );
@@ -752,1546 +813,15 @@ loadfile:
 
     slotChanged = 0;
     loadingFile = 0;
-
-    refreshConnections( -1 );
-
-    /*
-    case 'z': {
-        handleUserFunction( );
-        goto dontshowmenu;
-        break;
+    if (firstLoop == 2) {
+        refreshConnections( -1, 1, 1);
+    } else {
+        refreshConnections( -1, 1, 0 );
     }
+startupTimers[ 14 ] = millis( );
+   // refreshConnections( -1, 1, 0 );
 
-    case '|': {
-        erattaClearGPIO( -1 );
-        Serial.println( "Eratta cleared" );
-        Serial.flush( );
-        goto dontshowmenu;
-    }
 
-    case 'w': //! w - Setup logic analyzer
-    {
-        // int tempReading = adc_read_blocking(8);
-    setupla:
-
-        if ( la_enabled ) {
-            Serial.println( "Logic analyzer disabled, deinitializing..." );
-            // julseview.deinit();
-            la_enabled = false;
-            goto dontshowmenu;
-        } else {
-            changeTerminalColor( 196, true, &Serial );
-            Serial.println( "Logic analyzer enabled" );
-            Serial.println( "Note: Logic analyzer is not yet fully functional and can make a mess of your memory" );
-            Serial.println( "Make sure to save anything important on the file system before playing with it" );
-            Serial.println( "Worst case, you can use this to nuke the flash and start fresh:" );
-            changeTerminalColor( 39, true, &Serial );
-            Serial.println( "https://github.com/Gadgetoid/pico-universal-flash-nuke/releases/latest" );
-
-            changeTerminalColor( -1, true, &Serial );
-            la_enabled = true;
-        }
-
-        break;
-    }
-
-    case 'X': { //! X - Resource Status
-        Serial.println( "Resource Allocation Status:" );
-        Serial.println( "==========================" );
-
-        Serial.print( "Free Heap: " );
-        Serial.println( rp2040.getFreeHeap( ) );
-
-        Serial.println( "Total memory: " + String( rp2040.getTotalHeap( ) ) );
-        Serial.println( "Free memory: " + String( rp2040.getFreeHeap( ) ) );
-
-        // Check rotary encoder status
-        if ( isRotaryEncoderInitialized( ) ) {
-            Serial.println( "✓ Rotary Encoder: Initialized" );
-            printRotaryEncoderStatus( );
-        } else {
-            Serial.println( "✗ Rotary Encoder: Not initialized" );
-        }
-
-        // Check for conflicts
-        Serial.println( "\nConflict Detection:" );
-        Serial.println( "Logic Analyzer conflicts: N/A (removed)" );
-
-        printPIOStateMachines( );
-        Serial.print( "rotary divider = " );
-        Serial.println( rotaryDivider );
-
-        Serial.println( "gpio    up dn\tfunction\tfunction_hex" );
-        for ( int i = 0; i < 48; i++ ) {
-            int pull = gpio_is_pulled_up( i );
-            Serial.print( "gpio " );
-            Serial.print( i );
-            Serial.print( ":  " );
-            if ( i < 10 ) {
-                Serial.print( " " );
-            }
-            Serial.print( pull );
-            Serial.print( "  " );
-
-            pull = gpio_is_pulled_down( i );
-            Serial.print( pull );
-
-            Serial.print( "\t" );
-            Serial.print( gpio_function_names[ gpio_get_function( i ) ].name );
-            Serial.print( "\t" );
-            Serial.print( gpio_get_function( i ), HEX );
-            Serial.println( );
-            Serial.flush( );
-        }
-        Serial.println( );
-        break;
-    }
-
-    case 'G': { //! G - Load config.txt changes
-
-        // pauseCore2 = true;
-
-        float wavegen_frequency = 1000.0f;
-
-        // Initialize async wavegen
-        if ( !wavegen.begin( ) ) {
-            Serial.println( "Failed to initialize wavegen" );
-            Serial.flush( );
-        } else {
-            Serial.println( "wavegen initialized successfully" );
-            Serial.print( "Fallback mode: " );
-            Serial.println( wavegen.isFallbackMode( ) ? "ON" : "OFF" );
-
-            // Keep synchronous mode (no Wire.writeAsync)
-            wavegen.setFallbackMode( true );
-            Serial.println( "Staying in synchronous fallback mode (no writeAsync)" );
-            Serial.flush( );
-
-            // Configure wavegen for ±8V range
-            wavegen.setChannel( WAVEGEN_DAC1 );
-            wavegen.setWaveform( WAVEGEN_SINE );
-            float actual_freq = wavegen.setFrequencyAdjusted( wavegen_frequency );
-            wavegen.setAmplitude( 4.0f ); // 4V amplitude for ±4V swing
-            wavegen.setOffset( 0.0f );    // 0V offset (centered)
-
-            Serial.print( "Initial frequency: " );
-            Serial.print( wavegen_frequency );
-            Serial.print( " Hz -> " );
-            Serial.print( actual_freq );
-            Serial.print( " Hz (" );
-            Serial.print( wavegen.getTableSize( ) );
-            Serial.print( " pts, " );
-            Serial.print( wavegen.getBufferSize( ) );
-            Serial.print( " bytes, " );
-            Serial.print( wavegen.getBufferCycles( ) );
-            Serial.println( " cycles)" );
-
-            Serial.print( "Waveform: ±" );
-            Serial.print( 4.0f );
-            Serial.println( "V sine wave" );
-            Serial.flush( );
-
-            // Start wavegen
-            Serial.println( "About to call wavegen.start()" );
-            Serial.flush( );
-
-            // Add some debug info before the call
-            Serial.println( "Debug: About to enter wavegen.start()" );
-            Serial.flush( );
-
-            if ( wavegen.start( ) ) {
-                Serial.println( "wavegen started successfully" );
-                Serial.flush( );
-
-                // Service the wavegen immediately to start async transfers
-                Serial.println( "About to call wavegen.service()" );
-                Serial.flush( );
-
-                Serial.println( "Initial wavegen service completed" );
-                Serial.flush( );
-
-                while ( Serial.available( ) == 0 ) {
-                    // Service wavegen frequently while waiting for keypress
-                    rotaryEncoderStuff( );
-
-                    if ( encoderDirectionState == UP ) {
-                        wavegen_frequency *= 1.1f;
-                        float actual_freq = wavegen.setFrequencyAdjusted( wavegen_frequency );
-                        Serial.print( "Set: " );
-                        Serial.print( wavegen_frequency );
-                        Serial.print( " Hz, Actual: " );
-                        Serial.print( actual_freq );
-                        Serial.print( " Hz, Table: " );
-                        Serial.print( wavegen.getTableSize( ) );
-                        Serial.print( " pts, Buffer: " );
-                        Serial.print( wavegen.getBufferSize( ) );
-                        Serial.print( " bytes" );
-                        Serial.println( );
-                        Serial.flush( );
-                    } else if ( encoderDirectionState == DOWN ) {
-                        wavegen_frequency *= 0.9f;
-                        float actual_freq = wavegen.setFrequencyAdjusted( wavegen_frequency );
-                        Serial.print( "Set: " );
-                        Serial.print( wavegen_frequency );
-                        Serial.print( " Hz, Actual: " );
-                        Serial.print( actual_freq );
-                        Serial.print( " Hz, Table: " );
-                        Serial.print( wavegen.getTableSize( ) );
-                        Serial.print( " pts, Buffer: " );
-                        Serial.print( wavegen.getBufferSize( ) );
-                        Serial.print( " bytes" );
-                        Serial.println( );
-                        Serial.flush( );
-                    }
-
-                    // Service the async wavegen
-                    //  wavegen.service();
-
-                    if ( encoderButtonState == HELD ) {
-                        wavegen.stop( );
-                        Serial.print( "Final stats - Success: " );
-                        Serial.print( wavegen.getSuccessfulWrites( ) );
-                        Serial.print( ", Failed: " );
-                        Serial.println( wavegen.getFailedWrites( ) );
-                        break;
-                    }
-                }
-
-                wavegen.stop( );
-                Serial.println( "wavegen stopped" );
-            } else {
-                Serial.println( "Failed to start wavegen" );
-            }
-            Serial.flush( );
-        }
-
-        // pauseCore2 = false;
-
-        Serial.println( "Reloading config.txt..." );
-        configChanged = true;
-
-        break;
-    }
-    case 'S': { //! S - raw speed test
-        Serial.println( "Raw speed test..." );
-        Serial.println( "Read frequency on row 29\n\n\r" );
-
-        pauseCore2 = true;
-        unsigned long cycles = 1000000;
-        unsigned long start = micros( );
-        sendXYraw( 10, 0, 4, 1 );
-        for ( int i = 0; i < cycles; i++ ) {
-            sendXYraw( 10, 0, 0, 1 );
-            sendXYraw( 10, 0, 0, 0 );
-        }
-        unsigned long end = micros( );
-        Serial.print( "Time for " );
-        Serial.print( cycles );
-        Serial.print( " on off cycles: " );
-        Serial.print( end - start );
-        Serial.println( " microseconds" );
-        Serial.print( "Time per cycle: " );
-        Serial.print( ( end - start ) / cycles );
-        Serial.println( " microseconds" );
-        Serial.print( "Frequency: " );
-        Serial.print( ( (float)cycles / (float)( end - start ) ) * 1000 );
-        Serial.println( " kHz\n\r" );
-        Serial.flush( );
-        pauseCore2 = false;
-
-        break;
-    }
-
-    case 'j':
-
-        for ( int i = 0; i < highSaturationSpectrumColorsCount; i++ ) {
-            changeTerminalColorHighSat( i, true, &Serial, 0 );
-            Serial.print( i );
-            Serial.print( ": " );
-            if ( i < 10 ) {
-                Serial.print( " " );
-            }
-            Serial.print( highSaturationSpectrumColors[ i ] );
-
-            Serial.print( "\t\t" );
-            if ( i < highSaturationBrightColorsCount ) {
-                changeTerminalColorHighSat( i, true, &Serial, 1 );
-                Serial.print( i );
-                Serial.print( ": " );
-                if ( i < 10 ) {
-                    Serial.print( " " );
-                }
-                Serial.print( highSaturationBrightColors[ i ] );
-            }
-            Serial.println( );
-        }
-
-        goto dontshowmenu;
-        break;
-
-    case 'J': { //! J - Test new States system (e.g., "J 1-2" or "J 1-5,10-20")
-
-        Serial.println( "\n\r╭────────────────────────────────────╮" );
-        Serial.println( "│   States System Test (J command)  │" );
-        Serial.println( "╰────────────────────────────────────╯\n\r" );
-
-        // Get the SlotManager instance
-        SlotManager& mgr = SlotManager::getInstance( );
-        JumperlessState& state = mgr.getActiveState( );
-
-        // Parse the command line (skip first character 'J')
-        String commandLine = currentCommandLine;
-        if ( commandLine.length( ) > 1 ) {
-            commandLine = commandLine.substring( 1 ); // Remove 'J'
-            commandLine.trim( );
-
-            if ( commandLine.length( ) > 0 ) {
-                Serial.println( "Parsing connections: " + commandLine );
-
-                // Parse connections (format: "1-2" or "1-5,10-20,15-30")
-                int startIdx = 0;
-                int connectionsAdded = 0;
-                String errorMsg;
-
-                while ( startIdx < (int)commandLine.length( ) ) {
-                    int commaIdx = commandLine.indexOf( ',', startIdx );
-                    if ( commaIdx == -1 ) {
-                        commaIdx = commandLine.length( );
-                    }
-
-                    String conn = commandLine.substring( startIdx, commaIdx );
-                    conn.trim( );
-
-                    if ( conn.length( ) > 0 ) {
-                        int dashIdx = conn.indexOf( '-' );
-                        if ( dashIdx != -1 ) {
-                            int node1 = conn.substring( 0, dashIdx ).toInt( );
-                            int node2 = conn.substring( dashIdx + 1 ).toInt( );
-
-                            Serial.print( "  Adding connection: " + String( node1 ) + "-" + String( node2 ) + "... " );
-
-                            if ( state.addConnection( node1, node2, errorMsg ) ) {
-                                Serial.println( "✓ Success" );
-                                connectionsAdded++;
-                            } else {
-                                Serial.println( "✗ Failed" );
-                                Serial.println( "    Error: " + errorMsg );
-                            }
-                        } else {
-                            Serial.println( "  Invalid format: " + conn + " (should be N1-N2)" );
-                        }
-                    }
-
-                    startIdx = commaIdx + 1;
-                }
-
-                // Apply connections to hardware if any were added
-                if ( connectionsAdded > 0 ) {
-                    Serial.println( "\n\r─── Applying to Hardware ───" );
-                    Serial.print( "Refreshing connections... " );
-                    state.markDirty( );       // Mark for auto-save
-                    refreshConnections( -1 ); // Apply to hardware
-                    Serial.println( "✓ Done" );
-                }
-
-                // Display current state
-                Serial.println( "\n\r─── Current State ───" );
-                Serial.println( "Connections: " + String( state.connections.numBridges ) );
-                Serial.println( "Active Slot: " + String( mgr.getActiveSlot( ) ) );
-
-                // List all connections
-                if ( state.connections.numBridges > 0 ) {
-                    Serial.println( "\n\rConnections in state:" );
-                    for ( int i = 0; i < state.connections.numBridges; i++ ) {
-                        int n1 = state.connections.bridges[ i ][ 0 ];
-                        int n2 = state.connections.bridges[ i ][ 1 ];
-                        int dup = state.connections.bridges[ i ][ 2 ];
-                        Serial.print( "  " + String( i + 1 ) + ". " );
-                        Serial.print( String( n1 ) + "-" + String( n2 ) );
-                        if ( dup > 1 ) {
-                            Serial.print( " (x" + String( dup ) + " duplicates)" );
-                        }
-                        Serial.println( );
-                    }
-                }
-
-                // Test YAML serialization
-                Serial.println( "\n\r─── Testing YAML Serialization ───" );
-                String yamlOutput;
-                if ( state.toYAML( yamlOutput ) ) {
-                    Serial.println( "YAML output:" );
-
-                    Serial.println( yamlOutput );
-
-                    // Test saving to slot 7 (test slot)
-                    Serial.println( "\n\r─── Testing Slot Save ───" );
-                    Serial.print( "Saving to slot 7... " );
-                    if ( mgr.saveSlot( 7, errorMsg ) ) {
-                        Serial.println( "✓ Success" );
-                        Serial.println( "  File: /slots/slot7.yaml" );
-
-                        // Test loading it back
-                        Serial.print( "Loading from slot 7... " );
-                        if ( mgr.loadSlot( 7, errorMsg ) ) {
-                            Serial.println( "✓ Success" );
-                            Serial.println( "  Loaded " + String( mgr.getActiveState( ).connections.numBridges ) + " connections" );
-                        } else {
-                            Serial.println( "✗ Failed" );
-                            Serial.println( "  Error: " + errorMsg );
-                        }
-                    } else {
-                        Serial.println( "✗ Failed" );
-                        Serial.println( "  Error: " + errorMsg );
-                    }
-                } else {
-                    Serial.println( "Failed to serialize to JSON" );
-                }
-
-                // RAM usage estimate
-                Serial.println( "\n\r─── Memory Usage ───" );
-                Serial.println( "Active state RAM: ~" + String( mgr.getActiveStateRAMUsage( ) ) + " bytes" );
-                Serial.println( "State object size: ~" + String( state.estimateRAMUsage( ) ) + " bytes" );
-
-                Serial.println( "\n\r─── Test Complete ───" );
-
-            } else {
-                Serial.println( "No connections specified!" );
-                Serial.println( "Usage: J 1-2  or  J 1-5,10-20,15-30" );
-            }
-        } else {
-            // No arguments - show help
-            Serial.println( "States System Test Command" );
-            Serial.println( "\n\rUsage:" );
-            Serial.println( "  J 1-2              - Add connection 1-2" );
-            Serial.println( "  J 1-5,10-20        - Add multiple connections" );
-            Serial.println( "  J 1-5,1-5,1-5      - Add duplicates (increments count)" );
-            Serial.println( "\n\rFeatures:" );
-            Serial.println( "  • Validates connections" );
-            Serial.println( "  • Tracks duplicate counts" );
-            Serial.println( "  • JSON serialization" );
-            Serial.println( "  • Save/load from slots" );
-            Serial.println( "  • Undo/redo history" );
-            Serial.println( "\n\rExample:" );
-            Serial.println( "  J 1-5              - Creates connection 1-5" );
-            Serial.println( "  J TOP_RAIL-10      - Connects top rail to row 10" );
-            Serial.println( "  J GND-32           - Connects ground to row 32" );
-        }
-
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'U': { //! U - Enable USB Mass Storage drive\n
-
-        if ( mscModeEnabled == false ) {
-            Serial.println( "Enabling USB Mass Storage drive..." );
-            if ( initUSBMassStorage( ) ) {
-                Serial.println( "USB Mass Storage enabled - device will appear as "
-                                "'JUMPERLESS' drive\n\r" );
-                Serial.println( "\tu = disable USB Mass Storage" );
-                Serial.println( "\tG = reload config.txt" );
-                Serial.println( "\ty = refresh connections when files change" );
-                Serial.println( "\tS = show status" );
-                Serial.println( "\n\r" );
-                Serial.flush( );
-                delay( 3000 );
-            } else {
-                Serial.println( "USB Mass Storage initialization failed" );
-                Serial.flush( );
-            }
-        } else {
-            Serial.println( "USB Mass Storage is already enabled" );
-            printUSBMassStorageStatus( );
-            refreshConnections( -1 );
-            Serial.flush( );
-        }
-
-        delay( 3000 );
-        unsigned long mscModeTimer = millis( );
-        unsigned long lastServiceCallTime = 0;
-        const unsigned long SERVICE_CALL_INTERVAL = 1000;  // Call service every 1 second
-
-        Serial.println("◆ USB Mode: Starting service loop for live file monitoring");
-        Serial.flush();
-
-        unsigned long loopIterations = 0;
-
-        while ( mscModeEnabled == true ) {
-            loopIterations++;
-
-            // Debug every 100 iterations (~1 second)
-            extern bool debugUSB;
-            if (debugUSB && loopIterations % 100 == 0) {
-                Serial.print("◆ USB loop iteration ");
-                Serial.println(loopIterations);
-                Serial.flush();
-            }
-
-            // Check for serial input without blocking
-            if ( Serial.available( ) > 0 ) {
-                char c = Serial.read( );
-                if ( c == 'u' ) {
-                    Serial.println( "Disabling USB Mass Storage" );
-                    disableUSBMassStorage( );
-                    mscModeEnabled = false;
-                    Serial.flush( );
-                    refreshConnections( -1, 1, 1 );
-                }
-                if ( c == 'U' ) {
-                    Serial.println( "Enabling USB Mass Storage" );
-                    initUSBMassStorage( );
-                    printUSBMassStorageStatus( );
-                    Serial.flush( );
-                }
-                if ( c == 'y' || c == 'Y' ) {
-                    Serial.println( "Refreshing connections" );
-                    manualRefreshFromUSB( );
-                    delay( 100 );
-                    refreshConnections( -1 );
-
-                    Serial.flush( );
-                }
-                if ( c == 'G' || c == 'g' ) {
-                    Serial.println( "Reloading config.txt" );
-
-                    Serial.flush( );
-                    manualRefreshFromUSB( );
-                    delay( 100 );
-                    loadConfig( );
-                    Serial.flush( );
-                }
-                if ( c == 's' || c == 'S' ) {
-                    Serial.println( "Showing status" );
-                    printUSBMassStorageStatus( );
-                    Serial.flush( );
-                }
-            }
-
-            // Service SlotManager and USB while waiting for input
-            if (millis() - lastServiceCallTime > SERVICE_CALL_INTERVAL) {
-                if (debugUSB) {
-                    Serial.println("◆ USB loop: About to call SlotManager::service()");
-                    Serial.flush();
-                }
-                SlotManager::getInstance().service();
-                if (debugUSB) {
-                    Serial.println("◆ USB loop: SlotManager::service() returned");
-                    Serial.flush();
-                }
-                lastServiceCallTime = millis();
-            }
-
-            // Keep USB alive
-            tud_task();
-
-            // Small delay to prevent tight loop consuming CPU
-            delay(10);
-        }
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'Z': { //! Z - Toggle USB debug mode
-        Serial.println( "╭─────────────────────────────────╮" );
-        Serial.println( "│        USB Debug Control        │" );
-        Serial.println( "├─────────────────────────────────┤" );
-        Serial.println( "│ 1. Toggle USB debug mode        │" );
-        Serial.println( "│ 2. Manual refresh from USB      │" );
-        Serial.println( "│ 3. Validate all slots           │" );
-        Serial.println( "│ Any other key - Cancel          │" );
-        Serial.println( "╰─────────────────────────────────╯" );
-        Serial.print( "Choose option: " );
-        Serial.flush( );
-
-        // Wait for input
-        while ( Serial.available( ) == 0 ) {
-            delay( 1 );
-        }
-        char choice = Serial.read( );
-        Serial.println( choice );
-
-        switch ( choice ) {
-        case '1':
-            Serial.println( "\nToggling USB debug mode..." );
-            setUSBDebug( !usb_debug_enabled );
-            break;
-        case '2':
-            if ( isUSBMassStorageMounted( ) ) {
-                Serial.println( "\nPerforming manual refresh from USB..." );
-                manualRefreshFromUSB( );
-            } else {
-                Serial.println( "\nUSB drive not mounted" );
-            }
-            break;
-        case '3':
-            Serial.println( "\nValidating all slot files..." );
-            // validateAllSlots(true);
-            break;
-        default:
-            Serial.println( "\nCancelled" );
-            break;
-        }
-
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'u': { //! u - Disable USB Mass Storage drive
-        if ( mscModeEnabled == true ) {
-            Serial.println( "Disabling USB Mass Storage drive..." );
-            if ( disableUSBMassStorage( ) ) {
-                Serial.println(
-                    "USB Mass Storage disabled - device no longer appears as drive" );
-                Serial.println( "Use 'U' command to re-enable when needed" );
-            } else {
-                Serial.println( "USB Mass Storage disable failed" );
-            }
-        } else {
-            Serial.println( "USB Mass Storage is already disabled" );
-            Serial.println( "Use 'U' command to enable" );
-        }
-
-        goto dontshowmenu;
-        break;
-    }
-
-    case '/': { //!  /
-
-        runApp( -1, (char*)"File Manager" );
-        Serial.write( 0x0F );
-        termInInteractiveMode = 0;
-        Serial.flush( );
-        break;
-    }
-
-    case 'C': { //!  C
-        disableTerminalColors = !disableTerminalColors;
-        if ( disableTerminalColors ) {
-            Serial.println( "Terminal colors disabled" );
-        } else {
-            Serial.println( "Terminal colors enabled" );
-        }
-        Serial.flush( );
-        break;
-    }
-    case 'E': { //!  E
-        if ( dontShowMenu == 0 ) {
-            dontShowMenu = 1;
-        } else {
-            dontShowMenu = 0;
-        }
-        break;
-    }
-    case 'k': {
-
-        // Call the demo function directly - it will check for range input itself
-        // Serial.println("Displaying color names (enter range like '10-200' for
-        // specific range)"); colorPicker(0, 255);
-        if ( jumperlessConfig.top_oled.show_in_terminal > 0 ) {
-            jumperlessConfig.top_oled.show_in_terminal = 1;
-        } else {
-            jumperlessConfig.top_oled.show_in_terminal = 0;
-        }
-        configChanged = true;
-
-        break;
-    }
-
-    case 0x10: { //! DLE
-        input = '\0';
-        dumpLED = 0;
-        goto dontshowmenu;
-    }
-    case 'R': { //!  R
-                // printWireStatus();
-
-        // for (int i = 0; i < 10; i++) {
-        if ( dumpLED == 1 ) {
-            dumpLED = 0;
-        } else {
-            dumpLED = 1;
-        }
-        // }
-        // printSerial1stuff();
-        // printAllRLEimageData();
-        goto dontshowmenu;
-        break;
-    }
-
-        // Add this case for single Python command
-    case '>': { //! > - Execute single Python command
-
-        String pythonCommand = "";
-        // Use our buffer instead of reading from Serial again
-        if ( jumperlessConfig.display.terminal_line_buffering == 1 ) {
-            pythonCommand = currentCommandLine;
-            pythonCommand = pythonCommand.substring( 1 ); // Remove the '>' prefix
-            pythonCommand.trim( );
-
-        } else {
-            while ( Serial.available( ) > 0 ) {
-                pythonCommand += Serial.readString( );
-            }
-            // Serial.println(pythonCommand);
-            // Serial.flush();
-        }
-        if ( pythonCommand.length( ) > 1 ) {
-
-            // Serial.print("Python> ");
-            // Apply Python syntax highlighting
-            // displayStringWithSyntaxHighlighting(pythonCommand, &Serial);
-            // Serial.println();
-            // Execute the command
-            executeSinglePythonCommand( pythonCommand.c_str( ) );
-        } else {
-            Serial.println( "Usage: > <python_command>" );
-        }
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-    }
-
-    // Modify the existing P case for Python command mode
-    case 'P': { //! P - Deinitialize MicroPython to free memory
-        Serial.println(
-            "Deinitializing MicroPython to free memory... Total memory: " +
-            String( rp2040.getTotalHeap( ) ) );
-        Serial.println( "Free memory: " + String( rp2040.getFreeHeap( ) ) );
-        deinitMicroPythonProper( );
-        Serial.println( "MicroPython deinitialized. Memory freed." );
-
-        Serial.println( "Total memory: " + String( rp2040.getTotalHeap( ) ) );
-        Serial.println( "Free memory: " + String( rp2040.getFreeHeap( ) ) );
-        Serial.println( "Use 'p' to reinitialize and enter REPL again." );
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'p': {
-        enterMicroPythonREPL( );
-
-        refreshConnections( -1, 1, 1 );
-        Serial.write( 0x0F );
-        termInInteractiveMode = 0;
-        Serial.flush( );
-        // printAllConnectableNodes();
-        break;
-    }
-    case '.': { //!  .
-        // initOLED();
-        if ( jumperlessConfig.top_oled.enabled == 0 ) {
-            Serial.println( "oled enabled" );
-            oled.init( );
-            jumperlessConfig.top_oled.enabled = 1;
-            configChanged = true;
-        } else {
-            oled.disconnect( );
-            jumperlessConfig.top_oled.enabled = 0;
-            oled.oledConnected = false;
-
-            configChanged = true;
-            Serial.println( "oled disconnected" );
-        }
-
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'c': { //!  c
-        printChipStateArray( );
-        goto dontshowmenu;
-        break;
-    }
-
-    case '_': { //!  _
-        printMicrosPerByte( );
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'g': { //!  g
-        printGPIOState( );
-        break;
-    }
-    case '&': { //!  &
-        // loadChangedNetColorsFromFile( netSlot, 0 );
-        goto dontshowmenu;
-        break;
-        int node1 = -1;
-        int node2 = -1;
-        while ( Serial.available( ) == 0 ) {
-        }
-        // char c = Serial.read();
-        node1 = Serial.parseInt( );
-        node2 = Serial.parseInt( );
-        Serial.print( "node1 = " );
-        Serial.println( node1 );
-        Serial.print( "node2 = " );
-        Serial.println( node2 );
-        Serial.print( "checkIfBridgeExistsLocal(node1, node2) = " );
-        long unsigned int timer = micros( );
-        Serial.println( checkIfBridgeExistsLocal( node1, node2 ) );
-        Serial.print( "time taken = " );
-        Serial.print( micros( ) - timer );
-        Serial.println( " microseconds" );
-
-        Serial.flush( );
-
-        break;
-    }
-
-    case '\'': { //!  '
-        pauseCore2 = 1;
-        delay( 1 );
-        drawAnimatedImage( 0 );
-        pauseCore2 = 0;
-        goto dontshowmenu;
-        break;
-    }
-    case 'x': { //!  x
-        digitalWrite( RESETPIN, HIGH );
-        delay( 1 );
-        refreshPaths( );
-        clearAllNTCC( );
-        // oled.oledConnected = false;
-
-        clearNodeFile( netSlot, 0 );
-        refreshConnections( -1, 1, 1 );
-        digitalWrite( RESETPIN, LOW );
-
-        Serial.println( "Cleared all connections" );
-
-        goto dontshowmenu;
-
-        break;
-    }
-
-    case '+': { //!  +
-
-        readStringFromSerial( jumperlessConfig.display.terminal_line_buffering == 1 ? 3 : 0, 0 );
-        goto loadfile;
-
-        break;
-    }
-
-    case '-': { //!  -
-        readStringFromSerial( jumperlessConfig.display.terminal_line_buffering == 1 ? 3 : 0, 1 );
-        goto loadfile;
-        break;
-    }
-
-    case '~': { //!  ~
-        core1busy = 1;
-        waitCore2( );
-        printConfigToSerial( );
-        core1busy = 0;
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-    }
-    case '`': { //!  `
-        core1busy = 1;
-        waitCore2( );
-        readConfigFromSerial( );
-        core1busy = 0;
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-    }
-        // case '2': {
-        // runApp(2);
-        // break;
-        // }
-
-    case '^': { //!  ^
-        // doomOn = 1;
-        // Serial.println(yesNoMenu());
-        // break;
-        char f[ 8 ] = { ' ' };
-        int index = 0;
-        float f1 = 0.0;
-        unsigned long timer = millis( );
-        while ( Serial.available( ) == 0 && millis( ) - timer < 1000 ) {
-        }
-        while ( index < 8 ) {
-            f[ index ] = Serial.read( );
-            index++;
-        }
-
-        f1 = atof( f );
-        // Serial.print("f = ");
-        // Serial.println(f1);
-        if ( probePowerDAC == 1 ) {
-            setDac0voltage( f1, 1, 1 );
-        } else if ( probePowerDAC == 0 ) {
-            setDac1voltage( f1, 1, 1 );
-        }
-        configChanged = true;
-        Serial.printf( "DAC %d = %0.2f V\n", !probePowerDAC, f1 );
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-    }
-
-    case '?': { //!  ?
-        Serial.print( "Jumperless firmware version: " );
-        Serial.println( firmwareVersion );
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-    }
-    case '@': { //!  @
-        Serial.flush( );
-
-        if ( Serial.available( ) > 0 ) {
-            String input = Serial.readString( );
-            input.trim( ); // Remove whitespace
-
-            if ( input.indexOf( ',' ) != -1 ) {
-                // Format: @5,10 - SDA at row 5, SCL at row 10
-                int commaIndex = input.indexOf( ',' );
-                int sdaRow = input.substring( 0, commaIndex ).toInt( );
-                int sclRow = input.substring( commaIndex + 1 ).toInt( );
-
-                changeTerminalColor( 69, true );
-                Serial.print( "I2C scan with SDA=" );
-                Serial.print( sdaRow );
-                Serial.print( ", SCL=" );
-                Serial.println( sclRow );
-                changeTerminalColor( 38, true );
-
-                if ( i2cScan( sdaRow, sclRow, 26, 27, 1 ) > 0 ) {
-                    Serial.println( "Found devices" );
-                    return;
-                } else {
-                    removeBridgeFromState( RP_GPIO_26, sdaRow, true );
-                    removeBridgeFromState( RP_GPIO_27, sclRow, true );
-                }
-            } else if ( input.length( ) > 0 && isdigit( input[ 0 ] ) ) {
-                // Format: @5 - try all 4 combinations around row 5
-                int baseRow = input.toInt( );
-
-                changeTerminalColor( 69, true );
-                Serial.print( "I2C scan trying all combinations around row " );
-                Serial.println( baseRow );
-                changeTerminalColor( 38, true );
-
-                // Try all 4 combinations: SDA=base SCL=base+1, SDA=base+1 SCL=base,
-                // SDA=base SCL=base-1, SDA=base-1 SCL=base
-                int combinations[ 4 ][ 2 ] = {
-                    { baseRow, baseRow + 1 }, // SDA=base, SCL=base+1
-                    { baseRow + 1, baseRow }, // SDA=base+1, SCL=base
-                    { baseRow, baseRow - 1 }, // SDA=base, SCL=base-1
-                    { baseRow - 1, baseRow }  // SDA=base-1, SCL=base
-                };
-
-                for ( int i = 0; i < 4; i++ ) {
-                    int sdaRow = combinations[ i ][ 0 ];
-                    int sclRow = combinations[ i ][ 1 ];
-
-                    // // Skip invalid row numbers (must be 1-60)
-                    // if (sdaRow < 1 || sdaRow > 60 || sclRow < 1 || sclRow > 60) {
-                    //   continue;
-                    // }
-
-                    changeTerminalColor( 202, true );
-                    Serial.print( "\nTrying SDA=" );
-                    Serial.print( sdaRow );
-                    Serial.print( ", SCL=" );
-                    Serial.print( sclRow );
-                    Serial.println( ":" );
-                    changeTerminalColor( 38, true );
-                    int devicesFound = i2cScan( sdaRow, sclRow, 26, 27, 0 );
-                    if ( devicesFound > 0 ) {
-                        changeTerminalColor( 199, true );
-                        Serial.printf(
-                            "\n\rfound %d devices: SDA at row %d, SCL at row %d\n\r",
-                            devicesFound, sdaRow, sclRow );
-                        changeTerminalColor( -1 );
-                        return;
-                    }
-                    delay( 1 ); // Small delay between scans
-                }
-            }
-        } else {
-            // Interactive mode - prompt for SDA and SCL
-            Serial.print( "Enter SDA row: " );
-            Serial.flush( );
-            while ( Serial.available( ) == 0 ) {
-            }
-            int rowSDA = Serial.parseInt( );
-            Serial.print( "Enter SCL row: " );
-            Serial.flush( );
-            while ( Serial.available( ) == 0 ) {
-            }
-            int rowSCL = Serial.parseInt( );
-
-            changeTerminalColor( 69, true );
-            Serial.print( "I2C scan with SDA=" );
-            Serial.print( rowSDA );
-            Serial.print( ", SCL=" );
-            Serial.println( rowSCL );
-            changeTerminalColor( 38, true );
-
-            if ( i2cScan( rowSDA, rowSCL, 26, 27, 1 ) > 0 ) {
-                // Serial.println("Found devices");
-            } else {
-                removeBridgeFromState( RP_GPIO_26, rowSDA, true );
-                removeBridgeFromState( RP_GPIO_27, rowSCL, true );
-            }
-        }
-
-        goto dontshowmenu;
-        break;
-    }
-    case '$': { //!  $
-        // return current slot number
-        for ( int d = 0; d < 4; d++ ) {
-            Serial.print( "dacSpread[" );
-            Serial.print( d );
-            Serial.print( "] = " );
-            Serial.println( dacSpread[ d ] );
-        }
-
-        for ( int d = 0; d < 4; d++ ) {
-            Serial.print( "dacZero[" );
-            Serial.print( d );
-            Serial.print( "] = " );
-            Serial.println( dacZero[ d ] );
-        }
-
-        calibrateDacs( );
-        // Serial.println(netSlot);
-        break;
-    }
-    case 'r': { //!  r
-        if ( Serial.available( ) > 0 ) {
-            char c = Serial.read( );
-            if ( c == '0' || c == '2' || c == 't' ) {
-                resetArduino( 0 );
-            }
-            if ( c == '1' || c == '2' || c == 'b' ) {
-                resetArduino( 1 );
-            }
-        } else {
-            resetArduino( );
-        }
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'A': { //!  A
-        // delay(100);
-        int justAsk = 0;
-        if ( Serial.available( ) > 0 ) {
-            // Serial.print("checking for arduino connection");
-            char c = Serial.read( );
-            // if (c == ' ') {
-            //   continue;
-            //   }
-            if ( c == '?' ) {
-                if ( checkIfArduinoIsConnected( ) == 1 ) {
-                    justAsk = 1;
-                    Serial.println( "Y" );
-                    Serial.flush( );
-                    // break;
-                } else {
-                    justAsk = 1;
-                    Serial.println( "n" );
-                    Serial.flush( );
-                    // break;
-                }
-            } else {
-                // break;
-            }
-        }
-        if ( justAsk == 0 ) {
-            connectArduino( 0 );
-            Serial.println( "UART connected to Arduino D0 and D1" );
-            Serial.flush( );
-        }
-        goto dontshowmenu;
-        break;
-    }
-    case 'a': { //!  a
-        // delay(100);
-        int justAsk = 0;
-        while ( Serial.available( ) > 0 ) {
-            // Serial.print("checking for arduino connection");
-            char c = Serial.read( );
-            // if (c == ' ') {
-            //   continue;
-            //   }
-            if ( c == '?' ) {
-                if ( checkIfArduinoIsConnected( ) == 1 ) {
-                    justAsk = 1;
-                    Serial.println( "Y" );
-                    Serial.flush( );
-                    // break;
-                } else {
-                    justAsk = 1;
-                    Serial.println( "n" );
-                    Serial.flush( );
-                    // break;
-                }
-            } else {
-                // break;
-            }
-        }
-        if ( justAsk == 0 ) {
-            disconnectArduino( 0 );
-            Serial.println( "UART disconnected from Arduino D0 and D1" );
-            Serial.flush( );
-        }
-        // goto loadfile;
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'F': //!  F
-        oled.cycleFont( );
-        break;
-
-    case '=': {
-        Serial.println( "\n\r" );
-
-        oled.dumpFrameBuffer( );
-
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'i': { //!  i
-        if ( oled.isConnected( ) == false ) {
-            if ( oled.init( ) == false ) {
-                Serial.println( "Failed to initialize OLED" );
-                break;
-            }
-        }
-
-        break;
-    }
-
-    case '#': {
-
-        while ( Serial.available( ) == 0 && slotChanged == 0 ) {
-            if ( slotChanged == 1 ) {
-                // b.print("Jumperless", 0x101000, 0x020002, 0);
-                // delay(100);
-               // goto menu;
-            }
-        }
-        printTextFromMenu( );
-
-        clearLEDs( );
-        showLEDsCore2 = 1;
-        defconDisplay = -1;
-
-        break;
-    }
-    case 'e': { //!  e
-        showExtraMenu++;
-        if ( showExtraMenu > 3 ) {
-            showExtraMenu = 0;
-        }
-        break;
-    }
-
-    case 's': { //!  s
-        printSlots( -1 );
-
-        break;
-    }
-    case 'v': { //!  v
-        if ( Serial.available( ) > 0 ) {
-            char c = Serial.read( );
-
-            if ( isdigit( c ) == 1 ) {
-                int adc = c - '0';
-                if ( adc >= 0 && adc <= 4 ) {
-                    Serial.print( " adc" );
-                    Serial.print( adc );
-                    Serial.print( " = " );
-                    float adcVoltage = readAdcVoltage( adc, 32 );
-                    if ( adcVoltage > 0.00 ) {
-                        Serial.print( " " );
-                    }
-                    Serial.println( adcVoltage );
-                } else if ( c == 'p' ) {
-                    Serial.print( " probe = " );
-                    float probeVoltage = readAdcVoltage( 7, 32 );
-                    if ( probeVoltage > 0.00 ) {
-                        Serial.print( " " );
-                    }
-                    Serial.println( probeVoltage );
-                }
-            } else if ( c == 'i' ) {
-                if ( Serial.available( ) > 0 ) {
-                    char c = Serial.read( );
-                    if ( c == '1' ) {
-                        float iSense = INA1.getCurrent_mA( );
-                        Serial.print( "ina1 = " );
-                        Serial.print( iSense );
-                        Serial.println( "mA" );
-                    }
-                } else {
-                    float iSense = INA0.getCurrent_mA( );
-                    Serial.print( "ina0 = " );
-                    Serial.print( iSense );
-                    Serial.print( "mA \t" );
-
-                    iSense = INA0.getBusVoltage( );
-                    Serial.print( iSense );
-                    Serial.print( "V \t" );
-
-                    iSense = INA0.getPower_mW( );
-                    Serial.print( iSense );
-                    Serial.println( "mW" );
-                }
-            } else if ( c == 'l' ) {
-
-                if ( showReadings == 1 ) {
-                    showReadings = 0;
-                    Serial.println( "showReadings = 0" );
-                } else {
-                    showReadings = 1;
-                    Serial.println( "showReadings = 1" );
-                }
-                chooseShownReadings( );
-            }
-            Serial.flush( );
-        } else {
-            Serial.println( );
-            for ( int i = 0; i < 5; i++ ) {
-                Serial.print( "adc" );
-                Serial.print( i );
-                Serial.print( " = " );
-                float adcVoltage = readAdcVoltage( i, 32 );
-                if ( adcVoltage > 0.00 ) {
-                    Serial.print( " " );
-                }
-                Serial.println( adcVoltage );
-            }
-            Serial.print( "probe = " );
-            float probeVoltage = readAdcVoltage( 7, 32 );
-            if ( probeVoltage > 0.00 ) {
-                Serial.print( " " );
-            }
-            Serial.println( probeVoltage );
-        }
-        Serial.flush( );
-        goto dontshowmenu;
-        break;
-
-        if ( showReadings >= 3 || ( inaConnected == 0 && showReadings >= 1 ) ) {
-            showReadings = 0;
-            break;
-        } else {
-            showReadings++;
-
-            chooseShownReadings( );
-
-            goto dontshowmenu;
-            break;
-        }
-    }
-    case '}': {
-        // Probe connect button - now handled in Probing service
-        // This case is kept for backward compatibility but does nothing
-        // The actual logic runs in Probing::handleProbeButtonActions()
-        goto menu;
-    }
-    case '{': {
-        // Probe clear button - now handled in Probing service
-        // This case is kept for backward compatibility but does nothing
-        // The actual logic runs in Probing::handleProbeButtonActions()
-        goto menu;
-    }
-    case 'n':
-        couldntFindPath( 1 );
-        core1passthrough = 0;
-        Serial.print( "\n\n\rnetlist\n\r" );
-
-        listNets( anythingInteractiveConnected( -1 ) );
-
-        break;
-    case 'b': {
-        int showDupes = 1;
-        char in = Serial.read( );
-        if ( in == '0' ) {
-        } else if ( in == '2' ) {
-            showDupes = 2;
-        }
-        Serial.print( "\n\rpathDuplicates: " );
-        Serial.println( jumperlessConfig.routing.stack_paths );
-        Serial.print( "dacDuplicates: " );
-        Serial.println( jumperlessConfig.routing.stack_dacs );
-        Serial.print( "railsDuplicates: " );
-        Serial.println( jumperlessConfig.routing.stack_rails );
-        Serial.print( "railPriority: " );
-        Serial.println( jumperlessConfig.routing.rail_priority );
-        couldntFindPath( 1 );
-        Serial.print( "\n\rBridge Array\n\r" );
-        printBridgeArray( );
-        Serial.print( "\n\n\n\rPaths\n\r" );
-        printPathsCompact( showDupes );
-        Serial.print( "\n\n\rChip Status\n\r" );
-        printChipStatus( );
-        Serial.print( "\n\n\r" );
-
-        Serial.print( "\n\n\r" );
-        break;
-    }
-    case 'm':
-        goto forceprintmenu;
-        break;
-
-    case '!':
-        printNodeFile( netSlot, 0, 0, 0, true );
-        break;
-
-    case 'Y': { //! Y - Print current YAML state
-        Serial.println( "\n\r╭────────────────────────────────────╮" );
-        Serial.println( "│      Current YAML State (RAM)     │" );
-        Serial.println( "╰────────────────────────────────────╯\n\r" );
-
-        Serial.print( "Active Slot: " );
-        Serial.println( netSlot );
-        Serial.print( "Dirty Flag: " );
-        Serial.println( globalState.isDirty( ) ? "YES (will auto-save)" : "NO (saved)" );
-
-        if ( globalState.isDirty( ) ) {
-            unsigned long timeSince = millis( ) - globalState.getLastModifiedTime( );
-            Serial.print( "Time since last change: " );
-            Serial.print( timeSince / 1000 );
-            Serial.println( " seconds" );
-        }
-
-        Serial.println( "\n\r─── YAML Output ───\n\r" );
-
-        String yamlOutput;
-        if ( globalState.toYAML( yamlOutput ) ) {
-            Serial.println( yamlOutput );
-        } else {
-            Serial.println( "✗ Failed to generate YAML" );
-        }
-
-        Serial.println( "\n\r─── Memory Usage ───" );
-        Serial.print( "Connections: " );
-        Serial.println( globalState.connections.numBridges );
-        Serial.print( "State RAM: ~" );
-        Serial.print( globalState.estimateRAMUsage( ) );
-        Serial.println( " bytes" );
-
-        Serial.println( "\n\r" );
-        break;
-    }
-
-    case 'o': {
-        // probeActive = 1;
-        inputNodeFileList( rotaryEncoderMode );
-
-        // input = ' ';
-        showLEDsCore2 = -1;
-        // probeActive = 0;
-        goto loadfile;
-        // goto dontshowmenu;
-        break;
-    }
-
-    case '<': {
-
-        if ( netSlot == 0 ) {
-            netSlot = NUM_SLOTS - 1;
-        } else {
-            netSlot--;
-        }
-        Serial.print( "Slot " );
-        Serial.println( netSlot );
-
-        // Send slot change notification for app synchronization
-        Serial.print("SLOT_CHANGED:");
-        Serial.println(netSlot);
-        Serial.flush();
-
-        slotPreview = netSlot;
-        slotChanged = 1;
-
-        goto loadfile;
-    }
-    case 'y': {
-    loadfile:
-        loadingFile = 1;
-
-        // Just clear preview mode flag - don't restore original slot
-        // Let the normal load below handle loading the selected slot
-        SlotManager& mgr = SlotManager::getInstance( );
-        if ( mgr.isPreviewMode( ) ) {
-            // Serial.println("Clearing preview mode");
-            //  Clear preview flag without loading anything
-            mgr.clearPreviewMode( );
-        }
-
-        // Save current state if dirty before reloading to prevent data loss
-        // BUT skip this on the very first load (firstLoop == 1) to avoid overwriting
-        // the saved slot with an empty/uninitialized state
-        if ( globalState.isDirty( ) && firstLoop == 0 ) {
-         //  Serial.println( "Saving dirty state before reload" );
-            String saveError;
-            if ( mgr.saveActiveSlot( saveError ) ) {
-                if ( debugFP ) {
-                    Serial.println( "✓ Auto-saved dirty state before reload" );
-                }
-            } else if ( debugFP ) {
-                Serial.println( "Warning: Failed to auto-save: " + saveError );
-            }
-        }
-
-        // Load YAML state from slot file into globalState
-        String loadError;
-        if ( !mgr.loadSlot( netSlot, loadError ) ) {
-            if ( debugFP ) {
-                Serial.print( "Warning: Failed to load slot " );
-                Serial.print( netSlot );
-                Serial.print( ": " );
-                Serial.println( loadError );
-                Serial.println( "Starting with empty slot" );
-            }
-            // Empty slot is OK - just start fresh
-            mgr.clearActiveSlot( );
-        }
-
-        if ( slotChanged == 1 ) {
-            // clearChangedNetColors(0);
-            // loadChangedNetColorsFromFile( netSlot, 0 );
-        }
-
-        slotChanged = 0;
-        loadingFile = 0;
-
-        refreshConnections( -1 );
-
-        break;
-    }
-    case 'f': {
-
-        probeActive = 1;
-        readInNodesArduino = 1;
-
-        savePreformattedNodeFile( serSource, netSlot, rotaryEncoderMode );
-
-        // Validate the saved node file
-        int validation_result = validateNodeFileSlot( netSlot, false );
-        if ( validation_result == 0 ) {
-            if ( debugFP ) {
-                Serial.println( "NodeFile validated successfully" );
-            }
-            refreshConnections( -1 );
-        } else {
-            if ( debugFP ) {
-                Serial.println( "NodeFile validation failed: " +
-                                String( getNodeFileValidationError( validation_result ) ) );
-                Serial.println( "Connections not refreshed due to invalid node file" );
-            }
-        }
-
-        input = ' ';
-
-        probeActive = 0;
-        if ( connectFromArduino != '\0' ) {
-            connectFromArduino = '\0';
-            input = ' ';
-            readInNodesArduino = 0;
-
-            goto dontshowmenu;
-        }
-
-        connectFromArduino = '\0';
-        readInNodesArduino = 0;
-        break;
-    }
-
-    case 't': { //! t - Test MSC callbacks
-        // Test function disabled
-        goto dontshowmenu;
-        break;
-    }
-
-    case 'T': { //! T - Show netlist info
-#ifdef FSSTUFF
-        openNodeFile( );
-        getNodesToConnect( );
-#endif
-        Serial.println( "\n\n\rnetlist\n\n\r" );
-
-        bridgesToPaths( );
-
-        listSpecialNets( );
-        listNets( );
-        printBridgeArray( );
-        Serial.print( "\n\n\r" );
-        Serial.print( numberOfNets );
-
-        Serial.print( "\n\n\r" );
-        Serial.print( numberOfPaths );
-        checkChangedNetColors( -1 );
-
-        assignNetColors( );
-#ifdef PIOSTUFF
-        sendAllPaths( );
-#endif
-
-        break;
-    }
-
-    case 'l':
-        if ( LEDbrightnessMenu( ) == '!' ) {
-            clearLEDs( );
-            delayMicroseconds( 9200 );
-            sendAllPathsCore2 = 1;
-        }
-        break;
-
-        goto dontshowmenu;
-
-        break;
-
-    case 'd': {
-        // debugFlagInit();
-        debugFlagsMenu( );
-    }
-
-    case ':':
-
-        if ( Serial.read( ) == ':' ) {
-            // Serial.print("\n\r");
-            // Serial.print("entering machine mode\n\r");
-            // machineMode();
-            showLEDsCore2 = 1;
-            goto dontshowmenu;
-            break;
-        } else {
-            break;
-        }
-
-    default:
-        while ( Serial.available( ) > 0 ) {
-            int f = Serial.read( );
-            // delayMicroseconds(30);
-        }
-
-        break;
-    }
-    delayMicroseconds( 1000 );
-    while ( Serial.available( ) > 5 ) {
-        Serial.read( );
-        delayMicroseconds( 1000 );
-    }
-    Serial.flush( );
-    goto menu;
-
-    */
 }
 
 unsigned long lastSwirlTime = 0;
@@ -2299,9 +829,9 @@ unsigned long lastSwirlTime = 0;
 int swirlCount = 42;
 int spread = 13;
 
-int readcounter = 0;
+
 unsigned long schedulerTimer = 0;
-unsigned long schedulerUpdateTime = 6300;
+unsigned long schedulerUpdateTime = 5300;
 
 int swirled = 0;
 int countsss = 0;
@@ -2309,18 +839,14 @@ int countsss = 0;
 int probeCycle = 0;
 int netUpdateRefreshCount = 0;
 
-int tempDD = 0;
-int clearBeforeSend = 0;
 
-unsigned long tempTimer = 0;
-int lastTemp = 0;
+int clearBeforeSend = 0;
 
 int passthroughStatus = 0;
 
 unsigned long serialInfoTimer = 0;
 
 unsigned long la_timer = 0;
-unsigned long uartTaskTimer = 0;
 
 void loop1( ) {
 
@@ -2383,6 +909,7 @@ void loop1( ) {
     // wavegen.service() contains a blocking while() loop for I2C streaming!
     unsigned long t2 = debugWaitLoopTiming ? micros( ) : 0;
     if ( wavegen.isRunning( ) ) {
+        Serial.println("CORE2: wavegen.service() is being called");
         wavegen.service( );
     }
     if ( debugWaitLoopTiming ) {
@@ -2406,14 +933,9 @@ void loop1( ) {
         }
     }
 
-    if ( millis( ) - uartTaskTimer > 10 ) {
-        uartTaskTimer = millis( );
-        if ( jumperlessConfig.serial_1.async_passthrough == true ) {
-            AsyncPassthrough::task( );
-        }
-
-        passthroughStatus = secondSerialHandler( );
-    }
+    // REMOVED: AsyncPassthrough::task() and secondSerialHandler() moved to Core 0
+    // They were causing refreshLocalConnections() to be called from Core 2
+    // when handling Arduino flashing (DTR pulse detection)
 
     replyWithSerialInfo( );
 
@@ -2455,14 +977,11 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
         clearBeforeSend = 1;
     }
 
-    if ( micros( ) - schedulerTimer > schedulerUpdateTime || showLEDsCore2 == 3 ||
-
-         showLEDsCore2 == 4 ||
+    if ( micros( ) - schedulerTimer > schedulerUpdateTime || showLEDsCore2 == 3 ||showLEDsCore2 == 4 ||
          showLEDsCore2 == 6 && core1busy == false && core1request == 0 ) {
 
         if ( ( ( ( showLEDsCore2 >= 1 && loadingFile == 0 ) || showLEDsCore2 == 3 ||
-                 ( swirled == 1 ) && sendAllPathsCore2 == 0 ) ||
-               showProbeLEDs != lastProbeLEDs ) &&
+                 ( swirled == 1 ) && sendAllPathsCore2 == 0 ) || showProbeLEDs != lastProbeLEDs ) &&
              sendAllPathsCore2 == 0 ) {
 
             if ( showLEDsCore2 == 6 ) {
@@ -2499,9 +1018,9 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                     // core2busy = false;
                 } else {
 
-                    while ( core1busy == true ) {
-                        // core2busy = false;
-                    }
+                    // while ( core1busy == true ) {
+                    //     // core2busy = false;
+                    // }
                     core2busy = true;
 
                     if ( clearBeforeSend == 1 ) {
@@ -2603,7 +1122,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
         } else if ( millis( ) - lastSwirlTime > 51 && loadingFile == 0 &&
                     showLEDsCore2 == 0 && core1busy == false ) {
-            readcounter++;
+           
 
             lastSwirlTime = millis( );
 
@@ -2622,34 +1141,34 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             }
 
             // leds.show();
-        } else if ( inClickMenu == 0 && probeActive == 0 ) {
+        // } else if ( inClickMenu == 0 && probeActive == 0 ) {
 
-            if ( ( ( countsss > 8 && defconDisplay >= 0 ) || countsss > 10 ) &&
-                 defconDisplay != -1 ) {
-                countsss = 0;
+        //     if ( ( ( countsss > 8 && defconDisplay >= 0 ) || countsss > 10 ) &&
+        //          defconDisplay != -1 ) {
+        //         countsss = 0;
 
-                if ( defconDisplay != -1 ) {
-                    tempDD++;
+        //         if ( defconDisplay != -1 ) {
+        //             tempDD++;
 
-                    if ( tempDD > 6 ) {
-                        tempDD = 0;
-                    }
-                    defconDisplay = tempDD;
-                }
+        //             if ( tempDD > 6 ) {
+        //                 tempDD = 0;
+        //             }
+        //             defconDisplay = tempDD;
+        //         }
 
-                if ( defconDisplay > 5 ) {
-                    defconDisplay = 0;
-                }
-            }
+        //         if ( defconDisplay > 5 ) {
+        //             defconDisplay = 0;
+        //         }
+        //     }
 
-            if ( readcounter > 100 ) {
-                readcounter = 0;
-                if ( probeCycle > 4 ) {
-                    probeCycle = 1;
-                }
-            }
+        //     if ( readcounter > 100 ) {
+        //         readcounter = 0;
+        //         if ( probeCycle > 4 ) {
+        //             probeCycle = 1;
+        //         }
+        //     }
 
-            rotaryEncoderStuff( );
+        //     rotaryEncoderStuff( );
 
         } else {
             rotaryEncoderStuff( );

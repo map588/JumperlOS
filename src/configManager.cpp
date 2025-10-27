@@ -13,7 +13,7 @@
 #include "oled.h"
 #include "ArduinoStuff.h"
 #include "Apps.h"
-#include "TermControl.h"
+#include "Jerial.h" // TermControl is now part of Jerial
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -460,6 +460,11 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "lock_connection") == 0) jumperlessConfig.top_oled.lock_connection = parseBool(value);
             else if (strcmp(key, "show_in_terminal") == 0) jumperlessConfig.top_oled.show_in_terminal = parseSerialPort(value);
             else if (strcmp(key, "font") == 0) jumperlessConfig.top_oled.font = parseFont(value);
+            else if (strcmp(key, "startup_message") == 0) {
+                // Copy string value, ensuring null termination and max length
+                strncpy(jumperlessConfig.top_oled.startup_message, value, 32);
+                jumperlessConfig.top_oled.startup_message[32] = '\0';
+            }
         }
     }
     file.close();
@@ -732,6 +737,7 @@ void saveConfigToFile(const char* filename) {
     file.print("lock_connection = "); file.print(jumperlessConfig.top_oled.lock_connection ? 1:0); file.println(";");
     file.print("show_in_terminal = "); file.print(jumperlessConfig.top_oled.show_in_terminal ? 1:0); file.println(";");
     file.print("font = "); file.print(jumperlessConfig.top_oled.font); file.println(";");
+    file.print("startup_message = "); file.print(jumperlessConfig.top_oled.startup_message); file.println("");
     file.close();
     //core1busy = false;
 }
@@ -1050,6 +1056,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("show_in_terminal = "); Serial.print(getStringFromTable(jumperlessConfig.top_oled.show_in_terminal, serialPortTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[top_oled] ");
         Serial.print("font = "); Serial.print(getStringFromTable(jumperlessConfig.top_oled.font, fontTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[top_oled] ");
+        Serial.print("startup_message = "); Serial.print(jumperlessConfig.top_oled.startup_message); Serial.println("");
     }
     cycleTerminalColor();
     // if (section == -1) {
@@ -1329,8 +1337,8 @@ void printConfigToSerial(bool showNamesArg) {
     }
 
     // Wait for input with timeout (character-by-character mode)
-    // Use Serial directly when line buffering is disabled, termSerial when enabled
-    Stream* inputStream = (jumperlessConfig.display.terminal_line_buffering == 1) ? (Stream*)&termSerial : (Stream*)&Serial;
+    // Use Serial directly when line buffering is disabled, Jerial when enabled
+    Stream* inputStream = (jumperlessConfig.display.terminal_line_buffering == 1) ? (Stream*)&Jerial : (Stream*)&Serial;
     
     while (true) {
         if (inputStream->available() > 0) {
@@ -1518,13 +1526,13 @@ bool dacChange = false;
                 setRailsAndDACs(0);
                 showLEDsCore2 = -1;
                 
-                // Clear any leftover characters from termSerial buffer
-                while (termSerial.available() > 0) {
-                    termSerial.read();
+                // Clear any leftover characters from Jerial buffer
+                while (Jerial.available() > 0) {
+                    Jerial.read();
                 }
                 // Also clear any completed lines waiting
-                if (termSerial.hasCompletedLine()) {
-                    termSerial.clearCompletedLine();
+                if (Jerial.hasCompletedLine()) {
+                    Jerial.clearCompletedLine();
                 }
                 
                 return;
@@ -1537,8 +1545,8 @@ bool dacChange = false;
 
     Serial.println("\n\renter config settings (? for help)\n\r");
 
-    // Use Serial directly when line buffering is disabled, termSerial when enabled
-    Stream* inputStream = (jumperlessConfig.display.terminal_line_buffering == 1) ? (Stream*)&termSerial : (Stream*)&Serial;
+    // Use Serial directly when line buffering is disabled, Jerial when enabled
+    Stream* inputStream = (jumperlessConfig.display.terminal_line_buffering == 1) ? (Stream*)&Jerial : (Stream*)&Serial;
     
     while (inputStream->available() == 0) {
         // delayMicroseconds(10);
@@ -1896,6 +1904,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "lock_connection") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.lock_connection);
         else if (strcmp(key, "show_in_terminal") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.show_in_terminal);
         else if (strcmp(key, "font") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.font);
+        else if (strcmp(key, "startup_message") == 0) sprintf(oldValue, "%s", jumperlessConfig.top_oled.startup_message);
     }
     // Update the config structure
     // Accept string names for enums/bools and convert to int
@@ -2014,6 +2023,11 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
                 oled.setFont(fontIndex);
             }
             oled.show();
+        }
+        else if (strcmp(key, "startup_message") == 0) {
+            // Copy string value, ensuring null termination and max length
+            strncpy(jumperlessConfig.top_oled.startup_message, value, 32);
+            jumperlessConfig.top_oled.startup_message[32] = '\0';
         }
     }
     saveConfigToFile("/config.txt");

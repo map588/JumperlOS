@@ -19,6 +19,8 @@
 #include "Tui.h"
 #include "TuiGlue.h"
 
+#include "Jerial.h"
+
 #ifdef DONOTUSE_SERIALWRAPPER
 #include "SerialWrapper.h"
 #define Serial SerialWrap
@@ -38,21 +40,21 @@ bool safeFlush(Stream *stream, unsigned long timeoutMs = 50) {
   if (!stream) return false;
   
   unsigned long startTime = millis();
-  size_t initialAvailable = stream->availableForWrite();
+  size_t initialAvailable = Jerial.availableForWrite();
   
   // If buffer is nearly empty, try a quick flush
-  if (initialAvailable > stream->availableForWrite() * 0.8) {
-    stream->flush();
+  if (initialAvailable > Jerial.availableForWrite() * 0.8) {
+    Jerial.flush();
     return true;
   }
   
   // Wait for buffer to drain with timeout
   while (millis() - startTime < timeoutMs) {
-    size_t currentAvailable = stream->availableForWrite();
+    size_t currentAvailable = Jerial.availableForWrite();
     
     // If buffer has drained significantly, it's safe to flush
     if (currentAvailable > initialAvailable * 0.5) {
-      stream->flush();
+      Jerial.flush();
       return true;
     }
     
@@ -72,12 +74,12 @@ bool safePrint(Stream *stream, const char *text, unsigned long timeoutMs = 50) {
   unsigned long startTime = millis();
   
   // Wait for enough buffer space
-  while (stream->availableForWrite() < textLen && (millis() - startTime) < timeoutMs) {
+  while (Jerial.availableForWrite() < textLen && (millis() - startTime) < timeoutMs) {
     delayMicroseconds(100);
   }
   
-  if (stream->availableForWrite() >= textLen) {
-    stream->print(text);
+  if (Jerial.availableForWrite() >= textLen) {
+    Jerial.print(text);
     return true;
   }
   
@@ -388,19 +390,19 @@ void changeTerminalColor(int termColor, bool flush, Stream *stream) {
 
   if (termColor != -1) {
     if (flush) {
-      stream->flush();
+      Jerial.flush();
     }
-    stream->printf("\033[38;5;%dm", termColor);
+    Jerial.printf("\033[38;5;%dm", termColor);
     if (flush) {
-      stream->flush();
+      Jerial.flush();
     }
   } else {
     if (flush) {
-      stream->flush();
+      Jerial.flush();
     }
-    stream->print("\033[0m"); // Reset all colors and formatting
+    Jerial.print("\033[0m"); // Reset all colors and formatting
     if (flush) {
-      stream->flush();
+      Jerial.flush();
     }
   }
 }
@@ -478,9 +480,9 @@ void cycleTerminalColor(bool reset,  float step, bool flush, Stream *stream, int
   if (bright == 1) {
     color = highSaturationBrightColors[currentColor];
   }
-  stream->printf("\033[38;5;%dm", color);
+  Jerial.printf("\033[38;5;%dm", color);
   if (flush) {
-    stream->flush();
+    Jerial.flush();
   }
 }
 
@@ -510,9 +512,9 @@ void changeTerminalColorHighSat(int colorIndex, bool flush, Stream *stream, int 
     color = highSaturationBrightColors[colorIndex];
   }
   
-  stream->printf("\033[38;5;%dm", color);
+  Jerial.printf("\033[38;5;%dm", color);
   if (flush) {
-    stream->flush();
+    Jerial.flush();
   }
 }
 
@@ -529,14 +531,14 @@ void cycleTerminalColorHighSat(bool flush, Stream *stream) {
 void printSpectrumOrderedColorCube(void) {
   for (int i = 0; i < highSaturationSpectrumColorsCount; i++) {
     changeTerminalColor(highSaturationSpectrumColors[i], true, &Serial);
-    Serial.print("\t");
-    Serial.print(highSaturationSpectrumColors[i]);
+    Jerial.print("\t");
+    Jerial.print(highSaturationSpectrumColors[i]);
     
     if (i % 12 == 0 && i != 0) {
-      Serial.println();
+      Jerial.println();
     }
   }
-  Serial.println();
+  Jerial.println();
 }
 
 
@@ -547,21 +549,21 @@ int filledPaths[MAX_BRIDGES][4] = {-1}; // node1 node2 rowfilled
 void drawWires(int net) {
   // int fillSequence[6] = {0,2,4,1,3,};
   // debugLEDs = 0;
-  // Serial.print("c2debugLEDs = ");
-  // Serial.println(debugLEDs);
+  // Jerial.print("c2debugLEDs = ");
+  // Jerial.println(debugLEDs);
   assignNetColors();
 
-  // Serial.println("drawWires");
-  // Serial.print("numberOfNets = ");
+  // Jerial.println("drawWires");
+  // Jerial.print("numberOfNets = ");
 
-  // Serial.println(numberOfNets);
-  // Serial.print("probeActive = ");
-  // Serial.println(probeActive);
-  // Serial.print("numberOfShownNets = ");
-  // Serial.println(numberOfShownNets);
+  // Jerial.println(numberOfNets);
+  // Jerial.print("probeActive = ");
+  // Jerial.println(probeActive);
+  // Jerial.print("numberOfShownNets = ");
+  // Jerial.println(numberOfShownNets);
 
-  // Serial.print("numberOfPaths = ");
-  // Serial.println(numberOfPaths);
+  // Jerial.print("numberOfPaths = ");
+  // Jerial.println(numberOfPaths);
 
   int fillSequence[6] = {0, 1, 2, 3, 4, 0};
   int fillIndex = 0;
@@ -579,15 +581,15 @@ void drawWires(int net) {
   }
 
   // for (int i = 0; i < numberOfNets; i++) {
-  //   // Serial.print(i);
-  //   Serial.print("netColors[");
-  //   Serial.print(i);
-  //   Serial.print("] = ");
-  //   Serial.print(netColors[i].r, HEX);
-  //   Serial.print(" ");
-  //   Serial.print(netColors[i].g, HEX);
-  //   Serial.print(" ");
-  //   Serial.println(netColors[i].b, HEX);
+  //   // Jerial.print(i);
+  //   Jerial.print("netColors[");
+  //   Jerial.print(i);
+  //   Jerial.print("] = ");
+  //   Jerial.print(netColors[i].r, HEX);
+  //   Jerial.print(" ");
+  //   Jerial.print(netColors[i].g, HEX);
+  //   Jerial.print(" ");
+  //   Jerial.println(netColors[i].b, HEX);
   // }
   if (net == -1) {
 
@@ -630,11 +632,11 @@ void drawWires(int net) {
             }
           }
         } else {
-          // Serial.println("else ");
-          // Serial.print("globalState.connections.paths[");
-          // Serial.print(i);
-          // Serial.print("].net = ");
-          // Serial.print(globalState.connections.paths[i].net);
+          // Jerial.println("else ");
+          // Jerial.print("globalState.connections.paths[");
+          // Jerial.print(i);
+          // Jerial.print("].net = ");
+          // Jerial.print(globalState.connections.paths[i].net);
 
           lightUpNet(globalState.connections.paths[i].net);
         }
@@ -660,21 +662,21 @@ void drawWires(int net) {
             last = globalState.connections.paths[i].node2;
           }
 
-          // Serial.print("\nfirst = ");
-          // Serial.println(first);
-          // Serial.print("last = ");
-          // Serial.println(last);
-          // Serial.print("range = ");
-          // Serial.println(range);
-          // Serial.print("net = ");
-          // Serial.println(globalState.connections.paths[i].net);
+          // Jerial.print("\nfirst = ");
+          // Jerial.println(first);
+          // Jerial.print("last = ");
+          // Jerial.println(last);
+          // Jerial.print("range = ");
+          // Jerial.println(range);
+          // Jerial.print("net = ");
+          // Jerial.println(globalState.connections.paths[i].net);
 
           int inside = 0;
           int largestFillIndex = 0;
 
           for (int j = first; j <= first + range; j++) {
-            // Serial.print("j = ");
-            // Serial.println(j);
+            // Jerial.print("j = ");
+            // Jerial.println(j);
             for (int w = 0; w < 5; w++) {
               if ((wireStatus[j][w] == globalState.connections.paths[i].net || wireStatus[j][w] == 0) &&
                   w >= largestFillIndex) {
@@ -683,18 +685,18 @@ void drawWires(int net) {
                 if (w > largestFillIndex) {
                   largestFillIndex = w;
                 }
-                // Serial.print("j = ");
-                // Serial.println(j);
+                // Jerial.print("j = ");
+                // Jerial.println(j);
                 // if (first > 30) {
-                //   Serial.print("bottom ");
+                //   Jerial.print("bottom ");
                 // }
 
                 break;
               }
             }
           }
-          //           Serial.print("largestFillIndex = ");
-          // Serial.println(largestFillIndex);
+          //           Jerial.print("largestFillIndex = ");
+          // Jerial.println(largestFillIndex);
           // if (largestFillIndex > 4) {
           //   largestFillIndex = 0;
           // }
@@ -726,15 +728,15 @@ void drawWires(int net) {
                 wireStatus[globalState.connections.paths[i].node1][j] = globalState.connections.paths[i].net;
               }
 
-              // Serial.print("globalState.connections.paths[i].node1 = ");
-              // Serial.println(globalState.connections.paths[i].node1);
+              // Jerial.print("globalState.connections.paths[i].node1 = ");
+              // Jerial.println(globalState.connections.paths[i].node1);
             }
             if (globalState.connections.paths[i].node2 > 0 && globalState.connections.paths[i].node2 <= 60) {
               if (wireStatus[globalState.connections.paths[i].node2][j] == 0) {
                 wireStatus[globalState.connections.paths[i].node2][j] = globalState.connections.paths[i].net;
               }
-              // Serial.print("globalState.connections.paths[i].node2 = ");
-              // Serial.println(globalState.connections.paths[i].node2);
+              // Jerial.print("globalState.connections.paths[i].node2 = ");
+              // Jerial.println(globalState.connections.paths[i].node2);
             }
           }
           // lightUpNet(globalState.connections.paths[i].net);
@@ -803,16 +805,16 @@ void drawWires(int net) {
           rgbColor colorRGB = (wireStatus[i][j] < MAX_NETS)
                                   ? netColors[wireStatus[i][j]]
                                   : netColors[0];
-          // Serial.print("netColors[wireStatus[");
-          // Serial.print(i);
-          // Serial.print("][");
-          // Serial.print(j);
-          // Serial.print("] = ");
-          // Serial.print(netColors[wireStatus[i][j]].r, HEX);
-          // Serial.print(" ");
-          // Serial.print(netColors[wireStatus[i][j]].g, HEX);
-          // Serial.print(" ");
-          // Serial.println(netColors[wireStatus[i][j]].b, HEX);
+          // Jerial.print("netColors[wireStatus[");
+          // Jerial.print(i);
+          // Jerial.print("][");
+          // Jerial.print(j);
+          // Jerial.print("] = ");
+          // Jerial.print(netColors[wireStatus[i][j]].r, HEX);
+          // Jerial.print(" ");
+          // Jerial.print(netColors[wireStatus[i][j]].g, HEX);
+          // Jerial.print(" ");
+          // Jerial.println(netColors[wireStatus[i][j]].b, HEX);
 
           // int adcShow = 0;
 
@@ -823,15 +825,15 @@ void drawWires(int net) {
           // colorRGB = HsvToRgb(colorHSV);
 
           uint32_t color = packRgb(colorRGB.r, colorRGB.g, colorRGB.b);
-          // Serial.print("color = ");
-          // Serial.println(color);
+          // Jerial.print("color = ");
+          // Jerial.println(color);
 
           if (wireStatus[i][j] == 0) {
             // leds.setPixelColor((i * 5) + fillSequence[j], 0x000000);
           } else if (probeHighlight != i) {
             leds.setPixelColor((((i - 1) * 5) + (4 - j)), color);
-            // Serial.print((((i - 1) * 5) + (4 - j)));
-            // Serial.print(" ");
+            // Jerial.print((((i - 1) * 5) + (4 - j)));
+            // Jerial.print(" ");
           }
         }
       }
@@ -953,10 +955,10 @@ void initRowAnimations() {
       uint32_t color = HsvToRaw(colorHSV);
 
       animations[i + 3][j] = color;
-      // Serial.print(color, HEX);
-      // Serial.print(" ");
+      // Jerial.print(color, HEX);
+      // Jerial.print(" ");
     }
-    // Serial.println();
+    // Jerial.println();
   }
 
   for (int i = 0; i < 3; i++) {
@@ -1145,12 +1147,12 @@ void assignRowAnimations(void) {
 
     for (int i = 0; i < 10; i++) {
       if (gpioNet[i] > numberOfNets) {
-        // Serial.print("gpioNet[");
-        // Serial.print(i);
-        // Serial.print("] = ");
-        // Serial.println(gpioNet[i]);
-        // Serial.print("numberOfNets = ");
-        // Serial.println(numberOfNets);
+        // Jerial.print("gpioNet[");
+        // Jerial.print(i);
+        // Jerial.print("] = ");
+        // Jerial.println(gpioNet[i]);
+        // Jerial.print("numberOfNets = ");
+        // Jerial.println(numberOfNets);
 
         // Revert: always clear out-of-range nets; they will be reassigned on refresh
         gpioNet[i] = -1;
@@ -1191,22 +1193,22 @@ void assignRowAnimations(void) {
       rowAnimations[33].net = warningNet;
     }
   }
-  // Serial.println(" ");
+  // Jerial.println(" ");
   //   for (int i = 0; i < numberOfNets; i++) {
 
-  //     Serial.print(i);
-  //     Serial.print(" ");
-  //     Serial.print(assignedAnimations[i]);
-  //     Serial.print("\t");
+  //     Jerial.print(i);
+  //     Jerial.print(" ");
+  //     Jerial.print(assignedAnimations[i]);
+  //     Jerial.print("\t");
 
   //     for (int j = 0; j < 15; j++) {
-  //       Serial.printf("%06x ",
-  //       rowAnimations[assignedAnimations[i]].frames[j]); Serial.print(" ");
+  //       Jerial.printf("%06x ",
+  //       rowAnimations[assignedAnimations[i]].frames[j]); Jerial.print(" ");
   //     }
-  //     Serial.println();
+  //     Jerial.println();
 
   //   }
-  //  Serial.println();
+  //  Jerial.println();
 }
 
 void showRowAnimation(int net) {
@@ -1239,8 +1241,8 @@ void showRowAnimation(int index, int net) {
   // if (rowAnimations[index].type == 3) {
   //   rowAnimations[index].net = warningNet;
 
-  //   // Serial.print("warningNet = ");
-  //   // Serial.println(warningNet);
+  //   // Jerial.print("warningNet = ");
+  //   // Jerial.println(warningNet);
   //   }
 
   actualNet = net; // findNodeInNet(net);
@@ -1253,8 +1255,8 @@ void showRowAnimation(int index, int net) {
   uint32_t brightenedNodeColors[5];
 
   if (rowAnimations[index].net == warningNet) {
-    // Serial.print("warningNet: ");
-    // Serial.println(warningNet);
+    // Jerial.print("warningNet: ");
+    // Jerial.println(warningNet);
     rowAnimations[index].row = warningRow;
     uint32_t color;
 
@@ -1263,11 +1265,11 @@ void showRowAnimation(int index, int net) {
       hsvColor colorHSV = RgbToHsv(netColors[warningNet]);
       colorHSV.h =
           ((colorHSV.h - (int)((highlightedRowOffsetHues[i] * 1.5))) / 8) % 255;
-      // Serial.print("colorHSV.h: ") ;
-      // Serial.println(colorHSV.h);
+      // Jerial.print("colorHSV.h: ") ;
+      // Jerial.println(colorHSV.h);
       colorHSV.v = jumperlessConfig.display.led_brightness + 10;
-      // Serial.print("colorHSV.h = ");
-      // Serial.println(colorHSV.h);
+      // Jerial.print("colorHSV.h = ");
+      // Jerial.println(colorHSV.h);
       // colorHSV.s = satValues[i];
       color = HsvToRaw(colorHSV);
 
@@ -1282,8 +1284,8 @@ void showRowAnimation(int index, int net) {
 
     // handle the row animation for a single row, rather than the whole net
     if (rowAnimations[index].row > 0) {
-      // Serial.print("rowAnimations[index].row: ");
-      // Serial.println(rowAnimations[index].row);
+      // Jerial.print("rowAnimations[index].row: ");
+      // Jerial.println(rowAnimations[index].row);
       for (int i = 0; i < 5; i++) {
 
         uint32_t color = rowAnimations[index]
@@ -1294,8 +1296,8 @@ void showRowAnimation(int index, int net) {
         if (i == 2) {
           // colorHSV.s = 120;
           colorHSV.h = (rowAnimations[index].currentFrame % 3) * 10;
-          // Serial.print("rowAnimations[index].currentFrame: ");
-          // Serial.println(rowAnimations[index].currentFrame);
+          // Jerial.print("rowAnimations[index].currentFrame: ");
+          // Jerial.println(rowAnimations[index].currentFrame);
           colorHSV.v = 200; // jumperlessConfig.display.led_brightness+70;
         } else {
           // colorHSV.s = 230;
@@ -1322,8 +1324,8 @@ void showRowAnimation(int index, int net) {
     for (int i = 0; i < rowAnimations[index].numberOfFrames; i++) {
       hsvColor colorHSV;
 
-      // Serial.print("netColors[brightenedNet]: ");
-      // Serial.println(packRgb( netColors[brightenedNet]), HEX);
+      // Jerial.print("netColors[brightenedNet]: ");
+      // Jerial.println(packRgb( netColors[brightenedNet]), HEX);
       // if (rowAnimations[index].net > 3) {
       colorHSV = RgbToHsv(netColors[brightenedNet]);
       colorHSV.h =
@@ -1332,8 +1334,8 @@ void showRowAnimation(int index, int net) {
       //  colorHSV = RgbToHsv(netColors[rowAnimations[index].net]);
       //  }
       colorHSV.v = jumperlessConfig.display.led_brightness + 10;
-      // Serial.print("colorHSV.h = ");
-      // Serial.println(colorHSV.h);
+      // Jerial.print("colorHSV.h = ");
+      // Jerial.println(colorHSV.h);
       // colorHSV.s = satValues[i];
       color = HsvToRaw(colorHSV);
 
@@ -1348,8 +1350,8 @@ void showRowAnimation(int index, int net) {
 
     // handle the row animation for a single row, rather than the whole net
     if (rowAnimations[index].row >= 0) {
-      // Serial.print("rowAnimations[index].row: ");
-      // Serial.println(rowAnimations[index].row);
+      // Jerial.print("rowAnimations[index].row: ");
+      // Jerial.println(rowAnimations[index].row);
       for (int i = 0; i < 5; i++) {
 
         uint32_t color = rowAnimations[index]
@@ -1432,7 +1434,7 @@ void showRowAnimation(int index, int net) {
   // brightenedNodeColors[3] = brightenedNodeColors[1];
   // brightenedNodeColors[4] = brightenedNodeColors[0];
 
-  // Serial.println(" ");
+  // Jerial.println(" ");
   int row = 2;
 
   if (rowAnimations[index].direction == 0) {
@@ -1445,12 +1447,12 @@ void showRowAnimation(int index, int net) {
     frameColors[3] = tempFrame[1];
     frameColors[4] = tempFrame[0];
   }
-  // Serial.print("\n\n\rnet = ");
-  // Serial.print(net);
-  // Serial.print("   actualNet = ");
-  // Serial.print(actualNet);
-  // Serial.print("   direction = ");
-  // Serial.println(rowAnimations[net].direction);
+  // Jerial.print("\n\n\rnet = ");
+  // Jerial.print(net);
+  // Jerial.print("   actualNet = ");
+  // Jerial.print(actualNet);
+  // Jerial.print("   direction = ");
+  // Jerial.println(rowAnimations[net].direction);
 
   if (jumperlessConfig.display.lines_wires == 0 ||
       numberOfShownNets > MAX_NETS_FOR_WIRES) {
@@ -1491,8 +1493,8 @@ void showRowAnimation(int index, int net) {
 
           } else if (brightenedNode > 0 && i == brightenedNode) {
             leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j]);
-            // Serial.print("brightenedNode: ");
-            // Serial.println(brightenedNode);
+            // Jerial.print("brightenedNode: ");
+            // Jerial.println(brightenedNode);
           } else {
             leds.setPixelColor(((i - 1) * 5) + j, frameColors[j]);
           }
@@ -1555,10 +1557,10 @@ void showAllRowAnimations() {
 
     showRowAnimation(i);
     if (rowAnimations[i].type == 3) {
-      // Serial.print("warningNet = ");
-      // Serial.print(warningNet);
-      // Serial.print(" ");
-      // Serial.println(millis());
+      // Jerial.print("warningNet = ");
+      // Jerial.print(warningNet);
+      // Jerial.print(" ");
+      // Jerial.println(millis());
     }
   }
 }
@@ -1566,43 +1568,43 @@ void showAllRowAnimations() {
 void printWireStatus(void) {
 
   for (int s = 1; s <= 30; s++) {
-    Serial.print(s);
-    Serial.print(" ");
+    Jerial.print(s);
+    Jerial.print(" ");
     if (s < 9) {
-      Serial.print(" ");
+      Jerial.print(" ");
     }
   }
-  Serial.println();
+  Jerial.println();
 
   int level = 1;
   for (int r = 0; r < 5; r++) {
     for (int s = 1; s <= 30; s++) {
-      Serial.print(wireStatus[s][r]);
-      Serial.print(" ");
+      Jerial.print(wireStatus[s][r]);
+      Jerial.print(" ");
       if (wireStatus[s][r] < 10) {
-        Serial.print(" ");
+        Jerial.print(" ");
       }
     }
-    Serial.println();
+    Jerial.println();
   }
-  Serial.println("\n\n");
+  Jerial.println("\n\n");
   for (int s = 31; s <= 60; s++) {
-    Serial.print(s);
-    Serial.print(" ");
+    Jerial.print(s);
+    Jerial.print(" ");
     if (s < 9) {
-      Serial.print(" ");
+      Jerial.print(" ");
     }
   }
-  Serial.println();
+  Jerial.println();
   for (int r = 0; r < 5; r++) {
     for (int s = 31; s <= 60; s++) {
-      Serial.print(wireStatus[s][r]);
-      Serial.print(" ");
+      Jerial.print(wireStatus[s][r]);
+      Jerial.print(" ");
       if (wireStatus[s][r] < 10) {
-        Serial.print(" ");
+        Jerial.print(" ");
       }
     }
-    Serial.println();
+    Jerial.println();
   }
 }
 // }
@@ -1649,56 +1651,56 @@ void bread::print(const char c, uint32_t color, uint32_t backgroundColor,
 }
 
 void bread::print(const char *s) {
-  // Serial.println("1");
+  // Jerial.println("1");
   printString(s, defaultColor);
 }
 
 void bread::print(const char *s, int position) {
-  // Serial.println("2");
+  // Jerial.println("2");
   printString(s, defaultColor, 0xffffff, position);
 }
 
 void bread::print(const char *s, uint32_t color) {
-  // Serial.println("3");
+  // Jerial.println("3");
   printString(s, color);
 }
 
 void bread::print(const char *s, uint32_t color, uint32_t backgroundColor) {
-  // Serial.println("4");
+  // Jerial.println("4");
   printString(s, color, backgroundColor);
 }
 
 void bread::print(const char *s, uint32_t color, uint32_t backgroundColor,
                   int position, int topBottom) {
-  // Serial.println("5");
+  // Jerial.println("5");
   printString(s, color, backgroundColor, position, topBottom);
 }
 
 void bread::print(const char *s, uint32_t color, uint32_t backgroundColor,
                   int position, int topBottom, int nudge) {
-  // Serial.println("5");
+  // Jerial.println("5");
   printString(s, color, backgroundColor, position, topBottom, nudge);
 }
 
 void bread::print(const char *s, uint32_t color, uint32_t backgroundColor,
                   int position, int topBottom, int nudge, int lowercaseNumber) {
-  // Serial.println("5");
+  // Jerial.println("5");
   printString(s, color, backgroundColor, position, topBottom, nudge,
               lowercaseNumber);
 }
 
 void bread::print(const char *s, uint32_t color, uint32_t backgroundColor,
                   int topBottom) {
-  // Serial.println("6");
+  // Jerial.println("6");
   printString(s, color, backgroundColor, 0, topBottom);
 }
 
 void bread::print(int i) {
-  // Serial.println("7");
+  // Jerial.println("7");
   char buffer[15];
   itoa(i, buffer, 10);
   printString(buffer, defaultColor);
-  // Serial.println(buffer);
+  // Jerial.println(buffer);
 }
 
 // void bread::print(int i, int position) {
@@ -1926,7 +1928,7 @@ void printGraphicsRow(uint8_t data, int row, uint32_t color, uint32_t bg) {
   if (bg == 0xFFFFFF) {
 
     for (int j = 4; j >= 0; j--) {
-      // Serial.println(((data) & columnMask[j]) != 0 ? "1" : "0");
+      // Jerial.println(((data) & columnMask[j]) != 0 ? "1" : "0");
       if (((data)&columnMask[j]) != 0) {
         color = scaleBrightness(color, menuBrightnessSetting);
         leds.setPixelColor(((row) * 5) + j, color);
@@ -1937,7 +1939,7 @@ void printGraphicsRow(uint8_t data, int row, uint32_t color, uint32_t bg) {
   } else if (bg == 0xFFFFFE) {
 
     for (int j = 4; j >= 0; j--) {
-      // Serial.println(((data) & columnMask[j]) != 0 ? "1" : "0");
+      // Jerial.println(((data) & columnMask[j]) != 0 ? "1" : "0");
       if (((data)&columnMask[j]) != 0) {
         color = scaleBrightness(color, menuBrightnessSetting);
         leds.setPixelColor(((row) * 5) + j, color);
@@ -2098,20 +2100,20 @@ void printString(const char *s, uint32_t color, uint32_t bg, int position,
     // } else {
     //   position = position % 14;
     // }
-    // Serial.print(s[i]);
-    // Serial.print(" ");
-    // Serial.println(position);
+    // Jerial.print(s[i]);
+    // Jerial.print(" ");
+    // Jerial.println(position);
     // if (i > strlen(s))
     // {
     //     printChar(' ', 0x000000, 0x000000, position, topBottom);
     // } else {
-    // Serial.println(position);
+    // Jerial.println(position);
     printChar(s[i], color, bg, position, topBottom, nudge, lowercaseNumber);
     // }
 
     position++;
   }
-  // Serial.println();
+  // Jerial.println();
 }
 
 void bread::clear(int topBottom) {
@@ -2149,15 +2151,15 @@ void scrollFont() {
 
   uint8_t columnMask[5] = // 'JumperlessFontmap', 500x5px
       {0b00000001, 0b00000010, 0b00000100, 0b00001000, 0b00010000};
-  while (Serial.available() == 0) {
+  while (Jerial.available() == 0) {
 
     for (int i = 0; i < 60; i++) {
       for (int j = 0; j < 5; j++) {
         if ((font[(i + scrollPosition) % 500][0] & columnMask[j]) != 0) {
-          // Serial.print("1");
+          // Jerial.print("1");
           leds.setPixelColor((i * 5) + j, color);
         } else {
-          // Serial.print("0");
+          // Jerial.print("0");
           leds.setPixelColor((i * 5) + j, 0x00, 0x00, 0x00);
         }
       }
@@ -2179,11 +2181,11 @@ void printTextFromMenu(int print) {
   int index = 0;
   // b.clear();
   unsigned long timeout = millis();
-  while (Serial.available() > 0) {
+  while (Jerial.available() > 0) {
     if (index > 78) {
       break;
     }
-    f[index] = Serial.read();
+    f[index] = Jerial.read();
     index++;
     if (millis() - timeout > 1000) {
       break;
@@ -2201,7 +2203,7 @@ void printTextFromMenu(int print) {
   f[index + 2] = ' ';
   index += 3;
   uint32_t color = 0x100010;
-  // Serial.print(index);
+  // Jerial.print(index);
   defconString[0] = f[0];
   defconString[1] = f[1];
   defconString[2] = f[2];
@@ -2222,20 +2224,20 @@ void printTextFromMenu(int print) {
 
   defconDisplay = 0;
   unsigned long timerScrollTimer = millis();
-  // while (Serial.available() != 0) {
-  //   char trash = Serial.read();
+  // while (Jerial.available() != 0) {
+  //   char trash = Jerial.read();
   //   }
 
   int speed = 200000;
   int cycleCount = 15;
   if (print == 1) {
-    Serial.println("\n\rPress any key to exit\n\r");
+    Jerial.println("\n\rPress any key to exit\n\r");
 
     if (scroll == 1) {
-      Serial.println("scroll wheel to change speed)\n\r");
+      Jerial.println("scroll wheel to change speed)\n\r");
     }
   }
-  while (Serial.available() == 0) {
+  while (Jerial.available() == 0) {
     if (scroll == 1) {
       rotaryEncoderStuff();
       if (encoderDirectionState == UP) {
@@ -2247,14 +2249,14 @@ void printTextFromMenu(int print) {
         if (speed < 0) {
           speed = 0;
         }
-        // Serial.print("\r                          \rspeed = ");
-        // Serial.print(speed);
+        // Jerial.print("\r                          \rspeed = ");
+        // Jerial.print(speed);
 
         // encoderDirectionState = NONE;
       } else if (encoderDirectionState == DOWN) {
         speed = speed + 10000;
-        //           Serial.print("\r                          \rspeed = ");
-        // Serial.print(speed);
+        //           Jerial.print("\r                          \rspeed = ");
+        // Jerial.print(speed);
         // encoderDirectionState = NONE;
         if (speed > 1000000) {
           speed = 1000000;
@@ -2262,8 +2264,8 @@ void printTextFromMenu(int print) {
       }
 
       if ((micros() - timerScrollTimer) > speed) {
-        // Serial.print("defNudge = ");
-        // Serial.println(defNudge);
+        // Jerial.print("defNudge = ");
+        // Jerial.println(defNudge);
         timerScrollTimer = micros();
         defNudge--;
         if (defNudge < -3) {
@@ -2284,12 +2286,12 @@ void printTextFromMenu(int print) {
     }
   }
 
-  if (Serial.peek() == '#') {
-    uint8_t trash = Serial.read();
+  if (Jerial.peek() == '#') {
+    uint8_t trash = Jerial.read();
     printTextFromMenu(0);
   }
 
-  // while (Serial.available() == 0) {
+  // while (Jerial.available() == 0) {
   //   // b.print(f, color);
   //   // delay(100);
   //   // leds.show();
@@ -2331,30 +2333,30 @@ void showArray(uint8_t *array, int size) {
 }
 
 int getCursorPositionX() {
-  Serial.printf("\033[6n");
-  Serial.flush();
-  String response = Serial.readStringUntil(';');
+  Jerial.printf("\033[6n");
+  Jerial.flush();
+  String response = Jerial.readStringUntil(';');
   response.remove(0, 2);
   return response.toInt();
 }
 
 int getCursorPositionY() {
-  Serial.printf("\033[6n");
-  Serial.flush();
-  String response = Serial.readStringUntil(';');
+  Jerial.printf("\033[6n");
+  Jerial.flush();
+  String response = Jerial.readStringUntil(';');
   response.remove(0, 2);
   return response.toInt();
 }
 int cursorSaved = 0;
 void saveCursorPosition(Stream *stream) {
-  stream->print("\033[s");
-  stream->flush();
+  Jerial.print("\033[s");
+  Jerial.flush();
   cursorSaved = 1;
 }
 
 void restoreCursorPosition(Stream *stream) {
-  stream->print("\033[u");
-  stream->flush();
+  Jerial.print("\033[u");
+  Jerial.flush();
   cursorSaved = 0;
 }
 
@@ -2370,41 +2372,41 @@ void moveCursor(int posX, int posY, int absolute, Stream *stream, bool flush) {
   }
 
   if (posX == -1 && posY != -1) {
-    stream->printf("\033[%dA", posY);
+    Jerial.printf("\033[%dA", posY);
     if (flush == true) {
-      stream->flush();
+      Jerial.flush();
     }
     return;
   }
 
   if (posX != -1 && posY == -1) {
-    stream->printf("\033[%dC", posX);
+    Jerial.printf("\033[%dC", posX);
     if (flush == true) {
-      stream->flush();
+      Jerial.flush();
     }
     return;
   }
 
   if (absolute == 1) {
-    stream->printf("\033[%d;%dH", posY, posX);
+    Jerial.printf("\033[%d;%dH", posY, posX);
 
     if (flush == true) {
-      stream->flush();
+      Jerial.flush();
     }
   } else {
-    stream->printf("\033[%dA", posY);
-    stream->printf("\033[%dC", posX);
+    Jerial.printf("\033[%dA", posY);
+    Jerial.printf("\033[%dC", posX);
     if (flush == true) {
-      stream->flush();
+      Jerial.flush();
     }
   }
-  //   Serial.printf("\033[6n");
-  // Serial.flush();
-  // String response = Serial.readStringUntil('\n');
+  //   Jerial.printf("\033[6n");
+  // Jerial.flush();
+  // String response = Jerial.readStringUntil('\n');
   // response.remove(0, 2);
 
-  // Serial.println(response);
-  //   Serial.flush();
+  // Jerial.println(response);
+  //   Jerial.flush();
 }
 
 /*
@@ -2533,7 +2535,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
       serial2Connected = true;
       serial2ConnectTime = millis();
       serial2ClearSent = 0;
-      Serial.println("Serial 2 DTR connected");
+      Jerial.println("Serial 2 DTR connected");
     }
 
     // Send clear screen 1 second after connection is established
@@ -2563,7 +2565,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
       serial1Connected = true;
       serial1ConnectTime = millis();
       serial1ClearSent = 0;
-      Serial.println("Serial 1 DTR connected");
+      Jerial.println("Serial 1 DTR connected");
     }
 
     // Send clear screen 1 second after connection is established
@@ -2820,14 +2822,14 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
     if (mainSerial == true) {
       // restoreCursorPosition();
       int clearAbove = 6;
-      stream->printf("\033[%dA", 30);
-      stream->printf("\033[%dA", clearAbove);
-      // stream->printf("\033[%dC", xOffset);
+      Jerial.printf("\033[%dA", 30);
+      Jerial.printf("\033[%dA", clearAbove);
+      // Jerial.printf("\033[%dC", xOffset);
       for (int i = 0; i < clearAbove; i++) {
-        stream->printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
+        Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
       }
-      stream->print("\033[0G");
-      // stream->printf("\033[%dC", xOffset);
+      Jerial.print("\033[0G");
+      // Jerial.printf("\033[%dC", xOffset);
 
     } else {
       snprintf(screenLines[currentLine++], LINE_WIDTH, "\033[0;0H\033[0m");
@@ -2843,9 +2845,9 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
     // Wait for buffer space if needed
     int lineLen = strlen(screenLines[i]);
-    if (stream->availableForWrite() < lineLen + 3) { // +3 for \r\n\0
+    if (Jerial.availableForWrite() < lineLen + 3) { // +3 for \r\n\0
       unsigned long waitStart = millis();
-      while (stream->availableForWrite() < lineLen + 3 &&
+      while (Jerial.availableForWrite() < lineLen + 3 &&
              (millis() - waitStart) < 10) {
         delayMicroseconds(10);
       }
@@ -2855,15 +2857,15 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
     // Send line with proper line ending
     if (mainSerial == true) {
 
-      stream->printf("\033[%dC", xOffset);
+      Jerial.printf("\033[%dC", xOffset);
     }
 
-    stream->print(screenLines[i]);
-    stream->print("\r\n");
+    Jerial.print(screenLines[i]);
+    Jerial.print("\r\n");
   }
 
   if (mainSerial == true) {
-    stream->printf("\033[%dB", 4);
+    Jerial.printf("\033[%dB", 4);
   }
 
 
@@ -2886,8 +2888,8 @@ int attractMode(void) {
       netSlot = -1;
       defconDisplay = 0;
     }
-    // Serial.print("netSlot = ");
-    // Serial.println(netSlot);
+    // Jerial.print("netSlot = ");
+    // Jerial.println(netSlot);
     slotChanged = 1;
     showLEDsCore2 = -1;
     encoderDirectionState = NONE;
@@ -2901,8 +2903,8 @@ int attractMode(void) {
       netSlot = NUM_SLOTS;
       defconDisplay = 0;
     }
-    // Serial.print("netSlot = ");
-    // Serial.println(netSlot);
+    // Jerial.print("netSlot = ");
+    // Jerial.println(netSlot);
     slotChanged = 1;
     showLEDsCore2 = -1;
     encoderDirectionState = NONE;
@@ -3400,8 +3402,8 @@ void drawImage(int imageIndex) {
   //   } else if (cycleCount >= startupFrameLEN - 16) {
   // brightnessSet -=6;
   // }
-  // Serial.print(brightnessSet);
-  // Serial.print(", ");
+  // Jerial.print(brightnessSet);
+  // Jerial.print(", ");
 
   for (int i = 400; i < 445; i++) {
 
@@ -3466,12 +3468,12 @@ void printAllRLEimageData() {
 }
 
 void printRLEimageData(int imageIndex) {
-  Serial.print("//RLE image data for imageIndex: ");
-  Serial.println(imageIndex);
+  Jerial.print("//RLE image data for imageIndex: ");
+  Jerial.println(imageIndex);
 
-  Serial.print("\n\n\rconst uint32_t startupFrame");
-  Serial.print(imageIndex);
-  Serial.println("[] PROGMEM = {");
+  Jerial.print("\n\n\rconst uint32_t startupFrame");
+  Jerial.print(imageIndex);
+  Jerial.println("[] PROGMEM = {");
 
   const uint32_t *frameData = startupFrameArray[imageIndex];
   // Assuming each frame has a fixed size, e.g. 32*22, which is 704.
@@ -3510,75 +3512,75 @@ void printRLEimageData(int imageIndex) {
 
   // Print non-black pixels
   for (size_t i = 0; i < nonBlackPixels.size(); ++i) {
-    Serial.print("0x");
+    Jerial.print("0x");
     if (nonBlackPixels[i] < 0x100000)
-      Serial.print("0");
+      Jerial.print("0");
     if (nonBlackPixels[i] < 0x10000)
-      Serial.print("0");
+      Jerial.print("0");
     if (nonBlackPixels[i] < 0x1000)
-      Serial.print("0");
+      Jerial.print("0");
     if (nonBlackPixels[i] < 0x100)
-      Serial.print("0");
+      Jerial.print("0");
     if (nonBlackPixels[i] < 0x10)
-      Serial.print("0");
-    Serial.print(nonBlackPixels[i], HEX);
+      Jerial.print("0");
+    Jerial.print(nonBlackPixels[i], HEX);
     if (i < nonBlackPixels.size() - 1) {
-      Serial.print(", ");
+      Jerial.print(", ");
     }
     if ((i + 1) % 16 == 0) { // Print 16 values per line
-      Serial.println();
+      Jerial.println();
     }
   }
-  Serial.println("};");
-  Serial.println();
+  Jerial.println("};");
+  Jerial.println();
 
   // Print black start indexes
-  Serial.print("const int blackStartIndexes");
-  Serial.print(imageIndex);
-  Serial.println("[] PROGMEM = {");
+  Jerial.print("const int blackStartIndexes");
+  Jerial.print(imageIndex);
+  Jerial.println("[] PROGMEM = {");
   for (size_t i = 0; i < blackStartIndexes.size(); ++i) {
-    Serial.print(blackStartIndexes[i]);
+    Jerial.print(blackStartIndexes[i]);
     if (i < blackStartIndexes.size() - 1) {
-      Serial.print(", ");
+      Jerial.print(", ");
     }
     if ((i + 1) % 16 == 0) {
-      Serial.println();
+      Jerial.println();
     }
   }
-  Serial.println("};");
-  Serial.println();
+  Jerial.println("};");
+  Jerial.println();
 
   // Print black end indexes
-  Serial.print("const int blackEndIndexes");
-  Serial.print(imageIndex);
-  Serial.println("[] PROGMEM = {");
+  Jerial.print("const int blackEndIndexes");
+  Jerial.print(imageIndex);
+  Jerial.println("[] PROGMEM = {");
   for (size_t i = 0; i < blackEndIndexes.size(); ++i) {
-    Serial.print(blackEndIndexes[i]);
+    Jerial.print(blackEndIndexes[i]);
     if (i < blackEndIndexes.size() - 1) {
-      Serial.print(", ");
+      Jerial.print(", ");
     }
     if ((i + 1) % 16 == 0) {
-      Serial.println();
+      Jerial.println();
     }
   }
-  Serial.println("};");
-  Serial.println();
-  Serial.flush();
+  Jerial.println("};");
+  Jerial.println();
+  Jerial.flush();
 }
 
 // Screen state functions for clean transitions - Windows compatible
 void saveScreenState(Stream *stream) {
   // Clear screen for file manager interface - Windows compatible
-  stream->print("\033[2J\033[H");
-  stream->flush();
+  Jerial.print("\033[2J\033[H");
+  Jerial.flush();
   // Add delay for Windows terminals to process the command
   delay(50);
 }
 
 void restoreScreenState(Stream *stream) {
   // Clear screen for clean return to REPL - Windows compatible
-  stream->print("\033[2J\033[H");
-  stream->flush();
+  Jerial.print("\033[2J\033[H");
+  Jerial.flush();
   // Add delay for Windows terminals to process the command
   delay(50);
 }
@@ -3597,7 +3599,7 @@ int printMenuLine(const char* format, ...) {
   
   if (len > 0 && len < sizeof(buffer)) {
     // Print the formatted string
-    Serial.print(buffer);
+    Jerial.print(buffer);
    // TUI::log(buffer);
     printed = len;
     // Cycle to next color
@@ -3624,7 +3626,7 @@ int printMenuLine(int showExtraMenu, int minLevel, const char* format, ...) {
   
   if (len > 0 && len < sizeof(buffer)) {
     // Print the formatted string
-    Serial.print(buffer);
+    Jerial.print(buffer);
     //TUI::log(buffer);
     printed = len;
   }

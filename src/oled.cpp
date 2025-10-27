@@ -130,6 +130,10 @@ int oled::init() {
     scl_pin = jumperlessConfig.top_oled.scl_pin;
     sda_row = jumperlessConfig.top_oled.sda_row;
     scl_row = jumperlessConfig.top_oled.scl_row;
+    
+    // Read display dimensions from config
+    displayWidth = jumperlessConfig.top_oled.width;
+    displayHeight = jumperlessConfig.top_oled.height;
     // Serial.println("oled::init");
     // Serial.println(millis());
 
@@ -139,6 +143,9 @@ int oled::init() {
     // delay(100);
     if (checkConnection() == false) {
         oledConnected = false;
+        // Serial.println("oled::init checkConnection failed");
+        // Serial.println(millis());
+        // Serial.flush();
        /// disconnect();
         return 0;
     }
@@ -158,9 +165,13 @@ int oled::init() {
     display.clearDisplay();
     
     // Center the logo on the display
-    int x = (SCREEN_WIDTH - 128) / 2;
-    int y = (SCREEN_HEIGHT - 32) / 2 + 1;
-    display.drawBitmap(x, y, jogo32h, 128, 32, SSD1306_WHITE);
+    int x = (displayWidth - 128) / 2;
+    int y = (displayHeight - 32) / 2 + 1;
+    if (strcmp(jumperlessConfig.top_oled.startup_message, "") != 0) {
+        clearPrintShow(jumperlessConfig.top_oled.startup_message, 2, true, true, true);
+    } else {
+        display.drawBitmap(x, y, jogo32h, 128, 32, SSD1306_WHITE);
+    }
     display.display();
     
     setCursor(0, 0);
@@ -173,10 +184,10 @@ int oled::init() {
 
 // Helper to check I2C communication
 bool oled::checkConnection(void) {
-    if (jumperlessConfig.top_oled.enabled == 0) {
-        oledConnected = false;
-        return false;
-    }
+    // if (jumperlessConfig.top_oled.enabled == 0) {
+    //     oledConnected = false;
+    //     return false;
+    // }
     //if (millis() - lastConnectionCheck > 1000) {
         Wire1.beginTransmission(address);
         if (Wire1.endTransmission() != 0) {
@@ -310,11 +321,32 @@ void oled::setFontForSize(FontFamily family, int textSize) {
     FontSizeMapping mapping = fontFamilyMap[family];
     int fontIndex;
     
-    if (textSize <= 1) {
-        // Use size 1 font, fallback to size 2 if not available
+    // Enhanced size mapping:
+    // 0 = 4-5pt (extra small) - use small fonts from index 20-25
+    // 1 = 8-9pt (small) - use size1Index
+    // 2 = 11-12pt (large) - use size2Index
+    
+    if (textSize == 0) {
+        // Extra small - use dedicated 4-5pt fonts
+        switch (family) {
+            case FONT_FREE_MONO:
+                fontIndex = 24; // FreeMono5pt
+                break;
+            case FONT_PRAGMATISM:
+                fontIndex = 23; // Pragmatism5pt
+                break;
+            case FONT_ANDALE_MONO:
+                fontIndex = 12; // ANDALEMO5pt
+                break;
+            default:
+                fontIndex = 23; // Default to Pragmatism5pt for best readability
+                break;
+        }
+    } else if (textSize == 1) {
+        // Use size 1 font (8-9pt), fallback to size 2 if not available
         fontIndex = (mapping.size1Index != -1) ? mapping.size1Index : mapping.size2Index;
     } else {
-        // Use size 2 font, fallback to size 1 if not available
+        // Use size 2 font (11-12pt), fallback to size 1 if not available
         fontIndex = (mapping.size2Index != -1) ? mapping.size2Index : mapping.size1Index;
     }
     
@@ -451,7 +483,7 @@ void oled::getCenteredPosition(const char* str, int16_t* x, int16_t* y, Position
     display.getTextBounds(str, 0, 0, &x1, &y1, &w, &h);
     
     // Center horizontally
-    *x = (SCREEN_WIDTH - w) / 2;
+    *x = (displayWidth - w) / 2;
     // Serial.print("w: ");
     // Serial.println(w);
     // Serial.print("h: ");
@@ -470,10 +502,10 @@ void oled::getCenteredPosition(const char* str, int16_t* x, int16_t* y, Position
     if (mode == POS_TIGHT || (mode == POS_AUTO && currentTextSize > 1)) {
         // For larger text, center only the ascent (visible part above baseline)
         // Put baseline at screen_center + (ascent/2) so visual center is at screen center
-        *y = (SCREEN_HEIGHT / 2) + (bounds.ascent / 2);
+        *y = (displayHeight / 2) + (bounds.ascent / 2);
     } else {
         // Standard baseline positioning - center only the ascent
-        *y = (SCREEN_HEIGHT / 2) + (bounds.ascent / 2);
+        *y = (displayHeight / 2) + (bounds.ascent / 2);
     }
 }
 
@@ -486,7 +518,7 @@ void oled::getCenteredPosition(const char* str, int16_t* x, int16_t* y) {
 bool oled::textFits(const char* str) {
     if (!str) return true;
     TextBounds bounds = getTextBounds(str);
-    return (bounds.width <= SCREEN_WIDTH && bounds.height <= SCREEN_HEIGHT);
+    return (bounds.width <= displayWidth && bounds.height <= displayHeight);
 }
 
 // UNIFIED CURSOR POSITIONING
@@ -525,7 +557,7 @@ void oled::setCursor(int16_t x, int16_t y, PositionMode mode) {
             // Apply font-specific offset for multi-line displays
             for (int i = 0; i < numFonts; i++) {
                 if (fontList[i].font == currentFont && fontList[i].topRowOffset != 0) {
-                    if (SCREEN_HEIGHT >= 24) { // Multi-line capable
+                    if (displayHeight >= 24) { // Multi-line capable
                         finalY += fontList[i].topRowOffset; // Can be positive or negative
                     }
                     break;
@@ -559,6 +591,9 @@ void oled::clearPrintShow(const char* text, int textSize, bool clear, bool showO
         charPos = 0;
         display.clearDisplay();
     }
+    
+    // Auto-detect and switch framebuffer mode based on text size
+    autoDetectMode(textSize);
     
     // Use smart font selection instead of text scaling
     // Default to Eurostile family, but could be made configurable
@@ -705,10 +740,10 @@ void oled::displayMultiLineText(const char* text, bool center) {
     int16_t totalAscentSpan = (lines.size() - 1) * lineSpacing + ascentToUse;
     
     // If it doesn't fit, compress line spacing to fit all ascent areas
-    if (totalAscentSpan > SCREEN_HEIGHT) {
+    if (totalAscentSpan > displayHeight) {
         // Compress spacing: available space minus ascent, divided by number of gaps
         if (lines.size() > 1) {
-            lineSpacing = (SCREEN_HEIGHT - ascentToUse) / (lines.size() - 1) - 3;
+            lineSpacing = (displayHeight - ascentToUse) / (lines.size() - 1) - 3;
             // Ensure minimum spacing of at least ascent height
             if (lineSpacing < ascentToUse) {
                 lineSpacing = ascentToUse-3;
@@ -717,14 +752,14 @@ void oled::displayMultiLineText(const char* text, bool center) {
     }
     
     // Position last line so its ascent ends exactly at screen bottom
-    int16_t lastLineBaseline = SCREEN_HEIGHT- 2 ;
+    int16_t lastLineBaseline = displayHeight- 2 ;
     int16_t firstLineBaseline = lastLineBaseline - (lines.size() - 1) * lineSpacing;
     
     // Apply font-specific topRowOffset for multi-line text positioning
     // This ensures fonts with different vertical metrics render at the correct position
     for (int i = 0; i < numFonts; i++) {
         if (fontList[i].font == currentFont && fontList[i].topRowOffset != 0) {
-            if (SCREEN_HEIGHT >= 24) { // Multi-line capable display
+            if (displayHeight >= 24) { // Multi-line capable display
                 firstLineBaseline += fontList[i].topRowOffset; // Can be positive or negative
             }
             break;
@@ -884,7 +919,7 @@ void oled::moveToNextLine() {
     int16_t currentY = display.getCursorY();
     int16_t nextY = currentY + metrics.lineHeight;
     
-    if (nextY >= SCREEN_HEIGHT) {
+    if (nextY >= displayHeight) {
         nextY = metrics.ascent; // Wrap to top
     }
     
@@ -970,7 +1005,7 @@ void oled::clearLine(int line) {
   if (!oledConnected) return;
   
   // Clear a specific line by drawing a black rectangle
-  display.fillRect(0, line * 8, SCREEN_WIDTH, 8, SSD1306_BLACK);
+  display.fillRect(0, line * 8, displayWidth, 8, SSD1306_BLACK);
 }
 
 void oled::showFileStatus(const char* currentPath, int fileCount, const char* selectedFile) {
@@ -1131,8 +1166,8 @@ void oled::showJogo32h() {
     if (!oledConnected) return;
     display.clearDisplay();
     
-    int x = (SCREEN_WIDTH - 128) / 2 + 1;
-    int y = (SCREEN_HEIGHT - 32) / 2 + 1;
+    int x = (displayWidth - 128) / 2 + 1;
+    int y = (displayHeight - 32) / 2 + 1;
     
     display.drawBitmap(x, y, jogo32h, 128, 32, SSD1306_WHITE);
     display.display();
@@ -1313,7 +1348,7 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
     };
     
     // Process framebuffer in 2x2 blocks to create 64x16 output
-    for (int blockRow = 0; blockRow < SCREEN_HEIGHT / 2; blockRow++) {
+    for (int blockRow = 0; blockRow < displayHeight / 2; blockRow++) {
         stream->printf("\033[%dC",x_pos);
         stream->printf("\033[0K");
         if (border == 1) {
@@ -1324,7 +1359,7 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
             stream->print(" "); // Left border
         }
         
-        for (int blockCol = 0; blockCol < SCREEN_WIDTH / 2; blockCol++) {
+        for (int blockCol = 0; blockCol < displayWidth / 2; blockCol++) {
             uint8_t pixelMask = 0;
             
             // Check each pixel in the 2x2 block
@@ -1336,7 +1371,7 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
                     // Calculate buffer position for this pixel
                     int page = row / 8;
                     int bit = row % 8;
-                    int bufferIndex = page * SCREEN_WIDTH + col;
+                    int bufferIndex = page * displayWidth + col;
                     
                     // Extract the pixel value
                     uint8_t pixelByte = buffer[bufferIndex];
@@ -1370,7 +1405,7 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
     } else {
         stream->println("                                                                  ");
     }
-    stream->printf("\033[%dB",y_pos - (SCREEN_HEIGHT / 2 ) + 2);
+    stream->printf("\033[%dB",y_pos - (displayHeight / 2 ) + 2);
     if (stream == &Serial) {
       restoreCursorPosition(stream);
     } else {
@@ -1401,16 +1436,16 @@ void oled::dumpFrameBuffer() {
     // - Each byte represents 8 vertical pixels in a column
     // - Buffer layout: [col0_page0, col1_page0, ..., col127_page0, col0_page1, col1_page1, ...]
     
-    for (int row = 0; row < SCREEN_HEIGHT; row++) {
+    for (int row = 0; row < displayHeight; row++) {
         Serial.print("│"); // Left border
         
-        for (int col = 0; col < SCREEN_WIDTH; col++) {
+        for (int col = 0; col < displayWidth; col++) {
             // Calculate which page (group of 8 rows) this pixel is in
             int page = row / 8;
             // Calculate which bit within the byte (0 = top of page, 7 = bottom of page)
             int bit = row % 8;
             // Calculate buffer index: page * width + column
-            int bufferIndex = page * SCREEN_WIDTH + col;
+            int bufferIndex = page * displayWidth + col;
             
             // Extract the specific bit for this pixel
             uint8_t pixelByte = buffer[bufferIndex];
@@ -1429,7 +1464,7 @@ void oled::dumpFrameBuffer() {
     
     Serial.println("└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
     Serial.print("Buffer size: ");
-    Serial.print(SCREEN_WIDTH * SCREEN_HEIGHT / 8);
+    Serial.print(displayWidth * displayHeight / 8);
     Serial.println(" bytes");
 }
 
@@ -1604,6 +1639,241 @@ void oled::drawHighlightedChar(int16_t x, int16_t y, char c) {
 void oled::flushFramebuffer() {
     if (!oledConnected) return;
     display.display();
+}
+
+// ============================================================================
+// DUAL FRAMEBUFFER MODE MANAGEMENT
+// ============================================================================
+
+void oled::setMode(OLEDMode mode) {
+    if (!dualFramebufferEnabled) {
+        // Dual framebuffer not enabled, just track mode
+        currentMode = mode;
+        return;
+    }
+    
+    if (mode == currentMode) {
+        return; // Already in this mode
+    }
+    
+    // Save current framebuffer contents before switching
+    uint8_t* currentBuffer = display.getBuffer();
+    if (currentBuffer) {
+        if (currentMode == MODE_LARGE_TEXT && largeTextFramebuffer) {
+            memcpy(largeTextFramebuffer, currentBuffer, framebufferSize);
+        } else if (currentMode == MODE_SMALL_TEXT && smallTextFramebuffer) {
+            memcpy(smallTextFramebuffer, currentBuffer, framebufferSize);
+        }
+    }
+    
+    // Switch to new mode
+    currentMode = mode;
+    
+    // Load new framebuffer contents
+    if (currentBuffer) {
+        if (currentMode == MODE_LARGE_TEXT && largeTextFramebuffer) {
+            memcpy(currentBuffer, largeTextFramebuffer, framebufferSize);
+        } else if (currentMode == MODE_SMALL_TEXT && smallTextFramebuffer) {
+            memcpy(currentBuffer, smallTextFramebuffer, framebufferSize);
+        }
+    }
+}
+
+void oled::autoDetectMode(int textSize) {
+    if (!dualFramebufferEnabled) {
+        return; // Dual framebuffer not enabled
+    }
+    
+    // Automatic mode detection based on text size
+    if (textSize >= 2) {
+        setMode(MODE_LARGE_TEXT);
+    } else {
+        setMode(MODE_SMALL_TEXT);
+    }
+}
+
+// ============================================================================
+// TERMINAL EMULATION - ANSI/CONTROL SEQUENCE HANDLING
+// ============================================================================
+
+void oled::parseControlSequence(char c) {
+    if (!inEscapeSequence) {
+        if (c == '\x1b') { // ESC character
+            inEscapeSequence = true;
+            escapeBufferPos = 0;
+            memset(escapeBuffer, 0, sizeof(escapeBuffer));
+            return;
+        }
+        
+        // Handle regular control characters
+        switch (c) {
+            case '\r': // Carriage return
+                termCursorX = 0;
+                break;
+            case '\n': // Line feed
+                termCursorY++;
+                if (termCursorY >= displayHeight / 8) {
+                    termCursorY = displayHeight / 8 - 1;
+                }
+                break;
+            case '\t': // Tab
+                termCursorX = ((termCursorX / 8) + 1) * 8;
+                break;
+            case '\b': // Backspace
+                if (termCursorX > 0) termCursorX--;
+                break;
+            default:
+                // Printable character - handle normally
+                break;
+        }
+        return;
+    }
+    
+    // Build escape sequence
+    if (escapeBufferPos < sizeof(escapeBuffer) - 1) {
+        escapeBuffer[escapeBufferPos++] = c;
+        escapeBuffer[escapeBufferPos] = '\0';
+    }
+    
+    // Check if sequence is complete
+    if (c >= 'A' && c <= 'Z') { // Final character
+        executeEscapeSequence();
+        inEscapeSequence = false;
+        escapeBufferPos = 0;
+    } else if (c >= 'a' && c <= 'z') { // Some sequences end with lowercase
+        executeEscapeSequence();
+        inEscapeSequence = false;
+        escapeBufferPos = 0;
+    }
+}
+
+void oled::executeEscapeSequence() {
+    if (escapeBufferPos == 0) return;
+    
+    // Parse CSI sequences (starting with '[')
+    if (escapeBuffer[0] == '[') {
+        char finalChar = escapeBuffer[escapeBufferPos - 1];
+        
+        switch (finalChar) {
+            case 'H': case 'f': { // Cursor position
+                // Format: ESC[row;colH or ESC[H (home)
+                int row = 0, col = 0;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d;%d", &row, &col);
+                }
+                moveCursorTerm(col, row);
+                break;
+            }
+            
+            case 'A': { // Cursor up
+                int n = 1;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d", &n);
+                }
+                termCursorY -= n;
+                if (termCursorY < 0) termCursorY = 0;
+                break;
+            }
+            
+            case 'B': { // Cursor down
+                int n = 1;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d", &n);
+                }
+                termCursorY += n;
+                if (termCursorY >= displayHeight / 8) termCursorY = displayHeight / 8 - 1;
+                break;
+            }
+            
+            case 'C': { // Cursor forward
+                int n = 1;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d", &n);
+                }
+                termCursorX += n;
+                if (termCursorX >= displayWidth / 6) termCursorX = displayWidth / 6 - 1;
+                break;
+            }
+            
+            case 'D': { // Cursor back
+                int n = 1;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d", &n);
+                }
+                termCursorX -= n;
+                if (termCursorX < 0) termCursorX = 0;
+                break;
+            }
+            
+            case 'J': { // Erase in display
+                int n = 0;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d", &n);
+                }
+                if (n == 0) clearToEndOfScreen();
+                else if (n == 2) clearScreen();
+                break;
+            }
+            
+            case 'K': { // Erase in line
+                int n = 0;
+                if (escapeBufferPos > 1) {
+                    sscanf(&escapeBuffer[1], "%d", &n);
+                }
+                if (n == 0) clearToEndOfLine();
+                else if (n == 2) clearLine();
+                break;
+            }
+            
+            case 'm': // SGR (color/style) - ignore for monochrome display
+                break;
+                
+            default:
+                // Unknown sequence - ignore
+                break;
+        }
+    }
+}
+
+void oled::moveCursorTerm(int x, int y) {
+    termCursorX = x;
+    termCursorY = y;
+    
+    // Clamp to display bounds
+    if (termCursorX < 0) termCursorX = 0;
+    if (termCursorY < 0) termCursorY = 0;
+    if (termCursorX >= displayWidth / 6) termCursorX = displayWidth / 6 - 1;
+    if (termCursorY >= displayHeight / 8) termCursorY = displayHeight / 8 - 1;
+}
+
+void oled::clearToEndOfLine() {
+    if (!oledConnected) return;
+    int x = termCursorX * 6;
+    int y = termCursorY * 8;
+    display.fillRect(x, y, displayWidth - x, 8, SSD1306_BLACK);
+}
+
+void oled::clearLine() {
+    if (!oledConnected) return;
+    int y = termCursorY * 8;
+    display.fillRect(0, y, displayWidth, 8, SSD1306_BLACK);
+}
+
+void oled::clearToEndOfScreen() {
+    if (!oledConnected) return;
+    clearToEndOfLine();
+    
+    // Clear all lines below current
+    for (int line = termCursorY + 1; line < displayHeight / 8; line++) {
+        display.fillRect(0, line * 8, displayWidth, 8, SSD1306_BLACK);
+    }
+}
+
+void oled::clearScreen() {
+    if (!oledConnected) return;
+    display.clearDisplay();
+    termCursorX = 0;
+    termCursorY = 0;
 }
 
 // CONNECTION MANAGEMENT

@@ -95,6 +95,8 @@ extern float gpioPWMDutyCycle[10];
 extern bool gpioPWMEnabled[10];
 
 extern volatile bool readingGPIO;
+extern volatile bool readingADC;
+extern volatile bool usingI2C;
 
 struct gpio_function_name_struct {
     gpio_function_t function;

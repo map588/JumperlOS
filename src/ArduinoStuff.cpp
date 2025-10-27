@@ -20,6 +20,7 @@
 #include "hardware/uart.h"
 #include "usb_interface_config.h"
 #include "States.h"
+#include "Jerial.h"
 
 // #include "SerialWrapper.h"
 
@@ -798,9 +799,11 @@ int handleSerialPassthrough( int serial, int print, int printPassthroughFlashing
             // ARDUINO_DEBUG_PRINTLN(serial1Buffer[serial1BufferIndex], HEX);
 
             // serial1BufferIndex--;
-            USBSer1.write( serial1Buffer, serial1BufferIndex );
-            // USBSer1.write('\0');
-            USBSer1.flush( );
+            
+            // Route through Jerial instead of directly to USBSer1
+            // This way Serial1 data appears on Serial, OLED, and USBSer1
+            Jerial.write( (const uint8_t*)serial1Buffer, serial1BufferIndex );
+            Jerial.flush( );
 
             ret += serial1BufferIndex;
             received = serial1BufferIndex;
@@ -871,6 +874,7 @@ int handleSerialPassthrough( int serial, int print, int printPassthroughFlashing
             ret += serial1BufferIndex;
             sent = serial1BufferIndex;
 
+            // Write directly to Serial1 (not through Jerial to avoid echo loop)
             Serial1.write( serial1Buffer, serial1BufferIndex );
             // Serial1.flush( );
 

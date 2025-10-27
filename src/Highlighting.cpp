@@ -170,7 +170,8 @@ void Highlighting::clearHighlighting( void ) {
     // Reset highlight timer
     highlightTimer = 0;
 
-    assignNetColors( );
+    // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
+    showLEDsCore2 = 1;  // Trigger LED update on core 2
 }
 
 int lastReturnNode = -1;
@@ -480,10 +481,12 @@ int Highlighting::encoderNetHighlight( int print, int mode, int divider ) {
 int Highlighting::brightenNet( int node, int addBrightness ) {
 
     if ( node == -1 ) {
-        netColors[ brightenedNet ] = brightenedOriginalColor;
+        // Don't write to netColors[] directly - let assignNetColors() handle it
+        // Just clear the brightened state and trigger LED update
         brightenedNode = -1;
         brightenedNet = 0;
         brightenedRail = -1;
+        showLEDsCore2 = 1;  // Trigger LED update
         return -1;
     }
     addBrightness = 0;
@@ -514,7 +517,8 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
             // Serial.print("\n\rbrightenedNet = ");
             // Serial.println(brightenedNet);
             brightenedOriginalColor = netColors[ brightenedNet ];
-            assignNetColors( );
+            // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
+            showLEDsCore2 = 1;  // Trigger LED update on core 2
             return brightenedNet;
         }
     }
@@ -556,8 +560,8 @@ int Highlighting::warnNet( int node ) {
     // Serial.println(node);
     // Serial.flush();
     if ( node == -1 ) {
-        netColors[ warningNet ] = warningOriginalColor;
-
+        // Don't write to netColors[] directly - let assignNetColors() handle it
+        // Just clear the warning state and trigger LED update
         warningNet = -1;
         warningRow = -1;
         // Serial.print("warningNet = ");
@@ -594,7 +598,8 @@ int Highlighting::warnNet( int node ) {
             }
 
             warningOriginalColor = netColors[ warningNet ];
-            assignNetColors( );
+            // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
+            showLEDsCore2 = 1;  // Trigger LED update on core 2
             warningTimer = millis( );
             return warningNet;
         }
@@ -639,7 +644,8 @@ void Highlighting::warnNetTimeout( int clearAll ) {
         lastWarningTimer = millis( );
         warningTimer = 0;
 
-        assignNetColors( );
+        // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
+        showLEDsCore2 = 1;  // Trigger LED update on core 2
     } else {
         lastWarningTimer = millis( ) - lastWarningTimer;
         // Serial.print("lastWarningTimer = ");
