@@ -2651,6 +2651,10 @@ void showSkippedNodes(uint32_t onColor, uint32_t offColor) {
     }
   }
 
+/// @brief  scale the brightness of a color
+/// @param hexColor - the color to scale
+/// @param scaleFactor - -100 (completely off) to 1000 (10x brighter), 0 is no change
+/// @return the scaled color
 uint32_t scaleBrightness(uint32_t hexColor, int scaleFactor) {
 
   if (scaleFactor == 0) {

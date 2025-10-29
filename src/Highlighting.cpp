@@ -478,6 +478,11 @@ int Highlighting::encoderNetHighlight( int print, int mode, int divider ) {
     return returnNode;
 }
 
+/// @brief  brighten a net
+/// @param node - the node to brighten
+/// @param addBrightness - the amount to brighten the net 
+/// @return the net that was brightened
+
 int Highlighting::brightenNet( int node, int addBrightness ) {
 
     if ( node == -1 ) {
@@ -501,13 +506,13 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
             // Serial.println(brightenedNet);
             // Serial.print("net ");
             // Serial.print(globalState.connections.paths[i].net);
-            if ( brightenedNet == 1 ) {
+            if ( brightenedNet == 1 ) {// TOP_RAIL
                 brightenedRail = 1;
                 // lightUpRail(-1, 1, 1, addBrightness);
-            } else if ( brightenedNet == 2 ) {
+            } else if ( brightenedNet == 2 ) {// BOTTOM_RAIL
                 brightenedRail = 0;
                 // lightUpRail(-1, 0, 1, addBrightness);
-            } else if ( brightenedNet == 3 ) {
+            } else if ( brightenedNet == 3 ) {// GND
                 brightenedRail = 2;
                 // lightUpRail(-1, 2, 1, addBrightness);
             } else {

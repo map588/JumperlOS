@@ -2353,44 +2353,36 @@ void printPWMState( void ) {
 float VoltageAdjuster::snapValues[3] = {0.0, 3.3, 5.0};
 
 uint32_t VoltageAdjuster::determineColor(float value, const VoltageAdjustConfig& config) {
+    // Start with base color
+    uint32_t numberColor = config.posColor;
+    
+    if (value > 0.05) {
+        numberColor = config.posColor;
+    }
+    
+    // Blended regions (approaching special values)
+    if (value < 5.3 && value > 4.7) {
+        numberColor = config.fiveBlended;
+    } else if (value < 3.45 && value > 3.05) {
+        numberColor = config.threeBlended;
+    } else if (value < 0.35 && value > -0.35) {
+        numberColor = config.zeroBlended;
+    }
+    
     // Exact special values (tight ranges for snap points)
     if (value > -0.05 && value < 0.05) {
-        return config.zeroColor;
-    }
-    if (value > 3.25 && value < 3.35) {
-        return config.threeColor;
-    }
-    if (value > 4.95 && value < 5.05) {
-        return config.fiveColor;
-    }
-    if (value > 7.95 && value < 8.55) {
-        return config.maxColor;
+        numberColor = config.zeroColor;
+    } else if (value > 3.25 && value < 3.35) {
+        numberColor = config.threeColor;
+    } else if (value > 4.95 && value < 5.05) {
+        numberColor = config.fiveColor;
+    } else if (value > 7.95 && value < 8.55) {
+        numberColor = config.maxColor;
+    } else if (value < -0.05) {
+        numberColor = config.negColor;
     }
     
-    // // Blended regions (approaching special values)
-    // if (value < 5.3 && value > 4.7) {
-    //     return config.fiveBlended;
-    // }
-    // if (value < 3.75 && value > 3.00) {
-    //     return config.threeBlended;
-    // }
-    // if (value < 0.55 && value > -0.55) {
-    //     return config.zeroBlended;
-    // }
-    
-    // Use gradient from logoColors8vSelect for all other values
-    // Map voltage to array index: -8V to +8V maps to indices 0-59
-    long voltageScaled = (long)(value * 10.0); // Convert to tenths of a volt
-    int colorIndex = map(voltageScaled, -80, 80, 0, 69);
-    // Serial.print("colorIndex: ");
-    // Serial.println(colorIndex);
-    // Serial.flush();
-    
-    // Clamp to valid array bounds
-    if (colorIndex < 0) colorIndex = 0;
-    if (colorIndex > 69) colorIndex = 69;
-    
-    return scaleBrightness(logoColors8vSelect[colorIndex],abs(voltageScaled)-80);
+    return numberColor;
 }
 
 void VoltageAdjuster::updateDisplay(float value, uint32_t color, const VoltageAdjustConfig& config) {

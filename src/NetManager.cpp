@@ -92,7 +92,7 @@ const DefineInfo nanoDefines[] = {
     {"D11",      "NANO_D11",    NANO_D11},      // 81
     {"D12",      "NANO_D12",    NANO_D12},      // 82
     {"D13",      "NANO_D13",    NANO_D13},      // 83
-    {"RESET",    "NANO_RESET",  NANO_RESET},    // 84
+    {"3V3",      "NANO_3V3",    NANO_3V3},    // 84
     {"AREF",     "NANO_AREF",   NANO_AREF},     // 85
     {"A0",       "NANO_A0",     NANO_A0},       // 86
     {"A1",       "NANO_A1",     NANO_A1},       // 87
@@ -1662,7 +1662,7 @@ int printNodeOrName(
 
 const char* defNanoToCharShort[35] = {
     "VIN",  "D0",   "D1",   "D2",     "D3",     "D4",       "D5",     "D6",
-    "D7",   "D8",   "D9",   "D10",    "D11",    "D12",      "D13",    "RESET",
+    "D7",   "D8",   "D9",   "D10",    "D11",    "D12",      "D13",    "3V3",
     "AREF", "A0",   "A1",   "A2",     "A3",     "A4",       "A5",     "A6",
     "A7",   "RST0", "RST1", "N_GND1", "N_GND0", "NANO_3V3", "NANO_5V" };
 
@@ -1681,7 +1681,7 @@ const char* defNanoToCharLong[35] = {
     "NANO_VIN",   "NANO_D0",   "NANO_D1",     "NANO_D2",     "NANO_D3",
     "NANO_D4",    "NANO_D5",   "NANO_D6",     "NANO_D7",     "NANO_D8",
     "NANO_D9",    "NANO_D10",  "NANO_D11",    "NANO_D12",    "NANO_D13",
-    "NANO_RESET", "NANO_AREF", "NANO_A0",     "NANO_A1",     "NANO_A2",
+    "NANO_3V3", "NANO_AREF", "NANO_A0",     "NANO_A1",     "NANO_A2",
     "NANO_A3",    "NANO_A4",   "NANO_A5",     "NANO_A6",     "NANO_A7",
     "NANO_RST0",  "NANO_RST1", "NANO_N_GND1", "NANO_N_GND0", "NANO_3V3",
     "NANO_5V" };

@@ -188,6 +188,14 @@ public:
     static EncoderAccelerator Slow() {
         return EncoderAccelerator(0.1f, 0.4f, 0.1f, 10.8f, 5, 170);
     }
+
+    /**
+     * @brief Subtle preset - for subtle acceleration for menu selection
+     * 
+     */
+    static EncoderAccelerator Subtle() {
+        return EncoderAccelerator(0.01f, 1.0f, 0.3f, 10.8f, 6, 170);
+    }   
 };
 
 

@@ -437,7 +437,7 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
     }
 
     int returnedMenuPosition = -1;
-    if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
+    if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
         // Check if Highlighting wants to handle this button press (for voltage adjustment)
         if (Highlighting::getInstance().wantsToHandleButtonPress()) {
             // Don't consume the button press - let Highlighting handle it
@@ -689,6 +689,7 @@ int getMenuSelection( void ) {
 
     noInputTimer = millis( );
     while ( Serial.available( ) == 0 ) {
+        jOS.serviceCritical();
 
         if ( Serial.getWriteError( ) ) {
 
@@ -709,8 +710,9 @@ int getMenuSelection( void ) {
             return -2;
         }
         delayMicroseconds( 400 );
+       
 
-        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) { //! click
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) { //! click
 
             lastMenuLevel = menuLevel;
             noInputTimer = millis( );
@@ -1273,7 +1275,7 @@ int getMenuSelection( void ) {
 
         delayMicroseconds( 80 );
 
-        if ( encoderButtonState == HELD ) {
+        if ( encoderButtonState == HELD || ProbeButton::getInstance().getButtonPress() == 1) {
             noInputTimer = millis( );
             lastMenuLevel = menuLevel;
             // Serial.println("Held");
@@ -1424,6 +1426,8 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
         subMenuStrings[ i ] = "";
     }
 
+   // Serial.println("selectSubmenuOption");
+
     int shiftStars = -2;
     int lastOption = 0;
     for ( int i = 0; i < 8; i++ ) {
@@ -1562,9 +1566,11 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
     int firstTime = 1;
     delayMicroseconds( 1000 );
     while ( optionSelected == -1 ) {
+        jOS.serviceCritical();
         delayMicroseconds( 1000 );
 
-        if ( encoderButtonState == HELD || Serial.available( ) > 0 ) {
+        if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance().getButtonState() == 1) {
+            Serial.println("selectSubmenuOption: HELD");
             b.clear( );
             SlotManager& mgr = SlotManager::getInstance( );
             if ( mgr.isPreviewMode( ) ) {
@@ -1575,7 +1581,7 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
             showLEDsCore2 = 1;
             return -1;
         }
-        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
+        if ( (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || ProbeButton::getInstance().getButtonPress() == 2) {
 
             encoderButtonState = IDLE;
             optionSelected = highlightedOption;
@@ -2157,8 +2163,8 @@ int selectNodeAction( int whichSelection ) {
     while ( nodeSelected == -1 && Serial.available( ) == 0 ) {
         delayMicroseconds( 200 );
         rotaryEncoderStuff();
-        
-        if ( encoderButtonState == HELD || Serial.available( ) > 0 ) {
+        jOS.serviceCritical();
+        if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance().getButtonPress() == 1) {
             b.clear( );
             rotaryDivider = lastDivider;
             return -1;
@@ -2358,7 +2364,7 @@ int selectNodeAction( int whichSelection ) {
         }
 
         // Check for confirmation (short press)
-        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) {
             encoderButtonState = IDLE;
             nodeSelected = highlightedNode;
 
@@ -2416,27 +2422,26 @@ float getActionFloat( int menuPosition, int rail ) {
 
     uint32_t numberColor = posColor;
 
-    float scrollAcceleration = 0.1;
-    unsigned long lastScrollTime = 0;
-    unsigned long scrollAccelTime = 40000;
+    // Encoder acceleration tracking (using VoltageAdjuster approach)
+    long lastEncoderPosition = encoderPosition;
+    unsigned long lastChangeTime = millis();
+    float accelerationMultiplier = 1.0;
+    int lastDirection = 0;  // -1=down, 0=none, 1=up
+    int consecutiveFastCount = 0;  // Track consecutive fast movements
+    
     float min = -8.0;
     float max = 8.0;
 
     // No need for temp backup - globalState.power should always match hardware
     switch ( rail ) {
     case 0:
-        currentChoice = ( ( globalState.power.topRail + globalState.power.bottomRail ) / 2.0 ) - 0.1;
-        // Serial.print("[0] ");
-        // Serial.println(globalState.power.topRail);
-        // Serial.print("[1] ");
-        // Serial.println(globalState.power.bottomRail);
-        // Serial.println(currentChoice);
+        currentChoice = ( ( globalState.power.topRail + globalState.power.bottomRail ) / 2.0 );
         break;
     case 1:
-        currentChoice = globalState.power.topRail - 0.1; // it adds 0.1 on the first loop
+        currentChoice = globalState.power.topRail;
         break;
     case 2:
-        currentChoice = globalState.power.bottomRail - 0.1;
+        currentChoice = globalState.power.bottomRail;
         break;
     }
 
@@ -2451,86 +2456,113 @@ float getActionFloat( int menuPosition, int rail ) {
         max = 8.0;
     }
 
-    while ( encoderButtonState != HELD && Serial.available( ) == 0 ) {
-        delayMicroseconds( 380 );
-
-        if ( encoderDirectionState == UP || firstTime == 1 ) {
-
-            encoderDirectionState = NONE;
-            if ( snapToValue > 0 ) {
-                snapToValue--;
-                continue;
-            } else {
-                snapToValue = 0;
-            }
-            if ( micros( ) - lastScrollTime < scrollAccelTime ) {
-                scrollAcceleration += 0.1;
-                if ( scrollAcceleration > 0.6 ) {
-                    scrollAcceleration = 0.6;
+    while ( true ) {
+        jOS.serviceCritical();
+        rotaryEncoderStuff();
+        
+        // Check for cancellation (long press) - check FIRST on every iteration
+        if ( encoderButtonState == HELD || ProbeButton::getInstance().getButtonState() == 1 ) {
+            encoderButtonState = IDLE;
+            showLEDsCore2 = -1;
+            return currentChoice; // Return current choice without applying
+        }
+        
+        // Check for confirmation (short press) - check SECOND on every iteration
+        if ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) || 
+             ProbeButton::getInstance().getButtonPress() == 2 ) {
+            encoderButtonState = IDLE;
+            currentAction.analogVoltage = currentChoice;
+            
+            int keepSelecting = 0;
+            for ( int i = 0; i < 10; i++ ) {
+                if ( selectMultiple[ i ] == menuPosition ) {
+                    keepSelecting = 1;
                 }
-            } else {
-                scrollAcceleration = 0.1;
+                if ( i >= selectMultipleIndex ) {
+                    break;
+                }
             }
-            lastScrollTime = micros( );
-            currentChoice += scrollAcceleration;
-            if ( currentChoice < jumperlessConfig.dacs.limit_max ) {
-                // currentChoice += scrollAcceleration;
-            } else {
+            if ( keepSelecting == 1 ) {
+                selectNodeAction( );
+            }
+            return currentChoice;
+        }
+        
+        // Check for serial cancellation
+        if ( Serial.available() > 0 ) {
+            Serial.read();
+            showLEDsCore2 = -1;
+            return currentChoice;
+        }
+        
+        // Read probe pads for direct voltage selection
+        int probeReading = justReadProbe(true);
+        
+        // Check if probe is touching the voltage selection area (rows 31-60)
+        if ( probeReading >= 31 && probeReading <= 60 ) {
+            // Map probe position to voltage value based on config range
+            // Probe rows 31-60 (30 positions) map to min-max voltage
+            float voltageRange = max - min;
+            float normalizedPosition = (probeReading - 31) / 29.0;  // 0.0 to 1.0
+            currentChoice = min + (normalizedPosition * voltageRange);
+            
+            // Round to 0.1V increments
+            currentChoice = roundf(currentChoice * 10.0f) / 10.0f;
+            
+            // Clamp to limits
+            if ( currentChoice > max ) currentChoice = max;
+            if ( currentChoice < min ) currentChoice = min;
+            
+            // Clamp to DAC limits
+            if ( currentChoice > jumperlessConfig.dacs.limit_max ) {
                 currentChoice = jumperlessConfig.dacs.limit_max;
+            } else if ( currentChoice < jumperlessConfig.dacs.limit_min ) {
+                currentChoice = jumperlessConfig.dacs.limit_min;
             }
-
-            // currentChoice += scrollAcceleration;
-
-            if ( currentChoice > max ) {
-                currentChoice = max;
-            } else if ( currentChoice < min ) {
-                currentChoice = min;
+            
+            // Snap to zero
+            if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
+                currentChoice = 0.0;
             }
+            
+            // Determine color
+            uint32_t numberColor = posColor;
             if ( currentChoice > 0.05 ) {
                 numberColor = posColor;
             }
-
             if ( currentChoice < 5.3 && currentChoice > 4.7 ) {
                 numberColor = fiveBlended;
             } else if ( currentChoice < 3.45 && currentChoice > 3.05 ) {
                 numberColor = threeBlended;
-            } else if ( currentChoice < 8.25 && currentChoice > 7.75 ) {
-                scrollAcceleration = 0.1;
             } else if ( currentChoice < 0.35 && currentChoice > -0.35 ) {
                 numberColor = zeroBlended;
             }
-
             if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
                 numberColor = zeroColor;
             } else if ( currentChoice > 3.25 && currentChoice < 3.35 ) {
                 numberColor = threeColor;
-                // delayMicroseconds(8000);
             } else if ( currentChoice > 4.95 && currentChoice < 5.05 ) {
                 numberColor = fiveColor;
-                // delayMicroseconds(8000);
             } else if ( currentChoice > 7.95 && currentChoice < 8.55 ) {
                 numberColor = maxColor;
             } else if ( currentChoice < -0.05 ) {
                 numberColor = negColor;
             }
-            // } else if (currentChoice > 0.05) {
-            //   numberColor = posColor;
-            // }
-            if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
-                currentChoice = 0.0;
-            }
+            
+            // Format and display
             if ( currentChoice < 0.00 ) {
                 snprintf( floatString, 8, "%0.1f V", currentChoice );
             } else {
                 snprintf( floatString, 8, " %0.1f V", currentChoice );
             }
+            
             b.clear( 1 );
             b.print( floatString, numberColor, 0xffffff, 0, 1, 1 );
             Serial.print( "\r                        \r" );
             Serial.print( floatString );
-            // oled.setTextSize(3);
-            // oled.clrPrintfsh("%s", floatString);
             oled.clearPrintShow( floatString, 2, true, true, true );
+            
+            // Update global state immediately
             if ( rail == 0 ) {
                 globalState.power.topRail = currentChoice;
                 globalState.power.bottomRail = currentChoice;
@@ -2539,7 +2571,174 @@ float getActionFloat( int menuPosition, int rail ) {
             } else if ( rail == 2 ) {
                 globalState.power.bottomRail = currentChoice;
             }
-
+            
+            // Apply voltage to hardware (only for safe range)
+            if ( currentChoice > 0.0 && currentChoice <= 5.0 ) {
+                switch ( rail ) {
+                case 0:
+                    setTopRail( currentChoice, 1, 0 );
+                    setBotRail( currentChoice, 1, 0 );
+                    break;
+                case 1:
+                    setTopRail( currentChoice, 1, 0 );
+                    break;
+                case 2:
+                    setBotRail( currentChoice, 1, 0 );
+                    break;
+                }
+            }
+            
+            showLEDsCore2 = 2;
+            
+            // Reset encoder-based tracking since we're using probe now
+            lastEncoderPosition = encoderPosition;
+            accelerationMultiplier = 1.0;
+            consecutiveFastCount = 0;
+            lastDirection = 0;
+            firstTime = 0;
+            continue;  // Skip encoder processing this iteration
+        }
+        
+        // Read encoder position directly for immediate response
+        long currentEncoderPosition = encoderPosition;
+        long encoderDelta = currentEncoderPosition - lastEncoderPosition;
+        
+        bool valueChanged = false;
+        
+        // Process encoder movement
+        if ( encoderDelta != 0 || firstTime == 1 ) {
+            // Handle snap delay
+            if ( snapToValue > 0 && !firstTime ) {
+                snapToValue--;
+                lastEncoderPosition = currentEncoderPosition;
+                continue;
+            }
+            
+            if ( !firstTime ) {
+                // Determine current direction
+                int currentDirection = (encoderDelta > 0) ? 1 : ((encoderDelta < 0) ? -1 : 0);
+                
+                // Reset acceleration if direction changed
+                if ( currentDirection != 0 && currentDirection != lastDirection ) {
+                    accelerationMultiplier = 1.0;
+                    consecutiveFastCount = 0;
+                    lastDirection = currentDirection;
+                }
+                
+                // Calculate acceleration based on delta magnitude and timing
+                unsigned long currentTime = millis();
+                unsigned long timeSinceLastChange = currentTime - lastChangeTime;
+                int deltaMagnitude = abs(encoderDelta);
+                
+                // Fast rotation = large delta between polls
+                bool isFastRotation = (deltaMagnitude >= 4);
+                
+                if ( isFastRotation ) {
+                    // Fast movement detected - increment consecutive count
+                    consecutiveFastCount++;
+                    
+                    // Only accelerate after 0 consecutive fast movements in same direction
+                    if ( consecutiveFastCount >= 0 ) {
+                        accelerationMultiplier += 3.5;
+                        if ( accelerationMultiplier > 5.0 ) {
+                            accelerationMultiplier = 5.0;
+                        }
+                    }
+                } else if ( timeSinceLastChange > 120 ) {
+                    // Slow/stopped - reset everything
+                    accelerationMultiplier = 1.0;
+                    consecutiveFastCount = 0;
+                    lastDirection = 0;
+                } else {
+                    // Medium/slow speed - reset fast count but maintain acceleration
+                    consecutiveFastCount = 0;
+                }
+                
+                lastChangeTime = currentTime;
+                
+                // Calculate voltage change based on encoder delta
+                // Base change per encoder click, scaled by acceleration
+                float deltaMultiplier = 0.01 * accelerationMultiplier;
+                float addToValue = encoderDelta * deltaMultiplier;
+                
+                // Apply the change (note: subtract because encoder direction)
+                currentChoice -= addToValue;
+            }
+            
+            lastEncoderPosition = currentEncoderPosition;
+            valueChanged = true;
+            
+            // Clamp to limits
+            if ( currentChoice > max ) {
+                currentChoice = max;
+            } else if ( currentChoice < min ) {
+                currentChoice = min;
+            }
+            
+            // Clamp to DAC limits
+            if ( currentChoice > jumperlessConfig.dacs.limit_max ) {
+                currentChoice = jumperlessConfig.dacs.limit_max;
+            } else if ( currentChoice < jumperlessConfig.dacs.limit_min ) {
+                currentChoice = jumperlessConfig.dacs.limit_min;
+            }
+            
+            // Determine color based on voltage value (better color logic from original)
+            if ( currentChoice > 0.05 ) {
+                numberColor = posColor;
+            }
+            
+            // Blended regions (approaching special values)
+            if ( currentChoice < 5.3 && currentChoice > 4.7 ) {
+                numberColor = fiveBlended;
+            } else if ( currentChoice < 3.45 && currentChoice > 3.05 ) {
+                numberColor = threeBlended;
+            } else if ( currentChoice < 0.35 && currentChoice > -0.35 ) {
+                numberColor = zeroBlended;
+            }
+            
+            // Exact special values (tight ranges for snap points)
+            if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
+                currentChoice = 0.0;
+                numberColor = zeroColor;
+            } else if ( currentChoice > 3.25 && currentChoice < 3.35 ) {
+                numberColor = threeColor;
+            } else if ( currentChoice > 4.95 && currentChoice < 5.05 ) {
+                numberColor = fiveColor;
+            } else if ( currentChoice > 7.95 && currentChoice < 8.55 ) {
+                numberColor = maxColor;
+            } else if ( currentChoice < -0.05 ) {
+                numberColor = negColor;
+            }
+            
+            // Format display string
+            if ( currentChoice < 0.00 ) {
+                snprintf( floatString, 8, "%0.1f V", currentChoice );
+            } else {
+                snprintf( floatString, 8, " %0.1f V", currentChoice );
+            }
+            
+            // Update LED display
+            b.clear( 1 );
+            b.print( floatString, numberColor, 0xffffff, 0, 1, 1 );
+            
+            // Update serial
+            Serial.print( "\r                        \r" );
+            Serial.print( floatString );
+            
+            // Update OLED
+            oled.clearPrintShow( floatString, 2, true, true, true );
+            
+            // Update global state immediately
+            if ( rail == 0 ) {
+                globalState.power.topRail = currentChoice;
+                globalState.power.bottomRail = currentChoice;
+            } else if ( rail == 1 ) {
+                globalState.power.topRail = currentChoice;
+            } else if ( rail == 2 ) {
+                globalState.power.bottomRail = currentChoice;
+            }
+            
+            // Apply voltage to hardware (only for safe range)
             if ( firstTime == 0 && currentChoice > 0.0 && currentChoice <= 5.0 ) {
                 switch ( rail ) {
                 case 0:
@@ -2554,149 +2753,21 @@ float getActionFloat( int menuPosition, int rail ) {
                     break;
                 }
             }
-            if ( snapToValue == 0 && snap != 0 ) {
+            
+            // Check for snap values (using accelerationMultiplier == 1.0 for precision)
+            if ( snapToValue == 0 && snap != 0 && accelerationMultiplier == 1.0 ) {
                 for ( int i = 0; i < 8; i++ ) {
-                    if ( ( abs( currentChoice ) > snapValues[ i ] - 0.05 && abs( currentChoice ) < snapValues[ i ] + 0.05 ) ) {
+                    if ( ( fabs( currentChoice ) > snapValues[ i ] - 0.05 && fabs( currentChoice ) < snapValues[ i ] + 0.05 ) ) {
                         snapToValue = 3;
                     }
                 }
             }
+            
             showLEDsCore2 = 2;
-
             firstTime = 0;
-            // Serial.println(floatString);
-
-        } else if ( encoderDirectionState == DOWN ) {
-            encoderDirectionState = NONE;
-
-            if ( snapToValue > 0 && snap != 0 ) {
-                snapToValue--;
-                continue;
-            } else {
-                snapToValue = 0;
-            }
-            if ( micros( ) - lastScrollTime < scrollAccelTime ) {
-                scrollAcceleration += 0.1;
-                if ( scrollAcceleration > 0.6 ) {
-                    scrollAcceleration = 0.6;
-                }
-
-            } else {
-                scrollAcceleration = 0.1;
-            }
-            lastScrollTime = micros( );
-            currentChoice -= scrollAcceleration;
-            if ( currentChoice > jumperlessConfig.dacs.limit_min ) {
-
-            } else {
-                currentChoice = jumperlessConfig.dacs.limit_min;
-            }
-
-            if ( currentChoice > max ) {
-                currentChoice = max;
-            } else if ( currentChoice < min ) {
-                currentChoice = min;
-            }
-            if ( currentChoice > 0.05 ) {
-                numberColor = posColor;
-            }
-            if ( currentChoice < 5.3 && currentChoice > 4.7 ) {
-                numberColor = fiveBlended;
-            } else if ( currentChoice < 3.75 && currentChoice > 3.00 ) {
-                numberColor = threeBlended;
-            } else if ( currentChoice < 8.25 && currentChoice > 7.75 ) {
-                scrollAcceleration = 0.1;
-            } else if ( currentChoice < 0.55 && currentChoice > -0.55 ) {
-                numberColor = zeroBlended;
-            }
-
-            if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
-                currentChoice = 0.0;
-                numberColor = zeroColor;
-            } else if ( currentChoice > 3.25 && currentChoice < 3.35 ) {
-                numberColor = threeColor;
-            } else if ( currentChoice > 4.95 && currentChoice < 5.05 ) {
-                numberColor = fiveColor;
-            } else if ( currentChoice > 7.95 && currentChoice < 8.55 ) {
-                numberColor = maxColor;
-            } else if ( currentChoice < -0.05 ) {
-                numberColor = negColor;
-            }
-            if ( currentChoice < 0.00 ) {
-                snprintf( floatString, 8, "%0.1f V", currentChoice );
-            } else {
-                snprintf( floatString, 8, " %0.1f V", currentChoice );
-            }
-            b.clear( 1 );
-            b.print( floatString, numberColor, 0xffffff, 0, 1, 1 );
-            Serial.print( "\r                        \r" );
-            Serial.print( floatString );
-            // oled.clear();
-            // oled.print(floatString);
-            // oled.show();
-            // oled.clearPrintShow(floatString, 1, 0, 0, true);
-            // oled.setTextSize(3);
-            // oled.clrPrintfsh("%s", floatString);
-            oled.clearPrintShow( floatString, 2, true, true, true );
-            // Serial.println(currentChoice);
-            if ( rail == 0 ) {
-                globalState.power.topRail = currentChoice;
-                globalState.power.bottomRail = currentChoice;
-            } else if ( rail == 1 ) {
-                globalState.power.topRail = currentChoice;
-            } else if ( rail == 2 ) {
-                globalState.power.bottomRail = currentChoice;
-            }
-
-            if ( currentChoice > 0.0 && currentChoice <= 5.0 ) {
-                switch ( rail ) {
-                case 0:
-                    setTopRail( currentChoice, 1, 0 ); // save=1 to update globalState
-                    setBotRail( currentChoice, 1, 0 );
-                    break;
-                case 1:
-                    setTopRail( currentChoice, 1, 0 );
-                    break;
-                case 2:
-                    setBotRail( currentChoice, 1, 0 );
-                    break;
-                }
-            }
-            if ( snapToValue == 0 && snap != 0 ) {
-                for ( int i = 0; i < 8; i++ ) {
-                    if ( ( abs( currentChoice ) > snapValues[ i ] - 0.05 && abs( currentChoice ) < snapValues[ i ] + 0.05 ) ) {
-                        snapToValue = 3;
-                    }
-                }
-            }
-
-            showLEDsCore2 = 2;
-        } else if ( encoderButtonState == RELEASED &&
-                    lastButtonEncoderState == PRESSED ) {
-            encoderButtonState = IDLE;
-            currentAction.analogVoltage = currentChoice;
-
-            int keepSelecting = 0;
-            // Serial.println (menuPosition);
-
-            for ( int i = 0; i < 10; i++ ) {
-                if ( selectMultiple[ i ] == menuPosition ) {
-                    keepSelecting = 1;
-                }
-                if ( i >= selectMultipleIndex ) {
-                    break;
-                }
-            }
-            if ( keepSelecting == 1 ) {
-                // currentAction.
-                selectNodeAction( );
-            }
-            return currentChoice;
-
-            // Serial.println(floatString);
         }
     }
-    // globalState.power is already updated by setTopRail/setBotRail or directly during adjustment
+    // Should never reach here due to button checks in loop
     return currentChoice;
 }
 
@@ -2777,9 +2848,10 @@ int getActionInt(int minVal, int maxVal, int currentValue) {
     while (true) {
         delayMicroseconds(200);
         rotaryEncoderStuff();
+        jOS.serviceCritical();
         
         // Check for cancellation (long press)
-        if (encoderButtonState == HELD) {
+        if (encoderButtonState == HELD || ProbeButton::getInstance().getButtonPress() == 1) {
             rotaryDivider = lastDivider;
             encoderButtonState = IDLE;
             b.clear();
@@ -2788,7 +2860,7 @@ int getActionInt(int minVal, int maxVal, int currentValue) {
         }
         
         // Check for confirmation (short press)
-        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
+        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) {
             encoderButtonState = IDLE;
             rotaryDivider = lastDivider;
             b.clear();
@@ -3023,7 +3095,7 @@ String getActionString(int maxLength) {
     while (true) {
         //delayMicroseconds(300);
         rotaryEncoderStuff();
-        
+        jOS.serviceCritical();
         // Handle serial input for direct typing
         if (Serial.available() > 0) {
             char c = Serial.read();
@@ -3137,7 +3209,7 @@ String getActionString(int maxLength) {
         }
         
         // Check for finish (long press)
-        if (encoderButtonState == HELD) {
+        if (encoderButtonState == HELD || ProbeButton::getInstance().getButtonPress() == 1) {
             // Finish and return current string
             inputString[cursorPos] = '\0';
             rotaryDivider = lastDivider;
@@ -3189,7 +3261,7 @@ String getActionString(int maxLength) {
         // rotaryEncoderStuff();
         
         // Check for character confirmation (short press)
-        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
+        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) {
             encoderButtonState = IDLE;
             lastButtonEncoderState = IDLE;
             
@@ -3487,16 +3559,23 @@ int doMenuAction( int menuPosition, int selection ) {
             setTopRail( currentAction.analogVoltage, 1, 1 );
             delayMicroseconds( 100 );
             setBotRail( currentAction.analogVoltage, 1, 1 );
+            // oled.clearPrintShow("Both Rails \n\rset to ", 1, true, false, false);
+            String voltageString = "Both Rails set to\n\r" + String(currentAction.analogVoltage) + " V";
+            oled.clearPrintShow(voltageString, 2, true, true, true);
             break;
         }
         case 1: {
             // delay(100);
             setTopRail( currentAction.analogVoltage, 1, 1 );
+            String voltageString = "Top Rail set to\n\r" + String(currentAction.analogVoltage) + " V";
+            oled.clearPrintShow(voltageString, 2, true, true, true);
             break;
         }
         case 2: {
             // delay(100);
             setBotRail( currentAction.analogVoltage, 1, 1 );
+            String voltageString = "Bottom Rail set to\n\r" + String(currentAction.analogVoltage) + " V";
+            oled.clearPrintShow(voltageString, 2, true, true, true);
             break;
         }
         default: {
