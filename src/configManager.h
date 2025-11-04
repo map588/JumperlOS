@@ -218,6 +218,18 @@ const StringIntEntry netColorModeTable[] = {
 };
 const int netColorModeTableSize = sizeof(netColorModeTable) / sizeof(netColorModeTable[0]);
 
+
+const StringIntEntry displayTypeTable[] = {
+    {"ssd1306", 0},
+    {"sh1106", 1},
+    {"ssd1309", 2},
+    {"sh1107", 3},
+    {"ssd1312", 4},
+    {"sh1108", 5},
+};
+
+
+const int displayTypeTableSize = sizeof(displayTypeTable) / sizeof(displayTypeTable[0]);
 // Table for parseArbitraryFunction
 const StringIntEntry arbitraryFunctionTable[] = {
     {"off", -1},

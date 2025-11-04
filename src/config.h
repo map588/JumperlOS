@@ -136,6 +136,7 @@ struct config {
         struct top_oled {
             int enabled = 0;
             int i2c_address = 0x3C;
+            const char* display_type = "SSD1306";
             int width = 128;
             int height = 32;
             int rotation = 0; // 0 = 0 degrees, 1 = 90 degrees, 2 = 180 degrees, 3 = 270 degrees

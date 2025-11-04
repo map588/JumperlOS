@@ -1314,22 +1314,22 @@ int probeToggle( void ) {
         float dacStep = 0.25; // Default step size
         float newVoltage = currentVoltage;
 
-        if ( buttonState == 2 ) { // Connect button - increase voltage
-            newVoltage = currentVoltage + dacStep;
-            if ( newVoltage > 8.0 )
-                newVoltage = 8.0;        // Clamp to max
-        } else if ( buttonState == 1 ) { // Disconnect button - decrease voltage
-            newVoltage = currentVoltage - dacStep;
-            if ( newVoltage < -8.0 )
-                newVoltage = -8.0; // Clamp to min
-        }
+        // if ( buttonState == 2 ) { // Connect button - increase voltage
+        //     newVoltage = currentVoltage + dacStep;
+        //     if ( newVoltage > 8.0 )
+        //         newVoltage = 8.0;        // Clamp to max
+        // } else if ( buttonState == 1 ) { // Disconnect button - decrease voltage
+        //     newVoltage = currentVoltage - dacStep;
+        //     if ( newVoltage < -8.0 )
+        //         newVoltage = -8.0; // Clamp to min
+        // }
 
-        // Set the new voltage (setDac functions update globalState.power)
-        if ( brightenedNet == 4 ) {
-            setDac0voltage( newVoltage, 1, 0, true );
-        } else {
-            setDac1voltage( newVoltage, 1, 0, true );
-        }
+        // // Set the new voltage (setDac functions update globalState.power)
+        // if ( brightenedNet == 4 ) {
+        //     setDac0voltage( newVoltage, 1, 0, true );
+        // } else {
+        //     setDac1voltage( newVoltage, 1, 0, true );
+        // }
 
         // Reset the highlight timer to keep DAC highlighted during adjustment
         highlightTimer = millis( );
@@ -2545,7 +2545,7 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
         }
         
         // Check for confirmation (short press)
-        if ((encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || probeButton.getButtonState() == 2) {
+        if ((encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || probeButton.getButtonPress() == 2) {
             encoderButtonState = IDLE;
             //showLEDsCore2 = -1;
             // Final update with callback if not already in live range

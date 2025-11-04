@@ -203,6 +203,12 @@ ServiceStatus ProbeButton::service( ) {
  */
 int ProbeButton::getButtonPress( ) {
     int press = buttonPress;
+
+    if ( press != 0 ) {
+        blockProbeButton = 300;
+        blockProbeButtonTimer = millis( );
+    }
+
     buttonPress = 0; // Clear after reading
     return press;
 }
@@ -2169,9 +2175,9 @@ volatile int measureModeActive = 0;
 float Probing::measureMode( int updateSpeed ) {
     measureModeActive = 1;
     // Wait for button release (use state-based check, doesn't consume event)
-    while ( checkProbeButtonState( ) != 0 ) {
-        delay( 1 );
-    }
+    // while ( checkProbeButtonState( ) != 0 ) {
+    //     delay( 1 );
+    // }
     //   removeBridgeFromNodeFile(ROUTABLE_BUFFER_IN, -1, netSlot, 1);
     // removeBridgeFromNodeFile(ROUTABLE_BUFFER_OUT, -1, netSlot, 1);
     //   addBridgeToNodeFile(ROUTABLE_BUFFER_OUT, ADC3, netSlot, 1);
@@ -2685,7 +2691,15 @@ int Probing::chooseDAC( int justPickOne ) {
 
     int selected = -1;
     function = 0;
-    while ( selected == -1 && longShortPress( 500 ) == -1 ) {
+    while ( selected == -1) {
+
+        jOS.serviceCritical( );
+
+        if ( ProbeButton::getInstance().getButtonState() != 0 ) {
+            selected = DAC1;
+            function = DAC1;
+            break;
+        }
         int reading = justReadProbe( );
         if ( reading != -1 ) {
             switch ( reading ) {
@@ -2755,7 +2769,10 @@ int Probing::chooseDAC( int justPickOne ) {
                 }
 
                 // showNets();
+                blockProbeButton = 2000;
+                blockProbeButtonTimer = millis( );
                 showLEDsCore2 = -1;
+                probeButton.clearButtonState( );
                 delay( 100 );
                 break;
             }
@@ -3385,6 +3402,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
                 // }
                 vSelected = 1;
                 probeButton.clearButtonState( );
+
                 return voltageProbe;
                 showLEDsCore2 = -1;
                 break;
@@ -3503,11 +3521,16 @@ float Probing::voltageSelect( int fiveOrEight ) {
                 vSelected = 1;
                 showLEDsCore2 = -1;
                 probeButton.clearButtonState( );
+                blockProbeButton = 2000;
+                blockProbeButtonTimer = millis( );
                 return voltageProbe;
                 break;
             }
         }
     }
+
+    blockProbeButton = 2000;
+    blockProbeButtonTimer = millis( );
     // Serial.println(" ");
     return 0.0;
 }

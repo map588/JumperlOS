@@ -26,6 +26,9 @@
 
 #include "Highlighting.h"
 
+// External declarations
+extern Adafruit_SSD1306 display;
+
 // ============================================================================
 // Menus Class Implementation
 // ============================================================================
@@ -3965,13 +3968,21 @@ int doMenuAction( int menuPosition, int selection ) {
             jumperlessConfig.top_oled.width = currentAction.integerValue;
             oled.displayWidth = currentAction.integerValue;
             configChanged = true;
+            // Reinitialize display with new dimensions - init() now properly handles this
             oled.init();
             saveConfig();
         } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Height" ) != -1 ) {
             jumperlessConfig.top_oled.height = currentAction.integerValue;
             oled.displayHeight = currentAction.integerValue;
             configChanged = true;
+            // Reinitialize display with new dimensions - init() now properly handles this
             oled.init();
+            saveConfig();
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Rotation" ) != -1 ) {
+            jumperlessConfig.top_oled.rotation = currentAction.integerValue;
+            configChanged = true;
+            // Apply rotation immediately without full reinit
+            display.setRotation(jumperlessConfig.top_oled.rotation);
             saveConfig();
         }
         

@@ -450,8 +450,10 @@ void updateConfigFromFile(const char* filename) {
         } else if (strcmp(section, "top_oled") == 0) {
             if (strcmp(key, "enabled") == 0) jumperlessConfig.top_oled.enabled = parseBool(value);
             else if (strcmp(key, "i2c_address") == 0) jumperlessConfig.top_oled.i2c_address = parseInt(value);
+            else if (strcmp(key, "display_type") == 0) jumperlessConfig.top_oled.display_type = value; // Store string directly
             else if (strcmp(key, "width") == 0) jumperlessConfig.top_oled.width = parseInt(value);
             else if (strcmp(key, "height") == 0) jumperlessConfig.top_oled.height = parseInt(value);
+            else if (strcmp(key, "rotation") == 0) jumperlessConfig.top_oled.rotation = parseInt(value);
             else if (strcmp(key, "sda_pin") == 0) jumperlessConfig.top_oled.sda_pin = parseInt(value);
             else if (strcmp(key, "scl_pin") == 0) jumperlessConfig.top_oled.scl_pin = parseInt(value);
             else if (strcmp(key, "gpio_sda") == 0) jumperlessConfig.top_oled.gpio_sda = parseInt(value);
@@ -1892,8 +1894,10 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
     else if (strcmp(section, "top_oled") == 0) {
         if (strcmp(key, "enabled") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.enabled);
         else if (strcmp(key, "i2c_address") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.i2c_address);
+        else if (strcmp(key, "display_type") == 0) sprintf(oldValue, "%s", jumperlessConfig.top_oled.display_type);
         else if (strcmp(key, "width") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.width);
         else if (strcmp(key, "height") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.height);
+        else if (strcmp(key, "rotation") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.rotation);
         else if (strcmp(key, "sda_pin") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.sda_pin);
         else if (strcmp(key, "scl_pin") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.scl_pin);
         else if (strcmp(key, "gpio_sda") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.gpio_sda);
@@ -2002,8 +2006,10 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
     else if (strcmp(section, "top_oled") == 0) {
         if (strcmp(key, "enabled") == 0) jumperlessConfig.top_oled.enabled = parseBool(value);
         if (strcmp(key, "i2c_address") == 0) jumperlessConfig.top_oled.i2c_address = parseHex(value);
+        else if (strcmp(key, "display_type") == 0) jumperlessConfig.top_oled.display_type = value; // Store string directly
         else if (strcmp(key, "width") == 0) jumperlessConfig.top_oled.width = parseInt(value);
         else if (strcmp(key, "height") == 0) jumperlessConfig.top_oled.height = parseInt(value);
+        else if (strcmp(key, "rotation") == 0) jumperlessConfig.top_oled.rotation = parseInt(value);
         else if (strcmp(key, "sda_pin") == 0) jumperlessConfig.top_oled.sda_pin = parseInt(value);
         else if (strcmp(key, "scl_pin") == 0) jumperlessConfig.top_oled.scl_pin = parseInt(value);
         else if (strcmp(key, "gpio_sda") == 0) jumperlessConfig.top_oled.gpio_sda = parseInt(value);

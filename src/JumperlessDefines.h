@@ -178,11 +178,14 @@ extern int probeRev;
 #define UART0_TX 0
 #define UART0_RX 1
 
-#define NANO_I2C1_SCL 2 // These might be flipped on the RP2040, fuck
+#define NANO_I2C1_SCL 2 
 #define NANO_I2C1_SDA 3
 
 #define I2C0_SDA 4
 #define I2C0_SCL 5
+
+#define RP6_PIN 6
+#define RP7_PIN 7
 
 #define LED_DATA_OUT 17
 

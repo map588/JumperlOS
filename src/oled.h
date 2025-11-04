@@ -6,6 +6,7 @@
 #include "Arduino.h"
 #include "Wire.h"
 #include <vector>
+#include "config.h"
 // Core fonts - small and large sizes for auto-fallback
 #include "fonts/Eurostile8pt7b.h"
 #include "fonts/Eurostile12pt7b.h"
@@ -43,9 +44,8 @@
 class Adafruit_SSD1306;
 
 extern bool oledConnected;
+extern bool oledUsingHardwiredPins; // Global flag: true if using RP6/RP7 (GPIO 6/7), false if using crossbar
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 32
 #define OLED_RESET -1
 
 // Forward declarations for font bounds structures
@@ -259,8 +259,8 @@ public:
     char* getScratchPad(void);
     
     // Dynamic display dimensions (from config)
-    int displayWidth = 128;
-    int displayHeight = 32;
+    int displayWidth = jumperlessConfig.top_oled.width;
+    int displayHeight = jumperlessConfig.top_oled.height;
     
     // Dual framebuffer support
     OLEDMode currentMode = MODE_LARGE_TEXT;

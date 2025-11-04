@@ -1856,6 +1856,8 @@ void readStringFromSerial(int source, int addRemove) {
     if (lineData.length() > 0) {
       lineData = lineData.substring(1);  // Remove first character
     }
+    // Serial.println("lineData = ");
+    // Serial.println(lineData);
     specialFunctionsString.clear();
     specialFunctionsString = lineData.c_str();
   }
@@ -1929,12 +1931,12 @@ void readStringFromSerial(int source, int addRemove) {
       // Jerial.println();
 
       serialString.toInt(node2);
-      // serialString.printTo(Serial);
-      // Jerial.println();
-      // Jerial.print("node1 = ");
-      // Jerial.println(node1);
-      // Jerial.print("node2 = ");
-      // Jerial.println(node2);
+      serialString.printTo(Serial);
+      Jerial.println();
+      Jerial.print("node1 = ");
+      Jerial.println(node1);
+      Jerial.print("node2 = ");
+      Jerial.println(node2);
     }
 
     if (isNodeValid(node1) != 1) {

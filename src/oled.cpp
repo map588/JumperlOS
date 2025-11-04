@@ -20,21 +20,18 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <new>
 #include "Graphics.h"
 //#include "font_bounds_example.h"
 #include "Adafruit_GFX.h"
 #include "Highlighting.h"
 bool oledConnected = false;
+bool oledUsingHardwiredPins = false; // Global flag: true if using RP6/RP7 (GPIO 6/7), false if using crossbar
 
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 32 // OLED display height, in pixels
-#define NUMFLAKES     10 // Number of snowflakes in the animation example
-#define LOGO_HEIGHT  32
-#define LOGO_WIDTH   64
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire1, OLED_RESET);
+Adafruit_SSD1306 display(jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &Wire1, OLED_RESET);
 
 int oledAddress = -1;
 int numFonts = 26;
@@ -131,9 +128,17 @@ int oled::init() {
     sda_row = jumperlessConfig.top_oled.sda_row;
     scl_row = jumperlessConfig.top_oled.scl_row;
     
+    // Check if using hardwired GPIO 6/7 (RP6/RP7)
+    oledUsingHardwiredPins = (sda_pin == 6 && scl_pin == 7);
+    
     // Read display dimensions from config
     displayWidth = jumperlessConfig.top_oled.width;
     displayHeight = jumperlessConfig.top_oled.height;
+    
+    // Note: The global display object is constructed with initial width/height from config
+    // Changing dimensions at runtime requires the display object to be reconstructed with new dimensions
+    // This is a limitation of the static global display object
+    // Workaround: Edit config file and restart to change display dimensions
     // Serial.println("oled::init");
     // Serial.println(millis());
 
@@ -159,14 +164,18 @@ int oled::init() {
     }
     
     display.begin(SSD1306_SWITCHCAPVCC, address, false, false);
+    
+    // Apply rotation from config (0 = 0°, 1 = 90°, 2 = 180°, 3 = 270°)
+    display.setRotation(jumperlessConfig.top_oled.rotation);
+    
     display.setTextColor(SSD1306_WHITE);
     display.invertDisplay(false);
     display.setFont(currentFont);    
     display.clearDisplay();
     
     // Center the logo on the display
-    int x = (displayWidth - 128) / 2;
-    int y = (displayHeight - 32) / 2 + 1;
+    int x = (displayWidth - jumperlessConfig.top_oled.width) / 2;
+    int y = (displayHeight - jumperlessConfig.top_oled.height) / 2 + 1;
     if (strcmp(jumperlessConfig.top_oled.startup_message, "") != 0) {
         clearPrintShow(jumperlessConfig.top_oled.startup_message, 2, true, true, true);
     } else {
@@ -1166,10 +1175,10 @@ void oled::showJogo32h() {
     if (!oledConnected) return;
     display.clearDisplay();
     
-    int x = (displayWidth - 128) / 2 + 1;
-    int y = (displayHeight - 32) / 2 + 1;
+    int x = (displayWidth - jumperlessConfig.top_oled.width) / 2 + 1;
+    int y = (displayHeight - jumperlessConfig.top_oled.height) / 2 + 1;
     
-    display.drawBitmap(x, y, jogo32h, 128, 32, SSD1306_WHITE);
+    display.drawBitmap(x, y, jogo32h, jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, SSD1306_WHITE);
     display.display();
 }
 
@@ -1884,33 +1893,42 @@ int oled::connect(void) {
     //     return 0;
     // }
     int found = -1;
-    // Reserve pins on net map so UI shows them as I2C (not generic GPIO)
-    // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -2;
-    // gpioNet[jumperlessConfig.top_oled.scl_pin - 20] = -2;
-    // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, -1, netSlot, 0);
-    // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, -1, netSlot, 0);
     
-    // Use RAM-based state system
-    addBridgeToState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, 1);
-    addBridgeToState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, 1);
-    
-    // Extra refresh to ensure OLED connections are applied
-    refreshConnections(1, 0, 0);
-    // Serial.print("waitCore2     ");
-    // Serial.println(millis());
-     waitCore2();
+    // If using hardwired RP6/RP7 (GPIO 6/7), skip crossbar bridge management
+    if (!oledUsingHardwiredPins) {
+        // Reserve pins on net map so UI shows them as I2C (not generic GPIO)
+        // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -2;
+        // gpioNet[jumperlessConfig.top_oled.scl_pin - 20] = -2;
+        // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, -1, netSlot, 0);
+        // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, -1, netSlot, 0);
+        
+        // Use RAM-based state system for crossbar connections
+        addBridgeToState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, 1);
+        addBridgeToState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, 1);
+        
+        // Extra refresh to ensure OLED connections are applied
+        refreshConnections(1, 0, 0);
+        // Serial.print("waitCore2     ");
+        // Serial.println(millis());
+        waitCore2();
+    }
 
         
     // Serial.print("waitCore2Done  ");
     // Serial.println(millis());
     found = initI2C(jumperlessConfig.top_oled.sda_pin, jumperlessConfig.top_oled.scl_pin, 400000);
+    
     // Mark function map so scan/UI reflect I2C role
-    gpio_function_map[jumperlessConfig.top_oled.sda_pin - 20] = GPIO_FUNC_I2C;
-    gpio_function_map[jumperlessConfig.top_oled.scl_pin - 20] = GPIO_FUNC_I2C;
+    if (jumperlessConfig.top_oled.sda_pin >= 20) {
+        gpio_function_map[jumperlessConfig.top_oled.sda_pin - 20] = GPIO_FUNC_I2C;
+        gpioState[jumperlessConfig.top_oled.sda_pin - 20] = 6;
+    }
+    if (jumperlessConfig.top_oled.scl_pin >= 20) {
+        gpio_function_map[jumperlessConfig.top_oled.scl_pin - 20] = GPIO_FUNC_I2C;
+        gpioState[jumperlessConfig.top_oled.scl_pin - 20] = 6;
+    }
     // Serial.print("initI2C      ");
     // Serial.println(millis());
-    gpioState[jumperlessConfig.top_oled.sda_pin - 20] = 6;
-    gpioState[jumperlessConfig.top_oled.scl_pin - 20] = 6;
     
     if (found == -1) {
         oledConnected = false;
@@ -1928,16 +1946,25 @@ void oled::disconnect(void) {
    // oledConnected = false;
     clear(1000);
     show(1000);
-    // Use RAM-based state system
-    removeBridgeFromState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row);
-    removeBridgeFromState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);
-    // Restore pins to unassigned in net map so they show as normal when disconnected
-    // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -1;
-    // gpioNet[jumperlessConfig.top_oled.scl_pin - 20] = -1;
-    gpioState[jumperlessConfig.top_oled.sda_pin - 20] = 4;
-    gpioState[jumperlessConfig.top_oled.scl_pin - 20] = 4;
+    
+    // Only remove crossbar bridges if not using hardwired pins
+    if (!oledUsingHardwiredPins) {
+        // Use RAM-based state system
+        removeBridgeFromState(jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row);
+        removeBridgeFromState(jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);
+        // Restore pins to unassigned in net map so they show as normal when disconnected
+        // gpioNet[jumperlessConfig.top_oled.sda_pin - 20] = -1;
+        // gpioNet[jumperlessConfig.top_oled.scl_pin - 20] = -1;
+        if (jumperlessConfig.top_oled.sda_pin >= 20) {
+            gpioState[jumperlessConfig.top_oled.sda_pin - 20] = 4;
+        }
+        if (jumperlessConfig.top_oled.scl_pin >= 20) {
+            gpioState[jumperlessConfig.top_oled.scl_pin - 20] = 4;
+        }
+        refreshConnections(-1, 0, 0);
+    }
+    
     oledConnected = false;
-    refreshConnections(-1, 0, 0);
 }
 
 char scratchPad[40];

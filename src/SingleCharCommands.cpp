@@ -685,7 +685,12 @@ CommandResult cmd_clearConnections(char c, const String& line) {
 CommandResult cmd_addConnections(char c, const String& line) {
     // Use source 3 if we have a complete command line (from line buffering or injection)
     // Otherwise use source 0 to read interactively from Jerial
-    int source = (currentCommandLine.length() > 0) ? 3 : 0;
+   // Serial.println("Adding connections");
+    int source = (currentCommandLine.length() > 1) ? 3 : 0;
+    // Serial.println("source = ");
+    // Serial.print(source);
+    // Serial.print("currentCommandLine = ");
+    // Serial.println(currentCommandLine);
     readStringFromSerial(source, 0);
     // After reading connections, they need to be loaded
     firstLoop = 0; // Prevent first-loop logic
@@ -695,7 +700,7 @@ CommandResult cmd_addConnections(char c, const String& line) {
 CommandResult cmd_removeConnections(char c, const String& line) {
     // Use source 3 if we have a complete command line (from line buffering or injection)
     // Otherwise use source 0 to read interactively from Jerial
-    int source = (currentCommandLine.length() > 0) ? 3 : 0;
+    int source = (currentCommandLine.length() > 1) ? 3 : 0;
     readStringFromSerial(source, 1);
     return CMD_LOAD_FILE;
 }
