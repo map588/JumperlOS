@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "LEDs.h"
+#include "Jerial.h"
 
 extern const int screenMap[445];
 extern const int screenMapNoRails[445];
@@ -149,10 +150,10 @@ void printTextFromMenu(int print = 1);
 int attractMode(void);
 
 void changeTerminalColor(int termColor = -1, bool flush = true,
-                         Stream *stream = &Serial);
+                         Stream *stream = &Jerial);
 
 // void cycleTerminalColor(bool reset = false, bool reverse = false, int step = -1, bool flush = true, Stream *stream = &Serial);
-extern void cycleTerminalColor(bool reset = false, float step = 100.0, bool flush = true, Stream *stream = &Serial, int startColorIndex = 0, int bright = 1);
+extern void cycleTerminalColor(bool reset = false, float step = 100.0, bool flush = true, Stream *stream = &Jerial, int startColorIndex = 0, int bright = 1);
 
 extern "C" {
 extern void cycleTermColor(bool reset = false, float step = 100.0, bool flush = true);
@@ -164,7 +165,7 @@ int printMenuLine(const char* format, ...);
 // Printf-like function for menu items with automatic color cycling and conditional display
 int printMenuLine(int showExtraMenu, int minLevel, const char* format, ...);
 
-void changeTerminalColorHighSat(int colorIndex = -1, bool flush = true, Stream *stream = &Serial, int bright = 0);
+void changeTerminalColorHighSat(int colorIndex = -1, bool flush = true, Stream *stream = &Jerial, int bright = 0);
 
 void drawImage(int imageIndex = 0);
 void drawAnimatedImage(int imageIndex = 0, int speed = 2000);
@@ -173,18 +174,20 @@ void printAllRLEimageData(void);
 
 void dumpLEDs(int posX = 50, int posY = 27, int pixelsOrRows = 0,
               int header = 0, int rgbOrRaw = 0, int logo = 0,
-              Stream *stream = &Serial);
+              Stream *stream = &Jerial);
 void dumpHeader(int posX = 50, int posY = 20, int absolute = 1, int wide = 0,
-                Stream *stream = &Serial);
-void dumpHeaderHex(Stream *stream = &Serial);
+                Stream *stream = &Jerial);
+void dumpHeaderHex(Stream *stream = &Jerial);
 void moveCursor(int posX = -1, int posY = -1, int absolute = 1,
-                Stream *stream = &Serial, bool flush = false);
-void saveCursorPosition(Stream *stream = &Serial);
-void restoreCursorPosition(Stream *stream = &Serial);
+                Stream *stream = &Jerial, bool flush = false);
+void saveCursorPosition(Stream *stream = &Jerial);
+void restoreCursorPosition(Stream *stream = &Jerial);
+int getCursorPositionX(void);
+int getCursorPositionY(void);
 
 // Alternate screen buffer functions for saving/restoring entire screen state
-void saveScreenState(Stream *stream = &Serial);
-void restoreScreenState(Stream *stream = &Serial);
+void saveScreenState(void);
+void restoreScreenState(void);
 
 void dumpHeaderMain(int posX = 50, int posY = 20, int absolute = 1,
                     int wide = 0);

@@ -2348,6 +2348,7 @@ int getCursorPositionY() {
   return response.toInt();
 }
 int cursorSaved = 0;
+
 void saveCursorPosition(Stream *stream) {
   Jerial.print("\033[s");
   Jerial.flush();
@@ -2578,12 +2579,16 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
       serial1ClearSent++;
     }
   } else {
-    // dumpHeaderMain();
-    // dumpingToSerial = false;
-    // return;
-    // posX += 28;
-    // posY += 1;
-    saveCursorPosition(stream);
+    // Check if windowing system is active
+    extern struct config jumperlessConfig;
+    bool useWindowing = jumperlessConfig.windowing.enabled && 
+                        jumperlessConfig.windowing.show_leds;
+    
+    if (!useWindowing) {
+      // Legacy positioning for non-windowing mode
+      saveCursorPosition(stream);
+    }
+    // Windowing mode: WindowManager handles all positioning
     mainSerial = true;
   }
 
@@ -2820,16 +2825,21 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
       // Start with cursor reset
     if (mainSerial == true) {
-      // restoreCursorPosition();
-      int clearAbove = 6;
-      Jerial.printf("\033[%dA", 30);
-      Jerial.printf("\033[%dA", clearAbove);
-      // Jerial.printf("\033[%dC", xOffset);
-      for (int i = 0; i < clearAbove; i++) {
-        Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
+      extern struct config jumperlessConfig;
+      bool useWindowing = jumperlessConfig.windowing.enabled && 
+                          jumperlessConfig.windowing.show_leds;
+      
+      if (!useWindowing) {
+        // Legacy cursor management for non-windowing mode
+        int clearAbove = 6;
+        Jerial.printf("\033[%dA", 30);
+        Jerial.printf("\033[%dA", clearAbove);
+        for (int i = 0; i < clearAbove; i++) {
+          Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
+        }
+        Jerial.print("\033[0G");
       }
-      Jerial.print("\033[0G");
-      // Jerial.printf("\033[%dC", xOffset);
+      // Windowing mode: skip manual positioning
 
     } else {
       snprintf(screenLines[currentLine++], LINE_WIDTH, "\033[0;0H\033[0m");
@@ -2856,8 +2866,13 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
     // Send line with proper line ending
     if (mainSerial == true) {
-
-      Jerial.printf("\033[%dC", xOffset);
+      extern struct config jumperlessConfig;
+      bool useWindowing = jumperlessConfig.windowing.enabled && 
+                          jumperlessConfig.windowing.show_leds;
+      
+      if (!useWindowing) {
+        Jerial.printf("\033[%dC", xOffset);
+      }
     }
 
     Jerial.print(screenLines[i]);
@@ -2865,7 +2880,13 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   }
 
   if (mainSerial == true) {
-    Jerial.printf("\033[%dB", 4);
+    extern struct config jumperlessConfig;
+    bool useWindowing = jumperlessConfig.windowing.enabled && 
+                        jumperlessConfig.windowing.show_leds;
+    
+    if (!useWindowing) {
+      Jerial.printf("\033[%dB", 4);
+    }
   }
 
 
@@ -3569,7 +3590,7 @@ void printRLEimageData(int imageIndex) {
 }
 
 // Screen state functions for clean transitions - Windows compatible
-void saveScreenState(Stream *stream) {
+void saveScreenState(void) {
   // Clear screen for file manager interface - Windows compatible
   Jerial.print("\033[2J\033[H");
   Jerial.flush();
@@ -3577,7 +3598,7 @@ void saveScreenState(Stream *stream) {
   delay(50);
 }
 
-void restoreScreenState(Stream *stream) {
+void restoreScreenState(void) {
   // Clear screen for clean return to REPL - Windows compatible
   Jerial.print("\033[2J\033[H");
   Jerial.flush();

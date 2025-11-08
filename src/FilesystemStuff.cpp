@@ -1316,7 +1316,7 @@ void FileManager::run( ) {
             // Wait briefly to see if this is an escape sequence or standalone ESC
 
             if ( Serial.available( ) == 0 ) {
-            delayMicroseconds( 5000 ); // 5ms delay to wait for escape sequence
+            delayMicroseconds( 2000 ); // 5ms delay to wait for escape sequence
             }
             
             if ( Serial.available( ) ) {
@@ -2027,7 +2027,7 @@ void filesystemApp( bool waitForEnter ) {
     }
 
     // Save current screen state and switch to alternate screen buffer
-    saveScreenState( &Serial );
+    saveScreenState( );
 
     manager.clearScreen( );
     manager.hideCursor( );
@@ -2083,7 +2083,7 @@ void filesystemApp( bool waitForEnter ) {
     }
 
     // Restore original screen state with all scrollback intact
-    restoreScreenState( &Serial );
+    restoreScreenState( );
 
     jumperlessConfig.top_oled.show_in_terminal = showOledInTerminal;
 }
@@ -2107,12 +2107,12 @@ void eKiloApp( ) {
     }
 
     // Save current screen state and switch to alternate screen buffer
-    saveScreenState( &Serial );
+    saveScreenState( );
 
     launchEkiloStandalone( nullptr );
 
     // Restore original screen state with all scrollback intact
-    restoreScreenState( &Serial );
+    restoreScreenState( );
 
     // Windows-specific: Add extra delay to ensure proper display
     Serial.flush( );
@@ -2164,7 +2164,7 @@ String launchEkilo( const char* filename, bool replMode ) {
     // Screen management based on mode
     if ( replMode ) {
         // Save current screen state and switch to alternate screen buffer
-        saveScreenState( &Serial );
+        saveScreenState( );
     } else {
         // Clear screen and prepare for full-screen editor
         Serial.print( "\x1b[2J\x1b[H" );
@@ -2188,7 +2188,7 @@ String launchEkilo( const char* filename, bool replMode ) {
     // Screen restoration based on mode
     if ( replMode ) {
         // Restore original screen state with all scrollback intact
-        restoreScreenState( &Serial );
+        restoreScreenState( );
 
         // Windows-specific: Add extra delay and clear to ensure proper display
         Serial.flush( );
@@ -2352,7 +2352,7 @@ String FileManager::promptForFilename( const String& prompt ) {
 // REPL mode version - returns content if file was saved
 String filesystemAppPythonScriptsREPL( ) {
     // Clear screen for file manager interface
-    saveScreenState( &Serial );
+        saveScreenState( );
 
     FileManager manager;
     // Set REPL mode so the manager knows to use launchEkiloREPL
@@ -2411,7 +2411,7 @@ String filesystemAppPythonScriptsREPL( ) {
         Serial.flush( );
     } else {
         // Normal exit - restore screen state
-        restoreScreenState( &Serial );
+        restoreScreenState( );
     }
     manager.setREPLMode( false );
 

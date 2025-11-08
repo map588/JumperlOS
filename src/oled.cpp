@@ -152,7 +152,9 @@ int oled::init() {
         // Serial.println(millis());
         // Serial.flush();
        /// disconnect();
+       if (stillWriteToFramebuffer == false) {
         return 0;
+        }
     }
     // Set font from config value
     if (jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= 10) {
@@ -181,8 +183,9 @@ int oled::init() {
     } else {
         display.drawBitmap(x, y, jogo32h, 128, 32, SSD1306_WHITE);
     }
+    if (oledConnected) {
     display.display();
-    
+    }
     setCursor(0, 0);
     Wire1.setTimeout(15);
     charPos = 0;
@@ -535,7 +538,7 @@ bool oled::textFits(const char* str) {
 
 // Main cursor setting function with automatic positioning logic
 void oled::setCursor(int16_t x, int16_t y, PositionMode mode) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     
     if (!currentFont) {
         // Default font - direct positioning
@@ -594,7 +597,7 @@ void oled::setCursor(int16_t x, int16_t y) {
 
 // Main display function with all options
 void oled::clearPrintShow(const char* text, int textSize, bool clear, bool showOled, bool center, int x_pos, int y_pos, int waitToFinish) {
-    if (!oledConnected || !text) return;
+    if ((!oledConnected || !text) && stillWriteToFramebuffer == false) return;
 
     if (clear) {
         charPos = 0;
@@ -653,7 +656,7 @@ void oled::clearPrintShow(const char* text, int textSize, bool clear, bool showO
 
 // Main display function with font family selection
     void oled::clearPrintShow(const char* text, int textSize, FontFamily family, bool clear, bool showOled, bool center, int x_pos, int y_pos, int waitToFinish) {
-        if (!oledConnected || !text) return;
+        if ((!oledConnected || !text) && stillWriteToFramebuffer == false) return;
 
     if (clear) {
         charPos = 0;
@@ -709,6 +712,8 @@ void oled::displayMultiLineText(const char* text, bool center) {
     std::vector<String> lines;
     String textStr = String(text);
     int start = 0;
+
+    if ((!oledConnected) && stillWriteToFramebuffer == false ) return;
     int pos = 0;
     
     // Split by newlines
@@ -816,7 +821,7 @@ void oled::clearPrintShow(const String& text, int textSize, FontFamily family, b
 // ====================
 
 void oled::print(const char* s) {
-    if (!oledConnected || !s) return;
+    if ((!oledConnected || !s) && stillWriteToFramebuffer == false) return;
     
     // Auto-adjust cursor if at top of screen - simplified
     int16_t currentY = display.getCursorY();
@@ -838,19 +843,19 @@ void oled::print(const String& s) {
 }
 
 void oled::print(int i) {
-    if (!oledConnected) return;
+    if (!oledConnected && stillWriteToFramebuffer == false) return;
     display.print(i);
     charPos += String(i).length();
 }
 
 void oled::print(float f) {
-    if (!oledConnected) return;
+    if (!oledConnected && stillWriteToFramebuffer == false) return;
     display.print(f);
     charPos += String(f).length();
 }
 
 void oled::print(char c) {
-    if (!oledConnected) return;
+    if (!oledConnected && stillWriteToFramebuffer == false) return;
     display.print(c);
     charPos += 1;
 }
@@ -880,7 +885,7 @@ void oled::println(float f) {
 // ================
 
 bool oled::clear(int waitToFinish) {
-    if (!oledConnected) {
+    if ((!oledConnected) && stillWriteToFramebuffer == false) {
         charPos = 0;
         return false;
     }
@@ -922,8 +927,8 @@ bool oled::show(int waitToFinish) {
 }
 
 void oled::moveToNextLine() {
-    if (!oledConnected) return;
-    
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
+     
     FontMetrics metrics = getFontMetrics();
     int16_t currentY = display.getCursorY();
     int16_t nextY = currentY + metrics.lineHeight;
@@ -937,7 +942,7 @@ void oled::moveToNextLine() {
 
 // Display settings
 void oled::setTextSize(uint8_t size) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     if (size > 2) {
         size = 2;
     }
@@ -946,18 +951,18 @@ void oled::setTextSize(uint8_t size) {
 }
 
 void oled::setTextColor(uint32_t color) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.setTextColor(color);
 }
 
 void oled::invertDisplay(bool inv) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.invertDisplay(inv);
 }
 
 // Small text functions for file browser and detailed display
 void oled::printSmallText(const char* text, int16_t x, int16_t y, bool clear) {
-  if (!oledConnected) return;
+  if ((!oledConnected) && stillWriteToFramebuffer == false) return;
   
   if (clear) {
     display.clearDisplay();
@@ -984,7 +989,7 @@ void oled::printSmallText(const char* text, int16_t x, int16_t y, bool clear) {
 }
 
 void oled::printSmallTextLine(const char* text, int line, bool clear) {
-  if (!oledConnected) return;
+  if ((!oledConnected) && stillWriteToFramebuffer == false) return;
   
   if (clear) {
     display.clearDisplay();
@@ -1005,13 +1010,13 @@ void oled::printSmallTextLine(const char* text, int line, bool clear) {
   display.setFont(currentFont);
   usingSmallFont = false;
   
-  if (clear) {
+  if (clear && oledConnected) {
     display.display();
   }
 }
 
 void oled::clearLine(int line) {
-  if (!oledConnected) return;
+  if ((!oledConnected) && stillWriteToFramebuffer == false) return;
   
   // Clear a specific line by drawing a black rectangle
   display.fillRect(0, line * 8, displayWidth, 8, SSD1306_BLACK);
@@ -1060,7 +1065,7 @@ void oled::showFileStatus(const char* currentPath, int fileCount, const char* se
 }
 
 void oled::showFileStatusScrolled(const char* visibleText, int fileCount, int cursorPosition) {
-  if (!oledConnected) return;
+  if (!oledConnected && stillWriteToFramebuffer == false) return;
   
   // Clear display
   clearFramebuffer();
@@ -1136,9 +1141,9 @@ void oled::showFileStatusScrolled(const char* visibleText, int fileCount, int cu
 }
 
 void oled::showMultiLineSmallText(const char* text, bool clear) {
-  if (!oledConnected) return;
+  if (!oledConnected && stillWriteToFramebuffer == false) return;
   
-  if (clear) {
+  if (clear && oledConnected) {
     display.clearDisplay();
   }
   
@@ -1154,7 +1159,7 @@ void oled::showMultiLineSmallText(const char* text, bool clear) {
   setCursor(0, 8); // Start at top with proper baseline
   display.print(text);
   
-  if (clear) {
+  if (clear && oledConnected) {
     display.display();
   }
   
@@ -1172,7 +1177,7 @@ bool oled::isConnected() const {
 
 // Logo display
 void oled::showJogo32h() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.clearDisplay();
     
     int x = (displayWidth - jumperlessConfig.top_oled.width) / 2 + 1;
@@ -1183,7 +1188,7 @@ void oled::showJogo32h() {
 }
 
 void oled::oledPeriodic() {
-    return;
+    // return;
     if (millis() - lastConnectionCheck > connectionCheckInterval && jumperlessConfig.top_oled.enabled == 1) {
         lastConnectionCheck = millis();
         if (globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) == true) {
@@ -1192,8 +1197,8 @@ void oled::oledPeriodic() {
                     oledConnected = false;
                     if (connectionRetries < maxConnectionRetries) {
                         if (init() != 0) {
-                            Serial.print("\r                                          \r");
-                            Serial.flush();
+                            // Serial.print("\r                                          \r");
+                            // Serial.flush();
                         }
                     }
                 } else {
@@ -1280,15 +1285,15 @@ void oled::testSmallFonts() {
 unsigned long lastDumpTime = 0;
 unsigned long clearInterval = 2000;
 
-void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int border, Stream* stream) {
-    if (!oledConnected) {
-       // Serial.println("OLED not connected");
-        return;
-    }
+void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int border) {
+    // if (!oledConnected) {
+    //    // Serial.println("OLED not connected");
+    //     return;
+    // }
     
     uint8_t* buffer = display.getBuffer();
     if (!buffer) {
-       // Serial.println("No framebuffer available");
+        Serial.println("No framebuffer available");
         return;
     }
 
@@ -1298,42 +1303,30 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
         return;
     }
 
-    if (jumperlessConfig.serial_2.function == 4 || jumperlessConfig.serial_2.function == 6) {
-      stream = &USBSer2;
-      y_pos = 1;
-      x_pos = 1;
-      if (millis() - lastDumpTime > clearInterval) {
-        stream->print("\033[2J\033[?25l");
-        lastDumpTime = millis();
-      }
-    } else if (jumperlessConfig.serial_1.function == 4 || jumperlessConfig.serial_1.function == 6) {
-      stream = &USBSer1;
-      y_pos = 1;
-      x_pos = 1;
-      if (millis() - lastDumpTime > clearInterval) {
-        stream->print("\033[2J\033[?25l");
-        lastDumpTime = millis();
-      }
-    } else {
-      stream = &Serial;
-      saveCursorPosition(stream);
-    stream->printf("\033[%d;%dH", y_pos-1, x_pos +1);
-    stream->printf("\033[0K");
-    stream->printf("\033[1B");
-    stream->printf("\033[0K");
-
-
+    // Skip manual positioning if windowing system is active
+    extern struct config jumperlessConfig;
+    bool useWindowing = jumperlessConfig.windowing.enabled && 
+                        jumperlessConfig.windowing.show_oled;
+    
+    if (!useWindowing) {
+        // Legacy positioning for non-windowing mode
+        saveCursorPosition(&Jerial);
+        Jerial.printf("\033[%d;%dH", y_pos-1, x_pos +1);
+        Jerial.printf("\033[0K");
+        Jerial.printf("\033[1B");
+        Jerial.printf("\033[0K");
     }
+    // Windowing mode: WindowManager handles all positioning
 
 
 
 
     if (border == 1) {
-        stream->println("╭────────────────────────────────────────────────────────────────╮");
+        Jerial.println("╭────────────────────────────────────────────────────────────────╮");
     } else if (border == 2) {
-        stream->println("▗▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖");
+        Jerial.println("▗▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▖");
     } else {
-        stream->println("                                                                  ");
+        Jerial.println("                                                                  ");
     }
     
     // Quarter block characters for different pixel combinations
@@ -1358,14 +1351,14 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
     
     // Process framebuffer in 2x2 blocks to create 64x16 output
     for (int blockRow = 0; blockRow < displayHeight / 2; blockRow++) {
-        stream->printf("\033[%dC",x_pos);
-        stream->printf("\033[0K");
+        Jerial.printf("\033[%dC",x_pos);
+        Jerial.printf("\033[0K");
         if (border == 1) {
-            stream->print("│"); // Left border
+            Jerial.print("│"); // Left border
         } else if (border == 2) {
-            stream->print("▐"); // Left border
+            Jerial.print("▐"); // Left border
         } else {
-            stream->print(" "); // Left border
+            Jerial.print(" "); // Left border
         }
         
         for (int blockCol = 0; blockCol < displayWidth / 2; blockCol++) {
@@ -1394,41 +1387,41 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
             }
             
             // Print the appropriate quarter block character
-            stream->print(quarterBlocks[pixelMask]);
+            Jerial.print(quarterBlocks[pixelMask]);
         }
         
         if (border == 1) {
-            stream->println("│"); // Right border and newline
+            Jerial.println("│"); // Right border and newline
         } else if (border == 2) {
-            stream->println("▌"); // Right border and newline
+            Jerial.println("▌"); // Right border and newline
         } else {
-            stream->println(" "); // Right border and newline
+            Jerial.println(" "); // Right border and newline
         }
     }
-    stream->printf("\033[%dC",x_pos);
-    stream->printf("\033[0K");
+    Jerial.printf("\033[%dC",x_pos);
+    Jerial.printf("\033[0K");
     if (border == 1) {
-        stream->println("╰────────────────────────────────────────────────────────────────╯");
+        Jerial.println("╰────────────────────────────────────────────────────────────────╯");
     } else if (border == 2) {
-        stream->println("▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘");
+        Jerial.println("▝▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▘");
     } else {
-        stream->println("                                                                  ");
+            Jerial.println("                                                                  ");
     }
-    stream->printf("\033[%dB",y_pos - (displayHeight / 2 ) + 2);
-    if (stream == &Serial) {
-      restoreCursorPosition(stream);
-    } else {
-      stream->printf("\033[%d;%dH", y_pos-1, x_pos +1);
+    if (!useWindowing) {
+        // Legacy cursor restoration for non-windowing mode
+        Jerial.printf("\033[%dB",y_pos - (displayHeight / 2 ) + 2);
+        Jerial.printf("\033[50B");
     }
+    // Windowing mode: WindowManager handles all cursor management
     dumpingToSerial = false;
 }
 
 
 void oled::dumpFrameBuffer() {
-    if (!oledConnected) {
-        Serial.println("OLED not connected");
-        return;
-    }
+    // if (!oledConnected) {
+    //     Serial.println("OLED not connected");
+    //     return;
+    // }
     
     uint8_t* buffer = display.getBuffer();
     if (!buffer) {
@@ -1436,8 +1429,8 @@ void oled::dumpFrameBuffer() {
         return;
     }
     
-    Serial.println("OLED Framebuffer Dump (128x32):");
-    Serial.println("┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
+    Jerial.printf("OLED Framebuffer Dump (%dx%d):", displayWidth, displayHeight);
+    Jerial.println("┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
     
     // The SSD1306 framebuffer is organized as:
     // - 128 columns (width)
@@ -1446,7 +1439,7 @@ void oled::dumpFrameBuffer() {
     // - Buffer layout: [col0_page0, col1_page0, ..., col127_page0, col0_page1, col1_page1, ...]
     
     for (int row = 0; row < displayHeight; row++) {
-        Serial.print("│"); // Left border
+        Jerial.print("│"); // Left border
         
         for (int col = 0; col < displayWidth; col++) {
             // Calculate which page (group of 8 rows) this pixel is in
@@ -1462,18 +1455,18 @@ void oled::dumpFrameBuffer() {
             
             // Print block character based on pixel state
             if (pixelOn) {
-                Serial.print("█"); // Full block for lit pixel
+                Jerial.print("█"); // Full block for lit pixel
             } else {
-                Serial.print(" "); // Space for dark pixel
+                Jerial.print(" "); // Space for dark pixel
             }
         }
         
-        Serial.println("│"); // Right border and newline
+        Jerial.println("│"); // Right border and newline
     }
     
-    Serial.println("└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
-    Serial.print("Buffer size: ");
-    Serial.print(displayWidth * displayHeight / 8);
+    Jerial.println("└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘");
+    Jerial.print("Buffer size: ");
+    Jerial.print(displayWidth * displayHeight / 8);
     Serial.println(" bytes");
 }
 
@@ -1482,7 +1475,7 @@ void oled::dumpFrameBuffer() {
 // ===================
 
 void oled::setSmallFont(SmallFont smallFont) {
-    if (!oledConnected) return;
+    if (!oledConnected && stillWriteToFramebuffer == false) return;
     
     // Store current font and family for restoration
     if (!usingSmallFont) {
@@ -1533,7 +1526,7 @@ void oled::setSmallFont(SmallFont smallFont) {
 }
 
 void oled::useSmallFont(SmallFont smallFont, const char* text, int16_t x, int16_t y, bool clear) {
-    if (!oledConnected || !text) return;
+    if ((!oledConnected || !text) && stillWriteToFramebuffer == false) return;
     
     if (clear) {
         display.clearDisplay();
@@ -1545,7 +1538,7 @@ void oled::useSmallFont(SmallFont smallFont, const char* text, int16_t x, int16_
 }
 
 void oled::useSmallFontAndRestore(SmallFont smallFont, const char* text, int16_t x, int16_t y, bool clear, bool show) {
-    if (!oledConnected || !text) return;
+    if ((!oledConnected || !text) && stillWriteToFramebuffer == false) return;
     
     if (clear) {
         display.clearDisplay();
@@ -1570,7 +1563,7 @@ void oled::useSmallFontAndRestore(SmallFont smallFont, const char* text, int16_t
 }
 
 void oled::restoreNormalFont() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     
     if (usingSmallFont && previousFont) {
         currentFont = previousFont;
@@ -1583,28 +1576,28 @@ void oled::restoreNormalFont() {
 
 // Drawing primitives
 void oled::drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.drawLine(x0, y0, x1, y1, color);
 }
 
 void oled::fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.fillRect(x, y, w, h, color);
 }
 
 // Simple framebuffer management
 void oled::clearFramebuffer() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.clearDisplay();
 }
 
 void oled::setPixel(int16_t x, int16_t y, uint16_t color) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.drawPixel(x, y, color);
 }
 
 void oled::drawChar(int16_t x, int16_t y, char c) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     int16_t savedX = display.getCursorX();
     int16_t savedY = display.getCursorY();
     display.setCursor(x, y);
@@ -1613,7 +1606,7 @@ void oled::drawChar(int16_t x, int16_t y, char c) {
 }
 
 void oled::drawText(int16_t x, int16_t y, const char* text) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     int16_t savedX = display.getCursorX();
     int16_t savedY = display.getCursorY();
     display.setCursor(x, y);
@@ -1622,7 +1615,7 @@ void oled::drawText(int16_t x, int16_t y, const char* text) {
 }
 
 void oled::drawHighlightedChar(int16_t x, int16_t y, char c) {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false    ) return;
     
     // Get character bounds for background rectangle
     int16_t x1, y1;
@@ -1856,20 +1849,20 @@ void oled::moveCursorTerm(int x, int y) {
 }
 
 void oled::clearToEndOfLine() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     int x = termCursorX * 6;
     int y = termCursorY * 8;
     display.fillRect(x, y, displayWidth - x, 8, SSD1306_BLACK);
 }
 
 void oled::clearLine() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     int y = termCursorY * 8;
     display.fillRect(0, y, displayWidth, 8, SSD1306_BLACK);
 }
 
 void oled::clearToEndOfScreen() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     clearToEndOfLine();
     
     // Clear all lines below current
@@ -1879,7 +1872,7 @@ void oled::clearToEndOfScreen() {
 }
 
 void oled::clearScreen() {
-    if (!oledConnected) return;
+    if ((!oledConnected) && stillWriteToFramebuffer == false) return;
     display.clearDisplay();
     termCursorX = 0;
     termCursorY = 0;

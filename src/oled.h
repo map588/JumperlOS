@@ -7,6 +7,7 @@
 #include "Wire.h"
 #include <vector>
 #include "config.h"
+
 // Core fonts - small and large sizes for auto-fallback
 #include "fonts/Eurostile8pt7b.h"
 #include "fonts/Eurostile12pt7b.h"
@@ -45,6 +46,8 @@ class Adafruit_SSD1306;
 
 extern bool oledConnected;
 extern bool oledUsingHardwiredPins; // Global flag: true if using RP6/RP7 (GPIO 6/7), false if using crossbar
+
+
 
 #define OLED_RESET -1
 
@@ -176,7 +179,7 @@ public:
     void displayMultiLineText(const char* text, bool center);
     
     // Debug functions
-    void dumpFrameBufferQuarterSize(int clearFirst = 0, int x_pos = 40, int y_pos = 24, int border = 1, Stream* stream = &Serial);
+    void dumpFrameBufferQuarterSize(int clearFirst = 0, int x_pos = 40, int y_pos = 24, int border = 1);
     void dumpFrameBuffer();
     
     // Positioning functions (simplified)
@@ -250,6 +253,7 @@ public:
     bool usingSmallFont = false;
     
     bool oledConnected = false;
+    bool stillWriteToFramebuffer = true;
     
     int connectionRetries = 0;
     int maxConnectionRetries = 4;
