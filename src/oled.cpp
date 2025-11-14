@@ -120,7 +120,7 @@ int oled::init() {
     if (jumperlessConfig.top_oled.enabled == 0) {
         jumperlessConfig.top_oled.enabled = 1;
     }
-    
+    ///delay(1000);
     int success = 0;
     address = jumperlessConfig.top_oled.i2c_address;
     sda_pin = jumperlessConfig.top_oled.sda_pin;
@@ -145,16 +145,39 @@ int oled::init() {
     success = connect();
     // Serial.println("oled::init connect done");
     // Serial.println(millis());
-    // delay(100);
+     //delay(10);
     if (checkConnection() == false) {
-        oledConnected = false;
+       // oledConnected = false;
         // Serial.println("oled::init checkConnection failed");
         // Serial.println(millis());
         // Serial.flush();
-       /// disconnect();
+        // delay(100);
+
+        // Serial.println("oled width: " + String(displayWidth));
+        // Serial.println("oled height: " + String(displayHeight));
+        // Serial.flush();
+        // delay(100);
+
+        // Serial.println("oled rotation: " + String(jumperlessConfig.top_oled.rotation));
+        // Serial.flush();
+        // delay(100);
+
+        // Serial.println("oled font: " + String(jumperlessConfig.top_oled.font));
+       //disconnect();
+
+       //success = connect();
+//delay(10);
+     //  if (checkConnection() == false) {
+       // Serial.println("oled::init checkConnection failed 2");
+       // Serial.println(millis());
+       // Serial.flush();
+       // delay(100);
+        //return 0;
+       
        if (stillWriteToFramebuffer == false) {
         return 0;
         }
+   // }
     }
     // Set font from config value
     if (jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= 10) {
@@ -1188,7 +1211,7 @@ void oled::showJogo32h() {
 }
 
 void oled::oledPeriodic() {
-    // return;
+     return;
     if (millis() - lastConnectionCheck > connectionCheckInterval && jumperlessConfig.top_oled.enabled == 1) {
         lastConnectionCheck = millis();
         if (globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) == true) {
@@ -1304,18 +1327,18 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
     }
 
     // Skip manual positioning if windowing system is active
-    extern struct config jumperlessConfig;
-    bool useWindowing = jumperlessConfig.windowing.enabled && 
-                        jumperlessConfig.windowing.show_oled;
+    // extern struct config jumperlessConfig;
+    // bool useWindowing = jumperlessConfig.windowing.enabled && 
+    //                     jumperlessConfig.windowing.show_oled;
     
-    if (!useWindowing) {
+    // if (!useWindowing) {
         // Legacy positioning for non-windowing mode
         saveCursorPosition(&Jerial);
         Jerial.printf("\033[%d;%dH", y_pos-1, x_pos +1);
         Jerial.printf("\033[0K");
         Jerial.printf("\033[1B");
         Jerial.printf("\033[0K");
-    }
+    // }
     // Windowing mode: WindowManager handles all positioning
 
 
@@ -1407,11 +1430,11 @@ void oled::dumpFrameBufferQuarterSize(int clearFirst, int x_pos, int y_pos, int 
     } else {
             Jerial.println("                                                                  ");
     }
-    if (!useWindowing) {
+    // if (!useWindowing) {
         // Legacy cursor restoration for non-windowing mode
         Jerial.printf("\033[%dB",y_pos - (displayHeight / 2 ) + 2);
         Jerial.printf("\033[50B");
-    }
+    // }
     // Windowing mode: WindowManager handles all cursor management
     dumpingToSerial = false;
 }

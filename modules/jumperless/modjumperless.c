@@ -3203,6 +3203,22 @@ static mp_obj_t jl_get_current_slot(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(jl_get_current_slot_obj, jl_get_current_slot);
 
+// Connection context toggle functions
+extern void jl_toggle_connection_context(void);
+extern const char* jl_get_connection_context_name(void);
+
+static mp_obj_t jl_context_toggle(void) {
+    jl_toggle_connection_context();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_context_toggle_obj, jl_context_toggle);
+
+static mp_obj_t jl_context_get(void) {
+    const char* context = jl_get_connection_context_name();
+    return mp_obj_new_str(context, strlen(context));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_context_get_obj, jl_context_get);
+
 
 //==============================================================================
 // Missing MicroPython VFS bridge functions for os module support
@@ -3361,6 +3377,10 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     
     // Global variables
     { MP_ROM_QSTR(MP_QSTR_CURRENT_SLOT), MP_ROM_PTR(&jl_get_current_slot_obj) },
+    
+    // Connection context control
+    { MP_ROM_QSTR(MP_QSTR_context_toggle), MP_ROM_PTR(&jl_context_toggle_obj) },
+    { MP_ROM_QSTR(MP_QSTR_context_get), MP_ROM_PTR(&jl_context_get_obj) },
     
     // Node creation function
     { MP_ROM_QSTR(MP_QSTR_node), MP_ROM_PTR(&jl_node_obj) },

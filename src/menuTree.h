@@ -76,16 +76,16 @@ String menuLines[] = {
  
 
   "Apps",
-  "-Bounce Startup",
-  "-Calib  DACs",
-  "-Custom App",
+  "-Bounce \nStartup",
+  "-Calib  \nDACs",
+  "-Custom \nApp",
   // "-XLSX   GUI",
   //"-Micropython",
-  "-uPythonREPL",
-  "-File   Manager",
-  "-Probe  Calib",
-  "-JDI MIPdisplay",
-  "-DMX Serial",  
+  "-uPython\nREPL",
+  "-File   \nManager",
+  "-Probe  \nCalib",
+  "-JDI MIP\ndisplay",
+  "-DMX \nSerial",  
 
   //"-Show   Image",
  
@@ -129,7 +129,7 @@ String menuLines[] = {
 
 
 
-       "DisplayOptions",
+       "Display\nOptions",
        "-$Demo$",
        "--*On**Off*",
        "-$Colors$",
@@ -159,30 +159,30 @@ String menuLines[] = {
       "--BerkMono^",
       "--Pragmtsm^",
       "--IosevkaR^",
-      "-DisplaySize",
+      "-Display\nSize",
       "--$Width$",
       "---*32**64**128**256**Custom*",
       "---->i(16)(2048)",
       "--$Height$",
       "---*32**64**128**256**Custom*",
       "---->i(16)(2048)",
-      "-$StartUpMessge$",
+      "-$StartUp\nMessge$",
       "--*Edit**Clear*",
       "--->t(32)",
-      "-Show in Term",
+      "-Show \nin Term",
       "--*On**Off*",
       //"-Dis    connect",
 
-      "-Lock   Connect",
+      "-Lock   \nConnect",
       "--*On**Off*",
-      "-ConnectOn Boot",
+      "-Connect\nOn Boot",
       "--*On**Off*",
 
       "-Connect",
       //  "-Demo",
 
 
-       "RoutingOptions",
+       "Routing\nOptions",
        "-Stack",
        "--$Rails$",
        "---*0**1**2**3**4**Max *",

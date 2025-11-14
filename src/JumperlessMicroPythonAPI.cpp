@@ -46,6 +46,12 @@ extern SafeString nodeFileString;
 // Forward declarations
 int justReadProbe(bool allowDuplicates);
 
+// Python connection context - controls whether Python changes persist or are isolated
+#define PYTHON_SLOT_NUMBER 99  // Special slot for Python isolated context
+
+PythonConnectionContext connectionContext = PYTHON_CONTEXT_GLOBAL;  // Default to global mode
+static int pythonEntrySlot = -1;  // Track which slot was active when entering Python
+
 // C-compatible wrapper functions for MicroPython
 extern "C" {
 #include "py/mpthread.h"
@@ -469,17 +475,62 @@ int jl_nodes_save(int slot) {
 }
 
 void jl_init_micropython_local_copy(void) {
-    // Use the new state-based backup system to store entry state
-    storeStateBackup();
+    // Store which slot was active when entering Python
+    pythonEntrySlot = netSlot;
+    
+    if (connectionContext == PYTHON_CONTEXT_ISOLATED) {
+        // ISOLATED MODE: Save current state to backup and switch to Python slot
+        storeStateBackup();
+        
+        // Load Python slot (or create empty if doesn't exist)
+        SlotManager& mgr = SlotManager::getInstance();
+        String errorMsg;
+        
+        // Try to load existing Python slot
+        if (!mgr.slotExists(PYTHON_SLOT_NUMBER)) {
+            // Create empty Python slot
+            mgr.getActiveState().clear();
+            mgr.saveSlot(PYTHON_SLOT_NUMBER, errorMsg);
+        }
+        
+        // Load Python slot into active state
+        if (mgr.loadSlot(PYTHON_SLOT_NUMBER, errorMsg)) {
+            netSlot = PYTHON_SLOT_NUMBER;
+            mgr.setActiveSlot(PYTHON_SLOT_NUMBER);
+        } else {
+            Serial.println("Warning: Failed to load Python slot: " + errorMsg);
+        }
+    } else {
+        // GLOBAL MODE: Just store a backup for potential restore
+        // but continue working with the current slot
+        storeStateBackup();
+    }
 }
 
 void jl_exit_micropython_restore_entry_state(void) {
-    // By default, restore to entry state (discard Python changes)
-    // This makes Python connections temporary unless explicitly saved
-    restoreAndSaveStateBackup();
+    if (connectionContext == PYTHON_CONTEXT_ISOLATED) {
+        // ISOLATED MODE: Save Python slot and restore entry state
+        SlotManager& mgr = SlotManager::getInstance();
+        String errorMsg;
+        
+        // Save current Python state to Python slot
+        mgr.saveSlot(PYTHON_SLOT_NUMBER, errorMsg);
+        
+        // Restore the entry state (discards Python changes from global state)
+        restoreAndSaveStateBackup();
+        
+        // Restore the original slot number
+        if (pythonEntrySlot >= 0 && pythonEntrySlot < NUM_SLOTS) {
+            netSlot = pythonEntrySlot;
+            mgr.setActiveSlot(pythonEntrySlot);
+        }
+    } else {
+        // GLOBAL MODE: Changes persist, just clear the backup
+        clearStateBackup();
+    }
     
-    // Refresh connections to match the restored state
-    refreshLocalConnections();
+    // Refresh connections to match the current state
+    refreshConnections(-1, 1, 1);
 }
 
 void jl_restore_micropython_entry_state(void) {
@@ -493,6 +544,19 @@ void jl_restore_micropython_entry_state(void) {
 int jl_has_unsaved_changes(void) {
     // Use the new state-based backup system to check for changes
     return hasStateChanges() ? 1 : 0;
+}
+
+void jl_toggle_connection_context(void) {
+    // Toggle between global and isolated modes
+    if (connectionContext == PYTHON_CONTEXT_GLOBAL) {
+        connectionContext = PYTHON_CONTEXT_ISOLATED;
+    } else {
+        connectionContext = PYTHON_CONTEXT_GLOBAL;
+    }
+}
+
+const char* jl_get_connection_context_name(void) {
+    return (connectionContext == PYTHON_CONTEXT_GLOBAL) ? "global" : "python";
 }
 
 // Helper function to convert chip identifier to chip number

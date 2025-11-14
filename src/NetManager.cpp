@@ -120,6 +120,9 @@ int foundNode2Net =
 0; // netNumbers where that node is, a node can only be in 1 net (except
 // current sense, we'll deal with that separately)
 
+static const char* CURRENT_SENSE_PLUS_NAME = "I Sense +";
+static const char* CURRENT_SENSE_MINUS_NAME = "I Sense -";
+
 int foundNode1inSpecialNet = foundNode1Net;
 int foundNode2inSpecialNet = foundNode2Net;
 
@@ -686,6 +689,46 @@ void populateSpecialFunctions(int net, int node) {
     //     }
     }
   }
+
+static void updateCurrentSenseNetName(int netNumber) {
+  if (netNumber <= 0 || netNumber >= MAX_NETS) {
+    return;
+  }
+
+  netStruct& net = globalState.connections.nets[netNumber];
+  bool hasPlus = false;
+  bool hasMinus = false;
+
+  for (int i = 0; i < MAX_NODES; i++) {
+    int16_t node = net.nodes[i];
+    if (node == 0) {
+      break;
+    }
+    if (node == ISENSE_PLUS) {
+      hasPlus = true;
+    } else if (node == ISENSE_MINUS) {
+      hasMinus = true;
+    }
+  }
+
+  if (hasPlus && !hasMinus) {
+    net.name = CURRENT_SENSE_PLUS_NAME;
+    return;
+  }
+
+  if (hasMinus && !hasPlus) {
+    net.name = CURRENT_SENSE_MINUS_NAME;
+    return;
+  }
+
+  if (!hasPlus && !hasMinus && net.name != nullptr) {
+    if (strcmp(net.name, CURRENT_SENSE_PLUS_NAME) == 0 ||
+        strcmp(net.name, CURRENT_SENSE_MINUS_NAME) == 0) {
+      net.name = netNameConstants[netNumber];
+    }
+  }
+}
+
 void addNodeToNet(int netToAddNode, int node) {
   int newNodeIndex = findFirstUnusedNodeIndex(
       netToAddNode); // using a function lets us add more error checking later
@@ -713,6 +756,7 @@ void addNodeToNet(int netToAddNode, int node) {
     }
 
   globalState.connections.nets[netToAddNode].nodes[newNodeIndex] = node;
+  updateCurrentSenseNetName(netToAddNode);
   }
 
 int findFirstUnusedNetIndex() // search for a free globalState.connections.nets[]

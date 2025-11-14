@@ -734,6 +734,30 @@ void processMicroPythonInput(Stream *stream) {
           return;
         }
 
+        //! Connection context toggle
+        if (trimmed_input == "context" || trimmed_input == "context()") {
+          jl_toggle_connection_context();
+          changeTerminalColor(replColors[5], true, global_mp_stream);
+          global_mp_stream->print("Connection context switched to: ");
+          changeTerminalColor(replColors[2], true, global_mp_stream);
+          global_mp_stream->println(jl_get_connection_context_name());
+          changeTerminalColor(replColors[0], false, global_mp_stream);
+          
+          if (connectionContext == PYTHON_CONTEXT_GLOBAL) {
+            global_mp_stream->println("   Changes will persist to global state");
+            global_mp_stream->println("   Connections remain after exiting Python");
+          } else {
+            global_mp_stream->println("   Changes are isolated to Python session");
+            global_mp_stream->println("   Connections cleared on exit (saved to slots/slotPython.yaml)");
+          }
+          
+          editor.reset();
+          changeTerminalColor(replColors[1], true, global_mp_stream);
+          editor.drawPrompt(global_mp_stream, 0);
+          global_mp_stream->flush();
+          return;
+        }
+
         //! Multiline mode commands
         if (trimmed_input == "multiline" || trimmed_input == "multiline()") {
           global_mp_stream->println("Multiline mode status:");
@@ -1712,6 +1736,13 @@ void showREPLreference(int verbose) {
   global_mp_stream->println("-   Edit current input in main eKilo editor");
   changeTerminalColor(replColors[3], false, global_mp_stream);
 
+  textColumnLength = global_mp_stream->print("  context  ");
+  padTextColumn(textColumnEnd, textColumnLength);
+  changeTerminalColor(replColors[0], false, global_mp_stream);
+  global_mp_stream->print("-   Toggle connection context - currently: ");
+  changeTerminalColor(replColors[2], false, global_mp_stream);
+  global_mp_stream->println(jl_get_connection_context_name());
+  changeTerminalColor(replColors[3], false, global_mp_stream);
 
   // textColumnLength = global_mp_stream->print("  help() ");
   // padTextColumn(textColumnEnd, textColumnLength);
@@ -1737,7 +1768,7 @@ void showREPLreference(int verbose) {
   global_mp_stream->println("\nHardware:");
   changeTerminalColor(replColors[7], false, global_mp_stream);
   global_mp_stream->println(
-      "  help()           - Show Jumperless hardware commands");
+      "  help()       - Show Jumperless hardware commands");
 
   char int_char = (keyboard_interrupt_char >= 1 && keyboard_interrupt_char <= 26) ? 
                   (char)(keyboard_interrupt_char + 64) : '?';

@@ -28,7 +28,7 @@ public:
     // Service interface
     ServiceStatus service() override;
     const char* getName() const override { return "Peripherals"; }
-    ServicePriority getPriority() const override { return ServicePriority::NORMAL; }
+    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
     
     // Member variables (previously globals)
     unsigned long gpioToggleFrequency = 0;
@@ -37,6 +37,7 @@ public:
     // Public methods
     void checkPads(void);
     void showMeasurements(int samples = 8, int printOrBB = 2, int oneShot = 0);
+    void pollCurrentSense();  // Update current sense measurements (safe to call from any context)
     
 private:
     Peripherals();
@@ -57,6 +58,9 @@ inline void showMeasurements(int samples = 8, int printOrBB = 2, int oneShot = 0
 extern INA219 INA0;
 extern INA219 INA1;
 
+
+extern float currentReadingOffset0_mA;
+extern float currentReadingOffset1_mA;
 extern int i2cSpeed;
 
 extern int inaConnected;
@@ -97,6 +101,22 @@ extern bool gpioPWMEnabled[10];
 extern volatile bool readingGPIO;
 extern volatile bool readingADC;
 extern volatile bool usingI2C;
+
+struct CurrentSenseState {
+    bool active = false;
+    bool plusConnected = false;
+    bool minusConnected = false;
+    int plusNet = -1;
+    int minusNet = -1;
+    float current_mA = 0.0f;
+    float filteredCurrent_mA = 0.0f;
+    float busVoltage_V = 0.0f;
+    float shuntVoltage_mV = 0.0f;
+    int currentDirection = 0; // -1 reverse, 0 idle, 1 forward
+    unsigned long lastUpdatedMs = 0;
+};
+
+extern CurrentSenseState currentSenseState;
 
 struct gpio_function_name_struct {
     gpio_function_t function;

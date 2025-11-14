@@ -154,6 +154,23 @@ void ledClass::setPixelColor(uint16_t n, uint32_t c) {
     }
   }
 
+// blendType: 0 = no blend, 1 = only if brighter than current color, 2 = blend with current color
+void ledClass::setPixelColor(uint16_t n, uint32_t c, int blendType) {
+  if (blendType == 0) {
+    bbleds.setPixelColor(n, c);
+  } else if (blendType == 1) {
+    hsvColor currentColor = RgbToHsv(leds.getPixelColor(n));
+    hsvColor newColor = RgbToHsv(c);
+    if (currentColor.v < newColor.v) {
+      bbleds.setPixelColor(n, c);
+    }
+  } else if (blendType == 2) {
+uint32_t currentColor = leds.getPixelColor(n);
+uint32_t newColor = c;
+    uint32_t blendedColor = blendColors(currentColor, newColor, 0.5);
+    bbleds.setPixelColor(n, blendedColor);
+  }
+}
 void ledClass::fill(uint32_t c, uint16_t first, uint16_t count) {
   if (splitLEDs == 1) {
     topleds.fill(c, first, count);
@@ -2132,8 +2149,20 @@ void assignNetColors(int preview) {
 
 
       if (brightenedNet != 0 && i == brightenedNet) {
-        netHsv.v += brightenedAmount;
-        }
+        // Skip brightness boost for current sense nets - they'll be brightened in the overlay
+       // bool isCurrentSenseNet = currentSenseState.plusConnected && currentSenseState.minusConnected &&
+        //                         (i == currentSenseState.plusNet || i == currentSenseState.minusNet);
+      //  if (!isCurrentSenseNet) {
+      // Serial.println("brightenedNet != 0 && i == brightenedNet");
+      // Serial.print("brightenedNet: ");
+      // Serial.println(brightenedNet);
+      // Serial.print("i: ");
+      // Serial.println(i);
+      // Serial.print("brightenedAmount: ");
+      // Serial.println(brightenedAmount);
+          netHsv.v += brightenedAmount;
+      //  }
+      }
 
       // if (warningNet != 0 && i == warningNet) {
       //   netHsv.h = netHsv.h /10;
@@ -2292,8 +2321,13 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                   shiftedColorHsv.v = LEDbrightnessRail;
                   }
                 if (brightenedNet == netNumber) {
-                  shiftedColorHsv.v += brightenedAmount;
+                  // Skip brightness boost for current sense nets
+                  bool isCurrentSenseNet = currentSenseState.plusConnected && currentSenseState.minusConnected &&
+                                           (netNumber == currentSenseState.plusNet || netNumber == currentSenseState.minusNet);
+                  if (!isCurrentSenseNet) {
+                    shiftedColorHsv.v += brightenedAmount;
                   }
+                }
                 shiftedColor = HsvToRgb(shiftedColorHsv);
 
                 color = packRgb(shiftedColor.r, shiftedColor.g, shiftedColor.b);
@@ -2311,11 +2345,16 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                     shiftedColorHsv.v = LEDbrightnessSpecial;
                     }
                   if (brightenedNet == netNumber) {
-                    shiftedColorHsv.v += brightenedAmount;
-                    // shiftedColorHsv.v *= 8;
-                    shiftedColorHsv.v =
-                      constrain(shiftedColorHsv.v, 0, 255);
+                    // Skip brightness boost for current sense nets
+                    bool isCurrentSenseNet = currentSenseState.plusConnected && currentSenseState.minusConnected &&
+                                             (netNumber == currentSenseState.plusNet || netNumber == currentSenseState.minusNet);
+                    if (!isCurrentSenseNet) {
+                      shiftedColorHsv.v += brightenedAmount;
+                      // shiftedColorHsv.v *= 8;
+                      shiftedColorHsv.v =
+                        constrain(shiftedColorHsv.v, 0, 255);
                     }
+                  }
                   shiftedColor = HsvToRgb(shiftedColorHsv);
 
                   color = packRgb(shiftedColor.r, shiftedColor.g, shiftedColor.b);
@@ -2333,8 +2372,13 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                     // shiftedColorHsv.v = LEDbrightness;
                     }
                   if (brightenedNet == netNumber) {
-                    shiftedColorHsv.v += brightenedAmount;
+                    // Skip brightness boost for current sense nets
+                    bool isCurrentSenseNet = currentSenseState.plusConnected && currentSenseState.minusConnected &&
+                                             (netNumber == currentSenseState.plusNet || netNumber == currentSenseState.minusNet);
+                    if (!isCurrentSenseNet) {
+                      shiftedColorHsv.v += brightenedAmount;
                     }
+                  }
                   shiftedColor = HsvToRgb(shiftedColorHsv);
 
                   color = packRgb(shiftedColor.r, shiftedColor.g, shiftedColor.b);
@@ -2349,14 +2393,19 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                   // colorToShift = shiftHue(colorToShift, hueShift);
                   hsvColor brighterColor = RgbToHsv(colorToShift);
                   if (brightenedNet == netNumber) {
-                    // shiftedColorHsv.v += brightenedAmount;
-                    shiftedColorHsv.v = 255;
-                    brighterColor.v = 255;
-                    // brighterColor.v =
-                    //     constrain(shiftedColorHsv.v, 0, 255);
-                    // shiftedColorHsv.v =
-                    //     constrain(shiftedColorHsv.v, 0, 255);
+                    // Skip brightness boost for current sense nets
+                    bool isCurrentSenseNet = currentSenseState.plusConnected && currentSenseState.minusConnected &&
+                                             (netNumber == currentSenseState.plusNet || netNumber == currentSenseState.minusNet);
+                    if (!isCurrentSenseNet) {
+                      // shiftedColorHsv.v += brightenedAmount;
+                      shiftedColorHsv.v = 255;
+                      brighterColor.v = 255;
+                      // brighterColor.v =
+                      //     constrain(shiftedColorHsv.v, 0, 255);
+                      // shiftedColorHsv.v =
+                      //     constrain(shiftedColorHsv.v, 0, 255);
                     }
+                  }
                   brighterColor.v += PCBEXTINCTION;
                   rgbColor bright = HsvToRgb(brighterColor);
 
@@ -2381,15 +2430,21 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                   // Serial.println(nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]);
                   if (globalState.connections.nets[netNumber].nodes[j] >= NANO_D0) {
                     if (brightenedNet == netNumber) {
-                      
-                      if (brightenedNode == globalState.connections.nets[netNumber].nodes[j]) {
-                        color = scaleBrightness(color, brightenedNodeAmount);
+                      // Skip brightness boost for current sense nets
+                      bool isCurrentSenseNet = currentSenseState.plusConnected && currentSenseState.minusConnected &&
+                                               (netNumber == currentSenseState.plusNet || netNumber == currentSenseState.minusNet);
+                      if (!isCurrentSenseNet) {
+                        if (brightenedNode == globalState.connections.nets[netNumber].nodes[j]) {
+                          color = scaleBrightness(color, brightenedNodeAmount);
                         } else {
                           color = scaleBrightness(color, brightenedNetAmount);
                         }
                       } else {
-                      color = scaleBrightness(color, 0);
+                        color = scaleBrightness(color, 0);
                       }
+                    } else {
+                      color = scaleBrightness(color, 0);
+                    }
                     leds.setPixelColor(
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) + 320, color);
 

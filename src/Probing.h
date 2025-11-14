@@ -240,6 +240,7 @@ int switchPosition = -1; // -1 = unknown, 0 = measure, 1 = select
     int chooseGPIOinputOutput(int gpioChosen);
     int chooseADC(void);
     int chooseDAC(int justPickOne = 0);
+    int chooseIsense(void);
     int attachPadsToSettings(int pad);
     
     float voltageSelect(int fiveOrEight = 8);
@@ -392,6 +393,10 @@ inline int chooseADC(void) {
 
 inline int chooseDAC(int justPickOne = 0) {
     return Probing::getInstance().chooseDAC(justPickOne);
+}
+
+inline int chooseIsense(void) {
+    return Probing::getInstance().chooseIsense();
 }
 
 inline int chooseGPIO(int skipInputOutput = 0) {

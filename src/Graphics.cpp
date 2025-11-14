@@ -20,11 +20,12 @@
 #include "TuiGlue.h"
 
 #include "Jerial.h"
-
 #ifdef DONOTUSE_SERIALWRAPPER
 #include "SerialWrapper.h"
 #define Serial SerialWrap
 #endif
+#include <math.h>
+
 
 bool disableTerminalColors = false;
 
@@ -318,6 +319,63 @@ int wireStatus[64][5]; // row, led (net stored)
 char defconString[16] = "Jumper less V5 ";
 
 /* clang-format on */
+
+static constexpr int kCurrentSenseMaxPathLength = 320; // Allow full breadboard coverage (60 rows × 5 columns + margin)
+static constexpr int kCurrentSensePatternLength = 5;
+static constexpr float kCurrentSenseMinMotionCurrent_mA = 0.05f;
+static constexpr uint8_t kCurrentSenseRowTintAlpha = 50;
+static constexpr uint8_t kCurrentSensePathTintAlpha = 50;
+
+enum class PathSegmentType : uint8_t {
+  VIRTUAL_WIRE,  // The injected virtual wire between nets (vertical)
+  NET,
+};
+
+enum class NetType : uint8_t {
+  PLUS_NET,
+  MINUS_NET,
+};
+
+enum class SegOrientation: uint8_t {
+  HORIZONTAL,
+  VERTICAL,
+};
+
+struct PathSegment {
+  PathSegmentType segmentType;
+  SegOrientation orientation;
+  NetType netType;
+  int netNumber;
+  int direction;
+  int split;
+  int relativeIndex;  // Position within this net/segment (0, 1, 2...) for continuous flow
+};
+
+struct CurrentSenseOverlayState {
+  bool pathValid = false;
+  int plusRow = -1;
+  int minusRow = -1;
+  
+  // Separate pixel collections for cleaner animation
+  int plusNetPixels[kCurrentSenseMaxPathLength] = {0};
+  int plusNetLength = 0;
+  
+  int virtualWirePixels[kCurrentSenseMaxPathLength] = {0};
+  int virtualWireLength = 0;
+  
+  int minusNetPixels[kCurrentSenseMaxPathLength] = {0};
+  int minusNetLength = 0;
+  
+  float accumulator = 0.0f;
+  int patternOffset = 0;
+  unsigned long lastUpdateMs = 0;
+  int virtualWireNode1 = -1;  // Track virtual wire endpoints
+  int virtualWireNode2 = -1;
+};
+
+static CurrentSenseOverlayState currentSenseOverlayState;
+static void renderCurrentSenseOverlay();
+
 int colorCycle = 0;
 int defNudge = 0;
 
@@ -545,12 +603,144 @@ void printSpectrumOrderedColorCube(void) {
 
 int filledPaths[MAX_BRIDGES][4] = {-1}; // node1 node2 rowfilled
 
+// Add a virtual wire between current sense nets for visualization
+static int virtualCurrentSensePathIndex = -1;
+
+static void addVirtualCurrentSensePath() {
+  virtualCurrentSensePathIndex = -1;
+  
+  if (!currentSenseState.plusConnected || !currentSenseState.minusConnected) {
+    return;
+  }
+  
+  int plusNet = currentSenseState.plusNet;
+  int minusNet = currentSenseState.minusNet;
+  
+  if (plusNet <= 0 || minusNet <= 0 || plusNet >= MAX_NETS || minusNet >= MAX_NETS) {
+    return;
+  }
+  
+  // Collect all breadboard nodes from both nets
+  int plusNodesTop[MAX_NODES];
+  int plusNodesBottom[MAX_NODES];
+  int minusNodesTop[MAX_NODES];
+  int minusNodesBottom[MAX_NODES];
+  int plusTopCount = 0, plusBottomCount = 0;
+  int minusTopCount = 0, minusBottomCount = 0;
+  
+  for (int i = 0; i < MAX_NODES; i++) {
+    int node = globalState.connections.nets[plusNet].nodes[i];
+    if (node == 0) break;
+    if (node > 0 && node <= 30) {
+      plusNodesTop[plusTopCount++] = node;
+    } else if (node > 30 && node <= 60) {
+      plusNodesBottom[plusBottomCount++] = node;
+    }
+  }
+  
+  for (int i = 0; i < MAX_NODES; i++) {
+    int node = globalState.connections.nets[minusNet].nodes[i];
+    if (node == 0) break;
+    if (node > 0 && node <= 30) {
+      minusNodesTop[minusTopCount++] = node;
+    } else if (node > 30 && node <= 60) {
+      minusNodesBottom[minusBottomCount++] = node;
+    }
+  }
+  
+  // Select nodes - prefer same level (both top or both bottom)
+  // When on same level, pick nodes closest together for best visual appearance
+  int plusNode = -1;
+  int minusNode = -1;
+  
+  // Helper lambda to find closest pair of nodes
+  auto findClosestPair = [](int* arr1, int count1, int* arr2, int count2, int& node1, int& node2) {
+    int minDistance = 9999;
+    for (int i = 0; i < count1; i++) {
+      for (int j = 0; j < count2; j++) {
+        int distance = abs(arr1[i] - arr2[j]);
+        if (distance < minDistance) {
+          minDistance = distance;
+          node1 = arr1[i];
+          node2 = arr2[j];
+        }
+      }
+    }
+  };
+  
+  // Priority 1: Both on top level - find closest pair
+  if (plusTopCount > 0 && minusTopCount > 0) {
+    findClosestPair(plusNodesTop, plusTopCount, minusNodesTop, minusTopCount, plusNode, minusNode);
+  }
+  // Priority 2: Both on bottom level - find closest pair
+  else if (plusBottomCount > 0 && minusBottomCount > 0) {
+    findClosestPair(plusNodesBottom, plusBottomCount, minusNodesBottom, minusBottomCount, plusNode, minusNode);
+  }
+  // Priority 3: Cross-level - use first available
+  else if (plusTopCount > 0 && minusBottomCount > 0) {
+    plusNode = plusNodesTop[0];
+    minusNode = minusNodesBottom[0];
+  }
+  else if (plusBottomCount > 0 && minusTopCount > 0) {
+    plusNode = plusNodesBottom[0];
+    minusNode = minusNodesTop[0];
+  }
+  
+  if (plusNode <= 0 || minusNode <= 0) {
+    return;
+  }
+  
+  // Find a free slot in paths array or reuse our virtual path slot
+  int pathIndex = numberOfPaths;
+  if (pathIndex >= MAX_BRIDGES) {
+    return; // No room
+  }
+
+  // currentSenseOverlayState.plusRow = plusNode;
+  // currentSenseOverlayState.minusRow = minusNode;
+  
+  // Add virtual path
+  globalState.connections.paths[pathIndex].node1 = plusNode;
+  globalState.connections.paths[pathIndex].node2 = minusNode;
+  globalState.connections.paths[pathIndex].net = plusNet; // Use plusNet for the virtual wire
+  globalState.connections.paths[pathIndex].duplicate = 0;
+  globalState.connections.paths[pathIndex].skip = false;
+  
+  virtualCurrentSensePathIndex = pathIndex;
+  numberOfPaths = pathIndex + 1; // Temporarily increment
+  
+  // Store virtual wire endpoints in overlay state for segment classification
+  currentSenseOverlayState.virtualWireNode1 = plusNode;
+  currentSenseOverlayState.virtualWireNode2 = minusNode;
+}
+
+static void removeVirtualCurrentSensePath() {
+  if (virtualCurrentSensePathIndex >= 0 && virtualCurrentSensePathIndex < numberOfPaths) {
+    // Clear the virtual path
+    globalState.connections.paths[virtualCurrentSensePathIndex].node1 = -1;
+    globalState.connections.paths[virtualCurrentSensePathIndex].node2 = -1;
+    globalState.connections.paths[virtualCurrentSensePathIndex].net = 0;
+    
+    if (virtualCurrentSensePathIndex == numberOfPaths - 1) {
+      numberOfPaths--; // Restore original count if we were at the end
+    }
+  }
+  virtualCurrentSensePathIndex = -1;
+  
+  // Clear virtual wire tracking
+  currentSenseOverlayState.virtualWireNode1 = -1;
+  currentSenseOverlayState.virtualWireNode2 = -1;
+}
 
 void drawWires(int net) {
   // int fillSequence[6] = {0,2,4,1,3,};
   // debugLEDs = 0;
   // Jerial.print("c2debugLEDs = ");
   // Jerial.println(debugLEDs);
+  
+  // Add virtual wire for current sense visualization
+  addVirtualCurrentSensePath();
+  
   assignNetColors();
 
   // Jerial.println("drawWires");
@@ -840,6 +1030,844 @@ void drawWires(int net) {
     }
   } else {
     // lightUpNet(net);
+  }
+  
+  renderCurrentSenseOverlay();
+  
+  // Clean up virtual path after rendering
+  removeVirtualCurrentSensePath();
+}
+
+static bool isBreadboardRow(int node) {
+  return node > 0 && node <= 60;
+}
+
+static int rowColumnToPixelIndex(int row, int column) {
+  if (row <= 0 || row > 60 || column < 0 || column > 4) {
+    return -1;
+  }
+  int base = (row - 1) * 5;
+  if (row > 30) {
+    column = 4 - column;
+  }
+  int index = base + column;
+  if (index < 0 || index >= LED_COUNT) {
+    return -1;
+  }
+  return index;
+}
+
+// Convert wireStatus[row][col] to pixel index
+// After drawWires reverses bottom rows, wireStatus columns are pre-reversed,
+// so we use column index directly without additional reversal
+static int wireStatusToPixelIndex(int row, int column) {
+  if (row <= 0 || row > 60 || column < 0 || column > 4) {
+    return -1;
+  }
+  int index = (row - 1) * 5 + column;
+  if (index < 0 || index >= LED_COUNT) {
+    return -1;
+  }
+  return index;
+}
+
+static uint32_t blendColors(uint32_t base, uint32_t overlay, uint8_t alpha) {
+  uint8_t br = (base >> 16) & 0xFF;
+  uint8_t bg = (base >> 8) & 0xFF;
+  uint8_t bb = base & 0xFF;
+
+  uint8_t or_ = (overlay >> 16) & 0xFF;
+  uint8_t og = (overlay >> 8) & 0xFF;
+  uint8_t ob = overlay & 0xFF;
+
+  uint8_t rr = br + ((int(or_) - br) * alpha) / 255;
+  uint8_t rg = bg + ((int(og) - bg) * alpha) / 255;
+  uint8_t rb = bb + ((int(ob) - bb) * alpha) / 255;
+
+  return packRgb(rr, rg, rb);
+}
+
+static void tintPixel(int pixel, uint32_t tintColor, uint8_t alpha) {
+  if (pixel < 0 || pixel >= LED_COUNT) {
+    return;
+  }
+  uint32_t base = leds.getPixelColor(pixel);
+  uint32_t blended = blendColors(base, tintColor, alpha);
+  leds.setPixelColor(pixel, blended);
+}
+
+static int selectPrimaryRowForNet(int netNumber, int previousRow) {
+  if (netNumber <= 0 || netNumber >= MAX_NETS) {
+    return -1;
+  }
+
+  const netStruct &net = globalState.connections.nets[netNumber];
+  bool previousStillValid = false;
+  int fallbackTop = -1;
+  int fallbackBottom = -1;
+  int fallbackAny = -1;
+
+  for (int i = 0; i < MAX_NODES; i++) {
+    int node = net.nodes[i];
+    if (node == 0) {
+      break;
+    }
+    if (!isBreadboardRow(node)) {
+      continue;
+    }
+
+    if (node == previousRow) {
+      previousStillValid = true;
+    }
+
+    if (fallbackAny == -1) {
+      fallbackAny = node;
+    }
+    if (node <= 30) {
+      if (fallbackTop == -1) {
+        fallbackTop = node;
+      }
+    } else {
+      if (fallbackBottom == -1) {
+        fallbackBottom = node;
+      }
+    }
+  }
+
+  if (previousRow > 0 && previousStillValid) {
+    return previousRow;
+  }
+
+  if (previousRow > 0) {
+    bool previousTop = previousRow <= 30;
+    if (previousTop && fallbackTop != -1) {
+      return fallbackTop;
+    }
+    if (!previousTop && fallbackBottom != -1) {
+      return fallbackBottom;
+    }
+  }
+
+  if (fallbackTop != -1 && fallbackBottom != -1) {
+    return fallbackTop;
+  }
+  if (fallbackTop != -1) {
+    return fallbackTop;
+  }
+  if (fallbackBottom != -1) {
+    return fallbackBottom;
+  }
+  return fallbackAny;
+}
+
+static void rebuildCurrentSensePath(CurrentSenseOverlayState &state, int plusNet, int minusNet) {
+  // Reset all lengths
+  state.plusNetLength = 0;
+  state.virtualWireLength = 0;
+  state.minusNetLength = 0;
+  
+  if (plusNet <= 0 || minusNet <= 0) {
+    state.pathValid = false;
+    return;
+  }
+
+  // Identify which rows are virtual wire
+  bool isVirtualWireRow[61] = {false};
+  if (state.virtualWireNode1 > 0 && state.virtualWireNode1 <= 60 &&
+      state.virtualWireNode2 > 0 && state.virtualWireNode2 <= 60) {
+    int node1 = state.virtualWireNode1;
+    int node2 = state.virtualWireNode2;
+    bool bothOnTop = (node1 <= 30 && node2 <= 30);
+    bool bothOnBottom = (node1 > 30 && node2 > 30);
+    
+    if (bothOnTop || bothOnBottom) {
+      int startRow = (node1 < node2) ? node1 : node2;
+      int endRow = (node1 < node2) ? node2 : node1;
+      for (int row = startRow; row <= endRow; row++) {
+        isVirtualWireRow[row] = true;
+      }
+    } else {
+      isVirtualWireRow[node1] = true;
+      isVirtualWireRow[node2] = true;
+    }
+  }
+  
+  // STEP 1: Collect PLUS NET pixels (non-virtual-wire rows only)
+  for (int row = 1; row <= 60; row++) {
+    if (isVirtualWireRow[row]) continue;
+    
+    // Check if this row has plus net
+    bool hasPlus = false;
+    for (int col = 0; col < 5; col++) {
+      if (wireStatus[row][col] == plusNet) {
+        hasPlus = true;
+        break;
+      }
+    }
+    if (!hasPlus) continue;
+    
+    // Add pixels in column order for this row
+    for (int col = 0; col < 5; col++) {
+      if (wireStatus[row][col] == plusNet && state.plusNetLength < kCurrentSenseMaxPathLength) {
+        int pixel = wireStatusToPixelIndex(row, col);
+        if (pixel >= 0) {
+          state.plusNetPixels[state.plusNetLength++] = pixel;
+        }
+      }
+    }
+  }
+  
+  // STEP 2: Collect VIRTUAL WIRE pixels in counter-clockwise order starting from bottom-right
+  // This ordering minimizes phase discontinuities by matching the physical LED strip layout
+  // For a 5-column wide wire:
+  //    13 14 15 16 17     (top row, left to right)
+  //    12 .  .  .  18     (right column going down)
+  //    11 .  .  .  19
+  //    10 .  .  .  20
+  //     4  3  2  1  0     (bottom row, right to left starting point)
+  //     5  6  7  8  9     (left column going up from bottom)
+  
+  // Find the range of virtual wire rows
+  int firstVwireRow = 999, lastVwireRow = -1;
+  for (int row = 1; row <= 60; row++) {
+    if (isVirtualWireRow[row]) {
+      if (row < firstVwireRow) firstVwireRow = row;
+      if (row > lastVwireRow) lastVwireRow = row;
+    }
+  }
+  
+  if (firstVwireRow <= lastVwireRow) {
+    // Determine which columns have virtual wire content
+    bool hasVwireCol[5] = {false};
+    for (int row = firstVwireRow; row <= lastVwireRow; row++) {
+      if (!isVirtualWireRow[row]) continue;
+      for (int col = 0; col < 5; col++) {
+        int net = wireStatus[row][col];
+        if (net == plusNet || net == minusNet) {
+          hasVwireCol[col] = true;
+        }
+      }
+    }
+    
+    // Find leftmost and rightmost columns with content
+    int leftCol = -1, rightCol = -1;
+    for (int col = 0; col < 5; col++) {
+      if (hasVwireCol[col]) {
+        if (leftCol == -1) leftCol = col;
+        rightCol = col;
+      }
+    }
+    
+    if (leftCol >= 0 && rightCol >= 0) {
+      // Collect starting from BOTTOM-RIGHT, going counter-clockwise
+      // This matches the physical LED strip layout better and avoids phase discontinuities
+      
+      // PHASE 1: Across the BOTTOM row (right to left, starting at bottom-right)
+      for (int col = rightCol; col >= leftCol; col--) {
+        int net = wireStatus[lastVwireRow][col];
+        if (net == plusNet || net == minusNet) {
+          int pixel = wireStatusToPixelIndex(lastVwireRow, col);
+          if (pixel >= 0 && state.virtualWireLength < kCurrentSenseMaxPathLength) {
+            state.virtualWirePixels[state.virtualWireLength++] = pixel;
+          }
+        }
+      }
+      
+      // PHASE 2: Up the LEFT side (bottom to top, excluding bottom corner)
+      for (int row = lastVwireRow - 1; row >= firstVwireRow; row--) {
+        if (!isVirtualWireRow[row]) continue;
+        int net = wireStatus[row][leftCol];
+        if (net == plusNet || net == minusNet) {
+          int pixel = wireStatusToPixelIndex(row, leftCol);
+          if (pixel >= 0 && state.virtualWireLength < kCurrentSenseMaxPathLength) {
+            state.virtualWirePixels[state.virtualWireLength++] = pixel;
+          }
+        }
+      }
+      
+      // PHASE 3: Across the TOP row (left to right, excluding left corner)
+      for (int col = leftCol + 1; col <= rightCol; col++) {
+        int net = wireStatus[firstVwireRow][col];
+        if (net == plusNet || net == minusNet) {
+          int pixel = wireStatusToPixelIndex(firstVwireRow, col);
+          if (pixel >= 0 && state.virtualWireLength < kCurrentSenseMaxPathLength) {
+            state.virtualWirePixels[state.virtualWireLength++] = pixel;
+          }
+        }
+      }
+      
+      // PHASE 4: Down the RIGHT side (top to bottom, excluding both corners)
+      if (rightCol != leftCol) {
+        for (int row = firstVwireRow + 1; row < lastVwireRow; row++) {
+          if (!isVirtualWireRow[row]) continue;
+          int net = wireStatus[row][rightCol];
+          if (net == plusNet || net == minusNet) {
+            int pixel = wireStatusToPixelIndex(row, rightCol);
+            if (pixel >= 0 && state.virtualWireLength < kCurrentSenseMaxPathLength) {
+              state.virtualWirePixels[state.virtualWireLength++] = pixel;
+            }
+          }
+        }
+      }
+      
+      // PHASE 5: Fill any interior pixels (middle columns at middle rows)
+      for (int row = firstVwireRow + 1; row < lastVwireRow; row++) {
+        if (!isVirtualWireRow[row]) continue;
+        for (int col = leftCol + 1; col < rightCol; col++) {
+          int net = wireStatus[row][col];
+          if (net == plusNet || net == minusNet) {
+            int pixel = wireStatusToPixelIndex(row, col);
+            if (pixel >= 0 && state.virtualWireLength < kCurrentSenseMaxPathLength) {
+              state.virtualWirePixels[state.virtualWireLength++] = pixel;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // STEP 3: Collect MINUS NET pixels (non-virtual-wire rows only)
+  for (int row = 1; row <= 60; row++) {
+    if (isVirtualWireRow[row]) continue;
+    
+    // Check if this row has minus net
+    bool hasMinus = false;
+    for (int col = 0; col < 5; col++) {
+      if (wireStatus[row][col] == minusNet) {
+        hasMinus = true;
+        break;
+      }
+    }
+    if (!hasMinus) continue;
+    
+    // Add pixels in column order for this row
+    for (int col = 0; col < 5; col++) {
+      if (wireStatus[row][col] == minusNet && state.minusNetLength < kCurrentSenseMaxPathLength) {
+        int pixel = wireStatusToPixelIndex(row, col);
+        if (pixel >= 0) {
+          state.minusNetPixels[state.minusNetLength++] = pixel;
+        }
+      }
+    }
+  }
+  
+  state.pathValid = (state.plusNetLength > 0 || state.virtualWireLength > 0 || state.minusNetLength > 0);
+  state.patternOffset %= kCurrentSensePatternLength;
+  if (state.patternOffset < 0) {
+    state.patternOffset += kCurrentSensePatternLength;
+  }
+
+  bool printDebug = false;
+  static unsigned long lastPrintMs = 0;
+  if (millis() - lastPrintMs > 10000 && printDebug) {
+    lastPrintMs = millis();
+
+    Jerial.println("\n=== CURRENT SENSE PATH DEBUG ===");
+    Jerial.print("Plus Net Length: "); Jerial.println(state.plusNetLength);
+    Jerial.print("Virtual Wire Length: "); Jerial.println(state.virtualWireLength);
+    Jerial.print("Minus Net Length: "); Jerial.println(state.minusNetLength);
+    Jerial.println();
+
+    // Print plus net pixels (first 20)
+    Jerial.println("Plus Net Pixels (first 20):");
+    for (int i = 0; i < state.plusNetLength && i < 20; i++) {
+      int pixel = state.plusNetPixels[i];
+      int row = (pixel / 5) + 1;
+      int col = pixel % 5;
+      Jerial.print("  ["); Jerial.print(i); Jerial.print("] pixel=");
+      Jerial.print(pixel); Jerial.print(" row="); Jerial.print(row);
+      Jerial.print(" col="); Jerial.println(col);
+    }
+    
+    // Print virtual wire pixels (all)
+    Jerial.println("\nVirtual Wire Pixels:");
+    for (int i = 0; i < state.virtualWireLength; i++) {
+      int pixel = state.virtualWirePixels[i];
+      int row = (pixel / 5) + 1;
+      int col = pixel % 5;
+      Jerial.print("  ["); Jerial.print(i); Jerial.print("] pixel=");
+      Jerial.print(pixel); Jerial.print(" row="); Jerial.print(row);
+      Jerial.print(" col="); Jerial.println(col);
+    }
+    
+    // Print minus net pixels (first 20)
+    Jerial.println("\nMinus Net Pixels (first 20):");
+    for (int i = 0; i < state.minusNetLength && i < 20; i++) {
+      int pixel = state.minusNetPixels[i];
+      int row = (pixel / 5) + 1;
+      int col = pixel % 5;
+      Jerial.print("  ["); Jerial.print(i); Jerial.print("] pixel=");
+      Jerial.print(pixel); Jerial.print(" row="); Jerial.print(row);
+      Jerial.print(" col="); Jerial.println(col);
+    }
+if (printDebug) {
+    // Rebuild row tracking for visual map
+    bool rowHasPlusNet[61] = {false};
+    bool rowHasMinusNet[61] = {false};
+    bool rowHasVirtualWire[61] = {false};
+    
+    for (int row = 1; row <= 60; row++) {
+      for (int col = 0; col < 5; col++) {
+        if (wireStatus[row][col] == plusNet) {
+          rowHasPlusNet[row] = true;
+        }
+        if (wireStatus[row][col] == minusNet) {
+          rowHasMinusNet[row] = true;
+        }
+      }
+    }
+    
+    // Mark virtual wire rows
+    for (int row = 1; row <= 60; row++) {
+      if (isVirtualWireRow[row]) {
+        rowHasVirtualWire[row] = true;
+      }
+    }
+
+    Jerial.println("\n=== NET DISTRIBUTION MAP ===");
+    Jerial.println("(+ = plus net, - = minus net, V = virtual wire, X = mixed)");
+    Jerial.println("\nTop Half (1-30):");
+    for (int i = 1; i <= 30; i++) {
+      Jerial.print(i);
+      Jerial.print(" ");    
+      if (i < 10) {
+        Jerial.print(" ");
+      }
+    }
+    Jerial.println();
+    
+    for (int i = 1; i <= 30; i++) {
+      if (rowHasVirtualWire[i]) {
+        changeTerminalColor(226, true, &Jerial);
+        Jerial.print("V ");
+      } else if (rowHasPlusNet[i] && rowHasMinusNet[i]) {
+        changeTerminalColor(201, true, &Jerial);
+        Jerial.print("X ");
+      } else if (rowHasPlusNet[i]) {
+        changeTerminalColor(196, true, &Jerial);
+        Jerial.print("+ ");
+      } else if (rowHasMinusNet[i]) {
+        changeTerminalColor(46, true, &Jerial);
+        Jerial.print("- ");
+      } else {
+        changeTerminalColor();
+        Jerial.print(". ");
+      }
+      Jerial.print(" ");
+    }
+    Jerial.println();
+    changeTerminalColor();
+
+    Jerial.println("\nBottom Half (31-60):");
+    for (int i = 31; i <= 60; i++) {
+      if (i < 10) {
+        Jerial.print(" ");
+      }
+      Jerial.print(i);
+      Jerial.print(" ");
+    }
+    Jerial.println();
+    
+    for (int i = 31; i <= 60; i++) {
+      if (rowHasVirtualWire[i]) {
+        changeTerminalColor(226, true, &Jerial);
+        Jerial.print("V ");
+      } else if (rowHasPlusNet[i] && rowHasMinusNet[i]) {
+        changeTerminalColor(201, true, &Jerial);
+        Jerial.print("X ");
+      } else if (rowHasPlusNet[i]) {
+        changeTerminalColor(196, true, &Jerial);
+        Jerial.print("+ ");
+      } else if (rowHasMinusNet[i]) {
+        changeTerminalColor(46, true, &Jerial);
+        Jerial.print("- ");
+      } else {
+        changeTerminalColor();
+        Jerial.print(". ");
+      }
+      Jerial.print(" ");
+    }
+    Jerial.println();
+    changeTerminalColor();
+    Jerial.println("\n");
+    
+    // Print current flow information
+    Jerial.print("Current: ");
+    Jerial.print(currentSenseState.filteredCurrent_mA);
+    Jerial.print(" mA");
+  }
+  
+    // Calculate direction from current magnitude (same logic as animation)
+    int debugDirection = 0;
+    if (currentSenseState.filteredCurrent_mA > 0.1f) {
+      debugDirection = 1;
+    } else if (currentSenseState.filteredCurrent_mA < -0.1f) {
+      debugDirection = -1;
+    }
+    if (printDebug) {
+    Jerial.print(", Direction: ");
+    if (debugDirection > 0) {
+      Jerial.print("POSITIVE (clockwise →↓←↑)");
+    } else if (debugDirection < 0) {
+      Jerial.print("NEGATIVE (counter-clockwise ←↑→↓)");
+    } else {
+      Jerial.print("ZERO (stopped)");
+    }
+    Jerial.print(", Pattern Offset: ");
+    Jerial.println(state.patternOffset);
+    Jerial.println();
+    
+    // Visual path index grid for virtual wire
+    if (state.virtualWireLength > 0) {
+      Jerial.println("=== VIRTUAL WIRE PATH INDICES ===");
+      Jerial.println("(Counter-clockwise from bottom-right, matches LED strip layout)");
+      
+      // Create a map of pixel -> index
+      int pixelToIndex[300];
+      for (int p = 0; p < 300; p++) {
+        pixelToIndex[p] = -1;
+      }
+      for (int i = 0; i < state.virtualWireLength; i++) {
+        int pixel = state.virtualWirePixels[i];
+        if (pixel >= 0 && pixel < 300) {
+          pixelToIndex[pixel] = i;
+        }
+      }
+      
+      // Find row range for virtual wire
+      int minVwRow = 999, maxVwRow = -1;
+      for (int i = 0; i < state.virtualWireLength; i++) {
+        int pixel = state.virtualWirePixels[i];
+        int row = (pixel / 5) + 1;
+        if (row < minVwRow) minVwRow = row;
+        if (row > maxVwRow) maxVwRow = row;
+      }
+      
+      // Print grid for virtual wire rows
+      Jerial.print("Rows ");
+      Jerial.print(minVwRow);
+      Jerial.print("-");
+      Jerial.print(maxVwRow);
+      Jerial.println(":");
+      Jerial.println("Col: 0  1  2  3  4");
+      
+      for (int row = minVwRow; row <= maxVwRow; row++) {
+        Jerial.print("R");
+        if (row < 10) Jerial.print(" ");
+        Jerial.print(row);
+        Jerial.print(": ");
+        
+        for (int col = 0; col < 5; col++) {
+          int pixel = rowColumnToPixelIndex(row, col);
+          int idx = pixelToIndex[pixel];
+          if (idx >= 0) {
+            if (idx < 10) Jerial.print(" ");
+            Jerial.print(idx);
+            Jerial.print(" ");
+          } else {
+            Jerial.print(".  ");
+          }
+        }
+        Jerial.println();
+      }
+      Jerial.println();
+    }
+  }
+  }
+}
+
+static void tintRow(int row, uint32_t color) {
+  if (row <= 0 || row > 60 || probeHighlight == row) {
+    return;
+  }
+
+  for (int column = 0; column < 5; column++) {
+    int pixel = rowColumnToPixelIndex(row, column);
+    if (pixel >= 0) {
+      tintPixel(pixel, color, kCurrentSenseRowTintAlpha);
+    }
+  }
+}
+
+
+
+float kCurrentSenseBaseSpeed = 0.25f;
+float kCurrentSenseSpeedScale = 0.95f;
+
+static void renderCurrentSenseOverlay() {
+  if (!currentSenseState.plusConnected || !currentSenseState.minusConnected) {
+    currentSenseOverlayState.pathValid = false;
+    currentSenseOverlayState.plusRow = -1;
+    currentSenseOverlayState.minusRow = -1;
+    currentSenseOverlayState.lastUpdateMs = 0;
+    return;
+  }
+
+  int plusNet = currentSenseState.plusNet;
+  int minusNet = currentSenseState.minusNet;
+
+  // Get primary rows for tinting (visual feedback)
+  int plusRow = selectPrimaryRowForNet(plusNet, currentSenseOverlayState.plusRow);
+  int minusRow = selectPrimaryRowForNet(minusNet, currentSenseOverlayState.minusRow);
+
+  // Always rebuild path from wireStatus since it's populated fresh each frame
+  // wireStatus changes based on the virtual wire we inject
+  rebuildCurrentSensePath(currentSenseOverlayState, plusNet, minusNet);
+  
+  // Reset accumulator if rows changed
+  if (plusRow != currentSenseOverlayState.plusRow ||
+      minusRow != currentSenseOverlayState.minusRow) {
+    currentSenseOverlayState.accumulator = 0.0f;
+  }
+  
+  currentSenseOverlayState.plusRow = plusRow;
+  currentSenseOverlayState.minusRow = minusRow;
+
+  if (!currentSenseOverlayState.pathValid) {
+    return;
+  }
+
+  // Don't tint rows or paths - the marching ants rendering handles all visualization
+  // (Previously this was applying a voltage-colored tint that created unwanted artifacts)
+
+  unsigned long now = millis();
+  if (currentSenseOverlayState.lastUpdateMs == 0) {
+    currentSenseOverlayState.lastUpdateMs = now;
+  }
+  float deltaSeconds =
+      (now - currentSenseOverlayState.lastUpdateMs) / 1000.0f;
+  currentSenseOverlayState.lastUpdateMs = now;
+
+  float magnitude = fabsf(currentSenseState.filteredCurrent_mA);
+  int direction = 1;
+  if (currentSenseState.filteredCurrent_mA > 0) {
+    direction = 1;
+  } else if (currentSenseState.filteredCurrent_mA < 0) {
+    direction = -1;
+  } else {
+    direction = 0;
+  }   
+  float stepsPerSecond = 0.0f;
+
+  // Check if we have any pixels to animate
+  int totalPixels = currentSenseOverlayState.plusNetLength + 
+                    currentSenseOverlayState.virtualWireLength + 
+                    currentSenseOverlayState.minusNetLength;
+
+  if (direction != 0 && magnitude > kCurrentSenseMinMotionCurrent_mA && totalPixels > 1) {
+    const float baseSpeed = kCurrentSenseBaseSpeed;
+    const float speedScale = kCurrentSenseSpeedScale;
+    stepsPerSecond = baseSpeed + (magnitude * speedScale);
+    if (stepsPerSecond > 55.0f) {
+      stepsPerSecond = 55.0f;
+    }
+  }
+
+  if (stepsPerSecond > 1.0f) {
+    currentSenseOverlayState.accumulator += deltaSeconds * stepsPerSecond;
+    int steps = static_cast<int>(currentSenseOverlayState.accumulator);
+    if (steps != 0) {
+      currentSenseOverlayState.accumulator -= steps;
+      if (direction > 0) {
+        currentSenseOverlayState.patternOffset =
+            (currentSenseOverlayState.patternOffset + steps) %
+            kCurrentSensePatternLength;
+      } else {
+        currentSenseOverlayState.patternOffset =
+            (currentSenseOverlayState.patternOffset + steps) %
+            kCurrentSensePatternLength;
+      }
+    }
+  } else {
+    currentSenseOverlayState.accumulator = 0.0f;
+  }
+
+  if (currentSenseOverlayState.patternOffset < 0) {
+    currentSenseOverlayState.patternOffset += kCurrentSensePatternLength;
+  }
+
+  // Calculate voltage-based measurement color for virtual wire background
+  // Check if either current sense net is highlighted
+  bool isHighlighted = (highlightedNet == plusNet || highlightedNet == minusNet || brightenedNet == plusNet || brightenedNet == minusNet);
+
+bool isBrightenedNode = (brightenedNode == currentSenseOverlayState.virtualWireNode1 || brightenedNode == currentSenseOverlayState.virtualWireNode2);
+
+  
+  uint32_t measurementColor = measurementToColor((currentSenseState.current_mA * 0.3f) , -8.0f, 8.0f);
+  if (isBrightenedNode) {
+    measurementColor = scaleBrightness(measurementColor, 50);
+  } else {
+    measurementColor = scaleBrightness(measurementColor, -70);
+  }
+  uint8_t mR = (measurementColor >> 16) & 0xFF;
+  uint8_t mG = (measurementColor >> 8) & 0xFF;
+  uint8_t mB = measurementColor & 0xFF;
+  
+  // Pattern length for marching ants
+  int patternLength = 5;
+  
+
+if (isBrightenedNode) {
+  // Serial.print("isBrightenedNode: ");
+  // Serial.println(isBrightenedNode);
+  // Serial.print("brightenedNode: ");
+  // Serial.println(brightenedNode);
+  // Serial.print("currentSenseOverlayState.virtualWireNode1: ");
+  // Serial.println(currentSenseOverlayState.virtualWireNode1);
+  // Serial.print("currentSenseOverlayState.virtualWireNode2: ");
+  // Serial.println(currentSenseOverlayState.virtualWireNode2);
+  // Serial.flush();
+}
+  // if (isHighlighted) {
+  //   Serial.print("isHighlighted: ");
+  //   Serial.println(isHighlighted);
+  //   Serial.print("plusNet: ");
+  //   Serial.println(plusNet);
+  //   Serial.print("minusNet: ");
+  //   Serial.println(minusNet);
+  //   Serial.print("brightenedNet: ");
+  //   Serial.println(brightenedNet);
+  //   Serial.print("highlightedNet: ");
+  //   Serial.println(highlightedNet);
+  //   Serial.flush();
+  // }
+  // Helper lambda to render marching ants on a pixel array
+  auto renderMarchingAnts = [&](int* pixels, int length, bool isVirtualWire, int direction) {
+    for (int i = 0; i < length; i++) {
+      int pixel = pixels[i];
+      if (pixel < 0 || pixel >= LED_COUNT) {
+        continue;
+      }
+      int row = (pixel / 5) + 1;
+      if (row == probeHighlight) {
+        continue;
+      }
+
+      // Get existing LED color
+      uint32_t existingColor = leds.getPixelColor(pixel);
+      existingColor = scaleBrightness(existingColor, -55);
+      uint8_t r = (existingColor >> 16) & 0xFF;
+      uint8_t g = (existingColor >> 8) & 0xFF;
+      uint8_t b = existingColor & 0xFF;
+      
+      // Calculate animation phase
+      // For forward flow (+ to -), offset increases with index
+      // For reverse flow (- to +), offset decreases with index
+      int phase = (currentSenseOverlayState.patternOffset + i * direction) % patternLength;
+      if (phase < 0) phase += patternLength;
+      
+      if (isVirtualWire) {
+        // VIRTUAL WIRE: Bright white marching ants with voltage-colored background
+        // Apply voltage tint to background
+        uint8_t bgAlpha = 254; // Strong voltage background tint
+        r = r + ((int(mR) - r) * bgAlpha) / 255;
+        g = g + ((int(mG) - g) * bgAlpha) / 255;
+        b = b + ((int(mB) - b) * bgAlpha) / 255;
+        
+        // Add bright white ant at phase 0
+        if (phase == 0){// && isHighlighted == false) || (phase % 4 == 0 && isHighlighted == true)) {
+          uint8_t brightness = jumperlessConfig.display.special_net_brightness + (isHighlighted ? 80 : 10);
+          r = min(255, r + brightness);
+          g = min(255, g + brightness);
+          b = min(255, b + brightness);
+        }
+      } else {
+        // NET SEGMENTS: Subtle colored boost that follows net color
+        // No voltage background tint for net segments
+        
+        // Add brightness boost at phase 0 (the "ant")
+        if (phase == 0){// && isHighlighted == false && isBrightenedNode == false) || (phase % 4 == 0 && isHighlighted == true && isBrightenedNode == false)) {
+          uint8_t brightnessBoost = isHighlighted ? 250 : 150;
+          float boost = 1.0f + (brightnessBoost / 100.0f);
+          r = min(255, (int)(r * boost) + 2);
+          g = min(255, (int)(g * boost) + 2);
+          b = min(255, (int)(b * boost) + 2);
+        }
+      }
+      
+      leds.setPixelColor(pixel, (r << 16) | (g << 8) | b);
+    }
+  };
+  
+  // Helper lambda for counter-clockwise virtual wire animation
+  // Pixels are ordered counter-clockwise starting from bottom-right: ←↑→↓
+  // (bottom row R→L, left column up, top row L→R, right column down)
+  // This ordering matches the physical LED strip layout to avoid phase discontinuities
+  auto renderVirtualWireUShape = [&](int* pixels, int length, int baseDirection) {
+    if (length == 0) return;
+    
+    // Render each pixel following the counter-clockwise path order
+    for (int i = 0; i < length; i++) {
+      int pixel = pixels[i];
+      if (pixel < 0 || pixel >= LED_COUNT) {
+        continue;
+      }
+      int row = (pixel / 5) + 1;
+      
+      if (row == probeHighlight) {
+        continue;
+      }
+
+      // Get existing LED color
+      uint32_t existingColor = leds.getPixelColor(pixel);
+      uint8_t r = (existingColor >> 16) & 0xFF;
+      uint8_t g = (existingColor >> 8) & 0xFF;
+      uint8_t b = existingColor & 0xFF;
+      
+      // Calculate animation phase - ants flow counter-clockwise around the rectangle
+      // Positive baseDirection: flow forward (counter-clockwise: ←↑→↓)
+      // Negative baseDirection: flow backward (clockwise: →↓←↑)
+      int phase = (currentSenseOverlayState.patternOffset + i * baseDirection) % patternLength;
+      if (phase < 0) phase += patternLength;
+      
+      // Apply voltage tint to background
+      uint8_t bgAlpha = 254;
+      r = r + ((int(mR) - r) * bgAlpha) / 255;
+      g = g + ((int(mG) - g) * bgAlpha) / 255;
+      b = b + ((int(mB) - b) * bgAlpha) / 255;
+      
+      // Add bright white ant at phase 0
+      if (phase == 0){//&& isHighlighted == false && isBrightenedNode == false) || (phase % 3 == 0 && isHighlighted == true && isBrightenedNode == false)) {
+        uint8_t brightness = jumperlessConfig.display.special_net_brightness + (isHighlighted ? 80 : 10);
+        r = min(255, r + brightness);
+        g = min(255, g + brightness);
+        b = min(255, b + brightness);
+      }
+      
+      leds.setPixelColor(pixel, (r << 16) | (g << 8) | b);
+    }
+  };
+  
+  // Render each section independently with appropriate flow directions
+  // For positive current (plus→minus): ants flow forward through all sections
+  // For negative current (minus→plus): ants flow backward through all sections
+  // BUT: minus net should always flow in opposite direction to plus net to show divergence/convergence
+  
+  int baseDirection = (direction > 0) ? 1 : -1;
+  
+  // STEP 1: Render PLUS NET pixels - ants converge toward virtual wire when positive current
+  if (currentSenseOverlayState.plusNetLength > 0) {
+    renderMarchingAnts(currentSenseOverlayState.plusNetPixels, 
+                      currentSenseOverlayState.plusNetLength, 
+                      false,  // Not virtual wire
+                      baseDirection);
+  }
+  
+  // STEP 2: Render VIRTUAL WIRE pixels with U-shaped circulation pattern
+  // Left edge flows opposite to right edge, creating visual circulation
+  if (currentSenseOverlayState.virtualWireLength > 0) {
+    renderVirtualWireUShape(currentSenseOverlayState.virtualWirePixels, 
+                           currentSenseOverlayState.virtualWireLength, 
+                           baseDirection);
+  }
+  
+  // STEP 3: Render MINUS NET pixels - ants diverge from virtual wire when positive current
+  // Use opposite direction to create visual flow: plus→vwire→minus appears as continuous flow
+  if (currentSenseOverlayState.minusNetLength > 0) {
+    renderMarchingAnts(currentSenseOverlayState.minusNetPixels, 
+                      currentSenseOverlayState.minusNetLength, 
+                      false,  // Not virtual wire
+                      -baseDirection);  // Opposite direction for divergence effect
   }
 }
 
@@ -1214,6 +2242,7 @@ void assignRowAnimations(void) {
 void showRowAnimation(int net) {
 
   if (assignedAnimations[net] == -1) {
+   // Serial.println("assignedAnimations[net] == -1");
     return;
   }
 
@@ -1236,6 +2265,7 @@ void showRowAnimation(int index, int net) {
   //   return;
   //   }
   if (rowAnimations[index].net < 0) {
+   ///Serial.println("rowAnimations[index].net < 0");
     return;
   }
   // if (rowAnimations[index].type == 3) {
@@ -1253,6 +2283,11 @@ void showRowAnimation(int index, int net) {
 
   uint32_t frameColors[5];
   uint32_t brightenedNodeColors[5];
+
+  bool isCurrentSenseNet = (net == currentSenseState.plusNet || net == currentSenseState.minusNet);
+  // if (isCurrentSenseNet) {
+  //   return;
+  // }
 
   if (rowAnimations[index].net == warningNet) {
     // Jerial.print("warningNet: ");
@@ -1316,14 +2351,17 @@ void showRowAnimation(int index, int net) {
       }
     }
 
-  } else if (brightenedNet > 0 && net == brightenedNet) {
+  } else if ((brightenedNet > 0 && net == brightenedNet)){//&& (net != currentSenseState.plusNet && net != currentSenseState.minusNet)) {
 
     rowAnimations[index].row = brightenedNode - 1;
     uint32_t color;
 
+    
+
     for (int i = 0; i < rowAnimations[index].numberOfFrames; i++) {
       hsvColor colorHSV;
 
+      
       // Jerial.print("netColors[brightenedNet]: ");
       // Jerial.println(packRgb( netColors[brightenedNet]), HEX);
       // if (rowAnimations[index].net > 3) {
@@ -1349,7 +2387,9 @@ void showRowAnimation(int index, int net) {
     }
 
     // handle the row animation for a single row, rather than the whole net
-    if (rowAnimations[index].row >= 0) {
+    if (rowAnimations[index].row >= 0){// && (currentSenseOverlayState.virtualWireNode1 != rowAnimations[index].row && currentSenseOverlayState.virtualWireNode2 != rowAnimations[index].row)) {
+
+      
       // Jerial.print("rowAnimations[index].row: ");
       // Jerial.println(rowAnimations[index].row);
       for (int i = 0; i < 5; i++) {
@@ -1417,6 +2457,8 @@ void showRowAnimation(int index, int net) {
       }
     }
   }
+
+  
 
   if (millis() - rowAnimations[index].lastFrameTime >
       rowAnimations[index].frameInterval) {
@@ -1492,11 +2534,11 @@ void showRowAnimation(int index, int net) {
           if (i == probeHighlight) {
 
           } else if (brightenedNode > 0 && i == brightenedNode) {
-            leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j]);
+            leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j], 1);
             // Jerial.print("brightenedNode: ");
             // Jerial.println(brightenedNode);
           } else {
-            leds.setPixelColor(((i - 1) * 5) + j, frameColors[j]);
+            leds.setPixelColor(((i - 1) * 5) + j, frameColors[j], 1);
           }
         }
       }
@@ -1516,7 +2558,7 @@ void showRowAnimation(int index, int net) {
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
-                               scaleBrightness(frameColors[2], brightness));
+                               scaleBrightness(frameColors[2], brightness), 1);
           }
         }
       }
@@ -1527,7 +2569,7 @@ void showRowAnimation(int index, int net) {
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
-                               scaleBrightness(frameColors[2], brightness));
+                               scaleBrightness(frameColors[2], brightness), 1);
           }
         }
       }
@@ -1565,12 +2607,13 @@ void showAllRowAnimations() {
   }
 }
 
+
 void printWireStatus(void) {
 
   for (int s = 1; s <= 30; s++) {
     Jerial.print(s);
     Jerial.print(" ");
-    if (s < 9) {
+    if (s <= 9) {
       Jerial.print(" ");
     }
   }
@@ -1579,7 +2622,13 @@ void printWireStatus(void) {
   int level = 1;
   for (int r = 0; r < 5; r++) {
     for (int s = 1; s <= 30; s++) {
-      Jerial.print(wireStatus[s][r]);
+      if (wireStatus[s][r] == 0) {
+        Jerial.print(".");
+      } else {
+        changeTerminalColor(globalState.connections.nets[wireStatus[s][r]].termColor);
+          Jerial.print(wireStatus[s][r]);
+          changeTerminalColor();
+      }
       Jerial.print(" ");
       if (wireStatus[s][r] < 10) {
         Jerial.print(" ");
@@ -1598,7 +2647,13 @@ void printWireStatus(void) {
   Jerial.println();
   for (int r = 0; r < 5; r++) {
     for (int s = 31; s <= 60; s++) {
-      Jerial.print(wireStatus[s][r]);
+      if (wireStatus[s][r] == 0) {
+        Jerial.print(".");
+      } else {
+        changeTerminalColor(globalState.connections.nets[wireStatus[s][r]].termColor);
+        Jerial.print(wireStatus[s][r]);
+        changeTerminalColor();
+      }
       Jerial.print(" ");
       if (wireStatus[s][r] < 10) {
         Jerial.print(" ");
@@ -2090,6 +3145,9 @@ void printString(const char *s, uint32_t color, uint32_t bg, int position,
   // int position = 0;
 
   for (int i = 0; i < strlen(s); i++) {
+    if (s[i] == '\n') {
+      continue;
+    }
 
     // if (topBottom == 1) {
     //   position = position % 7;
@@ -2580,14 +3638,11 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
     }
   } else {
     // Check if windowing system is active
-    extern struct config jumperlessConfig;
-    bool useWindowing = jumperlessConfig.windowing.enabled && 
-                        jumperlessConfig.windowing.show_leds;
-    
-    if (!useWindowing) {
+
+    // if (!useWindowing) {
       // Legacy positioning for non-windowing mode
       saveCursorPosition(stream);
-    }
+   
     // Windowing mode: WindowManager handles all positioning
     mainSerial = true;
   }
@@ -2825,11 +3880,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
       // Start with cursor reset
     if (mainSerial == true) {
-      extern struct config jumperlessConfig;
-      bool useWindowing = jumperlessConfig.windowing.enabled && 
-                          jumperlessConfig.windowing.show_leds;
-      
-      if (!useWindowing) {
+
         // Legacy cursor management for non-windowing mode
         int clearAbove = 6;
         Jerial.printf("\033[%dA", 30);
@@ -2838,7 +3889,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
           Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
         }
         Jerial.print("\033[0G");
-      }
+   
       // Windowing mode: skip manual positioning
 
     } else {
@@ -2866,13 +3917,9 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
     // Send line with proper line ending
     if (mainSerial == true) {
-      extern struct config jumperlessConfig;
-      bool useWindowing = jumperlessConfig.windowing.enabled && 
-                          jumperlessConfig.windowing.show_leds;
-      
-      if (!useWindowing) {
+
         Jerial.printf("\033[%dC", xOffset);
-      }
+   
     }
 
     Jerial.print(screenLines[i]);
@@ -2880,13 +3927,9 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   }
 
   if (mainSerial == true) {
-    extern struct config jumperlessConfig;
-    bool useWindowing = jumperlessConfig.windowing.enabled && 
-                        jumperlessConfig.windowing.show_leds;
-    
-    if (!useWindowing) {
+
       Jerial.printf("\033[%dB", 4);
-    }
+ 
   }
 
 
@@ -3657,3 +4700,4 @@ int printMenuLine(int showExtraMenu, int minLevel, const char* format, ...) {
   }
   return printed;
 }
+

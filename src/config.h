@@ -95,8 +95,8 @@ struct config {
     struct logo_pads {
         int top_guy = 0; // 0 = uart tx, 1 = uart rx, others as I think of them
         int bottom_guy = 1;
-        int building_pad_top = -1;
-        int building_pad_bottom = -1;
+        int building_pad_top = 25;   // default to current sense +
+        int building_pad_bottom = 26; // default to current sense -
         int repeat_ms = 100;
     } logo_pads;
 

@@ -577,6 +577,10 @@ void SingleCharCommands::initializeCommands() {
     registerCommand('Z', "USB debug menu",
         "Open USB debugging options menu.",
         cmd_usbDebugMenu, MENU_DEBUG, CAT_DEBUG);
+
+    registerCommand(';', "print wire status",
+        "Print wire status to terminal.",
+        cmd_printWireStatus, MENU_DEBUG, CAT_DEBUG);
     
     // Settings commands
     registerCommand('l', "LED brightness / test",
@@ -2082,6 +2086,11 @@ CommandResult cmd_erattaClear(char c, const String& line) {
     erattaClearGPIO(-1);
     Jerial.println("Eratta cleared");
     Jerial.flush();
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_printWireStatus(char c, const String& line) {
+    printWireStatus();
     return CMD_DONT_SHOW_MENU;
 }
 

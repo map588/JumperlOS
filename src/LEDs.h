@@ -137,6 +137,7 @@ class ledClass { //I'm literally copying this from Adafruit_NeoPixel.h so I can 
   void setPin(int16_t p);
   void setPixelColor(uint16_t n, uint8_t r, uint8_t g, uint8_t b);
   void setPixelColor(uint16_t n, uint32_t c);
+  void setPixelColor(uint16_t n, uint32_t c, int blendType);
   uint32_t getPixelColor(uint16_t n);
   uint16_t numPixels(void);
   void fill(uint32_t c = 0, uint16_t first = 0, uint16_t count = 0);
@@ -363,6 +364,47 @@ struct NamedColor {
 
 extern const NamedColor namedColors[20];
 
+
+// #define LAYER_COUNT 11
+// enum blendingMode {
+//   BLEND_NORMAL,
+//   BLEND_OVERRIDE,
+//   BLEND_ALPHA,
+//   BLEND_ADDITIVE,
+//   BLEND_BRIGHTNESS,
+//   BLEND_DIM_OTHERS, // dim all other layers below this one and show this one
+//   BLEND_COLOR, // color the nonblack pixels in the layer with a specific color
+//   BLEND_MASK, // mask the layer with on or off pixels
+// };
+
+// enum layerType {
+// LAYER_DEFAULT = 0, // default layer for everything else
+// LAYER_WIRES = 1, // wires (or lines if its set to draw lines)
+// LAYER_RAILS = 2, // just the rails, leds 301-400
+// LAYER_LOGO = 3, // the last 7 LEDs for the logo, the adc/dac/gpio pads, and the hardwired connections on the nano header (5V, 3V3, GND, RST0, RST1, VIN)/\ 
+// LAYER_ANIMATIONS = 4, // animations for rails, special nets, etc.
+// LAYER_READINGS = 5, // readings for gpio, adc, dac, etc.
+// LAYER_BRIGHTNESS = 6, // brightness overlay user brightness setting
+// LAYER_TEXT = 7, // text for menus and b.print()
+// LAYER_IMAGES = 8, // images for startup screen and (future) arbitrary images
+// LAYER_HIGHLIGHTING = 9, // highlighting for nodes, nets, etc.
+// LAYER_CURSORS = 10, // cursors for clickwheel connections and stuff
+
+// };
+
+
+// struct ledLayer {
+//   layerType layerType; // layer number
+//   int level; // layer order
+//   blendingMode blending; // blending mode
+//   int ledCount = LED_COUNT; // number of LEDs in the layer
+//   int ledStart; // starting LED index
+//   int ledEnd; // ending LED index
+//   uint32_t leds[ledCount]; // entire LED frame buffer
+
+// };
+
+// extern ledLayer layers[LAYER_COUNT];
 
 
 //extern uint32_t changedNetColors[MAX_NETS];

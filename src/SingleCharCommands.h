@@ -265,7 +265,7 @@ CommandResult cmd_resourceStatus(char c, const String& line);
 CommandResult cmd_gpioState(char c, const String& line);
 CommandResult cmd_usbDebugMenu(char c, const String& line);
 CommandResult cmd_uartStats(char c, const String& line);
-
+CommandResult cmd_printWireStatus(char c, const String& line);
 // Settings commands
 CommandResult cmd_ledBrightness(char c, const String& line);
 CommandResult cmd_toggleOLED(char c, const String& line);

@@ -114,7 +114,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.5.0.3"; //! remember to update this
+const char firmwareVersion[] = "5.5.0.4"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -190,7 +190,7 @@ void setup( ) {
     // digitalWrite(BUTTON_PIN, HIGH);
     startupTimers[ 2 ] = millis( );
 
-    initINA219( );
+    //initINA219( );
 
     // Serial.println("INA219 initialized");
     // Serial.flush();
@@ -237,6 +237,12 @@ startupTimers[ 4 ] = millis( );
     // Serial.flush();
 
     getNothingTouched( );
+
+    initINA219( );
+
+    // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
+    // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
+    // Serial.flush();
 
     checkProbeCurrentZero( );
     startupTimers[ 8 ] = millis( );
@@ -451,6 +457,7 @@ menu:
         //Jerial.addInputSource(JerialEndpoint::SERIAL1);
 
         // runApp(-1, "jdi MIPdisplay");
+
 
         firstLoop = 0;
 

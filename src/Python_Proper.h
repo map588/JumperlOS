@@ -5,6 +5,14 @@
 
 extern Stream *global_mp_stream;
 
+// Python connection context modes
+enum PythonConnectionContext {
+    PYTHON_CONTEXT_GLOBAL = 0,  // Changes persist to global state
+    PYTHON_CONTEXT_ISOLATED = 1 // Changes isolated to Python session
+};
+
+extern PythonConnectionContext connectionContext;
+
 // Forward declaration from existing Python.cpp
 extern int parseAndExecutePythonCommand(char* command, char* response);
 
@@ -13,6 +21,8 @@ extern "C" void jl_init_micropython_local_copy(void);
 extern "C" void jl_exit_micropython_restore_entry_state(void);
 extern "C" void jl_restore_micropython_entry_state(void);
 extern "C" int jl_has_unsaved_changes(void);
+extern "C" void jl_toggle_connection_context(void);  // Toggle between global and isolated mode
+extern "C" const char* jl_get_connection_context_name(void);  // Get human-readable context name
 
 // Command history and filesystem support
 class ScriptHistory {

@@ -87,6 +87,8 @@ ServiceStatus ProbeButton::service( ) {
     if ( newState == 0 ) {
         // Button released!
         if ( currentButtonState != 0 ) {
+            blockProbeButton = 0;
+            blockProbeButtonTimer = 0;
             lastButtonState = currentButtonState;
             currentButtonState = 0;
             buttonChanged = true;
@@ -114,7 +116,7 @@ ServiceStatus ProbeButton::service( ) {
             // else: Keep block active to prevent bounce re-trigger
         } else {
             // Not blocked, clear everything
-            blockProbeButton = 0;
+            blockProbeButton = 10;
             blockProbeButtonTimer = 0;
         }
 
@@ -401,6 +403,8 @@ void Probing::handleProbeButtonActions( ) {
             showProbeLEDs = 1;
             probingTimer = millis( );
             brightenedNet = 0;
+            blockProbeButtonTimer = millis( );
+            blockProbeButton = 1000;
             core1passthrough = 0;
 
             // Run probe mode directly (it handles button blocking/clearing internally)
@@ -414,6 +418,8 @@ void Probing::handleProbeButtonActions( ) {
             showProbeLEDs = 2;
             probingTimer = millis( );
             brightenedNet = 0;
+            blockProbeButtonTimer = millis( );
+            blockProbeButton = 1000;
             core1passthrough = 0;
 
             // Run probe mode directly (it handles button blocking/clearing internally)
@@ -576,6 +582,40 @@ int ( &logoBottomSetting )[ 2 ] = Probing::getInstance( ).logoBottomSetting;
 int ( &buildingTopSetting )[ 2 ] = Probing::getInstance( ).buildingTopSetting;
 int ( &buildingBottomSetting )[ 2 ] = Probing::getInstance( ).buildingBottomSetting;
 
+static int resolveLogoPadAssignment( int configValue, int defaultNode ) {
+    switch ( configValue ) {
+    case -1:
+        return -1;
+    case 0:
+        return RP_UART_TX;
+    case 1:
+        return RP_UART_RX;
+    case 25:
+        return ISENSE_PLUS;
+    case 26:
+        return ISENSE_MINUS;
+    default:
+        return defaultNode;
+    }
+}
+
+static int nodeToLogoPadConfig( int node, int fallbackConfig ) {
+    switch ( node ) {
+    case RP_UART_TX:
+        return 0;
+    case RP_UART_RX:
+        return 1;
+    case ISENSE_PLUS:
+        return 25;
+    case ISENSE_MINUS:
+        return 26;
+    case -1:
+        return -1;
+    default:
+        return fallbackConfig;
+    }
+}
+
 // ============================================================================
 // Legacy Global Variables (not moved to class yet)
 // ============================================================================
@@ -637,6 +677,8 @@ int Probing::probeMode( int setOrClear, int firstConnection ) {
     blockProbeButton = 3000;
     blockProbeButtonTimer = millis( );
     probeButton.clearButtonState( ); // Clear the button state that triggered entry
+
+    // Enable text layer for special nodes display (UART, Current, etc.)
 
     /* clang-format off */
 
@@ -734,7 +776,8 @@ restartProbingNoPrint:
                       ZONE_DAC = 3,
                       ZONE_ADC = 4,
                       ZONE_GPIO = 5,
-                      ZONE_UART = 6 };
+                      ZONE_UART = 6,
+                      ZONE_CURRENT = 7 };
 
     // Static variable to persist cursor position between selections within same probe mode session
     static int persistentEncoderCursorNode = -1;
@@ -759,6 +802,11 @@ restartProbingNoPrint:
     int savedRotaryDivider = rotaryDivider;
     rotaryDivider = 3;
 
+    blockProbeButton = 1000;
+    blockProbeButtonTimer = millis( );
+
+    unsigned long probeModeStartTime = millis( );
+
     //! this is the main loop for probing
     while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 6200 ) {
         delayMicroseconds( 200 ); // Reduced from 500 for faster encoder response
@@ -774,9 +822,13 @@ restartProbingNoPrint:
         long currentEncoderPosition = encoderPosition;
         long encoderDelta = -( currentEncoderPosition - lastEncoderPosition );
 
+        if ( millis( ) - probeModeStartTime < 100 ) {
+            lastEncoderPosition = encoderPosition;
+        }
+
         // Don't clear color overrides here - they need to persist while cursor is visible in zones
         // Overrides are cleared when changing zones or on timeout
-        if ( encoderDelta != 0 ) {
+        if ( encoderDelta != 0 && ( millis( ) - probeModeStartTime > 100 ) ) {
             // Encoder moved - show cursor and reset timeout
             lastEncoderMovement = millis( );
             encoderCursorVisible = true;
@@ -802,7 +854,7 @@ restartProbingNoPrint:
                         encoderCursorNode += steps;
                         if ( encoderCursorNode < 0 ) {
                             // Wrap to last special functions zone (UART)
-                            cursorZone = ZONE_UART;
+                            cursorZone = ZONE_CURRENT;
                             subIndex = 1; // UART RX
                             encoderCursorNode = -1;
                         }
@@ -840,6 +892,9 @@ restartProbingNoPrint:
                                 case ZONE_UART:
                                     subIndex = 1;
                                     break; // 2 UART (TX, RX)
+                                case ZONE_CURRENT:
+                                    subIndex = 1;
+                                    break; // Current +/-
                                 }
                             }
                         }
@@ -880,13 +935,16 @@ restartProbingNoPrint:
                         case ZONE_UART:
                             maxSubIndex = 1;
                             break;
+                        case ZONE_CURRENT:
+                            maxSubIndex = 1;
+                            break;
                         }
 
                         subIndex += steps;
                         if ( subIndex > maxSubIndex ) {
                             // Move to next zone
                             cursorZone++;
-                            if ( cursorZone > ZONE_UART ) {
+                            if ( cursorZone > ZONE_CURRENT ) {
                                 // Wrap back to breadboard
                                 cursorZone = ZONE_BREADBOARD;
                                 encoderCursorNode = 0;
@@ -930,7 +988,31 @@ restartProbingNoPrint:
 
                 // 3. Set cursor color based on mode
                 uint32_t cursorColor = setOrClear == 1 ? 0x250035 : 0x362404;
-                uint32_t dimColor = setOrClear == 1 ? 0x100310 : 0x151803;
+                uint32_t dimColor = setOrClear == 1 ? 0x080205 : 0x080500;
+
+                ///[active/dim][setOrClear][index]
+                uint32_t cursorColors[ 2 ][ 2 ][ 8 ] = {
+                    {
+                        // active
+
+                        // clear
+                        { 0x391912, 0x3a1810, 0x3b1608, 0x3d1411, 0x3f1214, 0x411015, 0x450e16, 0x480c14 },
+
+                        // set
+                        { 0x191229, 0x18102a, 0x16082b, 0x14112d, 0x12142f, 0x101531, 0x0e1635, 0x0c1438 },
+
+                    },
+                    {
+                        // dim
+                        // clear
+                        { 0x040302, 0x040302, 0x040202, 0x050302, 0x050401, 0x050301, 0x040302, 0x040302 },
+                        
+
+                        // set
+                        { 0x050304, 0x050204, 0x040204, 0x030205, 0x040105, 0x050104, 0x040203, 0x030305 },
+
+                    } };
+
                 globalEncoderCursorColor = cursorColor;
 
                 // 4. Get actual node and display based on zone
@@ -965,8 +1047,6 @@ restartProbingNoPrint:
                     // Rails don't have breadboard positions so no text conflict
                     inPadMenu = 1;
 
-
-
                     // Highlight the rail LEDs
                     Highlighting::getInstance( ).brightenedRail = railBrightened[ subIndex ];
 
@@ -988,13 +1068,13 @@ restartProbingNoPrint:
                     if ( subIndex == 0 ) {
                         setLogoOverride( DAC_0, -2 );
 
-                        b.print( "0", cursorColor, 0xFFFFFF, 0, 1, 3 );
-                        b.print( "1", dimColor, 0xFFFFFF, 5, 1, 0 );
+                        b.print( "0", cursorColors[ 1 ][ setOrClear ][ 0], 0xFFFFFF, 0, 1, 3 );
+                        b.print( "1", cursorColors[ 0 ][ setOrClear ][ 4 ], 0xFFFFFF, 5, 1, 0 );
                     } else {
 
                         setLogoOverride( DAC_1, -2 );
-                        b.print( "0", dimColor, 0xFFFFFF, 0, 1, 3 );
-                        b.print( "1", cursorColor, 0xFFFFFF, 5, 1, 0 );
+                        b.print( "0", cursorColors[ 0 ][ setOrClear ][ 0 ], 0xFFFFFF, 0, 1, 3 );
+                        b.print( "1", cursorColors[ 1 ][ setOrClear ][ 4 ], 0xFFFFFF, 5, 1, 0 );
                     }
                 } else if ( cursorZone == ZONE_ADC ) {
                     // Display ADC 0-4, 7 (ADC 5,6 don't exist)
@@ -1010,7 +1090,7 @@ restartProbingNoPrint:
                     b.print( " ADC", scaleDownBrightness( rawOtherColors[ 8 ], 4, 22 ), 0xFFFFFF, 0, 0, 3 );
 
                     for ( int i = 0; i < 6; i++ ) {
-                        uint32_t color = ( i == subIndex ) ? cursorColor : dimColor;
+                        uint32_t color = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
                         b.print( adcLabels[ i ], color, 0xFFFFFF, i, 1, ( i == 0 ? -1 : i - 1 ) );
                     }
 
@@ -1034,14 +1114,12 @@ restartProbingNoPrint:
                     uint32_t inColor = ( connectOrClearProbe == 0 ) ? 0x000000 : 0x000606;
                     uint32_t outColor = ( connectOrClearProbe == 0 ) ? 0x000000 : 0x060100;
 
-                    
-
                     // Display GPIO 1-4 on top row using original positioning
                     const int positions[ 4 ] = { 0, 2, 4, 6 };
                     const int nudges[ 4 ] = { 1, 0, -1, -2 };
 
                     for ( int i = 0; i < 4; i++ ) {
-                        uint32_t numColor = ( i == subIndex ) ? cursorColor : dimColor;
+                        uint32_t numColor = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
                         char numStr[ 2 ] = { (char)( '1' + i ), '\0' };
                         b.print( numStr, numColor, 0xFFFFFF, positions[ i ], 0, nudges[ i ] );
 
@@ -1053,7 +1131,7 @@ restartProbingNoPrint:
 
                     // Display GPIO 5-8 on bottom row using original positioning
                     for ( int i = 4; i < 8; i++ ) {
-                        uint32_t numColor = ( i == subIndex ) ? cursorColor : dimColor;
+                        uint32_t numColor = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
                         char numStr[ 2 ] = { (char)( '1' + i ), '\0' };
                         b.print( numStr, numColor, 0xFFFFFF, positions[ i - 4 ], 1, nudges[ i - 4 ] );
 
@@ -1086,8 +1164,8 @@ restartProbingNoPrint:
 
                     // Show UART label and only the selected TX or RX
                     b.print( " UART", sfOptionColors[ 3 ], 0xFFFFFF, 0, 0, 2 );
-                    b.print( uartNames[ 0], subIndex == 0 ? cursorColor : dimColor, 0xFFFFFF, 1, 1, -2);
-                    b.print( uartNames[ 1], subIndex == 1 ? cursorColor : dimColor, 0xFFFFFF, 4, 1, 2);
+                    b.print( uartNames[ 0 ], subIndex == 0 ? cursorColors[ 0 ][ setOrClear ][ 0 ] : cursorColors[ 1 ][ setOrClear ][ 0 ], 0xFFFFFF, 1, 1, -2 );
+                    b.print( uartNames[ 1 ], subIndex == 1 ? cursorColors[ 0 ][ setOrClear ][ 1 ] : cursorColors[ 1 ][ setOrClear ][ 1 ], 0xFFFFFF, 4, 1, 2 );
 
                     // Clear all logo overrides first, then set only UART
                     // clearColorOverrides(true, true, false);
@@ -1100,6 +1178,26 @@ restartProbingNoPrint:
 
                         setLogoOverride( LOGO_BOTTOM, -2 );
                     }
+                } else if ( cursorZone == ZONE_CURRENT ) {
+                    const char* currentNames[ 2 ] = { "I+", "I-" };
+                    int currentNodes[ 2 ] = { ISENSE_PLUS, ISENSE_MINUS };
+                    actualNode = currentNodes[ subIndex ];
+                    snprintf( displayName, sizeof( displayName ), "Current %s", subIndex == 0 ? "+" : "-" );
+
+                    // Color definitions for I+ (red) and I- (green)
+                    const uint32_t plusBrightColor = 0x2A0002;  // Bright red for selected I+
+                    const uint32_t plusDimColor = 0x0a0000;     // Dim red for unselected I+
+                    const uint32_t minusBrightColor = 0x002A02; // Bright green for selected I-
+                    const uint32_t minusDimColor = 0x000A00;    // Dim green for unselected I-
+
+                    inPadMenu = 1;
+                    clearLEDsExceptRails( );
+
+                    b.print( "Current", sfOptionColors[ 6 ], 0xFFFFFF, 0, 0, 1 );
+                    b.print( currentNames[ 0 ], subIndex == 0 ? plusBrightColor : plusDimColor, 0xFFFFFF, 1, 1, -2 );
+                    b.print( currentNames[ 1 ], subIndex == 1 ? minusBrightColor : minusDimColor, 0xFFFFFF, 4, 1, 2 );
+
+                    clearColorOverrides( true, true, false );
                 }
 
                 // 5. Try highlighting nets if we're on a regular node
@@ -1170,7 +1268,7 @@ restartProbingNoPrint:
             }
 
             // Clear net highlighting and all color overrides
-            Highlighting::getInstance( ).clearHighlighting( );
+            Highlighting::getInstance( ).clearHighlighting( 0 );
             clearColorOverrides( true, true, false );
 
             encoderCursorVisible = false;
@@ -1183,10 +1281,23 @@ restartProbingNoPrint:
 
         // Check for encoder button press to select node
         // Only process encoder button if cursor is visible (otherwise it might interfere with normal operation)
-        if ( encoderCursorVisible && encoderButtonState == PRESSED && lastButtonEncoderState == IDLE ) {
+        if ( encoderCursorVisible && ( ( encoderButtonState == PRESSED && lastButtonEncoderState == IDLE ) || ( ProbeButton::getInstance( ).getButtonState( ) == ( setOrClear == 1 ? 2 : 1 ) ) && ( millis( ) - probeModeStartTime > 500 ) ) ) {
             // IMMEDIATELY reset button state to prevent it from triggering click menu
+
+            // Serial.println(encoderButtonState);
+            // Serial.println(lastButtonEncoderState);
+            // Serial.println(ProbeButton::getInstance().getButtonState());
+            // Serial.println(encoderCursorVisible);
+            // Serial.println(blockProbeButton);
+            // Serial.println(blockProbeButtonTimer);
+            // Serial.println(millis());
+            // Serial.flush();
+
             encoderButtonState = IDLE;
             lastButtonEncoderState = IDLE;
+            blockProbeButton = 1000;
+            blockProbeButtonTimer = millis( );
+            ProbeButton::getInstance( ).clearButtonState( );
 
             // Get the actual node number based on current zone
             int selectedNode = -1;
@@ -1270,6 +1381,9 @@ restartProbingNoPrint:
             } else if ( cursorZone == ZONE_UART ) {
                 const int uartNodes[ 2 ] = { RP_UART_TX, RP_UART_RX };
                 selectedNode = uartNodes[ subIndex ];
+            } else if ( cursorZone == ZONE_CURRENT ) {
+                const int currentNodes[ 2 ] = { ISENSE_PLUS, ISENSE_MINUS };
+                selectedNode = currentNodes[ subIndex ];
             }
 
             // Treat encoder selection like a probe touch
@@ -1280,7 +1394,7 @@ restartProbingNoPrint:
             }
 
             // Clear net highlighting and color overrides
-            Highlighting::getInstance( ).clearHighlighting( );
+            Highlighting::getInstance( ).clearHighlighting( 0 );
 
             // Clear all colorOverrides using helper function
             clearColorOverrides( true, true, false );
@@ -1338,7 +1452,7 @@ restartProbingNoPrint:
             globalEncoderCursorInHeader = 0;
 
             // Clear all highlighting and color overrides
-            Highlighting::getInstance( ).clearHighlighting( );
+            Highlighting::getInstance( ).clearHighlighting( 0 );
             clearColorOverrides( true, true, false );
 
             // Clear inPadMenu flag
@@ -1394,7 +1508,7 @@ restartProbingNoPrint:
         // //  continue;
         // }
 
-        if ( setOrClear == 1 ) {
+        if ( setOrClear == 1 ) { //! remove fade animation
             deleteMissesIndex = 0;
             if ( millis( ) - fadeTimer > 500 ) {
                 fadeTimer = millis( );
@@ -1441,10 +1555,12 @@ restartProbingNoPrint:
                     }
                     // clearLEDsExceptMiddle(deleteMisses[i], -1);
 
-                    // Serial.println(fadeOffset);
+                    //  Serial.println(fadeOffset);
+                    //  Serial.flush();
                     // b.printRawRow(0b00001010, deleteMisses[i] - 1, deleteFadeSides[fadeOffset], 0xfffffe);
                     b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, deleteFade[ fadeOffset ],
                                    0xfffffe );
+                    showLEDsCore2 = 2;
                 }
 
                 if ( deleteMissesIndex == 0 && fadeClear == 0 ) {
@@ -1462,7 +1578,7 @@ restartProbingNoPrint:
             }
         }
 
-        if ( ( row[ 0 ] == -18 || row[ 0 ] == -16 ) ) { //&&
+        if ( ( row[ 0 ] == -18 || row[ 0 ] == -16 ) ) { // ! Button press detected
             // (millis() - probingTimer > 500)) { //&&
 
             // Serial.println("row[0] = " + String(row[0]));
@@ -1584,7 +1700,7 @@ restartProbingNoPrint:
                         //   Serial.print("    ");
                         //  Serial.println(map(i, 0,deleteMissesIndex, 0, 19));
                     }
-                    showLEDsCore2 = 1;
+                    // showLEDsCore2 = 1;
                     if ( connectionsThisSession == 0 ) {
                         Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
                         Serial.flush( );
@@ -1877,7 +1993,7 @@ restartProbingNoPrint:
                         //   Serial.print("    ");
                         //  Serial.println(map(i, 0,deleteMissesIndex, 0, 19));
                     }
-                    clearHighlighting( );
+                    clearHighlighting( 0 );
                     //  Serial.println();
                     // Remove from RAM state - let auto-save handle persistence
                     // This removes ALL connections containing nodesToConnect[0]
@@ -1938,7 +2054,7 @@ restartProbingNoPrint:
                         // No need to call it again here - that was causing double refresh delay!
 
                         // delay(10);
-                        waitCore2( );
+                        // waitCore2( );
                         showLEDsCore2 = -1;
 
                         // showLEDsCore2 = -1;
@@ -2144,7 +2260,7 @@ restartProbingNoPrint:
     Highlighting::getInstance( ).clearHighlighting( );
 
     // Clear all color overrides using helper function
-    clearColorOverrides( true, true, false );
+    // clearColorOverrides( true, true, false );
 
     // Clear inPadMenu flag
     inPadMenu = 0;
@@ -2166,6 +2282,8 @@ restartProbingNoPrint:
     blockProbeButton = 1000; // Extra 100ms safety margin
     blockProbeButtonTimer = millis( );
     clearColorOverrides( 1, 1, 0 );
+
+    // Disable text layer when exiting probe mode
 
     return 1;
 }
@@ -2265,6 +2383,8 @@ int Probing::selectSFprobeMenu( int function ) {
         setLogoOverride( GPIO_1, -2 );
         break;
     }
+    case BUILDING_PAD_TOP:
+    case BUILDING_PAD_BOTTOM:
     case LOGO_PAD_TOP:
     case LOGO_PAD_BOTTOM: {
 
@@ -2287,7 +2407,7 @@ int Probing::selectSFprobeMenu( int function ) {
             b.printRawRow( 0b00011100, 53, 0x400014, 0xffffff );
             b.printRawRow( 0b00011000, 54, 0x400014, 0xffffff );
             b.printRawRow( 0b00010000, 55, 0x400014, 0xffffff );
-            function = RP_UART_TX;
+            function = resolveLogoPadAssignment( jumperlessConfig.logo_pads.top_guy, RP_UART_TX );
             clearColorOverrides( 1, 1, 0 );
             setLogoOverride( LOGO_TOP, -2 );
 
@@ -2314,51 +2434,28 @@ int Probing::selectSFprobeMenu( int function ) {
             b.printRawRow( 0b00000001, 54, 0x050500, 0xfffffe );
             b.printRawRow( 0b00000001, 55, 0x050500, 0xfffffe );
             b.printRawRow( 0b00000001, 59, 0x050500, 0xfffffe );
-            function = RP_UART_RX;
+            function = resolveLogoPadAssignment( jumperlessConfig.logo_pads.bottom_guy, RP_UART_RX );
             clearColorOverrides( 1, 1, 0 );
             setLogoOverride( LOGO_BOTTOM, -2 );
 
             break;
         }
-        case BUILDING_PAD_TOP: {
-            inPadMenu = 1;
-            b.print( "Buildng", sfOptionColors[ 6 ], 0xFFFFFF, 0, 1, -1 );
-            b.print( "Top", sfOptionColors[ 7 ], 0xFFFFFF, 0, 0, 1 );
-
-            b.printRawRow( 0b00011000, 24, 0x200010, 0xffffff );
-            b.printRawRow( 0b00011000, 25, 0x200010, 0xffffff );
-            b.printRawRow( 0b00011000, 26, 0x200010, 0xffffff );
-            b.printRawRow( 0b00011000, 27, 0x200010, 0xffffff );
-
-            b.printRawRow( 0b00000011, 24, 0x010201, 0xfffffe );
-            b.printRawRow( 0b00000011, 25, 0x010201, 0xfffffe );
-            b.printRawRow( 0b00000011, 26, 0x010201, 0xfffffe );
-            b.printRawRow( 0b00000011, 27, 0x010201, 0xfffffe );
-
-            break;
-        }
+            // }
+        case BUILDING_PAD_TOP:
         case BUILDING_PAD_BOTTOM: {
-            inPadMenu = 1;
-            b.print( "Buildng", sfOptionColors[ 6 ], 0xFFFFFF, 0, 1, -1 );
-            b.print( "Bottom", sfOptionColors[ 5 ], 0xFFFFFF, 0, 0, -1 );
-
-            b.printRawRow( 0b00000011, 25, 0x200010, 0xffffff );
-            b.printRawRow( 0b00000011, 26, 0x200010, 0xffffff );
-            b.printRawRow( 0b00000011, 27, 0x200010, 0xffffff );
-            b.printRawRow( 0b00000011, 28, 0x200010, 0xffffff );
-
-            b.printRawRow( 0b00011000, 25, 0x010201, 0xfffffe );
-            b.printRawRow( 0b00011000, 26, 0x010201, 0xfffffe );
-            b.printRawRow( 0b00011000, 27, 0x010201, 0xfffffe );
-            b.printRawRow( 0b00011000, 28, 0x010201, 0xfffffe );
+            // Both building pads now use the same chooser function
+            function = chooseIsense( );
             break;
         }
         }
+
         // showLEDsCore2 = 2;
-        delayWithButton( 900 );
+        // delayWithButton( 900 );
 
         // b.clear();
         clearLEDsExceptRails( );
+        blockProbing = 800;
+        blockProbingTimer = millis( );
 
         // lastReadRaw = 0;
         // b.print("Attach", sfOptionColors[0], 0xFFFFFF, 0, 0, -1);
@@ -2379,12 +2476,12 @@ int Probing::selectSFprobeMenu( int function ) {
         // printNodeOrName(function, 1);
         showLEDsCore2 = 1;
         lightUpRail( );
-        delay( 200 );
+        // delay( 200 );
         inPadMenu = 0;
         sfProbeMenu = 0;
         // return function;
 
-        delay( 100 );
+        // delay( 100 );
 
         break;
     }
@@ -2603,23 +2700,23 @@ int Probing::attachPadsToSettings( int pad ) {
 
     switch ( pad ) {
     case LOGO_PAD_TOP: {
-        jumperlessConfig.logo_pads.top_guy = function;
+        jumperlessConfig.logo_pads.top_guy = nodeToLogoPadConfig( function, jumperlessConfig.logo_pads.top_guy );
         // jumperlessConfig.logo_pads.top_guy = settingOption;
 
         break;
     }
     case LOGO_PAD_BOTTOM: {
-        jumperlessConfig.logo_pads.bottom_guy = function;
+        jumperlessConfig.logo_pads.bottom_guy = nodeToLogoPadConfig( function, jumperlessConfig.logo_pads.bottom_guy );
         // jumperlessConfig.logo_pads.bottom_guy = settingOption;
         break;
     }
     case BUILDING_PAD_TOP: {
-        jumperlessConfig.logo_pads.building_pad_top = function;
+        jumperlessConfig.logo_pads.building_pad_top = nodeToLogoPadConfig( function, jumperlessConfig.logo_pads.building_pad_top );
         // jumperlessConfig.logo_pads.building_pad_top= settingOption;
         break;
     }
     case BUILDING_PAD_BOTTOM: {
-        jumperlessConfig.logo_pads.building_pad_bottom = function;
+        jumperlessConfig.logo_pads.building_pad_bottom = nodeToLogoPadConfig( function, jumperlessConfig.logo_pads.building_pad_bottom );
         // jumperlessConfig.logo_pads.building_pad_bottom_setting = settingOption;
         break;
     }
@@ -2691,11 +2788,11 @@ int Probing::chooseDAC( int justPickOne ) {
 
     int selected = -1;
     function = 0;
-    while ( selected == -1) {
+    while ( selected == -1 ) {
 
         jOS.serviceCritical( );
 
-        if ( ProbeButton::getInstance().getButtonState() != 0 ) {
+        if ( ProbeButton::getInstance( ).getButtonState( ) != 0 ) {
             selected = DAC1;
             function = DAC1;
             break;
@@ -2782,6 +2879,158 @@ int Probing::chooseDAC( int justPickOne ) {
 
     return function;
 }
+
+int Probing::chooseIsense( void ) {
+    int function = -1;
+    int selectedOption = 0; // 0 = ISENSE_PLUS (default), 1 = ISENSE_MINUS
+
+    // Prevent net LEDs from overwriting our menu
+    inPadMenu = 1;
+
+    // Clear LEDs before showing menu
+    clearLEDsExceptRails( );
+    b.clear( );
+    showLEDsCore2 = 2;
+
+    // Track encoder position for selection with accumulator
+    long lastEncPos = encoderPosition;
+    int lastSelectedOption = -1;  // Track if we need to redraw
+    int encoderAccumulator = 0;   // Accumulate encoder clicks
+    const int clicksToSwitch = 5; // Require 8 clicks to switch
+
+    // Serial.println( "Choose Current Sense" );
+    // Serial.println( "  I+ (ISENSE_PLUS) or I- (ISENSE_MINUS)" );
+    // Serial.println( "  Encoder: rotate to select, press to confirm" );
+
+    // Color definitions for I+ (red) and I- (green)
+    const uint32_t plusBrightColor = 0x2A0002;  // Bright red for selected I+
+    const uint32_t plusDimColor = 0x0a0000;     // Dim red for unselected I+
+    const uint32_t minusBrightColor = 0x002A02; // Bright green for selected I-
+    const uint32_t minusDimColor = 0x000A00;    // Dim green for unselected I-
+
+    // Initial display
+    b.clear( );
+    clearLEDsExceptRails( );
+    uint32_t plusColor = ( selectedOption == 0 ) ? plusBrightColor : plusDimColor;
+    uint32_t minusColor = ( selectedOption == 1 ) ? minusBrightColor : minusDimColor;
+    b.print( "Current", sfOptionColors[ 6 ], 0xFFFFFF, 0, 0, 1 );
+    b.print( "I+", plusColor, 0xFFFFFF, 1, 1, -2 );
+    b.print( "I-", minusColor, 0xFFFFFF, 4, 1, 2 );
+    oled.clearPrintShow( "Current\n I +     I -", 2, 100 );
+
+    showLEDsCore2 = 2;
+    lastSelectedOption = selectedOption;
+
+    int selected = -1;
+    while ( selected == -1 ) {
+        // Keep critical services running
+        jOS.serviceCritical( );
+
+        // Check for encoder movement and accumulate
+        long currentEncPos = encoderPosition;
+        long encDelta = currentEncPos - lastEncPos;
+        if ( encDelta != 0 ) {
+            encoderAccumulator += encDelta;
+            lastEncPos = currentEncPos;
+
+            // Switch option when accumulator reaches threshold
+            if ( encoderAccumulator >= clicksToSwitch ) {
+                selectedOption = 0; // ISENSE_MINUS
+                encoderAccumulator = 0;
+            } else if ( encoderAccumulator <= -clicksToSwitch ) {
+                selectedOption = 1; // ISENSE_PLUS
+                encoderAccumulator = 0;
+            }
+        }
+
+        // Only update display if selection changed
+        if ( selectedOption != lastSelectedOption ) {
+            b.clear( );
+            clearLEDsExceptRails( );
+            if ( selectedOption == 0 ) {
+                oled.clearPrintShow( "I Sense +", 2, 100 );
+            } else {
+                oled.clearPrintShow( "I Sense -", 2, 100 );
+                // oled.clearPrintShow( "I+", 2, 100 );
+            }
+
+            plusColor = ( selectedOption == 0 ) ? plusBrightColor : plusDimColor;
+            minusColor = ( selectedOption == 1 ) ? minusBrightColor : minusDimColor;
+
+            b.print( "Current", sfOptionColors[ 6 ], 0xFFFFFF, 0, 0, 1 );
+            b.print( "I+", plusColor, 0xFFFFFF, 1, 1, -2 );
+            b.print( "I-", minusColor, 0xFFFFFF, 4, 1, 2 );
+            showLEDsCore2 = 2;
+
+            lastSelectedOption = selectedOption;
+        }
+
+        // Check for encoder button press
+        if ( encoderButtonState == PRESSED && lastButtonEncoderState == IDLE ) {
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            selected = selectedOption;
+            break;
+        }
+
+        // Also check for probe touch for backward compatibility
+        int reading = justReadProbe( );
+        if ( reading != -1 ) {
+            switch ( reading ) {
+            case 31 ... 43: {
+                selected = 0; // ISENSE_PLUS
+                break;
+            }
+            case 47 ... 60: {
+                selected = 1; // ISENSE_MINUS
+                break;
+            }
+            }
+        }
+
+        // Check for button press to exit
+        if ( probeButton.getButtonState( ) == 1 ) {
+            probeButton.clearButtonState( );
+            blockProbeButton = 1000;
+            blockProbeButtonTimer = millis( );
+            // selected = -1;
+            break;
+        } else if ( probeButton.getButtonState( ) == 2 ) {
+            probeButton.clearButtonState( );
+            blockProbeButton = 1000;
+            blockProbeButtonTimer = millis( );
+            //   selected = -1;
+            break;
+        }
+
+        delayMicroseconds( 200 );
+    }
+
+    // Map selection to function
+    if ( selected == 0 ) {
+        function = ISENSE_PLUS;
+    } else if ( selected == 1 ) {
+        function = ISENSE_MINUS;
+    } else {
+        function = -1;
+    }
+
+    delay( 100 );
+
+    // Serial.print( "Current Sense selected: " );
+    // Serial.println( function == ISENSE_PLUS ? "ISENSE_PLUS (+)" : function == ISENSE_MINUS ? "ISENSE_MINUS (-)" : "None" );
+    // Serial.flush( );
+
+    clearLEDsExceptRails( );
+    b.clear( );
+    showLEDsCore2 = -1;
+
+    // Clear inPadMenu flag
+    inPadMenu = 0;
+
+    return function;
+}
+
 int Probing::chooseADC( void ) {
     int function = -1;
     // b.clear();
@@ -3571,7 +3820,7 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
         setDac1voltage( 3.33, 0, 0, false );
     }
 
-    float current_mA = checkProbeCurrent( );
+    float current_mA = checkProbeCurrent( ); // - currentReadingOffset1_mA;
 
     // HYSTERESIS LOGIC to prevent oscillation:
     // Use different thresholds depending on current state to create a "dead zone"
@@ -3695,12 +3944,16 @@ float Probing::checkProbeCurrent( void ) {
 }
 
 float Probing::checkProbeCurrentZero( void ) {
+    // return 0.0f;
 
     showProbeLEDs = 10;
     probeLEDs.setPixelColor( 0, 0x000000 );
     probeLEDs.show( );
     delayMicroseconds( 100 );
-
+    bool bridgeExists = checkIfBridgeExistsLocal( DAC0, -1 );
+    if ( bridgeExists == true ) {
+        removeBridgeFromState( DAC0, -1, true );
+    }
     int div = 8;
 
     float current = 0.0;
@@ -3734,6 +3987,10 @@ float Probing::checkProbeCurrentZero( void ) {
     // Serial.println(current);
 
     // saveConfig();
+
+    if ( bridgeExists == true ) {
+        addBridgeToState( DAC0, ROUTABLE_BUFFER_IN );
+    }
 
     showProbeLEDs = 4;
     return current;
@@ -4009,13 +4266,13 @@ void Probing::checkPads( void ) {
 
     int probeReadings[ 8 ] = { 0 };
 
-    for ( int i = 0; i < 4; i++ ) {
+    for ( int i = 0; i < 8; i++ ) {
         probeReadings[ i ] = readProbeRaw( 0, 1 );
     }
 
     int probeReading = 0;
     int numberOfGoodReadings = 0;
-    for ( int i = 0; i < 4; i++ ) {
+    for ( int i = 0; i < 8; i++ ) {
         if ( probeReadings[ i ] > 0 ) {
             probeReading += probeReadings[ i ];
             numberOfGoodReadings++;
@@ -4122,7 +4379,7 @@ void Probing::checkPads( void ) {
         }
         break;
     case BUILDING_PAD_BOTTOM:
-        // Serial.print("Building bottom");
+        Serial.print( "Building bottom" );
         clearColorOverrides( 1, 1, 0 );
         if ( brightenedNet != -1 ) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
@@ -4279,19 +4536,19 @@ int Probing::readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
 int convertPadsToRows( int pad ) {
     int row = pad;
     if ( pad == LOGO_PAD_BOTTOM ) {
-        row = 108;
+        row = RP_UART_TX;
     } else if ( pad == LOGO_PAD_TOP ) {
-        row = 109;
+        row = RP_UART_RX;
     } else if ( pad == GPIO_PAD ) {
-        row = 116;
+        row = GPIO_PAD;
     } else if ( pad == DAC_PAD ) {
-        row = 106;
+        row = DAC_PAD;
     } else if ( pad == ADC_PAD ) {
-        row = 111;
+        row = ADC_PAD;
     } else if ( pad == BUILDING_PAD_TOP ) {
-        row = 116;
+        row = ISENSE_PLUS;
     } else if ( pad == BUILDING_PAD_BOTTOM ) {
-        row = 117;
+        row = ISENSE_MINUS;
     }
     return row;
 }
@@ -4457,6 +4714,7 @@ int Probing::readProbe( ) {
         return -1;
     }
 
+    // int padRead = 0;
     if ( probeRead < 300 ) { // take an average if it's a logo pad
         int probeReadings[ 4 ] = { 0 };
         for ( int i = 0; i < 4; i++ ) {
@@ -4471,6 +4729,7 @@ int Probing::readProbe( ) {
             }
         }
         probeRead = probeReading / numberOfGoodReadings;
+        // padRead = 1;
         // Serial.print("probeRead: ");
         // Serial.println(probeRead);
         // Serial.flush();
@@ -4479,6 +4738,7 @@ int Probing::readProbe( ) {
     int rowProbed = map( probeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 );
     // Serial.print("\n\n\rprobeRead: ");
     // Serial.println(probeRead);
+    // rowProbed = convertPadsToRows( rowProbed );
 
     if ( rowProbed <= 0 || rowProbed >= sizeof( probeRowMap ) ) {
         if ( debugProbing == 1 ) {
@@ -4886,6 +5146,7 @@ int Probing::checkProbeButton( void ) {
 
     // If we got a press event, return it
     if ( press != 0 ) {
+        // Serial.println("\n\n\n\rcheckProbeButton press = " + String(press));
         return press;
     }
 

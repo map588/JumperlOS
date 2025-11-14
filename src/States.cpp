@@ -1861,6 +1861,10 @@ const JumperlessState& SlotManager::getActiveState() const {
 }
 
 String SlotManager::getSlotFilename(int slotNum) const {
+    // Special case for Python slot (slot 99)
+    if (slotNum == 99) {
+        return "/slots/slotPython.yaml";
+    }
     return "/slots/slot" + String(slotNum) + ".yaml";
 }
 
@@ -1877,8 +1881,14 @@ String SlotManager::getJSONSlotFilename(int slotNum) const {
 static int extractSlotNumberFromFilename(const char* filename) {
     if (!filename) return -1;
     
-    // Check if filename matches pattern "/slots/slotN.yaml"
     String fname(filename);
+    
+    // Special case for Python slot
+    if (fname == "/slots/slotPython.yaml") {
+        return 99;
+    }
+    
+    // Check if filename matches pattern "/slots/slotN.yaml"
     if (!fname.startsWith("/slots/slot") || !fname.endsWith(".yaml")) {
         return -1;
     }
@@ -1893,8 +1903,8 @@ static int extractSlotNumberFromFilename(const char* filename) {
     String numStr = fname.substring(slotStart, yamlStart);
     int slotNum = numStr.toInt();
     
-    // Validate it's a valid slot number
-    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+    // Validate it's a valid slot number (0-7 for normal slots, 99 for Python)
+    if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
         return -1;
     }
     
@@ -1902,7 +1912,8 @@ static int extractSlotNumberFromFilename(const char* filename) {
 }
 
 bool SlotManager::slotExists(int slotNum) const {
-    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+    // Allow slot 99 (Python slot) in addition to 0-7
+    if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
         return false;
     }
     
@@ -1911,13 +1922,18 @@ bool SlotManager::slotExists(int slotNum) const {
         return true;
     }
     
-    // Check for legacy format
-    String legacyFilename = getLegacySlotFilename(slotNum);
-    return FatFS.exists(legacyFilename.c_str());
+    // Check for legacy format (not applicable to Python slot)
+    if (slotNum != 99) {
+        String legacyFilename = getLegacySlotFilename(slotNum);
+        return FatFS.exists(legacyFilename.c_str());
+    }
+    
+    return false;
 }
 
 bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
-    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+    // Allow slot 99 (Python slot) in addition to 0-7
+    if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
         errorMsg = "Invalid slot number: " + String(slotNum);
         return false;
     }
@@ -1990,7 +2006,8 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
 }
 
 bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
-    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+    // Allow slot 99 (Python slot) in addition to 0-7
+    if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
         errorMsg = "Invalid slot number: " + String(slotNum);
         return false;
     }
@@ -2053,7 +2070,8 @@ bool SlotManager::saveActiveSlot(String& errorMsg) {
 }
 
 bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
-    if (slotNum < 0 || slotNum >= NUM_SLOTS) {
+    // Allow slot 99 (Python slot) in addition to 0-7
+    if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
         errorMsg = "Invalid slot number: " + String(slotNum);
         return false;
     }
@@ -2501,7 +2519,8 @@ size_t SlotManager::getActiveStateRAMUsage() const {
 // ============================================================================
 
 bool SlotManager::enterPreviewMode(int slotToPreview, String& errorMsg) {
-    if (slotToPreview < 0 || slotToPreview >= NUM_SLOTS) {
+    // Allow slot 99 (Python slot) in addition to 0-7
+    if (slotToPreview < 0 || (slotToPreview >= NUM_SLOTS && slotToPreview != 99)) {
         errorMsg = "Invalid slot number: " + String(slotToPreview);
         return false;
     }

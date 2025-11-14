@@ -260,7 +260,10 @@ void jOSmanager::serviceAll() {
  * @brief Execute ONLY CRITICAL priority services
  * 
  * This is used within blocking operations (like probeMode) to keep
- * critical services like button checking alive in their inner loops
+ * critical services like button checking alive in their inner loops.
+ * 
+ * Also keeps current sense measurements updating so marching ants
+ * visualization stays current during probe mode.
  */
 void jOSmanager::serviceCritical() {
     for (uint8_t i = 0; i < serviceCount; i++) {
@@ -281,6 +284,10 @@ void jOSmanager::serviceCritical() {
         // Execute the service (ignore status - we're in a blocking context already)
         svc->service();
     }
+    
+    // Also keep current sense measurements updating during blocking operations
+    // This ensures marching ants visualization stays current in probe mode
+    Peripherals::getInstance().pollCurrentSense();
 }
 
 /**

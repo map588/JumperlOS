@@ -23,3 +23,9 @@ lib/micropython/build-embed
 micropython_repo
 JumperlOS.code-workspace
 docs/DOCUMENTATION_REVIEW.md
+CodeDocs/LAYERS_README.md
+CodeDocs/LAYERS_INTEGRATION_SUMMARY.md
+CodeDocs/LAYERS_MEMORY_OPTIMIZATION.md
+CodeDocs/LAYERS_API_REFERENCE.md
+CodeDocs/current_task_plan.md
+.agents/python_connection_context_feature.md

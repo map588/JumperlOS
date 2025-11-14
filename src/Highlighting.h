@@ -66,7 +66,7 @@ public:
     int lastWarningNet = -1;
     
     // Public methods
-    void clearHighlighting(void);
+    void clearHighlighting(int updateLEDs = 0);
     int encoderNetHighlight(int print = 1, int mode = 1, int divider = 4);
     int brightenNet(int node, int addBrightness = 5);
     int warnNet(int node);
@@ -114,8 +114,8 @@ extern unsigned long& warningTimer;
 extern unsigned long& highlightTimer;
 
 // Legacy wrapper functions
-inline void clearHighlighting(void) {
-    Highlighting::getInstance().clearHighlighting();
+inline void clearHighlighting(int updateLEDs = 01) {
+    Highlighting::getInstance().clearHighlighting(updateLEDs);
 }
 
 inline int encoderNetHighlight(int print = 1, int mode = 1, int divider = 4) {

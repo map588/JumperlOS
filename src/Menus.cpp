@@ -4036,10 +4036,14 @@ int doMenuAction( int menuPosition, int selection ) {
         // LEDbrightnessSpecial = (specialBrightnessOptionMap[currentAction.from[0]]);
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "ConnectOn Boot" ) != -1 ) {
             if ( currentAction.from[ 0 ] == 0 ) {
+                jumperlessConfig.top_oled.lock_connection = 1;
+                globalState.config.oledLockConnection = 1;
                 jumperlessConfig.top_oled.connect_on_boot = 1;
                 oled.init( );
             } else if ( currentAction.from[ 0 ] == 1 ) {
                 jumperlessConfig.top_oled.connect_on_boot = 0;
+                jumperlessConfig.top_oled.lock_connection = 0;
+                globalState.config.oledLockConnection = 0;
                 oled.disconnect( );
             }
             // oled.init();

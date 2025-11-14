@@ -95,7 +95,7 @@ ServiceStatus Highlighting::service() {
     // ============================================================================
     static unsigned long lastPeriodicCheckTime = 0;
     unsigned long now = millis();
-    if (now - lastPeriodicCheckTime >= 20) {  // 20ms = 50Hz
+    if (now - lastPeriodicCheckTime >= 40) {  // 20ms = 50Hz
         lastPeriodicCheckTime = now;
         
         // Handle warning timeouts
@@ -145,7 +145,7 @@ unsigned long& highlightTimer = Highlighting::getInstance().highlightTimer;
 // Existing Functions (now class methods)
 // ============================================================================
 
-void Highlighting::clearHighlighting( void ) {
+void Highlighting::clearHighlighting( int updateLEDs) {
 
     // netColors[highlightedNet] = highlightedOriginalColor;
     // netColors[brightenedNet] = brightenedOriginalColor;
@@ -169,9 +169,13 @@ void Highlighting::clearHighlighting( void ) {
 
     // Reset highlight timer
     highlightTimer = 0;
+   // leds.clear( );
 
     // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
-    showLEDsCore2 = 1;  // Trigger LED update on core 2
+    // Use negative value to force clearBeforeSend, ensuring old highlights are fully cleared
+    if (updateLEDs != 0) {
+    showLEDsCore2 = updateLEDs;  // Trigger full clear + LED update on core 2
+    }
 }
 
 int lastReturnNode = -1;
@@ -404,6 +408,22 @@ int Highlighting::encoderNetHighlight( int print, int mode, int divider ) {
                     brightenedNet = connectedNet;
                     brightenedNode = scrolledRow;
                     brightenedAmount = 80; // Set brightness for highlighting
+                    // Serial.print("highlightedNet: ");
+                    // Serial.println(highlightedNet);
+                    // Serial.flush();
+                    // Serial.print("brightenedNet: ");
+                    // Serial.println(brightenedNet);
+                    // Serial.flush();
+                    // Serial.print("brightenedNode: ");
+                    // Serial.println(brightenedNode);
+                    // Serial.flush();
+                    // Serial.print("brightenedAmount: ");
+                    // Serial.println(brightenedAmount);
+                    // Serial.flush();
+                    // Serial.print("returnNode: ");
+                    // Serial.println(returnNode);
+                    // Serial.flush();
+                    showLEDsCore2 = -1;
                     highlightNets( 0, highlightedNet, print );
                     returnNode = scrolledRow;
                     break;
@@ -449,6 +469,7 @@ int Highlighting::encoderNetHighlight( int print, int mode, int divider ) {
                     brightenedNet = connectedNet;
                     brightenedNode = scrolledRow;
                     brightenedAmount = 80; // Set brightness for highlighting
+                    showLEDsCore2 = -1;
                     highlightNets( 0, highlightedNet, print );
                     returnNode = scrolledRow;
                     break;
@@ -491,7 +512,8 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
         brightenedNode = -1;
         brightenedNet = 0;
         brightenedRail = -1;
-        showLEDsCore2 = 1;  // Trigger LED update
+        // Use negative value to force clearBeforeSend, ensuring old highlights are fully cleared
+        showLEDsCore2 = -1;  // Trigger full clear + LED update
         return -1;
     }
     addBrightness = 0;
@@ -500,7 +522,21 @@ int Highlighting::brightenNet( int node, int addBrightness ) {
 
         if ( node == globalState.connections.paths[ i ].node1 || node == globalState.connections.paths[ i ].node2 && globalState.connections.paths[ i ].duplicate == 0 ) {
             /// if (brightenedNet != i) {
-            brightenedNet = globalState.connections.paths[ i ].net;
+            int netToHighlight = globalState.connections.paths[ i ].net;
+            
+            // // Skip standard highlighting for current sense nets - they use marching ants only
+            // if ( currentSenseState.plusConnected && currentSenseState.minusConnected ) {
+            //     if ( netToHighlight == currentSenseState.plusNet || netToHighlight == currentSenseState.minusNet ) {
+            //         // Don't set brightenedNet, but allow the highlighting system to track it for OLED/persistence
+            //         brightenedNode = node;  // Set for persistence check
+            //         highlightedNet = netToHighlight;
+            //         highlightedRow = node;
+            //         showLEDsCore2 = 1;  // Trigger LED update to show marching ants
+            //         return netToHighlight;
+            //     }
+            // }
+            
+            brightenedNet = netToHighlight;
             brightenedNode = node;
             // Serial.print("\n\n\rbrightenedNet: ");
             // Serial.println(brightenedNet);
@@ -695,6 +731,17 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
         netHighlighted = brightenNet( probeReading );
     }
 
+    static bool sensePrintInitialized = false;
+    static int lastSenseNetPrinted = -1;
+    static float lastSenseCurrentPrinted = 0.0f;
+    static float lastSenseVoltagePrinted = 0.0f;
+    static unsigned long lastSenseUpdatePrinted = 0;
+
+    // if ( !currentSenseState.plusConnected || !currentSenseState.minusConnected ) {
+    //     sensePrintInitialized = false;
+    //     lastSenseNetPrinted = -1;
+    // }
+
     if ( netHighlighted > 0 ) {
 
         highlightedOriginalColor = netColors[ netHighlighted ];
@@ -876,6 +923,75 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
             // Serial.print("gpioOutputNumber = ");
             // Serial.println(gpioOutputNumber);
 
+            bool currentSenseNetActive =
+                currentSenseState.plusConnected && currentSenseState.minusConnected;
+            bool isCurrentSenseNet =
+                currentSenseNetActive &&
+                (netHighlighted == currentSenseState.plusNet ||
+                 netHighlighted == currentSenseState.minusNet);
+
+            if ( isCurrentSenseNet ) {
+
+                int showVoltage = 0;
+                
+
+                float current = currentSenseState.filteredCurrent_mA;
+                float voltage = currentSenseState.busVoltage_V;
+                unsigned long updated = currentSenseState.lastUpdatedMs;
+                int direction = currentSenseState.currentDirection;
+
+                bool shouldPrint = false;
+                if ( !sensePrintInitialized || lastSenseNetPrinted != netHighlighted ) {
+                    shouldPrint = true;
+                } else if ( fabsf( current - lastSenseCurrentPrinted ) > 0.05f ||
+                            fabsf( voltage - lastSenseVoltagePrinted ) > 0.02f ) {
+                    shouldPrint = true;
+                }
+
+                if ( print == 1 && shouldPrint ) {
+                    const char* baseName = globalState.connections.nets[ netHighlighted ].name;
+                    char nameBuffer[ 16 ];
+                    if ( baseName == nullptr || baseName[ 0 ] == '\0' ) {
+                        snprintf( nameBuffer, sizeof( nameBuffer ), "Net %d", netHighlighted );
+                        baseName = nameBuffer;
+                    }
+
+                    const char* directionStr = "||";
+                    if ( direction > 0 ) {
+                        directionStr = "->";
+                    } else if ( direction < 0 ) {
+                        directionStr = "<-";
+                    }
+
+                    Serial.print( "\r                                              \r" );
+                    Serial.printf( "%s %+.2f mA", baseName,  current);
+                    Serial.flush( );
+
+                    char oledBuffer[ 48 ];
+                    if (netHighlighted == currentSenseState.plusNet) {
+                        snprintf( oledBuffer, sizeof( oledBuffer ), "I Sense +\n %+.2f mA",
+                              baseName,  current );
+                    } else {
+                        snprintf( oledBuffer, sizeof( oledBuffer ), "I Sense -\n %+.2f mA",
+                              baseName,  current );
+                    }
+                    snprintf( oledBuffer, sizeof( oledBuffer ), "%s\n %+.2f mA",
+                              baseName,  current );
+                    oled.clearPrintShow( oledBuffer, 1, true, true, true );
+
+                    lastSenseCurrentPrinted = current;
+                    lastSenseVoltagePrinted = voltage;
+                    lastSenseUpdatePrinted = updated;
+                    lastSenseNetPrinted = netHighlighted;
+                    sensePrintInitialized = true;
+                    lastPrintedNet = netHighlighted;
+                } else if ( print == 1 ) {
+                    lastPrintedNet = netHighlighted;
+                }
+
+                specialPrint = 1;
+
+             } else 
             if ( uartTxOnNet || uartRxOnNet ) {
 
                 if ( lastPrintedNet != netHighlighted ) {
@@ -1345,6 +1461,64 @@ int Highlighting::checkForReadingChanges( void ) {
         showReadingRow = showReadingNet;
     }
 
+    // Check for current sense nets
+    if ( showReadingNet > 0 && currentSenseState.plusConnected && currentSenseState.minusConnected ) {
+        if ( showReadingNet == currentSenseState.plusNet || showReadingNet == currentSenseState.minusNet ) {
+            float current = currentSenseState.filteredCurrent_mA;
+            float voltage = currentSenseState.busVoltage_V;
+
+            // Serial.print("current: ");
+            // Serial.print(current);
+            // Serial.print(" mA");
+            // Serial.flush();
+
+            // Serial.print("voltage: ");
+            // Serial.print(voltage);
+            // Serial.print(" V");
+            // Serial.flush();
+            
+            // Always update current sense display (no dead zone, it changes frequently)
+            static float lastCurrentPrinted = 0.0f;
+            static float lastVoltagePrinted = 0.0f;
+            
+            // Update if current changed by more than 0.05mA or voltage by more than 0.02V
+            if (( fabs( current - lastCurrentPrinted ) > 0.05 || fabs( voltage - lastVoltagePrinted ) > 0.1)  && millis() - lastUpdateTime > 15) {
+                lastCurrentPrinted = current;
+                lastVoltagePrinted = voltage;
+                
+                const char* baseName = globalState.connections.nets[ showReadingNet ].name;
+                char nameBuffer[ 16 ];
+                if ( baseName == nullptr || baseName[ 0 ] == '\0' ) {
+                    snprintf( nameBuffer, sizeof( nameBuffer ), "Nerrrr %d", showReadingNet );
+                    baseName = nameBuffer;
+                }
+                if (showReadingNet == currentSenseState.plusNet) {
+                    baseName = "I Sense +";
+                } else if (showReadingNet == currentSenseState.minusNet) {
+                    baseName = "I Sense -";
+                }
+                int direction = currentSenseState.currentDirection;
+                const char* directionStr = "||";
+                if ( direction > 0 ) {
+                    directionStr = "->";
+                } else if ( direction < 0 ) {
+                    directionStr = "<-";
+                }
+                
+                Serial.print( "\r                                              \r" );
+                Serial.printf( "%s %+.2f mA", baseName, current );
+                Serial.flush( );
+                
+                char oledBuffer[ 48 ];
+                snprintf( oledBuffer, sizeof( oledBuffer ), "%s\n %+.2f mA", baseName, current );
+                oled.clearPrintShow( oledBuffer, 1, true, true, true );
+                
+                displayUpdated = true;
+            }
+            showReadingRow = showReadingNet;
+        }
+    }
+
     if ( displayUpdated ) {
         lastUpdateTime = currentTime;
         return 1; // Indicates display was updated
@@ -1435,25 +1609,33 @@ static void dacVoltageCallback(float value, bool isLive, void* context) {
  * - Rails (GND, TOP_RAIL, BOTTOM_RAIL)
  * - DACs (DAC0, DAC1)
  * - GPIO outputs
+ * - Current sense nets (when active)
  * 
  * @param node The node to check
  * @return true if node should persist, false otherwise
  */
 bool Highlighting::shouldPersistHighlight(int node) {
     // Special nodes that persist
-    if (node == TOP_RAIL || node == BOTTOM_RAIL) {
-        return true;
-    }
+    // if (node == TOP_RAIL || node == BOTTOM_RAIL) {
+    //     return true;
+    // }
     
-    // DAC nets (4 and 5)
-    if (highlightedNet == 4 || highlightedNet == 5) {
-        return true;
-    }
+    // // DAC nets (4 and 5)
+    // if (highlightedNet == 4 || highlightedNet == 5) {
+    //     return true;
+    // }
     
     // GPIO outputs persist
     if (highlightedNet > 0 && anyGpioOutputConnected(highlightedNet) != -1) {
         return true;
     }
+    
+    // Current sense nets persist when active
+    // if (highlightedNet > 0 && currentSenseState.plusConnected && currentSenseState.minusConnected) {
+    //     if (highlightedNet == currentSenseState.plusNet || highlightedNet == currentSenseState.minusNet) {
+    //         return true;
+    //     }
+    // }
     
     return false;
 }
@@ -1483,8 +1665,8 @@ bool Highlighting::wantsToHandleButtonPress(void) {
     }
     
     // Rails and DACs are adjustable
-    if (brightenedNode == TOP_RAIL || brightenedNode == BOTTOM_RAIL ||
-        highlightedNet == 4 || highlightedNet == 5) {
+   // if (brightenedNode == TOP_RAIL || brightenedNode == BOTTOM_RAIL ||
+     if(   highlightedNet == 4 || highlightedNet == 5) {
         return true;
     }
     

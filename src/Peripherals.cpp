@@ -12,6 +12,7 @@
 #include "NetManager.h"
 
 #include "hardware/adc.h"
+#include <math.h>
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "hardware/structs/io_bank0.h"
@@ -38,6 +39,13 @@
 // ============================================================================
 
 // Static member initialization
+static void resetCurrentSenseMeasurement();
+static bool pollCurrentSenseMeasurement();
+static unsigned long lastCurrentSensePollMs = 0;
+static constexpr unsigned long CURRENT_SENSE_POLL_INTERVAL_MS = 50;
+static constexpr float CURRENT_SENSE_FILTER_ALPHA = 0.55f;
+static constexpr float CURRENT_SENSE_DIRECTION_EPSILON_MA = 0.25f;
+
 Peripherals* Peripherals::instance = nullptr;
 
 Peripherals& Peripherals::getInstance() {
@@ -61,14 +69,90 @@ Peripherals::Peripherals() {
 ServiceStatus Peripherals::service() {
     lastStatus = ServiceStatus::IDLE;
     
+   // if (millis() > 3000) {
+    if (pollCurrentSenseMeasurement()) {
+        lastStatus = ServiceStatus::BUSY;
+   // }
+}
+
     // Show measurements if enabled
     if (showReadings >= 1) {
         showMeasurements(16, 0, 0);
         lastStatus = ServiceStatus::BUSY;
     }
-    showLEDmeasurements();
+    //showLEDmeasurements();
     
     return lastStatus;
+}
+
+static void resetCurrentSenseMeasurement() {
+    currentSenseState.active = false;
+    currentSenseState.current_mA = 0.0f;
+    currentSenseState.filteredCurrent_mA = 0.0f;
+    currentSenseState.busVoltage_V = 0.0f;
+    currentSenseState.shuntVoltage_mV = 0.0f;
+    currentSenseState.currentDirection = 0;
+    lastCurrentSensePollMs = 0;
+}
+
+static bool pollCurrentSenseMeasurement() {
+    if ( !currentSenseState.plusConnected || !currentSenseState.minusConnected ) {
+        if ( currentSenseState.active ) {
+            resetCurrentSenseMeasurement();
+        }
+        return false;
+    }
+
+    unsigned long now = millis();
+    if ( now - lastCurrentSensePollMs < CURRENT_SENSE_POLL_INTERVAL_MS ) {
+        return false;
+    }
+
+    if ( !INA0.getConversionFlag() ) {
+        return false;
+    }
+
+    lastCurrentSensePollMs = now;
+
+    float current_mA = INA0.getCurrent_mA()- currentReadingOffset0_mA;
+    float busVoltage = 0.0f;//min(8.0f, fabs(current_mA * 0.5f));
+   // float busVoltage = 5.0;//INA0.getBusVoltage();
+
+  //  if ( !currentSenseState.active ) {
+        currentSenseState.filteredCurrent_mA = current_mA;
+    // } else {
+    //     currentSenseState.filteredCurrent_mA =
+    //         ( CURRENT_SENSE_FILTER_ALPHA * current_mA ) +
+    //         ( ( 1.0f - CURRENT_SENSE_FILTER_ALPHA ) * currentSenseState.filteredCurrent_mA );
+    // }
+
+    currentSenseState.current_mA = current_mA;
+    currentSenseState.busVoltage_V = busVoltage;
+    currentSenseState.shuntVoltage_mV = 0.0f;
+
+    int direction = 0;
+    if ( current_mA > CURRENT_SENSE_DIRECTION_EPSILON_MA ) {
+        direction = 1;
+    } else if ( current_mA < -CURRENT_SENSE_DIRECTION_EPSILON_MA ) {
+        direction = -1;
+    }
+    currentSenseState.currentDirection = direction;
+
+    currentSenseState.active = true;
+    currentSenseState.lastUpdatedMs = now;
+
+    return true;
+}
+
+/**
+ * @brief Public method to poll current sense measurements
+ * 
+ * This is exposed publicly so it can be called from serviceCritical()
+ * to keep current measurements updating even during blocking operations
+ * like probe mode.
+ */
+void Peripherals::pollCurrentSense() {
+    pollCurrentSenseMeasurement();
 }
 
 // Backward compatibility - create references to singleton members
@@ -790,6 +874,8 @@ int gpioOutput[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 volatile bool readingGPIO = false;
 volatile bool readingADC = false;
 volatile bool usingI2C = false;
+CurrentSenseState currentSenseState;
+
 void readGPIO( void ) {
 
     if ( false ) {
@@ -1139,6 +1225,9 @@ void erattaClearGPIO( int gpio ) {
 
 void writeGPIOex( int value, uint8_t pin ) {}
 
+float currentReadingOffset0_mA = 0.0f;
+float currentReadingOffset1_mA = 0.0f;
+
 void initINA219( void ) {
 
     if ( !INA0.begin( ) || !INA1.begin( ) ) {
@@ -1162,7 +1251,17 @@ void initINA219( void ) {
     INA0.setBusVoltageRange( 16 );
     INA1.setBusVoltageRange( 16 );
 
+    while ( INA0.getConversionFlag() == false ) {
+        tight_loop_contents();
+    }
 
+
+    currentReadingOffset0_mA = INA0.getCurrent_mA();
+
+    while ( INA1.getConversionFlag() == false ) {
+        tight_loop_contents();
+    }
+    currentReadingOffset1_mA = INA1.getCurrent_mA();
 }
 
 void setDacByNumber( int dac, float voltage, int save, int saveEEPROM,
@@ -1233,6 +1332,9 @@ void chooseShownReadings( void ) {
 
     inaConnected = 0;
 
+    int detectedPlusNet = -1;
+    int detectedMinusNet = -1;
+
     for ( int i = 0; i < numberOfPaths; i++ ) {
 
         if ( globalState.connections.paths[ i ].node1 == ADC0 || globalState.connections.paths[ i ].node2 == ADC0 ) {
@@ -1255,22 +1357,27 @@ void chooseShownReadings( void ) {
             showADCreadings[ 4 ] = globalState.connections.paths[ i ].net;
         }
 
-        if ( globalState.connections.paths[ i ].node1 == ISENSE_PLUS || globalState.connections.paths[ i ].node1 == ISENSE_PLUS ||
-             globalState.connections.paths[ i ].node2 == ISENSE_MINUS || globalState.connections.paths[ i ].node2 == ISENSE_MINUS ) {
-            // Serial.println(showReadings);
+        if ( globalState.connections.paths[ i ].node1 == ISENSE_PLUS || globalState.connections.paths[ i ].node2 == ISENSE_PLUS ) {
+            detectedPlusNet = globalState.connections.paths[ i ].net;
+        }
 
-            inaConnected = 1;
-
-            showINA0[ 0 ] = 1;
-            showINA0[ 1 ] = 0;
-            showINA0[ 2 ] = 0;
+        if ( globalState.connections.paths[ i ].node1 == ISENSE_MINUS || globalState.connections.paths[ i ].node2 == ISENSE_MINUS ) {
+            detectedMinusNet = globalState.connections.paths[ i ].net;
         }
     }
-    if ( inaConnected == 0 ) {
+
+    currentSenseState.plusNet = detectedPlusNet;
+    currentSenseState.minusNet = detectedMinusNet;
+    currentSenseState.plusConnected = ( detectedPlusNet > 0 );
+    currentSenseState.minusConnected = ( detectedMinusNet > 0 );
+
+    if ( currentSenseState.plusConnected && currentSenseState.minusConnected ) {
+        inaConnected = 1;
+        showINA0[ 0 ] = 1;
+    } else {
+        inaConnected = 0;
         showINA0[ 0 ] = 0;
-        showINA0[ 1 ] = 0;
-        showINA0[ 2 ] = 0;
-        // showReadings = 3;
+        resetCurrentSenseMeasurement();
     }
 
     for ( int i = 0; i < 10; i++ ) {
@@ -1302,14 +1409,14 @@ int highlightInteractable[ 10 ] = { RP_GPIO_0, RP_GPIO_1, RP_GPIO_2,
 
 int probeToggle( void ) {
 
-    int buttonState = checkProbeButton( );
+    int buttonState = ProbeButton::getInstance().getButtonState();
 
     if ( buttonState == 0 ) {
         return -1; // no button pressed
     }
 
     // Handle DAC voltage control for nets 4 and 5
-    if ( brightenedNet == 4 || brightenedNet == 5 ) {
+    if ( (brightenedNet == 4 || brightenedNet == 5 )&& false) {
         float currentVoltage = getDacVoltage( brightenedNet == 4 ? 0 : 1 );
         float dacStep = 0.25; // Default step size
         float newVoltage = currentVoltage;
