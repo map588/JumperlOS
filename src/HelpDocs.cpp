@@ -929,6 +929,26 @@ Jerial.println(probe_art);
         Jerial.println("  3. That connection gets removed");
         Jerial.println("  4. Press Remove again to exit");
         
+        changeTerminalColor(HELP_USAGE_COLOR, true);
+        Jerial.println("\n ENCODER CONNECTIONS:");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  Use the clickwheel to make connections without the probe:");
+        Jerial.println("  1. Click > Connect > Add (or Remove)");
+        Jerial.println("     OR just turn the clickwheel while in probe mode");
+        Jerial.println("  2. Turn clickwheel to scroll through:");
+        Jerial.println("     - Breadboard rows (1-60)");
+        Jerial.println("     - Nano header pins (D0-A7)");
+        Jerial.println("     - Rails (Top, Bottom, GND)");
+        Jerial.println("     - DAC (0, 1)");
+        Jerial.println("     - ADC (0-4, Probe)");
+        Jerial.println("     - GPIO (1-8)");
+        Jerial.println("     - UART (TX, RX)");
+        Jerial.println("     - Current sense (I+, I-)");
+        Jerial.println("  3. Click encoder button to select node");
+        Jerial.println("  4. Hold encoder button to exit");
+        changeTerminalColor(HELP_NOTE_COLOR, true);
+        Jerial.println("  Cursor auto-hides after 5 seconds of no movement");
+        
         changeTerminalColor(HELP_NOTE_COLOR, true);
         Jerial.println("\n IMPORTANT - Switch Position:");
         changeTerminalColor(HELP_DESC_COLOR, true);
@@ -948,6 +968,10 @@ Jerial.println(probe_art);
         Jerial.println("  - GPIO pins (programmable digital I/O)");
         Jerial.println("  - ADC inputs (read voltages)");
         Jerial.println("  - DAC outputs (generate voltages)");
+        Jerial.println("  - UART (TX/RX for serial communication)");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  Tap the building pads (in connect/remove mode) for:");
+        Jerial.println("  - Current sense (I+/I-) - Shows marching ants animation");
      
         
     } else if (strcmp(category, "voltage") == 0) {
@@ -1002,6 +1026,19 @@ Jerial.println(probe_art);
         Jerial.println("  Green (0V) → Red (5V) → Pink (8V+)");
         Jerial.println("  Blue/icy colors for negative voltages");
         Jerial.println("  Rails pulse toward top/bottom");
+        
+        changeTerminalColor(HELP_USAGE_COLOR, true);
+        Jerial.println("\n Current Sensing Marching Ants:");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  When both I+ and I- are connected to nets:");
+        Jerial.println("  Note: I+ and I- are shorted together through a 2 ohm sense resistor");
+        Jerial.println("  1. Tap building pads (in connect/remove mode) to access I+/I-");
+        Jerial.println("  2. Connect I+ and I- to different nets in your circuit");
+        Jerial.println("  3. Animated 'marching ants' show current flow direction!");
+        Jerial.println("  4. Virtual wire drawn between closest breadboard nodes");
+        changeTerminalColor(HELP_NOTE_COLOR, true);
+        Jerial.println("  Visual feedback helps you see the current path in real-time");
+        Jerial.println("  Automatically picks optimal breadboard nodes for display");
         
     } else if (strcmp(category, "arduino") == 0) {
         changeTerminalColor(HELP_DESC_COLOR, true);
@@ -1116,6 +1153,30 @@ Jerial.println(probe_art);
         Jerial.println("  save    - Save current session as script");
         Jerial.println("  load    - Load and run a saved script");
         Jerial.println("  new     - Create new script with eKilo editor");
+        changeTerminalColor(HELP_COMMAND_COLOR, false);
+        Jerial.print("  context ");
+        changeTerminalColor(HELP_DESC_COLOR, false);
+        Jerial.println("- Toggle connection context");
+        
+        changeTerminalColor(HELP_USAGE_COLOR, true);
+        Jerial.println("\n Connection Context Switching:");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  Type 'context' in the REPL to toggle between:");
+        changeTerminalColor(HELP_COMMAND_COLOR, false);
+        Jerial.print("  - global context: ");
+        changeTerminalColor(HELP_DESC_COLOR, false);
+        Jerial.println("Connections persist after exiting Python");
+        changeTerminalColor(HELP_COMMAND_COLOR, false);
+        Jerial.print("  - python context: ");
+        changeTerminalColor(HELP_DESC_COLOR, false);
+        Jerial.println("Connections restored on exit (saved to slots/slotPython.yaml)");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("\n  How it works:");
+        Jerial.println("  - 'global' mode: Changes are permanent, like normal commands");
+        Jerial.println("  - 'python' mode: State saved on entry, restored on exit");
+        Jerial.println("  - Perfect for experimenting without affecting your main circuit");
+        changeTerminalColor(HELP_NOTE_COLOR, true);
+        Jerial.println("  Context shown in REPL prompt - toggle anytime!");
         
         changeTerminalColor(HELP_NOTE_COLOR, true);
         Jerial.println("\n Python Features:");
