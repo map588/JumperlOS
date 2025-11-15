@@ -1166,7 +1166,7 @@ static void rebuildCurrentSensePath(CurrentSenseOverlayState &state, int plusNet
   state.virtualWireLength = 0;
   state.minusNetLength = 0;
   
-  if (plusNet <= 0 || minusNet <= 0) {
+  if (plusNet <= 0 && minusNet <= 0) {
     state.pathValid = false;
     return;
   }
@@ -1595,7 +1595,7 @@ float kCurrentSenseBaseSpeed = 0.25f;
 float kCurrentSenseSpeedScale = 0.95f;
 
 static void renderCurrentSenseOverlay() {
-  if (!currentSenseState.plusConnected || !currentSenseState.minusConnected) {
+  if (!currentSenseState.plusConnected && !currentSenseState.minusConnected) {
     currentSenseOverlayState.pathValid = false;
     currentSenseOverlayState.plusRow = -1;
     currentSenseOverlayState.minusRow = -1;
@@ -1626,7 +1626,6 @@ static void renderCurrentSenseOverlay() {
   if (!currentSenseOverlayState.pathValid) {
     return;
   }
-
   // Don't tint rows or paths - the marching ants rendering handles all visualization
   // (Previously this was applying a voltage-colored tint that created unwanted artifacts)
 
@@ -3145,7 +3144,7 @@ void printString(const char *s, uint32_t color, uint32_t bg, int position,
   // int position = 0;
 
   for (int i = 0; i < strlen(s); i++) {
-    if (s[i] == '\n') {
+    if (s[i] == '\n' || s[i] == '\31') {
       continue;
     }
 

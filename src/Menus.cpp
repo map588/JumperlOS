@@ -3415,6 +3415,18 @@ actionCategories getActionCategory( void ) {
 int doMenuAction( int menuPosition, int selection ) {
 
     populateAction( );
+    
+    // Strip \31 characters from menuLines referenced in action struct
+    // This ensures proper matching while keeping OLED display correct
+    for ( int i = 0; i < currentAction.previousMenuIndex; i++ ) {
+        int menuIdx = currentAction.previousMenuPositions[ i ];
+        if ( menuIdx != -1 ) {
+            String cleaned = menuLines[ menuIdx ];
+            cleaned.replace( "\31", "" );
+            menuLines[ menuIdx ] = cleaned;
+        }
+    }
+    
     printActionStruct( );
     clearLEDsExceptRails( );
     showLEDsCore2 = -1;
@@ -3800,14 +3812,15 @@ int doMenuAction( int menuPosition, int selection ) {
         // slotChanged = 0;
         inClickMenu = 0;
 
-        for ( int i = 0; i < NUM_APPS; i++ ) {
-            if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( apps[ i ].name ) != -1 ) {
-                runApp( apps[ i ].index, apps[ i ].name );
+     
+
+          
+                runApp( -1, (char*)menuLines[ currentAction.previousMenuPositions[ 1 ] ].c_str() );
                 // showLEDsCore2 = -1;
                 refreshConnections( -1, 0 );
-                break;
-            }
-        }
+                
+        
+        
 
         return 10;
 
@@ -4012,7 +4025,7 @@ int doMenuAction( int menuPosition, int selection ) {
                // delay(1500); // Show confirmation briefly
             } else if (selectedOption.indexOf("clear") != -1) {
                 // User wants to clear - set to empty string
-                jumperlessConfig.top_oled.startup_message[0] = '\0';
+                strcpy(jumperlessConfig.top_oled.startup_message, "");
                 configChanged = true;
                 saveConfig();
                 
@@ -4027,7 +4040,7 @@ int doMenuAction( int menuPosition, int selection ) {
                 
                 Serial.println("\n\rStartup message cleared - will show logo on boot");
                 //delay(1500);
-            }
+            } 
         }
         
  

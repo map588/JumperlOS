@@ -1415,6 +1415,10 @@ restartProbingNoPrint:
                 persistentEncoderCursorNode = 14; // Row 15 (0-indexed)
                 persistentCursorZone = ZONE_BREADBOARD;
                 persistentSubIndex = 0;
+                // Also reset the local working variables immediately
+                encoderCursorNode = 14;
+                cursorZone = ZONE_BREADBOARD;
+                subIndex = 0;
             } else {
                 // Normal breadboard/nano selection - persist position
                 persistentEncoderCursorNode = encoderCursorNode;
@@ -2467,10 +2471,17 @@ int Probing::selectSFprobeMenu( int function ) {
         // delay(800);
 
         // function = attachPadsToSettings(function);
-        node1or2 = 0;
-        nodesToConnect[ 0 ] = function;
-        nodesToConnect[ 1 ] = -1;
-        connectedRowsIndex = 1;
+
+        if (node1or2 == 0) {
+            node1or2 = 1;
+            nodesToConnect[ 0 ] = function;
+            nodesToConnect[ 1 ] = -1;
+            connectedRowsIndex = 1;
+        } else {
+            nodesToConnect[ 1 ] = function;
+            
+            //connectedRowsIndex = 0;
+        }
 
         // Serial.print("function!!!!!: ");
         // printNodeOrName(function, 1);
@@ -2591,10 +2602,10 @@ int Probing::attachPadsToSettings( int pad ) {
                     gpioChosen = gpioChosen - RP_GPIO_1 + 1;
                 }
 
-                Serial.print( "gpioChosen: " );
-                Serial.println( gpioChosen );
-                Serial.print( "gpioState[gpioChosen]: " );
-                Serial.println( gpioState[ gpioChosen - 1 ] );
+                // Serial.print( "gpioChosen: " );
+                // Serial.println( gpioChosen );
+                // Serial.print( "gpioState[gpioChosen]: " );
+                // Serial.println( gpioState[ gpioChosen - 1 ] );
                 if ( gpioState[ gpioChosen - 1 ] != 0 ) {
                     clearLEDsExceptRails( );
                     // showLEDsCore2 = 2;
@@ -3173,10 +3184,10 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
     int encoderAccumulator = 0;   // Accumulate encoder clicks
     const int clicksToSwitch = 8; // Require 8 clicks to switch
 
-    Serial.print( "GPIO " );
-    Serial.print( gpioChosen );
-    Serial.println( " - Select Input or Output" );
-    Serial.println( "  Encoder: rotate to select, press to confirm" );
+    // Serial.print( "GPIO " );
+    // Serial.print( gpioChosen );
+    // Serial.print( " - Select Input or Output" );
+    // Serial.println( "  Encoder: rotate to select, press to confirm" );
 
     // Initial display
     b.clear( );
@@ -3247,12 +3258,16 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
                 break;
             }
             }
+            blockProbing = 1000;
+            blockProbingTimer = millis( );
         }
 
-        // Check for button press to exit
-        if ( longShortPress( 500 ) == 1 ) {
-            break;
-        }
+        // // Check for button press to exit
+        // if ( longShortPress( 500 ) == 1 ) {
+        //     blockProbing = 1000;
+        //     blockProbingTimer = millis( );
+        //     break;
+        // }
 
         delayMicroseconds( 200 );
     }
@@ -3276,11 +3291,11 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
         }
     }
 
-    Serial.print( "gpioChosen (chooseGPIOinputOutput): " );
-    Serial.print( gpioChosen );
-    Serial.print( " -> " );
-    Serial.println( settingOption == 0 ? "Input" : "Output" );
-    Serial.flush( );
+    // Serial.print( "gpioChosen (chooseGPIOinputOutput): " );
+    // Serial.print( gpioChosen );
+    // Serial.print( " -> " );
+    // Serial.println( settingOption == 0 ? "Input" : "Output" );
+    // Serial.flush( );
 
     clearLEDsExceptRails( );
     b.clear( );
@@ -5090,7 +5105,7 @@ int Probing::longShortPress( int pressLength ) {
     // Rewritten to use state-based API (doesn't consume button events)
     // Returns: -1 = no press, 1 = short remove press, 2 = short connect press,
     //          3 = long remove press, 4 = long connect press
-
+return -1;
     unsigned long clickTimer = millis( );
 
     // Wait for initial button press (check state, don't consume event)

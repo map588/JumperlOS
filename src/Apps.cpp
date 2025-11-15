@@ -90,6 +90,10 @@ String normalizeSpaces( const char* s ) {
     bool lastSpace = false;
     for ( size_t i = 0; i < in.length( ); ++i ) {
         char c = in[ i ];
+        if ( c == '\31' ) {
+            //out += '\n';
+            continue;
+        }
         if ( c == ' ' ) {
             if ( !lastSpace ) {
                 out += ' ';

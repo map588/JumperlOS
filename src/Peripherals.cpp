@@ -80,7 +80,7 @@ ServiceStatus Peripherals::service() {
         showMeasurements(16, 0, 0);
         lastStatus = ServiceStatus::BUSY;
     }
-    //showLEDmeasurements();
+   // showLEDmeasurements();
     
     return lastStatus;
 }

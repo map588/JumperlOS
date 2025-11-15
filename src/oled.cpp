@@ -650,7 +650,14 @@ void oled::clearPrintShow(const char* text, int textSize, bool clear, bool showO
     }
     // Serial.print("wrap: ");
     // Serial.println(wrap);
-    
+
+    // Handle \31 character replacement - keep String alive for function scope
+    String processedText;
+    if (strchr(text, '\31') != nullptr) {
+        processedText = String(text);  // Create a copy
+        processedText.replace('\31', '\n');  // Modify in place (returns void)
+        text = processedText.c_str();
+    }
     // Handle multi-line text
     if (strchr(text, '\n') != nullptr) {
         displayMultiLineText(text, center);
@@ -738,6 +745,13 @@ void oled::displayMultiLineText(const char* text, bool center) {
 
     if ((!oledConnected) && stillWriteToFramebuffer == false ) return;
     int pos = 0;
+
+    String textQuotedStr;
+    if (strchr(text, '\31') != nullptr) {
+        textQuotedStr = String(text);
+        textQuotedStr.replace('\31', '\n');
+        text = textQuotedStr.c_str();
+    }
     
     // Split by newlines
     while (pos < textStr.length()) {
@@ -855,6 +869,13 @@ void oled::print(const char* s) {
     if (currentTextSize > 2) {
         currentTextSize = 2;
         setFontForSize(currentFontFamily, currentTextSize);
+    }
+    
+    String processedStr;
+    if (strchr(s, '\31') != nullptr) {
+        processedStr = String(s);
+        processedStr.replace('\31', '\n');
+        s = processedStr.c_str();
     }
     
     display.print(s);
@@ -1018,6 +1039,12 @@ void oled::printSmallTextLine(const char* text, int line, bool clear) {
     display.clearDisplay();
   }
   
+  String textStr;
+  if (String(text).indexOf('\31') != -1) {
+    textStr = String(text);
+    textStr.replace('\31', '\n');
+    text = textStr.c_str();
+  }
   // Store current font before changing
   const GFXfont* savedFont = currentFont;
   FontFamily savedFamily = currentFontFamily;
