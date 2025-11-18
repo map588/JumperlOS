@@ -145,6 +145,7 @@ enum actionCategories getActionCategory(int menuPosition);
 float getActionFloat(int menuPosition, int rail = -1);
 int getActionInt(int min, int max, int currentValue = -1);
 String getActionString(int maxLength = 32);
+String getActionBitmap();
 
 char* findSubMenuString(int menuPosition, int selection);
 

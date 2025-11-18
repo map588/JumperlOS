@@ -664,8 +664,17 @@ void SingleCharCommands::initializeCommands() {
     registerCommand('w', "wavegen",
         "Wavegen test.",
         cmd_wavegen, MENU_DEBUG, CAT_ADVANCED);
+
+    registerCommand('t', "print text from terminal",
+        "Print text from terminal.",
+        cmd_printTextFromTerminal, MENU_DEBUG, CAT_ADVANCED);
 }
 
+
+CommandResult cmd_printTextFromTerminal(char c, const String& line) {
+    OLEDprintFromTerminal();
+    return CMD_DONT_SHOW_MENU;
+}
 // ============================================================================
 // Command Callback Implementations
 // ============================================================================

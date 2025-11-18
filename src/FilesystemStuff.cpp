@@ -18,6 +18,9 @@ extern class oled oled;
 // eKilo editor integration
 #include "EkiloEditor.h"
 
+// Bitmap editor integration
+#include "BitmapEditor.h"
+
 // States integration for slot file preview
 #include "States.h"
 
@@ -242,6 +245,20 @@ FileType FileManager::getFileType( const String& filename ) {
         return FILE_TYPE_COLORS;
     } else if ( lower.endsWith( ".txt" ) || lower.endsWith( ".md" ) || lower.endsWith( ".readme" ) ) {
         return FILE_TYPE_TEXT;
+    } else if (  lower.endsWith( ".bmp" ) || lower.endsWith( ".bin" ) ) {
+        return FILE_TYPE_BITMAP;
+    } else if ( lower.endsWith( ".png" ) || lower.endsWith( ".jpg" ) || lower.endsWith( ".jpeg" ) || lower.endsWith( ".gif" ) || lower.endsWith( ".tiff" ) || lower.endsWith( ".ico" ) || lower.endsWith( ".webp" ) ) {
+        return FILE_TYPE_IMAGE;
+    } else if ( lower.endsWith( ".bb" ) || lower.endsWith( ".led" ) ) {
+        return FILE_TYPE_LED;
+    } else if ( lower.endsWith( ".mp3" ) || lower.endsWith( ".wav" ) || lower.endsWith( ".ogg" ) || lower.endsWith( ".flac" ) || lower.endsWith( ".aac" ) || lower.endsWith( ".m4a" ) || lower.endsWith( ".m4b" ) || lower.endsWith( ".m4p" ) || lower.endsWith( ".m4v" ) || lower.endsWith( ".m4b" ) || lower.endsWith( ".m4p" ) || lower.endsWith( ".m4v" ) || lower.endsWith( ".m4b" ) || lower.endsWith( ".m4p" ) || lower.endsWith( ".m4v" ) ) {
+        return FILE_TYPE_AUDIO;
+    } else if ( lower.endsWith( ".mp4" ) || lower.endsWith( ".mov" ) || lower.endsWith( ".avi" ) || lower.endsWith( ".mkv" ) || lower.endsWith( ".webm" ) || lower.endsWith( ".wmv" ) || lower.endsWith( ".flv" ) || lower.endsWith( ".mpeg" ) || lower.endsWith( ".mpg" ) || lower.endsWith( ".m4v" ) || lower.endsWith( ".m4b" ) || lower.endsWith( ".m4p" ) || lower.endsWith( ".m4v" ) || lower.endsWith( ".m4b" ) || lower.endsWith( ".m4p" ) || lower.endsWith( ".m4v" ) ) {
+        return FILE_TYPE_VIDEO;
+    } else if ( lower.endsWith( ".pdf" ) || lower.endsWith( ".doc" ) || lower.endsWith( ".docx" ) || lower.endsWith( ".xls" ) || lower.endsWith( ".xlsx" ) || lower.endsWith( ".ppt" ) || lower.endsWith( ".pptx" ) ) {
+        return FILE_TYPE_DOCUMENT;
+    } else if ( lower.endsWith( ".zip" ) || lower.endsWith( ".rar" ) || lower.endsWith( ".7z" ) || lower.endsWith( ".tar" ) || lower.endsWith( ".gz" ) || lower.endsWith( ".bz2" ) || lower.endsWith( ".xz" ) || lower.endsWith( ".iso" ) || lower.endsWith( ".dmg" ) || lower.endsWith( ".pkg" ) || lower.endsWith( ".deb" ) || lower.endsWith( ".rpm" ) || lower.endsWith( ".msi" ) || lower.endsWith( ".exe" ) || lower.endsWith( ".app" ) || lower.endsWith( ".dmg" ) || lower.endsWith( ".pkg" ) || lower.endsWith( ".deb" ) || lower.endsWith( ".rpm" ) || lower.endsWith( ".msi" ) || lower.endsWith( ".exe" ) || lower.endsWith( ".app" ) ) {
+        return FILE_TYPE_ARCHIVE;
     }
     return FILE_TYPE_UNKNOWN;
 }
@@ -262,6 +279,20 @@ String FileManager::getFileIcon( FileType type ) {
         return "☊";
     case FILE_TYPE_COLORS:
         return "⎃";
+    case FILE_TYPE_BITMAP:
+        return "🁝";
+    case FILE_TYPE_IMAGE:
+        return "🀥";
+    case FILE_TYPE_LED:
+        return "☄︎";
+    case FILE_TYPE_AUDIO:
+        return "♒︎";
+    case FILE_TYPE_VIDEO:
+        return "🀕";
+    case FILE_TYPE_DOCUMENT:
+        return "🀆";
+    case FILE_TYPE_ARCHIVE:
+        return "🁣";
     default:
         return "⍺";
     }
@@ -695,6 +726,27 @@ void FileManager::showCurrentListing( bool showHeader ) {
         case FILE_TYPE_COLORS:
             color = FileColors::COLORS;
             break;
+        case FILE_TYPE_BITMAP:
+            color = FileColors::BITMAP;
+            break;
+        case FILE_TYPE_IMAGE:
+            color = FileColors::IMAGE;
+            break;
+        case FILE_TYPE_LED:
+            color = FileColors::LED;
+            break;
+        case FILE_TYPE_AUDIO:
+            color = FileColors::AUDIO;
+            break;
+        case FILE_TYPE_VIDEO:
+            color = FileColors::VIDEO;
+            break;
+        case FILE_TYPE_DOCUMENT:
+            color = FileColors::DOCUMENT;
+            break;
+        case FILE_TYPE_ARCHIVE:
+            color = FileColors::ARCHIVE;
+            break;
         case FILE_TYPE_UNKNOWN:
             color = FileColors::TEXT;
             break;
@@ -966,6 +1018,20 @@ bool FileManager::deleteFile( const String& filename ) {
 }
 
 bool FileManager::editFile( const String& filename ) {
+    // Check if this is a bitmap file (.bin or .bmp)
+    String lower = filename;
+    lower.toLowerCase();
+    
+    if (lower.endsWith(".bin") || lower.endsWith(".bmp")) {
+        // Launch bitmap editor
+        changeTerminalColor( FileColors::STATUS, false );
+        Serial.println( "\n\n\rOpening " + filename + " in bitmap editor..." );
+        changeTerminalColor( -1, false ); // Reset colors
+        
+        return launchBitmapEditor(filename);
+    }
+    
+    // Regular text file - use eKilo
     changeTerminalColor( FileColors::STATUS, false );
     Serial.println( "\n\n\rOpening " + filename + " in text editor..." );
     changeTerminalColor( -1, false ); // Reset colors
@@ -1668,14 +1734,31 @@ void FileManager::updateFileListDisplay( ) {
         case FILE_TYPE_NODEFILES:
             color = FileColors::NODEFILES;
             break;
-        case FILE_TYPE_COLORS:
-            color = FileColors::COLORS;
+        case FILE_TYPE_BITMAP:
+            color = FileColors::BITMAP;
             break;
-        case FILE_TYPE_UNKNOWN:
-            color = FileColors::TEXT;
+        case FILE_TYPE_IMAGE:
+            color = FileColors::IMAGE;
+            break;
+        case FILE_TYPE_LED:
+            color = FileColors::LED;
+            break;
+        case FILE_TYPE_AUDIO:
+            color = FileColors::AUDIO;
+            break;
+        case FILE_TYPE_VIDEO:
+            color = FileColors::VIDEO;
+            break;
+        case FILE_TYPE_DOCUMENT:
+            color = FileColors::DOCUMENT;
+            break;
+        case FILE_TYPE_ARCHIVE:
+            color = FileColors::ARCHIVE;
+            break;
+        default:
+            color = FileColors::UNKNOWN;
             break;
         }
-
         changeTerminalColor( color, false );
 
         // Special handling for ".." entry

@@ -17,7 +17,14 @@ enum FileType {
     FILE_TYPE_JSON = 4,
     FILE_TYPE_DIRECTORY = 5,
     FILE_TYPE_NODEFILES = 6,
-    FILE_TYPE_COLORS = 7
+    FILE_TYPE_COLORS = 7,
+    FILE_TYPE_BITMAP = 8,
+    FILE_TYPE_IMAGE = 9,
+    FILE_TYPE_LED = 10,
+    FILE_TYPE_AUDIO = 11,
+    FILE_TYPE_VIDEO = 12,
+    FILE_TYPE_DOCUMENT = 13,
+    FILE_TYPE_ARCHIVE = 14
 };
 
 // File entry structure
@@ -46,6 +53,13 @@ struct FileColors {
     static const int HEADER = 38;        // Bright green
     static const int STATUS = 226;       // Bright yellow
     static const int ERROR = 196;        // Red
+    static const int BITMAP = 199;       // Pink
+    static const int IMAGE = 57;         // purple
+    static const int LED = 206;          // light blue
+    static const int AUDIO = 123;        // light blue
+    static const int VIDEO = 214;        // light green
+    static const int DOCUMENT = 117;     // light yellow
+    static const int ARCHIVE = 117;      // light yellow
 };
 
 class FileManager {

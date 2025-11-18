@@ -11,6 +11,7 @@
 
 extern struct config jumperlessConfig;
 // Forward declarations of nested structs
+struct firmware;
 struct hardware;
 struct dacs;
 struct debug;
@@ -23,6 +24,11 @@ struct serial_2;
 struct top_oled;
 
 struct config {
+    struct firmware {
+        char last_version[16] = "";  // Last firmware version that was run
+        bool files_provisioned = false;  // Whether files have been provisioned for this version
+    } firmware;
+
     struct hardware {
         int generation = 5;
         int revision = 5;

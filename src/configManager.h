@@ -20,6 +20,11 @@ void loadConfig(void);
 void saveConfig(void);
 void resetConfigToDefaults(int clearCalibration = 0, int clearHardware = 0);
 
+// Firmware versioning and file provisioning
+bool checkAndHandleFirmwareUpdate(void);
+void provisionFirmwareFiles(void);
+bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsigned int dataLen);
+
 // File operations
 void updateConfigFromFile(const char* filename);
 void saveConfigToFile(const char* filename);
@@ -37,7 +42,8 @@ void parseCommaSeparatedBools(const char* str, bool* array, int maxValues);
 bool parseBool(const char* str);
 float parseFloat(const char* str);
 int parseInt(const char* str);
-int parseFont(const char* str);
+int parseFont(const char* str);                // Now reads from fontList in oled.cpp
+const char* getFontString(int fontFamily);     // Get font name from FontFamily enum
 int parseSerialPort(const char* str);
 int parseDumpFormat(const char* str);
 
@@ -62,40 +68,8 @@ extern const char* arbitraryFunctionStrings[];
 
 // Generic struct for mapping string to int value
 
-// struct font fontList[] = {
-//   { &Eurostile_Next_LT_Com_Light_Extended6pt7b, "Eurostl", "Eurostile" },
-//   { &BerkeleyMono6pt7b, "Berkley", "Berkeley" },
-//   { &JumperlessLowerc12pt7b, "Jumprls", "Jumperless" },
-//   { &Jokerman8pt7b, "Jokermn", "Jokerman" },
-// };
-const StringIntEntry fontTable[] = {
-    {"eurostile", 0},
-    {"eurostl", 0},
-    {"jokerman", 1},
-    {"jokermn", 1},
-    {"comicsans", 2},
-    {"comicsns", 2},
-    {"courier", 3},
-    {"couriernew", 3},
-    {"science", 4},
-    {"newscience", 4},
-    {"scienceext", 5},
-    {"sciext", 5},
-    {"andale", 6},
-    {"andalemono", 6},
-    {"andlmno", 6},
-    {"freemono", 7},
-    {"fremno", 7},
-    {"mono", 6},
-    {"iosevka", 8},
-    {"iosevkar", 8},
-    {"iosevkaregular", 8},
-    {"berkeleymono", 9},
-    {"berkmono", 9},
-    {"pragmatism", 10},
-    {"pragmtsm", 10}
-};
-const int fontTableSize = sizeof(fontTable) / sizeof(fontTable[0]);
+// REMOVED: Font table now reads directly from fontList in oled.cpp
+// This eliminates duplicate data and ensures config always matches available fonts
 // Table for parseBool
 const StringIntEntry boolTable[] = {
     {"true", 1},

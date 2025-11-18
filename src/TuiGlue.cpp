@@ -180,7 +180,9 @@ namespace {
 
   void cbToggleOLED() {
   if (jumperlessConfig.top_oled.enabled == 0) {
-    oled.init(); oled.show(); jumperlessConfig.top_oled.enabled = 1;
+    oled.init(); 
+    oled.show(); 
+    jumperlessConfig.top_oled.enabled = 1;
     oled.clearPrintShow("OLED Set ON", 1, true, true, true, -1, -1, 1500);
   } else {
     oled.clearPrintShow("OLED Set OFF", 1, true, true, true, -1, -1, 1500);

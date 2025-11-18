@@ -116,7 +116,7 @@ ServiceStatus ProbeButton::service( ) {
             // else: Keep block active to prevent bounce re-trigger
         } else {
             // Not blocked, clear everything
-            blockProbeButton = 10;
+            blockProbeButton = 0;
             blockProbeButtonTimer = 0;
         }
 
@@ -201,9 +201,9 @@ ServiceStatus ProbeButton::service( ) {
 }
 
 /**
- * @brief Get button press event (consumes the event)
+ * @brief Get button press event (consumes the event if consume is true)
  */
-int ProbeButton::getButtonPress( ) {
+int ProbeButton::getButtonPress( bool consume) {
     int press = buttonPress;
 
     if ( press != 0 ) {
@@ -211,7 +211,9 @@ int ProbeButton::getButtonPress( ) {
         blockProbeButtonTimer = millis( );
     }
 
-    buttonPress = 0; // Clear after reading
+    if ( consume ) {
+        buttonPress = 0; // Clear after reading
+    }
     return press;
 }
 
@@ -347,53 +349,73 @@ Probing::Probing( ) {
  */
 void Probing::handleProbeButtonActions( ) {
     extern unsigned long startupTimers[];
-    extern int probeToggle( void );        // Defined in Peripherals.cpp
-    extern class ProbeButton& probeButton; // High-frequency button service
+    extern int probeToggle( int buttonState );  // Defined in Peripherals.cpp
+    extern class ProbeButton& probeButton;      // High-frequency button service
+
+    // Check if we're in a blocking period FIRST - don't consume events if blocked
+    if ( blockProbeButton > 0 && ( millis( ) - blockProbeButtonTimer < blockProbeButton ) ) {
+        return; // Still blocked, don't process or consume button events
+    }
+    
+    // Now consume the button press event (only if not blocked)
+    int buttonPress = probeButton.getButtonPress( );
 
     // Handle probe toggle when brightenedNet is active
     if ( brightenedNet > 0 ) {
-        int probeToggleResult = probeToggle( );
+        int probeToggleResult = probeToggle( buttonPress );
         if ( probeToggleResult >= 0 && brightenedNet > 0 ) {
+            // Successfully toggled GPIO - block button and return to prevent probe mode
             blockProbeButton = gpioToggleFrequency;
             blockProbeButtonTimer = millis( );
+            return; // Don't continue to probe mode logic
+        } else if ( probeToggleResult == -4 ) {
+            // GPIO output - remove button should just unhighlight
+            highlighting.clearHighlighting( );
+            blockProbeButton = 800;
+            blockProbeButtonTimer = millis( );
+            return; // Don't enter probe mode
         } else if ( probeToggleResult == -5 ) {
-            if ( firstConnection > 0 ) {
+            // Regular net with no GPIO output - handle warning logic for disconnection
+            if ( brightenedNode > 0 ) {
+                // Check if we're already warning this net (second press)
                 if ( warningNet == brightenedNet && warningTimeout > 0 ) {
-                    // Trigger probe clear mode
+                    // Second press - trigger probe clear mode
                     warningTimeout = 0;
                     connectOrClearProbe = 0;
                     showProbeLEDs = 2;
                     probingTimer = millis( );
                     startupTimers[ 0 ] = millis( );
 
-                    // Run probe mode directly instead of goto (it handles button state internally)
-                    probeMode( 0, firstConnection );
+                    // Run probe mode directly (it handles button state internally)
+                    probeMode( 0, brightenedNode );
                     highlighting.clearHighlighting( );
 
                 } else {
-                    highlighting.warnNet( firstConnection );
+                    // First press - show warning animation
+                    highlighting.warnNet( brightenedNode );
                     warningTimeout = 1500;
                     warningTimer = millis( );
+                    // Use shorter block time to allow second press quickly
+                    blockProbeButton = 400;
+                    blockProbeButtonTimer = millis( );
+                    return; // Don't enter probe mode on first press
                 }
             }
+            // Second press executed - use longer block after entering probe mode
             blockProbeButton = 800;
             blockProbeButtonTimer = millis( );
         } else if ( probeToggleResult == -3 || probeToggleResult == -2 ) {
             blockProbeButton = 800;
             blockProbeButtonTimer = millis( );
-        } else if ( probeToggleResult == -4 ) {
-            firstConnection = -1;
-            blockProbeButton = 800;
-            blockProbeButtonTimer = millis( );
         }
+        
     } else {
         firstConnection = -1;
     }
 
-    // Check for button press events from high-frequency ProbeButton service
-    int buttonPress = probeButton.getButtonPress( );
+    // Use the button press event we got at the start of the function
 
-    if ( buttonPress != 0 ) {
+    if ( buttonPress != 0) {
         // Button was pressed - stored state changed
         lastProbeButton = buttonPress;
 
@@ -1294,7 +1316,7 @@ restartProbingNoPrint:
             // Serial.flush();
 
             encoderButtonState = IDLE;
-            lastButtonEncoderState = IDLE;
+            lastButtonEncoderState = PRESSED;
             blockProbeButton = 1000;
             blockProbeButtonTimer = millis( );
             ProbeButton::getInstance( ).clearButtonState( );
@@ -3812,7 +3834,7 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 
     // Use the global interval if available; otherwise default to 50ms.
     // unsigned long switchPositionCheckInterval = 200;
-    unsigned long interval_ms = 1500; // switchPositionCheckInterval;
+
 
     if ( checkingButton == 1 ) {
         Serial.println( "checkingButton" );
@@ -3821,7 +3843,7 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 
     // Timing gate: exit early if interval hasn't elapsed.
     unsigned long now_ms = millis( );
-    if ( ( now_ms - last_check_millis ) < interval_ms ) {
+    if ( ( now_ms - last_check_millis ) < ProbeSwitch::getInstance().interval_ms ) {
         return switchPosition;
     }
     last_check_millis = now_ms;

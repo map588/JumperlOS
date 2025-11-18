@@ -2,6 +2,7 @@
 #define APPS_H
 
 #include <Arduino.h>
+#include "ImagesApp.h"
 #include <stdint.h>
 
 #define NUM_APPS 30

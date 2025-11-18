@@ -114,7 +114,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.5.0.5"; //! remember to update this
+const char firmwareVersion[] = "5.5.0.7"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -136,6 +136,9 @@ void setup( ) {
     startupTimers[ 0 ] = millis( );
 
     loadConfig( );
+
+    // Check for firmware updates and provision new files if needed
+    checkAndHandleFirmwareUpdate();
 
     configLoaded = 1;
     startupTimers[ 1 ] = millis( );
@@ -270,7 +273,7 @@ startupTimers[ 4 ] = millis( );
 
     // Wire up system services
     termSerialService.setTermControl( &Jerial );
-   // oledService.setOledDisplay( &oled );
+    //oledService.setOledDisplay( &oled );
 
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
@@ -457,7 +460,7 @@ menu:
         //Jerial.addInputSource(JerialEndpoint::SERIAL1);
 
         // runApp(-1, "jdi MIPdisplay");
-
+        printColorJogoSmall();
 
         firstLoop = 0;
 
@@ -514,6 +517,8 @@ menu:
         // USBSer2.print( "printMenu" );
         // USBSer2.flush( );
 
+        
+
 #if debug_startup_timers == 1
         for ( int i = 1; i < 16; i++ ) {
             Serial.print( "startupTimer[" );
@@ -537,16 +542,17 @@ menu:
 #endif
     }
 
-    if ( configChanged == true && millis( ) > 3000 ) {
-        Jerial.print( "config changed, saving..." );
-        saveConfig( );
-        // Serial.println("\r                             \rconfig saved!\n\r");
-        // Serial.flush();
-        configChanged = false;
-    }
+
 
 dontshowmenu:
 
+if ( configChanged == true && millis( ) > 3000 ) {
+    Jerial.print( "config changed, saving..." );
+    saveConfig( );
+    // Serial.println("\r                             \rconfig saved!\n\r");
+    // Serial.flush();
+    configChanged = false;
+}
     connectFromArduino = '\0';
     firstConnection = -1;
     core1passthrough = 1;
@@ -572,6 +578,16 @@ dontshowmenu:
         // Service all registered subsystems via jOSmanager
         // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services
         jOS.serviceAll( );
+
+
+
+        // if (configChanged == true) {
+        //     Jerial.print("config changed, saving...");
+        //     saveConfig();
+        //     // Serial.println("\r                             \rconfig saved!\n\r");
+        //     // Serial.flush();
+        //     configChanged = false;
+        // }
 
         // CRITICAL: Handle Arduino flashing (DTR pulse detection) on Core 0
         // This MUST run on Core 0 because it can call refreshLocalConnections()

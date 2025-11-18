@@ -156,8 +156,73 @@ int parseArbitraryFunction(const char* str) {
     return parseFromTable(arbitraryFunctionTable, arbitraryFunctionTableSize, str);
 }
 
+// Parse font name from config - reads directly from fontList in oled.cpp
+// Returns FontFamily enum value (0-10)
 int parseFont(const char* str) {
-    return parseFromTable(fontTable, fontTableSize, str);
+    // Convert to lowercase for case-insensitive matching
+    char lower[32];
+    strncpy(lower, str, sizeof(lower)-1);
+    lower[sizeof(lower)-1] = '\0';
+    toLower(lower);
+    
+    // Search through fontList for matching shortName or longName
+    for (int i = 0; i < numFonts; i++) {
+        char shortLower[32];
+        char longLower[32];
+        
+        // Check shortName (case-insensitive)
+        strncpy(shortLower, fontList[i].shortName, sizeof(shortLower)-1);
+        shortLower[sizeof(shortLower)-1] = '\0';
+        toLower(shortLower);
+        if (strcmp(lower, shortLower) == 0) {
+            return (int)fontList[i].family;  // Return FontFamily enum value
+        }
+        
+        // Check longName (case-insensitive, spaces removed)
+        strncpy(longLower, fontList[i].longName, sizeof(longLower)-1);
+        longLower[sizeof(longLower)-1] = '\0';
+        toLower(longLower);
+        
+        // Remove spaces from longName for flexible matching
+        char* src = longLower;
+        char* dst = longLower;
+        while (*src) {
+            if (*src != ' ') {
+                *dst++ = *src;
+            }
+            src++;
+        }
+        *dst = '\0';
+        
+        if (strcmp(lower, longLower) == 0) {
+            return (int)fontList[i].family;  // Return FontFamily enum value
+        }
+    }
+    
+    // Fallback: try parsing as integer (backwards compatibility)
+    int value = atoi(str);
+    if (value >= 0 && value <= FONT_PRAGMATISM) {
+        return value;
+    }
+    
+    // Default to Eurostile if nothing matches
+    return FONT_EUROSTILE;
+}
+
+// Get font name string from FontFamily value - reads directly from fontList
+// Returns shortName for the given FontFamily enum value
+const char* getFontString(int fontFamily) {
+    // Find the first font in fontList that matches this family
+    for (int i = 0; i < numFonts; i++) {
+        if (fontList[i].family == (FontFamily)fontFamily) {
+            return fontList[i].shortName;  // Return shortName for config display
+        }
+    }
+    
+    // Fallback to numeric string
+    static char buf[16];
+    snprintf(buf, sizeof(buf), "%d", fontFamily);
+    return buf;
 }
 
 int parseSerialPort(const char* str) {
@@ -463,9 +528,31 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "show_in_terminal") == 0) jumperlessConfig.top_oled.show_in_terminal = parseSerialPort(value);
             else if (strcmp(key, "font") == 0) jumperlessConfig.top_oled.font = parseFont(value);
             else if (strcmp(key, "startup_message") == 0) {
-                // Copy string value, ensuring null termination and max length
-                strncpy(jumperlessConfig.top_oled.startup_message, value, 32);
-                jumperlessConfig.top_oled.startup_message[32] = '\0';
+                // Strip leading/trailing whitespace and quotes
+                const char* start = value;
+                size_t valueLen = strlen(value);
+                if (valueLen == 0) {
+                    jumperlessConfig.top_oled.startup_message[0] = '\0';
+                } else {
+                    const char* end = value + valueLen - 1;
+                    
+                    // Skip leading whitespace and quotes
+                    while (*start && (isspace((unsigned char)*start) || *start == '"' || *start == '\'')) {
+                        start++;
+                    }
+                    
+                    // Skip trailing whitespace and quotes
+                    while (end > start && (isspace((unsigned char)*end) || *end == '"' || *end == '\'')) {
+                        end--;
+                    }
+                    
+                    // Calculate length and copy
+                    size_t len = (size_t)(end - start + 1);
+                    if (len > 32) len = 32;
+                    
+                    strncpy(jumperlessConfig.top_oled.startup_message, start, len);
+                    jumperlessConfig.top_oled.startup_message[len] = '\0';
+                }
             }
         }
     }
@@ -546,7 +633,7 @@ void updateConfigFromFile(const char* filename) {
             
             // Save the updated config with current firmware version
             saveConfig();
-            Serial.println("Config updated with new firmware version.");
+            //Serial.println("Config updated with new firmware version.");
             
             // Set flag to run calibration later if there are new calibration options
             if (hasNewCalibrationOptions) {
@@ -581,6 +668,7 @@ void updateConfigFromFile(const char* filename) {
         resetConfigToDefaults(1, 1);  // Clear calibration and hardware too, we'll restore them
         
         // Restore all saved values (this preserves user settings while adding any new defaults)
+        jumperlessConfig.firmware = savedConfig.firmware;
         jumperlessConfig.hardware = savedConfig.hardware;
         jumperlessConfig.dacs = savedConfig.dacs;
         jumperlessConfig.debug = savedConfig.debug;
@@ -616,6 +704,12 @@ void saveConfigToFile(const char* filename) {
     // Write config metadata section
     file.println("[config]");
     file.print("firmware_version = "); file.print(firmwareVersion); file.println(";");
+    file.println();
+
+    // Write firmware tracking section
+    file.println("[firmware]");
+    file.print("last_version = "); file.print(jumperlessConfig.firmware.last_version); file.println(";");
+    file.print("files_provisioned = "); file.print(jumperlessConfig.firmware.files_provisioned ? 1:0); file.println(";");
     file.println();
 
     // Write hardware version section
@@ -768,6 +862,155 @@ void saveConfig(void) {
    // }
 }
 
+// Firmware versioning and file provisioning system
+// ================================================
+
+/**
+ * Helper function to write embedded binary data to filesystem
+ * Returns true on success, false on failure
+ */
+bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsigned int dataLen) {
+    // Check if file already exists
+    if (FatFS.exists(filename)) {
+        return true; // Already provisioned
+    }
+    
+    // Write file
+    File file = FatFS.open(filename, "w");
+    if (!file) {
+        Serial.print("Failed to create file: ");
+        Serial.println(filename);
+        return false;
+    }
+    
+    // Write data from PROGMEM
+    uint8_t buffer[128];
+    unsigned int bytesWritten = 0;
+    while (bytesWritten < dataLen) {
+        unsigned int chunkSize = min(sizeof(buffer), dataLen - bytesWritten);
+        memcpy_P(buffer, data + bytesWritten, chunkSize);
+        size_t written = file.write(buffer, chunkSize);
+        if (written != chunkSize) {
+            Serial.print("Write error for: ");
+            Serial.println(filename);
+            file.close();
+            return false;
+        }
+        bytesWritten += written;
+    }
+    
+    file.close();
+    Serial.print("Provisioned: ");
+    Serial.println(filename);
+    return true;
+}
+
+/**
+ * Provision embedded image files to filesystem
+ * This is called on first boot or firmware update
+ */
+void provisionFirmwareFiles(void) {
+    Serial.println("\n\r╔═══════════════════════════════════════╗");
+    Serial.println("║  Provisioning Firmware Files          ║");
+    Serial.println("╚═══════════════════════════════════════╝\n\r");
+    
+    // Provision image files
+    provisionEmbeddedFile("images/bubbleJumpThin.bin", bubbleJumpThin_bin, bubbleJumpThin_bin_len);
+    provisionEmbeddedFile("images/bubbleJump.bin", bubbleJump_bin, bubbleJump_bin_len);
+    provisionEmbeddedFile("images/jogo32h.bin", jogo32h_file_bin, jogo32h_file_bin_len);
+    provisionEmbeddedFile("images/bubbleJumpThiccWhite.bin", bubbleJumpThiccWhite_bin, bubbleJumpThiccWhite_bin_len);
+    
+    // Mark as provisioned
+    jumperlessConfig.firmware.files_provisioned = true;
+    
+    Serial.println("\n\rFile provisioning complete!\n\r");
+}
+
+/**
+ * Perform one-time config migrations for this firmware version
+ * Only changes config values if they haven't been modified from defaults
+ */
+void performConfigMigrations(const char* oldVersion, const char* newVersion) {
+    Serial.print("Migrating config from ");
+    Serial.print(oldVersion);
+    Serial.print(" to ");
+    Serial.println(newVersion);
+    
+    // Example: Set default startup image to bubbleJumpThin.bin if startup_message is empty
+    if (strlen(jumperlessConfig.top_oled.startup_message) == 0) {
+        strncpy(jumperlessConfig.top_oled.startup_message, "images/bubbleJumpThin.bin", 
+                sizeof(jumperlessConfig.top_oled.startup_message) - 1);
+        jumperlessConfig.top_oled.startup_message[sizeof(jumperlessConfig.top_oled.startup_message) - 1] = '\0';
+        Serial.println("  - Set default startup image to images/bubbleJumpThin.bin");
+    }
+    
+    // Add more migrations here as needed for future firmware updates
+    // Example:
+    // if (strcmp(oldVersion, "5.5.0.4") <= 0) {
+    //     // Migration for versions <= 5.5.0.4
+    // }
+}
+
+/**
+ * Check if firmware was updated and handle provisioning
+ * Should be called during startup after config is loaded
+ * Returns true if firmware was updated
+ */
+bool checkAndHandleFirmwareUpdate(void) {
+    const char* currentVersion = firmwareVersion;
+    const char* lastVersion = jumperlessConfig.firmware.last_version;
+    
+    // First boot (no version stored) or firmware was updated
+    bool isFirstBoot = (strlen(lastVersion) == 0);
+    bool wasUpdated = !isFirstBoot && (strcmp(lastVersion, currentVersion) != 0);
+    
+    if (isFirstBoot) {
+        Serial.println("\n\r╔═══════════════════════════════════════╗");
+        Serial.println("║  First Boot Detected                  ║");
+        Serial.println("╚═══════════════════════════════════════╝\n\r");
+        
+        // Provision files
+        provisionFirmwareFiles();
+        
+        // Set default config values for first boot
+        if (strlen(jumperlessConfig.top_oled.startup_message) == 0) {
+            strncpy(jumperlessConfig.top_oled.startup_message, "images/bubbleJumpThin.bin", 
+                    sizeof(jumperlessConfig.top_oled.startup_message) - 1);
+            jumperlessConfig.top_oled.startup_message[sizeof(jumperlessConfig.top_oled.startup_message) - 1] = '\0';
+        }
+        
+    } else if (wasUpdated) {
+        Serial.println("\n\r╔═══════════════════════════════════════╗");
+        Serial.println("║  Firmware Update Detected             ║");
+        Serial.println("╚═══════════════════════════════════════╝\n\r");
+        Serial.print("Previous version: ");
+        Serial.println(lastVersion);
+        Serial.print("Current version:  ");
+        Serial.println(currentVersion);
+        Serial.println();
+        
+        // Provision new files (will skip existing ones)
+        provisionFirmwareFiles();
+        
+        // Perform config migrations (respects user changes)
+        performConfigMigrations(lastVersion, currentVersion);
+    }
+    
+    // Update stored version if changed
+    if (isFirstBoot || wasUpdated) {
+        strncpy(jumperlessConfig.firmware.last_version, currentVersion, 
+                sizeof(jumperlessConfig.firmware.last_version) - 1);
+        jumperlessConfig.firmware.last_version[sizeof(jumperlessConfig.firmware.last_version) - 1] = '\0';
+        
+        // Save config with new version
+        saveConfig();
+        
+        Serial.println("\n\rFirmware version updated in config.\n\r");
+    }
+    
+    return wasUpdated || isFirstBoot;
+}
+
 void loadConfig(void) {
     updateConfigFromFile("/config.txt");
 
@@ -783,6 +1026,7 @@ void loadConfig(void) {
 
 int parseSectionName(const char* sectionName) {
     if (strcmp(sectionName, "config") == 0) return -2; // Special case for config section
+    else if (strcmp(sectionName, "firmware") == 0) return -3; // Firmware tracking section
     else if (strcmp(sectionName, "hardware") == 0) return 0;
     else if (strcmp(sectionName, "dacs") == 0) return 1;
     else if (strcmp(sectionName, "debug") == 0) return 2;
@@ -1057,7 +1301,7 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         if (pasteable == true) Serial.print("`[top_oled] ");
         Serial.print("show_in_terminal = "); Serial.print(getStringFromTable(jumperlessConfig.top_oled.show_in_terminal, serialPortTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[top_oled] ");
-        Serial.print("font = "); Serial.print(getStringFromTable(jumperlessConfig.top_oled.font, fontTable)); Serial.println(";");
+        Serial.print("font = "); Serial.print(getFontString(jumperlessConfig.top_oled.font)); Serial.println(";");
         if (pasteable == true) Serial.print("`[top_oled] ");
         Serial.print("startup_message = "); Serial.print(jumperlessConfig.top_oled.startup_message); Serial.println("");
     }
@@ -1197,8 +1441,8 @@ void printSettingChange(const char* section, const char* key, const char* oldVal
         oldName = getStringFromTable(atoi(oldValue), arbitraryFunctionTable);
         newName = getStringFromTable(atoi(newValue), arbitraryFunctionTable);
     } else if (strcmp(section, "top_oled") == 0 && strcmp(key, "font") == 0) {
-        oldName = getStringFromTable(atoi(oldValue), fontTable);
-        newName = getStringFromTable(atoi(newValue), fontTable);
+        oldName = getFontString(atoi(oldValue));
+        newName = getFontString(atoi(newValue));
     } else if (strcmp(section, "top_oled") == 0 && strcmp(key, "show_in_terminal") == 0) {
         oldName = getStringFromTable(atoi(oldValue), serialPortTable);
         newName = getStringFromTable(atoi(newValue), serialPortTable);
@@ -1801,7 +2045,11 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
     char oldValue[64] = {0};
      //! this is a place to add new config options
     // Get old value
-    if (strcmp(section, "hardware") == 0) {
+    if (strcmp(section, "firmware") == 0) {
+        if (strcmp(key, "last_version") == 0) sprintf(oldValue, "%s", jumperlessConfig.firmware.last_version);
+        else if (strcmp(key, "files_provisioned") == 0) sprintf(oldValue, "%d", jumperlessConfig.firmware.files_provisioned);
+    }
+    else if (strcmp(section, "hardware") == 0) {
         if (strcmp(key, "generation") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.generation);
         else if (strcmp(key, "revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.revision);
         else if (strcmp(key, "probe_revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.probe_revision);
@@ -1912,7 +2160,14 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
     }
     // Update the config structure
     // Accept string names for enums/bools and convert to int
-    if (strcmp(section, "hardware") == 0) {
+    if (strcmp(section, "firmware") == 0) {
+        if (strcmp(key, "last_version") == 0) {
+            strncpy(jumperlessConfig.firmware.last_version, value, sizeof(jumperlessConfig.firmware.last_version) - 1);
+            jumperlessConfig.firmware.last_version[sizeof(jumperlessConfig.firmware.last_version) - 1] = '\0';
+        }
+        else if (strcmp(key, "files_provisioned") == 0) jumperlessConfig.firmware.files_provisioned = parseBool(value);
+    }
+    else if (strcmp(section, "hardware") == 0) {
         if (strcmp(key, "generation") == 0) jumperlessConfig.hardware.generation = parseInt(value);
         else if (strcmp(key, "revision") == 0) jumperlessConfig.hardware.revision = parseInt(value);
         else if (strcmp(key, "probe_revision") == 0) jumperlessConfig.hardware.probe_revision = parseInt(value);
@@ -2022,18 +2277,40 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "font") == 0) {
             jumperlessConfig.top_oled.font = parseFont(value);
             
-            // Apply font from config value
-            if (jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= 10) {
-                extern int configValueToFontIndex[];
-                int fontIndex = configValueToFontIndex[jumperlessConfig.top_oled.font];
-                oled.setFont(fontIndex);
+            // Apply font from config value (config value IS the FontFamily enum)
+            if (jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= FONT_PRAGMATISM) {
+                FontFamily family = (FontFamily)jumperlessConfig.top_oled.font;
+                oled.setFontForSize(family, 2);  // Use size 2 (large/12pt) as default
+                oled.currentFontFamily = family;
             }
             oled.show();
         }
         else if (strcmp(key, "startup_message") == 0) {
-            // Copy string value, ensuring null termination and max length
-            strncpy(jumperlessConfig.top_oled.startup_message, value, 32);
-            jumperlessConfig.top_oled.startup_message[32] = '\0';
+            // Strip leading/trailing whitespace and quotes
+            const char* start = value;
+            size_t valueLen = strlen(value);
+            if (valueLen == 0) {
+                jumperlessConfig.top_oled.startup_message[0] = '\0';
+            } else {
+                const char* end = value + valueLen - 1;
+                
+                // Skip leading whitespace and quotes
+                while (*start && (isspace((unsigned char)*start) || *start == '"' || *start == '\'')) {
+                    start++;
+                }
+                
+                // Skip trailing whitespace and quotes
+                while (end > start && (isspace((unsigned char)*end) || *end == '"' || *end == '\'')) {
+                    end--;
+                }
+                
+                // Calculate length and copy
+                size_t len = (size_t)(end - start + 1);
+                if (len > 32) len = 32;
+                
+                strncpy(jumperlessConfig.top_oled.startup_message, start, len);
+                jumperlessConfig.top_oled.startup_message[len] = '\0';
+            }
         }
     }
     saveConfigToFile("/config.txt");

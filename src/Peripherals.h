@@ -31,7 +31,7 @@ public:
     ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
     
     // Member variables (previously globals)
-    unsigned long gpioToggleFrequency = 0;
+    unsigned long gpioToggleFrequency = 25;
     int showReadings = 0;
     
     // Public methods
@@ -160,7 +160,7 @@ void printGPIOState(void);
 // gpio = -1 means toggle the brightened net
 // lowHigh = 2 means toggle 
 int toggleGPIO(int lowHigh = 2, int gpio = -1, int onlyCheck = 0);
-int probeToggle(void);
+int probeToggle(int buttonState = -1);
 int handleHighlights(int probeReading);
 void erattaClearGPIO(int gpio = -1);
 

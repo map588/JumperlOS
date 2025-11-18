@@ -86,6 +86,7 @@ String menuLines[] = {
   "-Probe  \31Calib",
   "-JDI MIP\31display",
   "-DMX \31Serial",  
+  "-OLED \31Images",
 
   //"-Show   Image",
  
@@ -112,7 +113,7 @@ String menuLines[] = {
  //   "-Logic  Analyzr",
 
    "-Scan",
-   "-I2C    Scan",
+   "-I2C    \31Scan",
 
    "Slots",
    "-$Load$",
@@ -121,11 +122,6 @@ String menuLines[] = {
    "--*0**1**2**3**4**5**6**7*>s",
    "-$Save to$",
    "--*0**1**2**3**4**5**6**7*>s",
-
-
-
-
-
 
 
 
@@ -167,7 +163,7 @@ String menuLines[] = {
       "---*32**64**128**256**Custom*",
       "---->i(16)(2048)",
       "-$StartUp\31Messge$",
-      "--*Edit**Clear*",
+      "--*Text**Bitmap**Clear*",
       "--->t(32)",
       "-Show \31in Term",
       "--*On**Off*",

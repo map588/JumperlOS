@@ -76,6 +76,7 @@ struct app apps[ NUM_APPS ] = {
     { "JDI MIPdisplay", 12, 1, jdiMIPdisplay },
     { "DOOM", 16, 1, playDoom },
     { "DMX Serial", 13, 1, DMXSerialApp },
+    { "OLED Images", 14, 1, imagesAppLauncher },
     // others can remain uninitialized (works=0)
 };
 

@@ -1397,7 +1397,7 @@ int handleHighlights( int probeReading ) {
     }
 
     if ( brightenedNet > 0 ) {
-        return probeToggle( );
+        return probeToggle( -1 );  // -1 = read from hardware
     }
 
     return probeReading;
@@ -1407,9 +1407,12 @@ int highlightInteractable[ 10 ] = { RP_GPIO_0, RP_GPIO_1, RP_GPIO_2,
                                     RP_GPIO_3, RP_GPIO_4, RP_GPIO_5,
                                     RP_GPIO_6, RP_GPIO_7, RP_GPIO_8 };
 
-int probeToggle( void ) {
+int probeToggle( int buttonState ) {
 
-    int buttonState = ProbeButton::getInstance().getButtonState();
+    // If buttonState is -1, read from hardware (legacy behavior)
+    if ( buttonState == -1 ) {
+        buttonState = ProbeButton::getInstance().getButtonState();
+    }
 
     if ( buttonState == 0 ) {
         return -1; // no button pressed
@@ -1449,7 +1452,7 @@ int probeToggle( void ) {
         char oledString[ 30 ];
         sprintf( oledString, "DAC %d\n%0.2f V", brightenedNet == 4 ? 0 : 1,
                  newVoltage );
-        oled.clearPrintShow( oledString, 2, true, true, true );
+        oled.clearPrintShow( oledString, 1, true, true, true );
 
         return brightenedNet; // Return the DAC net number
     }
@@ -1471,11 +1474,13 @@ int probeToggle( void ) {
 
         if ( brightenedNet > 0 ) {
             int toggleResult = toggleGPIO( 2, -1, 1 );
-            if ( toggleResult != -2 ) { //-2 means gpio is not connected
-                brightenedNet = 0;
-                return -4; // no gpio connected - disconnect button pressed
+            if ( toggleResult != -2 ) { //-2 means gpio is not found/connected
+                // GPIO output is connected - return -4 to unhighlight it
+                // Note: Don't clear brightenedNet here, let caller handle it
+                return -4; // gpio output is connected - disconnect button pressed
             } else {
-                return -5; // gpio is connected - disconnect button pressed
+                // No GPIO output on this net - this is a regular net that might have connections
+                return -5; // no gpio output - disconnect button pressed on regular net
             }
         } else {
 

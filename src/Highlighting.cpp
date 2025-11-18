@@ -167,8 +167,10 @@ void Highlighting::clearHighlighting( int updateLEDs) {
 
     firstConnection = -1;
 
-    // Reset highlight timer
+    // Reset timers
     highlightTimer = 0;
+    warningTimeout = 0;
+    warningTimer = 0;
    // leds.clear( );
 
     // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
@@ -977,7 +979,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                     }
                     snprintf( oledBuffer, sizeof( oledBuffer ), "%s\n %+.2f mA",
                               baseName,  current );
-                    oled.clearPrintShow( oledBuffer, 1, true, true, true );
+                    oled.clearPrintShow( oledBuffer, 2, true, true, true );
 
                     lastSenseCurrentPrinted = current;
                     lastSenseVoltagePrinted = voltage;
@@ -1034,7 +1036,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                                  ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
                                  baud, bits, parityChar, stopbits );
                         oled.clear( );
-                        oled.clearPrintShow( oledString, 1, true, true, true );
+                        oled.clearPrintShow( oledString, 2, true, true, true );
                         oled.show( );
                     }
                     lastPrintedNet = netHighlighted;
@@ -1072,7 +1074,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                         Serial.flush();
                
                         snprintf( oledString, sizeof( oledString ), "%s\n%d KHz", line, i2cSpeed/1000 );
-                        oled.clearPrintShow( oledString, 1, true, true, true );
+                        oled.clearPrintShow( oledString, 2, true, true, true );
                        // oled.show( );
                     }
                     lastPrintedNet = netHighlighted;
@@ -1095,7 +1097,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                         char oledString[ 32 ];
                         sprintf( oledString, "PWM\n%0.0f Hz  %0.0f%%", freq, (duty) );
                         //oled.clear( );
-                        oled.clearPrintShow( oledString, 1, true, true, true );
+                        oled.clearPrintShow( oledString, 2, true, true, true );
                         //oled.show( );
                     }
                     lastPrintedNet = netHighlighted;
@@ -1115,7 +1117,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                         char oledString[ 32 ];
                         sprintf( oledString, "%s", fname );
                         //oled.clear( );
-                        oled.clearPrintShow( oledString, 1, true, true, true );
+                        oled.clearPrintShow( oledString, 2, true, true, true );
                         //oled.show( );
                     }
                     lastPrintedNet = netHighlighted;
@@ -1142,7 +1144,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                             Serial.flush( );
 
                             char oledString[ 30 ];
-                            sprintf( oledString, "ADC %d\n  %0.2f V", adc, (float)readAdcVoltage( adc, 32 ) );
+                            sprintf( oledString, "ADC %d\n%0.2f V", adc, (float)readAdcVoltage( adc, 32 ) );
 
                             //oled.clear();
                             oled.clearPrintShow( oledString, 2, true, true, true );
@@ -1185,9 +1187,9 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                             }
 
                             char oledString[ 30 ];
-                            sprintf( oledString, "GPIO %d input\n %s", gpioInputNumber + 1, stateString );
+                            sprintf( oledString, "GPIO %d in\n %s", gpioInputNumber + 1, stateString );
                             //oled.clear( );
-                            oled.clearPrintShow( oledString, 1, true, true, true );
+                            oled.clearPrintShow( oledString, 2, true, true, true );
                             //oled.show( );
                             // Serial.println();
                         }
@@ -1218,9 +1220,9 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                             }
 
                             char oledString[ 30 ];
-                            sprintf( oledString, "GPIO %d output\n %s", gpioOutputNumber + 1, stateString );
+                            sprintf( oledString, "GPIO %d out\n %s", gpioOutputNumber + 1, stateString );
 
-                            oled.clearPrintShow( oledString, 1, true, true, true );
+                            oled.clearPrintShow( oledString, 2, true, true, true );
 
                             // Serial.println();
                         }
@@ -1241,7 +1243,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                         char oledString[ 30 ];
                         sprintf( oledString, "Net %d       \n  row %s", netHighlighted, definesToChar( brightenedNode, 0 ) );
                         //oled.clear( );
-                        oled.clearPrintShow( oledString, 1, true, true, true );
+                        oled.clearPrintShow( oledString, 2, true, true, true );
                         //oled.show( );
 
                         // for (int i = 0; i < 8 - length; i++) {
@@ -1318,7 +1320,7 @@ int Highlighting::checkForReadingChanges( void ) {
         if ( fabs( currentAdcReading - prevAdcReading ) > 0.009 ) {
             prevAdcReading = currentAdcReading;
 
-            sprintf( oledString, "ADC %d\n  %0.2f V", adcChannel, currentAdcReading );
+            sprintf( oledString, "ADC %d\n%0.2f V", adcChannel, currentAdcReading );
             // oled.clear();
             oled.clearPrintShow( oledString, 2, true, true, true );
             // oled.show();
@@ -1359,11 +1361,11 @@ int Highlighting::checkForReadingChanges( void ) {
 
             sprintf( oledString, "GPIO %d input\n %s", gpioInputNumber + 1, stateString );
             // oled.clear();
-            oled.clearPrintShow( oledString, 1, true, true, true );
+            oled.clearPrintShow( oledString, 2, true, true, true );
             // oled.show();
 
             Serial.print( "\r                                 \r" );
-            Serial.printf( "GPIO %d input %s", gpioInputNumber + 1, stateString );
+            Serial.printf( "GPIO %d in %s", gpioInputNumber + 1, stateString );
             Serial.flush( );
 
             displayUpdated = true;
@@ -1387,9 +1389,9 @@ int Highlighting::checkForReadingChanges( void ) {
                 strcpy( stateString, "high" );
             }
 
-            sprintf( oledString, "GPIO %d output\n %s", gpioOutputNumber + 1, stateString );
+            sprintf( oledString, "GPIO %d out\n %s", gpioOutputNumber + 1, stateString );
             // oled.clear();
-            oled.clearPrintShow( oledString, 1, true, true, true );
+            oled.clearPrintShow( oledString, 2, true, true, true );
             // oled.show();
 
             displayUpdated = true;
@@ -1489,7 +1491,7 @@ int Highlighting::checkForReadingChanges( void ) {
                 const char* baseName = globalState.connections.nets[ showReadingNet ].name;
                 char nameBuffer[ 16 ];
                 if ( baseName == nullptr || baseName[ 0 ] == '\0' ) {
-                    snprintf( nameBuffer, sizeof( nameBuffer ), "Nerrrr %d", showReadingNet );
+                    snprintf( nameBuffer, sizeof( nameBuffer ), "Net %d", showReadingNet );
                     baseName = nameBuffer;
                 }
                 if (showReadingNet == currentSenseState.plusNet) {
@@ -1511,7 +1513,7 @@ int Highlighting::checkForReadingChanges( void ) {
                 
                 char oledBuffer[ 48 ];
                 snprintf( oledBuffer, sizeof( oledBuffer ), "%s\n %+.2f mA", baseName, current );
-                oled.clearPrintShow( oledBuffer, 1, true, true, true );
+                oled.clearPrintShow( oledBuffer, 2, true, true, true );
                 
                 displayUpdated = true;
             }

@@ -10,6 +10,7 @@
 #include "FatFS.h"
 #include "FileParsing.h"
 #include "Graphics.h"
+#include "ImagesApp.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
@@ -23,7 +24,7 @@
 #include "configManager.h"
 #include "menuTree.h"
 #include "oled.h"
-
+#include "BitmapEditor.h"
 #include "Highlighting.h"
 
 // External declarations
@@ -56,7 +57,7 @@ Menus::Menus() {
  */
 ServiceStatus Menus::service() {
     lastStatus = ServiceStatus::IDLE;
-    
+//dont allow menus to run if the bitmap editor is active
     // Check if menu is active
     if (inClickMenu != 0) {
         lastStatus = ServiceStatus::BLOCKING;
@@ -432,6 +433,11 @@ char chosenOptions[ 20 ][ 40 ];
 int previousMenuSelection[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
 int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
+    // Don't allow menus to run if the bitmap editor is active
+    if ( BitmapEditor::getInstance().active ) {
+        return -1;
+    }
+    
     if ( menuLineIndex < 2 ) {
         // b.clear();
         b.print( "No menu file", 0x0f0400, 0xFFFFFF, 0, -1, 0 );
@@ -849,8 +855,9 @@ int getMenuSelection( void ) {
                 Serial.print( menuLine.c_str( ) );
                 Serial.flush( );
                 menuLine.replace( "±", "+-" );
-
-                oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
+                if (numberOfChoices[menuPosition] == 0) {
+               oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
+                }
             } else if ( actions[ menuPosition ] == 6 ) {
                 // Font preview - display at native size (1x) using the specific font
                 int fontIndex = oled.setFont( menuLines[ menuPosition ], 0 );
@@ -1062,8 +1069,14 @@ int getMenuSelection( void ) {
                 Serial.print( menuLine.c_str( ) );
                 Serial.flush( );
                 menuLine.replace( "±", "+-" );
+                
+                // if (actions[menuPosition+1] != 0) {
+
+                if (numberOfChoices[menuPosition] == 0) {
 
                 oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
+                }
+//                }
             } else if ( actions[ menuPosition ] == 6 ) {
                 // Font preview - display at native size (1x) using the specific font
                 int fontIndex = oled.setFont( menuLines[ menuPosition ], 0 );
@@ -1197,9 +1210,16 @@ int getMenuSelection( void ) {
                 // Text input action: -->t(maxLength)
                 // Check if user selected "Edit" (trigger input) or "Clear" (skip input)
                 String selectedOptionText = String(currentAction.fromAscii[subSelection]);
+                // Serial.print("DEBUG: selectedOptionText BEFORE toLowerCase: '");
+                // Serial.print(selectedOptionText);
+                // Serial.println("'");
                 selectedOptionText.toLowerCase();
+                // Serial.print("DEBUG: selectedOptionText AFTER toLowerCase: '");
+                // Serial.print(selectedOptionText);
+                // Serial.println("'");
+                // Serial.flush();
                 
-                if (selectedOptionText.indexOf("edit") != -1) {
+                if (selectedOptionText.indexOf("text") != -1) {
                     // Parse max length from menu string
                     String menuStr = menuLines[ menuPosition ];
                     int actionIndex = menuStr.indexOf( '>' );
@@ -1220,8 +1240,23 @@ int getMenuSelection( void ) {
                     
                     // Get the string from user via rotary encoder
                     currentAction.stringValue = getActionString( maxLength );
-                } else {
+                } else if (selectedOptionText.indexOf("bitmap") != -1) {
+                    // Get the bitmap from user via rotary encoder
+                    encoderButtonState = IDLE;
+                    lastButtonEncoderState = IDLE;
+                    //Serial.println("getActionBitmap");
+                    //Serial.flush();
+                    String bitmapFilename = getActionBitmap();
+                    Serial.println(bitmapFilename);
+                    Serial.flush();
+                    if (bitmapFilename.length() > 0) {
+                        currentAction.stringValue = bitmapFilename;
+                    } else {
+                        currentAction.stringValue = "";
+                    }
+                } else if (selectedOptionText.indexOf("clear") != -1) {
                     // "Clear" selected - don't trigger text input, just clear in doMenuAction
+                    
                     currentAction.stringValue = "";
                 }
                 
@@ -1430,7 +1465,7 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
     }
 
    // Serial.println("selectSubmenuOption");
-
+//delay(5000);
     int shiftStars = -2;
     int lastOption = 0;
     for ( int i = 0; i < 8; i++ ) {
@@ -1452,8 +1487,29 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
         }
 
         if ( optionStart != -1 && optionEnd != -1 ) {
+            // Serial.print("DEBUG substring: menuPos=");
+            // Serial.print(menuPosition);
+            // Serial.print(" optionStart=");
+            // Serial.print(optionStart);
+            // Serial.print(" optionEnd=");
+            // Serial.print(optionEnd);
+            // Serial.print(" shiftStars=");
+            // Serial.print(shiftStars);
+            // Serial.print(" menuLine='");
+            // Serial.print(menuLines[menuPosition]);
+            // Serial.print("'");
+            // Serial.println();
+            
             subMenuStrings[ i ] = menuLines[ menuPosition ].substring(
                 optionStart - shiftStars, optionEnd - shiftStars - 1 );
+                
+            // Serial.print("DEBUG extracted subMenuStrings[");
+            // Serial.print(i);
+            // Serial.print("]='");
+            // Serial.print(subMenuStrings[i]);
+            // Serial.println("'");
+            // Serial.flush();
+            
             if ( subMenuStrings[ i ].length( ) > maxMenuOptionLength ) {
                 menuOptionLengths[ i ] = subMenuStrings[ i ].length( );
                 if ( strcasecmp( subMenuStrings[ i ].c_str( ), "max " ) == 0 ) {
@@ -1573,7 +1629,7 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
         delayMicroseconds( 1000 );
 
         if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance().getButtonState() == 1) {
-            Serial.println("selectSubmenuOption: HELD");
+            ///Serial.println("selectSubmenuOption: HELD");
             b.clear( );
             SlotManager& mgr = SlotManager::getInstance( );
             if ( mgr.isPreviewMode( ) ) {
@@ -1618,8 +1674,9 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
 
             } else {
                 if ( alreadySelected == 0 ) {
+                    // Store the option text - use optionSelected as index to match how it's read later
                     subMenuStrings[ optionSelected ].toCharArray(
-                        currentAction.fromAscii[ currentAction.connectIndex ], 10, 0 );
+                        currentAction.fromAscii[ optionSelected ], 10, 0 );
                 }
             }
 
@@ -2042,6 +2099,9 @@ int yesNoMenu( unsigned long timeout ) {
     uint32_t backgroundColor = 0x000002;
     int firstTime = 1;
     unsigned long startTime = millis( );
+    encoderButtonState = IDLE;
+    lastButtonEncoderState = IDLE;
+    
     while ( optionSelected == -1 ) {
         if ( millis( ) - startTime > timeout ) {
             inClickMenu = 0;
@@ -2461,7 +2521,7 @@ float getActionFloat( int menuPosition, int rail ) {
 
     while ( true ) {
         jOS.serviceCritical();
-        rotaryEncoderStuff();
+        //rotaryEncoderStuff();
         
         // Check for cancellation (long press) - check FIRST on every iteration
         if ( encoderButtonState == HELD || ProbeButton::getInstance().getButtonState() == 1 ) {
@@ -2733,12 +2793,12 @@ float getActionFloat( int menuPosition, int rail ) {
             
             // Update global state immediately
             if ( rail == 0 ) {
-                globalState.power.topRail = currentChoice;
-                globalState.power.bottomRail = currentChoice;
+                globalState.power.topRail = roundf(currentChoice * 10.0f) / 10.0f;
+                globalState.power.bottomRail = roundf(currentChoice * 10.0f) / 10.0f;
             } else if ( rail == 1 ) {
-                globalState.power.topRail = currentChoice;
+                globalState.power.topRail = roundf(currentChoice * 10.0f) / 10.0f;
             } else if ( rail == 2 ) {
-                globalState.power.bottomRail = currentChoice;
+                globalState.power.bottomRail = roundf(currentChoice * 10.0f) / 10.0f;
             }
             
             // Apply voltage to hardware (only for safe range)
@@ -3362,6 +3422,26 @@ String getActionString(int maxLength) {
     return String("");
 }
 
+/**
+ * @brief Get bitmap filename from user via interactive image selector
+ * 
+ * Launches an interactive image browser that displays images from /images folder.
+ * User can scroll through images using rotary encoder and select one.
+ * 
+ * Features:
+ * - Rotary encoder to browse through images
+ * - Live preview of each image on OLED
+ * - Image info overlay (filename, counter)
+ * - Short click to select image
+ * - Long press to cancel
+ * 
+ * @return Selected image filename (empty on cancel)
+ */
+String getActionBitmap() {
+    // Call the interactive image selector from ImagesApp
+    return selectImageFromMenu();
+}
+
 //>n nodes 1 //>b baud 2 //>v voltage 3 //>i integer 7 //>t text 8
 
 // subSelection
@@ -3422,7 +3502,7 @@ int doMenuAction( int menuPosition, int selection ) {
         int menuIdx = currentAction.previousMenuPositions[ i ];
         if ( menuIdx != -1 ) {
             String cleaned = menuLines[ menuIdx ];
-            cleaned.replace( "\31", "" );
+            //cleaned.replace( "\31", "" );
             menuLines[ menuIdx ] = cleaned;
         }
     }
@@ -3571,9 +3651,9 @@ int doMenuAction( int menuPosition, int selection ) {
 
         switch ( currentAction.from[ 0 ] ) {
         case 0: {
-            setTopRail( currentAction.analogVoltage, 1, 1 );
+            setTopRail( currentAction.analogVoltage, 1, 0 );
             delayMicroseconds( 100 );
-            setBotRail( currentAction.analogVoltage, 1, 1 );
+            setBotRail( currentAction.analogVoltage, 1, 0 );
             // oled.clearPrintShow("Both Rails \n\rset to ", 1, true, false, false);
             String voltageString = "Both Rails set to\n\r" + String(currentAction.analogVoltage) + " V";
             oled.clearPrintShow(voltageString, 2, true, true, true);
@@ -3581,14 +3661,14 @@ int doMenuAction( int menuPosition, int selection ) {
         }
         case 1: {
             // delay(100);
-            setTopRail( currentAction.analogVoltage, 1, 1 );
+            setTopRail( currentAction.analogVoltage, 1, 0 );
             String voltageString = "Top Rail set to\n\r" + String(currentAction.analogVoltage) + " V";
             oled.clearPrintShow(voltageString, 2, true, true, true);
             break;
         }
         case 2: {
             // delay(100);
-            setBotRail( currentAction.analogVoltage, 1, 1 );
+            setBotRail( currentAction.analogVoltage, 1, 0 );
             String voltageString = "Bottom Rail set to\n\r" + String(currentAction.analogVoltage) + " V";
             oled.clearPrintShow(voltageString, 2, true, true, true);
             break;
@@ -3983,34 +4063,35 @@ int doMenuAction( int menuPosition, int selection ) {
             configChanged = true;
             // Reinitialize display with new dimensions - init() now properly handles this
             oled.init();
-            saveConfig();
+           // saveConfig();
         } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Height" ) != -1 ) {
             jumperlessConfig.top_oled.height = currentAction.integerValue;
             oled.displayHeight = currentAction.integerValue;
             configChanged = true;
             // Reinitialize display with new dimensions - init() now properly handles this
             oled.init();
-            saveConfig();
+         //  saveConfig();
         } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Rotation" ) != -1 ) {
             jumperlessConfig.top_oled.rotation = currentAction.integerValue;
             configChanged = true;
             // Apply rotation immediately without full reinit
             display.setRotation(jumperlessConfig.top_oled.rotation);
-            saveConfig();
+           // saveConfig();
         }
         
         // Apply text input value to config based on menu context (action 8)
-        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "StartUpMessge" ) != -1 ) {
+        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "StartUp" ) != -1 && 
+             menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Messge" ) != -1 ) {
             // Check if user selected "Edit" or "Clear"
             String selectedOption = String(currentAction.fromAscii[0]);
             selectedOption.toLowerCase();
             
-            if (selectedOption.indexOf("edit") != -1) {
+            if (selectedOption.indexOf("text") != -1) {
                 // User wants to edit - the text input already ran, so save the value
                 strncpy(jumperlessConfig.top_oled.startup_message, currentAction.stringValue.c_str(), 32);
                 jumperlessConfig.top_oled.startup_message[32] = '\0'; // Ensure null termination
                 configChanged = true;
-                saveConfig();
+            //    saveConfig();
                 
                 // Show confirmation on OLED and serial
                 oled.clear();
@@ -4023,17 +4104,54 @@ int doMenuAction( int menuPosition, int selection ) {
                 Serial.print("\n\rStartup message saved: ");
                 Serial.println(jumperlessConfig.top_oled.startup_message);
                // delay(1500); // Show confirmation briefly
+            } else if (selectedOption.indexOf("bitmap") != -1) {
+                // User selected a bitmap image
+                if (currentAction.stringValue.length() > 0) {
+                    // Store the bitmap filename in startup_message
+                    strncpy(jumperlessConfig.top_oled.startup_message, currentAction.stringValue.c_str(), 32);
+                    jumperlessConfig.top_oled.startup_message[32] = '\0'; // Ensure null termination
+                    configChanged = true;
+                    
+                    
+                    // Show confirmation on OLED by displaying the selected image
+                    oled.clear();
+                    //oled.setTextSize(1);
+                    ///
+                    //oled.clearPrintShow("Startup Image\nSelected:", 1, true, true, true);
+                    //delay(1000);
+                    
+                    // Display the selected bitmap as preview
+                    String fullPath =  currentAction.stringValue;
+                    if (loadAndDisplayImage(currentAction.stringValue.c_str())) {
+                        //delay(1500); // Show preview
+                    } else {
+                        Serial.println("Error loading image");
+                        Serial.println(currentAction.stringValue);
+                        Serial.println(fullPath);
+                        Serial.flush();
+                        oled.clearPrintShow("Error loading\nimage", 1, true, true, true);
+                       //delay(1500);
+                    }
+                    
+                    Serial.print("\n\rStartup bitmap saved: ");
+                    Serial.println(jumperlessConfig.top_oled.startup_message);
+               //     saveConfig();
+                } else {
+                    // User canceled selection
+                    Serial.println("\n\rBitmap selection canceled");
+                }
             } else if (selectedOption.indexOf("clear") != -1) {
                 // User wants to clear - set to empty string
                 strcpy(jumperlessConfig.top_oled.startup_message, "");
                 configChanged = true;
-                saveConfig();
-                
+             //   saveConfig();
+             //   
                 // Show confirmation with logo
                 oled.clear();
-                oled.setTextSize(1);
+               // oled.setTextSize(1);
                 oled.clearPrintShow("Startup Message\nCleared", 1, true, true, true);
-                delay(1000);
+               // delay(1000);
+               //oled.dumpFrameBuffer();
                 
                 // Show the logo that will appear on startup
                 oled.init();
@@ -4047,7 +4165,8 @@ int doMenuAction( int menuPosition, int selection ) {
     
         // LEDbrightness = (brightnessOptionMap[currentAction.from[0]]);
         // LEDbrightnessSpecial = (specialBrightnessOptionMap[currentAction.from[0]]);
-        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "ConnectOn Boot" ) != -1 ) {
+        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Connect" ) != -1 && 
+             menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "On Boot" ) != -1 ) {
             if ( currentAction.from[ 0 ] == 0 ) {
                 jumperlessConfig.top_oled.lock_connection = 1;
                 globalState.config.oledLockConnection = 1;
@@ -4074,7 +4193,8 @@ int doMenuAction( int menuPosition, int selection ) {
             oled.setTextSize( 1 );
             configChanged = true;
 
-        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Lock   Connect" ) != -1 ) {
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Lock" ) != -1 && 
+                    menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Connect"  ) == -1 ) {
             if ( currentAction.from[ 0 ] == 0 ) {
                 jumperlessConfig.top_oled.lock_connection = 1;
                 globalState.config.oledLockConnection = 1;
@@ -4084,7 +4204,7 @@ int doMenuAction( int menuPosition, int selection ) {
             }
             oled.clear( );
             oled.setTextSize( 1 );
-            oled.print( "Lock \nConnection: " );
+            oled.print( "Lock: " );
             oled.setTextSize( 2 );
             if ( jumperlessConfig.top_oled.lock_connection == 1 ) {
                 oled.print( "On" );
@@ -4099,24 +4219,14 @@ int doMenuAction( int menuPosition, int selection ) {
                 jumperlessConfig.top_oled.enabled = 1;
                 showLEDsCore2 = 1;
                 oled.init( );
-                oled.clear( );
-                oled.setTextSize( 1 );
-                oled.print( "OLED Connected" );
-                oled.show( );
+                oled.clearPrintShow("OLED Connected", 2, true, true, true);
                 delay( 300 );
-                oled.clear( );
-                oled.showJogo32h( );
-                oled.show( );
-            } else {
-                oled.clear( );
-                oled.setTextSize( 1 );
-                oled.print( "Disconnecting OLED" );
-                oled.show( );
-                delay( 300 );
-                oled.clear( );
-                oled.show( );
-                oled.disconnect( );
-                jumperlessConfig.top_oled.enabled = 0;
+                // oled.clearPrintShow("Disconnecting OLED", 2, true, true, true);
+                // delay( 300 );
+                oled.clear();
+                oled.showJogo32h();
+                //oled.disconnect( );
+               // jumperlessConfig.top_oled.enabled = 0;
             }
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Font" ) != -1 ) {
             // Use the font name directly from menu
@@ -4125,27 +4235,14 @@ int doMenuAction( int menuPosition, int selection ) {
             // Set the font by name (this will search fontList)
             int fontIndex = oled.setFont( fontMenuName, 0 );
             
-            // Map font name to simplified config value (0-14)
-            int configFontValue = 0; // Default to Eurostile
-            if ( fontMenuName.indexOf( "Eurostl" ) != -1 ) configFontValue = 0;
-            else if ( fontMenuName.indexOf( "Jokermn" ) != -1 ) configFontValue = 1;
-            else if ( fontMenuName.indexOf( "ComicSns" ) != -1 ) configFontValue = 2;
-            else if ( fontMenuName.indexOf( "Courier" ) != -1 ) configFontValue = 3;
-            else if ( fontMenuName.indexOf( "Science" ) != -1 && fontMenuName.indexOf( "Ext" ) == -1 ) configFontValue = 4;
-            else if ( fontMenuName.indexOf( "SciExt" ) != -1 ) configFontValue = 5;
-            else if ( fontMenuName.indexOf( "AndlMno" ) != -1 ) configFontValue = 6;
-            else if ( fontMenuName.indexOf( "FreMno" ) != -1 ) configFontValue = 7;
-            else if ( fontMenuName.indexOf( "BerkMono" ) != -1 ) configFontValue = 8;
-            else if ( fontMenuName.indexOf( "BerkUni" ) != -1 ) configFontValue = 9;
-            else if ( fontMenuName.indexOf( "Pragmtsm" ) != -1 ) configFontValue = 10;
-            else if ( fontMenuName.indexOf( "IosevkaR" ) != -1 ) configFontValue = 11;
-            else if ( fontMenuName.indexOf( "IosevkaM" ) != -1 ) configFontValue = 12;
-            else if ( fontMenuName.indexOf( "IosevkaL" ) != -1 ) configFontValue = 13;
-            else if ( fontMenuName.indexOf( "IosevkaT" ) != -1 ) configFontValue = 14;
+            // Use parseFont() to get the correct FontFamily enum value
+            // This ensures consistency with config system (single source of truth)
+            int configFontValue = parseFont(fontMenuName.c_str());
             
-            // Update config with simplified font value
+            // Update config with FontFamily enum value
             jumperlessConfig.top_oled.font = configFontValue;
             configChanged = true;
+           // saveConfig();
 
             Serial.print( "Font set to: " );
             Serial.print( fontMenuName );
@@ -4153,7 +4250,8 @@ int doMenuAction( int menuPosition, int selection ) {
             Serial.print( configFontValue );
             Serial.println( ")" );
 
-        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Show in Term" ) != -1 ) {
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Show" ) != -1 && 
+                    menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "in Term" ) != -1 ) {
             if ( jumperlessConfig.top_oled.show_in_terminal == 1 ) {
                 jumperlessConfig.top_oled.show_in_terminal = 0;
             } else {

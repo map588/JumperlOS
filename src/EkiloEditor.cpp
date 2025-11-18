@@ -131,7 +131,7 @@ const char* python_keywords[] = {
     // JFS Functions (marked with ||||)
     "open||||", "read||||", "write||||", "close||||", "seek||||", "tell||||", "size||||", "available||||",
     "exists||||", "listdir||||", "mkdir||||", "rmdir||||", "remove||||", "rename||||", "stat||||", "info||||",
-    "SEEK_SET||||", "SEEK_CUR||||", "SEEK_END||||",
+    "SEEK_SET||||", "SEEK_CUR||||", "SEEK_END||||", "nodes_save||||", 
     
     // Basic filesystem functions (marked with ||||)
     "fs_exists||||", "fs_listdir||||", "fs_read||||", "fs_write||||", "fs_cwd||||",

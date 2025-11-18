@@ -460,8 +460,11 @@ ServiceStatus OLEDService::service() {
     lastStatus = ServiceStatus::IDLE;
     
     if (oledDisplay != nullptr) {
+        //Serial.println("OLEDService::oledPeriodic");
         oledDisplay->oledPeriodic();
         lastStatus = ServiceStatus::BUSY;
+    } else {
+        //Serial.println("OLEDService::oledPeriodic oledDisplay is nullptr");
     }
     
     return lastStatus;

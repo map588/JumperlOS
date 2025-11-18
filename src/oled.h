@@ -25,19 +25,28 @@
 #include "fonts/FreeMono4pt7b.h"
 #include "fonts/FreeMono5pt7b.h"
 
-// New fonts - small and large sizes
+// New fonts - granular sizes (5pt to 15pt for smooth scaling)
 #include "fonts/BerkeleyMono8pt7b.h"    
 #include "fonts/BerkeleyMono12pt7b.h"
+#include "fonts/Pragmatism5pt7b.h"
+#include "fonts/Pragmatism6pt7b.h"
+#include "fonts/Pragmatism7pt7b.h"
 #include "fonts/Pragmatism8pt7b.h"
+#include "fonts/Pragmatism9pt7b.h"
+#include "fonts/Pragmatism10pt7b.h"
+#include "fonts/Pragmatism11pt7b.h"
 #include "fonts/Pragmatism12pt7b.h"
 #include "fonts/IosevkaSS08_Regular9pt7b.h"
 #include "fonts/IosevkaSS08_Regular11pt7b.h"
+#include "fonts/IosevkaSS08_Regular12pt7b.h"
+#include "fonts/IosevkaSS08_Regular13pt7b.h"
+#include "fonts/IosevkaSS08_Regular14pt7b.h"
+#include "fonts/IosevkaSS08_Regular15pt7b.h"
 
 // Small fonts for file manager and detailed displays (4-5pt for better readability)
 #include "fonts/ubuntu5pt7b.h"
 #include "fonts/DotGothic16_Regular4pt7b.h"
 #include "fonts/IosevkaSS08_Light5pt7b.h"
-#include "fonts/Pragmatism5pt7b.h"
 #include "fonts/EnvyCodeRNerdFont_Regular5pt7b.h"
 
 //#include "fonts/JumperlessLowerc12pt7b.h"
@@ -111,6 +120,8 @@ struct TextInfo {
     int16_t cursorY;        // Current cursor Y position
 };
 
+void OLEDprintFromTerminal( void );
+
 class oled {
 public:
     oled();
@@ -162,8 +173,12 @@ public:
     void setFont(const GFXfont* font);
     void setFont(FontFamily fontFamily);
     void setFont(int fontIndex);
-    void setFontForSize(FontFamily family, int textSize);
+    void setFontForSize(FontFamily family, int textSize);  // Backwards compatible (textSize 1/2)
+    void setFontPointSize(FontFamily family, uint8_t pointSize);  // New: granular point size control
     String getFontName(FontFamily fontFamily);
+    
+    // Current font point size tracking
+    uint8_t currentPointSize = 12;  // Track current font point size for intelligent scaling
     
     // Simplified display functions
     void clearPrintShow(const char* text, int textSize = 2, bool clear = true, bool show = true, bool center = true, int x_pos = -1, int y_pos = -1, int waitToFinish = 0);
@@ -220,6 +235,7 @@ public:
     void drawText(int16_t x, int16_t y, const char* text);
     void drawHighlightedChar(int16_t x, int16_t y, char c); // Highlight a single character
     void flushFramebuffer();
+    uint8_t* getFramebuffer(); // Get direct access to framebuffer
     
     // Dual framebuffer mode management
     void setMode(OLEDMode mode);
@@ -304,13 +320,56 @@ extern const unsigned char jogo32h[];
 extern const unsigned char logo[];
 extern const unsigned char ColorJumpLogo[];
 
-// Font structure
+// Embedded binary images for filesystem provisioning
+extern const unsigned char bubbleJumpThin_bin[];
+extern const unsigned int bubbleJumpThin_bin_len;
+extern const unsigned char bubbleJump_bin[];
+extern const unsigned int bubbleJump_bin_len;
+extern const unsigned char jogo32h_file_bin[];
+extern const unsigned int jogo32h_file_bin_len;
+extern const unsigned char bubbleJumpThiccWhite_bin[];
+extern const unsigned int bubbleJumpThiccWhite_bin_len;
+
+// Font structure - now includes point size and spacing info for granular control
 struct font {
     const GFXfont* font;
     const char* shortName;
     const char* longName;
     int16_t topRowOffset;  // Y offset to apply when text is on top row with multiple lines
     FontFamily family;
+    uint8_t pointSize;     // Actual point size (5-15pt) for granular scaling
+};
+
+// Per-family font characteristics for intelligent scaling
+struct FontFamilyCharacteristics {
+    FontFamily family;
+    float lineSpacingMultiplier;  // Multiply lineHeight by this (1.0 = normal, 1.2 = 20% more space)
+    int8_t verticalClipTolerance; // Pixels that can be clipped without triggering scaling (for descenders)
+    int8_t horizontalClipTolerance; // Pixels that can be clipped horizontally
+};
+
+// FontManager - Lightweight font lookup system stored in flash
+// Provides granular font scaling with minimal RAM usage
+class FontManager {
+public:
+    // Find best font for family and desired point size
+    // Returns font index, automatically selects closest available size
+    static int getFontForPointSize(FontFamily family, uint8_t desiredPointSize);
+    
+    // Convert old textSize (1/2) to point size for backwards compatibility
+    // Now display-size aware for better scaling
+    static uint8_t textSizeToPointSize(int textSize, int displayHeight = 32);
+    
+    // Find largest font that fits given text width
+    // Returns optimal point size for the text to fit within maxWidth
+    static uint8_t findBestFitPointSize(FontFamily family, const char* text, int16_t maxWidth, uint8_t maxPointSize = 15, uint8_t minPointSize = 5);
+    
+    // Get all available point sizes for a font family (stored in PROGMEM)
+    static void getAvailableSizes(FontFamily family, uint8_t* sizes, int* count);
+    
+private:
+    // Helper: find closest font index for a specific point size
+    static int findClosestFont(FontFamily family, uint8_t pointSize);
 };
 
 // Character bounds structure for returning detailed character metrics
@@ -346,7 +405,6 @@ struct FontMetrics {
 // Font list
 extern struct font fontList[];
 extern int numFonts;
-extern int configValueToFontIndex[];
 
 // Global instance
 extern class oled oled;

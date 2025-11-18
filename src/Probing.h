@@ -35,7 +35,7 @@ public:
     int getButtonState() const { return currentButtonState; }
     //@brief Get the current button press
     //@return 0 = no press, 1 = remove button, 2 = connect button
-    int getButtonPress();
+    int getButtonPress(bool consume = true);
     //@brief Check the probe button hardware
     //@return 0 = neither pressed, 1 = remove button, 2 = connect button
     int checkProbeButtonHardware(void);
@@ -126,6 +126,7 @@ public:
     ServiceStatus service() override;
     const char* getName() const override { return "ProbeSwitch"; }
     ServicePriority getPriority() const override { return ServicePriority::LOW; }
+    unsigned long interval_ms = 1500; // switchPositionCheckInterval;
     
 private:
     ProbeSwitch() = default;
@@ -278,7 +279,7 @@ int switchPosition = -1; // -1 = unknown, 0 = measure, 1 = select
     void calibrateDac0(float target = 3.3);
     
     void probeLEDhandler(void);
-    int probeToggle(void);
+    int probeToggle(int buttonState = -1);  // Note: Currently unused, global function used instead
     
 private:
     Probing();
