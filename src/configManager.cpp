@@ -910,10 +910,12 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
  * This is called on first boot or firmware update
  */
 void provisionFirmwareFiles(void) {
+
+    if (debugFP) {
     Serial.println("\n\r╔═══════════════════════════════════════╗");
     Serial.println("║  Provisioning Firmware Files          ║");
     Serial.println("╚═══════════════════════════════════════╝\n\r");
-    
+    }
     // Provision image files
     provisionEmbeddedFile("images/bubbleJumpThin.bin", bubbleJumpThin_bin, bubbleJumpThin_bin_len);
     provisionEmbeddedFile("images/bubbleJump.bin", bubbleJump_bin, bubbleJump_bin_len);
@@ -923,7 +925,9 @@ void provisionFirmwareFiles(void) {
     // Mark as provisioned
     jumperlessConfig.firmware.files_provisioned = true;
     
+    if (debugFP) {
     Serial.println("\n\rFile provisioning complete!\n\r");
+    }
 }
 
 /**
@@ -931,10 +935,12 @@ void provisionFirmwareFiles(void) {
  * Only changes config values if they haven't been modified from defaults
  */
 void performConfigMigrations(const char* oldVersion, const char* newVersion) {
+    if (debugFP) {
     Serial.print("Migrating config from ");
     Serial.print(oldVersion);
     Serial.print(" to ");
-    Serial.println(newVersion);
+        Serial.println(newVersion);
+    }
     
     // Example: Set default startup image to bubbleJumpThin.bin if startup_message is empty
     if (strlen(jumperlessConfig.top_oled.startup_message) == 0) {
@@ -965,10 +971,11 @@ bool checkAndHandleFirmwareUpdate(void) {
     bool wasUpdated = !isFirstBoot && (strcmp(lastVersion, currentVersion) != 0);
     
     if (isFirstBoot) {
+        if (debugFP) {
         Serial.println("\n\r╔═══════════════════════════════════════╗");
         Serial.println("║  First Boot Detected                  ║");
         Serial.println("╚═══════════════════════════════════════╝\n\r");
-        
+        }
         // Provision files
         provisionFirmwareFiles();
         
@@ -980,6 +987,7 @@ bool checkAndHandleFirmwareUpdate(void) {
         }
         
     } else if (wasUpdated) {
+        if (debugFP) {
         Serial.println("\n\r╔═══════════════════════════════════════╗");
         Serial.println("║  Firmware Update Detected             ║");
         Serial.println("╚═══════════════════════════════════════╝\n\r");
@@ -988,7 +996,7 @@ bool checkAndHandleFirmwareUpdate(void) {
         Serial.print("Current version:  ");
         Serial.println(currentVersion);
         Serial.println();
-        
+        }
         // Provision new files (will skip existing ones)
         provisionFirmwareFiles();
         
@@ -1004,8 +1012,9 @@ bool checkAndHandleFirmwareUpdate(void) {
         
         // Save config with new version
         saveConfig();
-        
+        if (debugFP) {
         Serial.println("\n\rFirmware version updated in config.\n\r");
+        }
     }
     
     return wasUpdated || isFirstBoot;

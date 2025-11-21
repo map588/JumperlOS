@@ -2144,7 +2144,7 @@ int assignedAnimations[MAX_NETS] = {-1};
 
 // int rowAnimations[100] = {0};
 
-void assignRowAnimations(void) {
+void __not_in_flash_func(assignRowAnimations)(void) {
 
   for (int i = 0; i < numberOfNets + 3; i++) {
     assignedAnimations[i] = -1;
@@ -2238,7 +2238,7 @@ void assignRowAnimations(void) {
   //  Jerial.println();
 }
 
-void showRowAnimation(int net) {
+void __not_in_flash_func(showRowAnimation)(int net) {
 
   if (assignedAnimations[net] == -1) {
    // Serial.println("assignedAnimations[net] == -1");
@@ -2254,7 +2254,7 @@ void animateBrightenedRow(int row) {}
 
 
 
-void showRowAnimation(int index, int net) {
+void __not_in_flash_func(showRowAnimation)(int index, int net) {
 
   // net = 0;
 
@@ -2585,7 +2585,7 @@ void showRowAnimation(int index, int net) {
   showSkippedNodes();
 }
 
-void showAllRowAnimations() {
+void __not_in_flash_func(showAllRowAnimations)() {
   // showRowAnimation(2, rowAnimations[1].net);
   // showRowAnimation(2, rowAnimations[2].net);
   // for (int i = 0; i < 10; i++) {
@@ -2864,7 +2864,7 @@ void bread::printMenuReminder(int menuDepth, uint32_t color) {
   }
 }
 
-void bread::printRawRow(uint8_t data, int row, uint32_t color, uint32_t bg,
+void __not_in_flash_func(bread::printRawRow)(uint8_t data, int row, uint32_t color, uint32_t bg,
                         int scale) {
 
   // color = scaleBrightness(color, (menuBrightnessSetting / scale));
@@ -2972,7 +2972,7 @@ void bread::barGraph(int position, int value, int maxValue, int leftRight,
 
 
 */
-void printGraphicsRow(uint8_t data, int row, uint32_t color, uint32_t bg) {
+void __not_in_flash_func(printGraphicsRow)(uint8_t data, int row, uint32_t color, uint32_t bg) {
   uint8_t columnMask[5] = // 'JumperlessFontmap', 500x5px
       {0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001};
 

@@ -1584,7 +1584,7 @@ bool oled::show( int waitToFinish ) {
         dumpFrameBufferQuarterSize( 1 );
     }
     if ( !oledConnected ) {
-        Serial.println( "OLED not connected" );
+        // Serial.println( "OLED not connected" );
         return false;
     }
     display.display( );
@@ -1910,7 +1910,7 @@ void oled::oledPeriodic( ) {
     // return;
 
     if ( millis( ) - lastConnectionCheck > connectionCheckInterval ) {
-        if ( jumperlessConfig.top_oled.lock_connection == 1 ) {
+        if ( jumperlessConfig.top_oled.lock_connection == 1 && !oledUsingHardwiredPins) {
             if ( globalState.hasConnection( jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda ) == true && globalState.hasConnection( jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl ) == true ) {
                 if ( checkConnection( ) == false ) {
                     connect( );
@@ -1920,8 +1920,8 @@ void oled::oledPeriodic( ) {
             }
         }
         lastConnectionCheck = millis( );
-        if ( globalState.hasConnection( jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda ) == true ) {
-            if ( globalState.hasConnection( jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl ) == true ) {
+        if ( globalState.hasConnection( jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda ) == true || oledUsingHardwiredPins ) {
+            if ( globalState.hasConnection( jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl ) == true || oledUsingHardwiredPins ) {
                 if ( checkConnection( ) == false ) {
                     oledConnected = false;
                     if ( connectionRetries < maxConnectionRetries ) {

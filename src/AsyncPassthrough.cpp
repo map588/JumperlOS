@@ -1,3 +1,39 @@
+/**
+ * AsyncPassthrough - Bidirectional UART↔USB bridge with command injection
+ * 
+ * Architecture (complete flow):
+ * 
+ * 1. UART→USB (Arduino sends commands):
+ *    Arduino Serial1 → UART RX (ISR) → ring buffer
+ *    → bridge_uart_to_usb() reads ring buffer
+ *    → Parses <j>command</j> tags
+ *    → Injects command chars to Jerial.injection_buffer
+ *    → Raw data (with tags) → USBSer1 (CDC 1) for debugging
+ *    → Filtered data (tags removed) → Serial (CDC 0) for display
+ * 
+ * 2. Jerial.injection_buffer → Command Processing:
+ *    InjectionBufferStream wraps injection_buffer (automatically strips tags on read)
+ *    → MultiSourceStream multiplexes InjectionBufferStream + Serial
+ *    → TermControl reads from MultiSourceStream (line buffering)
+ *    → Main loop calls Jerial.service() → TermControl::service()
+ *    → Completed lines → SingleCharCommands → executeCommand()
+ * 
+ * 3. USB→UART (Upload/send to Arduino):
+ *    Serial (CDC 0) → bridge_usb_to_uart() reads
+ *    → Raw data → USBSer1 (CDC 1) for debugging
+ *    → Filtered/forwarded → UART TX → Arduino Serial1
+ * 
+ * Benefits:
+ *   - Non-blocking command injection using composable Stream layers
+ *   - No 8-command queue limit (uses 512-byte injection buffer)
+ *   - Complete debug visibility via USBSer1 (CDC 1)
+ *   - Clean separation: AsyncPassthrough injects, Jerial processes
+ */
+
+// Debug flag for command injection tracing
+// Set to 1 to see each character being injected from <j> tags
+#define DEBUG_INJECTED_COMMANDS 0
+
 #include "AsyncPassthrough.h"
 #include "class/cdc/cdc_device.h"
 #if ASYNC_PASSTHROUGH_ENABLED == 1
@@ -19,7 +55,19 @@
 // External Jerial instance
 extern JerialClass Jerial;
 
+// External USBSer1 (declared in ArduinoStuff.cpp) - file scope, before namespace
+extern Adafruit_USBD_CDC USBSer1;
+
 bool asyncPassthroughEnabled = jumperlessConfig.serial_1.async_passthrough;
+bool asyncPassthroughTagParsingEnabled = true; // Enable tag parsing by default
+
+// Tag parsing timeout support (for Arduino flashing, etc.)
+static uint32_t s_tag_parsing_timeout_ms = 0;  // 0 = no timeout
+static uint32_t s_tag_parsing_disabled_time = 0;  // When tag parsing was disabled
+
+// Smart re-enable: Track last USB->UART activity to detect end of upload
+static uint32_t s_last_usb_to_uart_data_time = 0;  // Last time USB->UART data was sent
+static uint32_t s_tag_parsing_inactivity_timeout_ms = 0;  // Re-enable after this many ms of no data (0 = disabled)
 
 // ============================================================================
 // Jumperless Command Tag Detection
@@ -37,14 +85,29 @@ struct TagParserState {
     TagState state;
     char tag_buffer[32];           // Buffer for tag name
     uint8_t tag_buffer_idx;
-    char command_buffer[512];      // Buffer for command content
-    uint16_t command_buffer_idx;
     char current_tag[32];          // Currently open tag name
 };
 
 // Separate state machines for each direction
-static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0}, 0, {0} };
-static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0}, 0, {0} };
+static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0} };
+static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0} };
+
+// Command injection tracking (no rate limiting - process all commands immediately)
+static uint32_t s_last_command_injection_time = 0;
+static uint32_t s_injected_commands = 0;
+
+// ARCHITECTURAL NOTE: Character-by-character injection instead of line buffering
+// ============================================================================
+// Previous approach: Accumulate complete commands in 512-byte buffer, inject as lines
+// Problem: 8-command queue filled while bridge_uart_to_usb() blocked (900-7000ms)
+// 
+// Current approach: Inject characters one-by-one as they arrive via Jerial.injectInput()
+// Benefits:
+//   - Uses larger injection_buffer (no 8-command queue limit)
+//   - Commands flow through normal Jerial.read() path
+//   - Main loop's line buffering handles command completion naturally
+//   - No blocking accumulation - chars available immediately for processing
+// ============================================================================
 
 // Supported command tags
 static const char* COMMAND_TAGS[] = {
@@ -328,25 +391,14 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                     // Closing tag
                     if ( strcmp( &parser->tag_buffer[1], parser->current_tag ) == 0 ) {
                         // Valid closing tag for current command
-                        parser->command_buffer[parser->command_buffer_idx] = '\0';
-                        
-                        // Inject command directly into Jerial as a completed line
-                        // This makes it appear as if it was typed and Enter was pressed
-                        if ( parser->command_buffer_idx > 0 ) {
-                            Jerial.injectCompletedLine(parser->command_buffer);
-                            
-                            // DEBUG: Show we injected a command
-                            Serial.print("\n\r[");
-                            Serial.print(direction);
-                            Serial.print(" INJECTED CMD: '");
-                            Serial.print(parser->command_buffer);
-                            Serial.println("']\n\r");
-                            Serial.flush();
-                        }
-                        
+                        // Inject newline to complete the command AND set flag for InjectedCommandService
+                        Jerial.injectInput("\n", false);
+                        Jerial.hasInjectedCommand = 1;  // Signal complete command ready
+                        s_injected_commands++;
+                        s_last_command_injection_time = millis();
+                        //delay(1);
                         // Reset state
                         parser->state = TAG_SEARCHING;
-                        parser->command_buffer_idx = 0;
                         memset( parser->current_tag, 0, sizeof(parser->current_tag) );
                     } else {
                         // Mismatched closing tag, treat as normal text
@@ -355,11 +407,9 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                     return false; // Consumed
                     
                 } else if ( is_command_tag( parser->tag_buffer ) ) {
-                    // Valid opening command tag - silently accumulate command content
+                    // Valid opening command tag - will inject characters as they arrive
                     strcpy( parser->current_tag, parser->tag_buffer );
                     parser->state = TAG_IN_COMMAND;
-                    parser->command_buffer_idx = 0;
-                    memset( parser->command_buffer, 0, sizeof(parser->command_buffer) );
                     return false; // Consumed
                     
                 } else {
@@ -387,16 +437,18 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                 memset( parser->tag_buffer, 0, sizeof(parser->tag_buffer) );
                 return false; // Start detecting closing tag
                 
-            } else if ( parser->command_buffer_idx < sizeof(parser->command_buffer) - 1 ) {
-                // Accumulate command content
-                parser->command_buffer[parser->command_buffer_idx++] = c;
-                return false; // Consuming command
-                
             } else {
-                // Command buffer overflow, abort and treat as normal text
-                parser->state = TAG_SEARCHING;
-                memset( parser->current_tag, 0, sizeof(parser->current_tag) );
-                return true;
+                // Inject character immediately into input stream (no buffering)
+                // This allows Jerial's line buffering to handle command completion
+                #if DEBUG_INJECTED_COMMANDS
+                Serial.printf("AsyncPassthrough: Injecting '%c' (%d) from <%s> tag\n", 
+                             (c >= 32 && c < 127) ? c : '?', (int)c, parser->current_tag);
+                Serial.flush();
+                #endif
+                delayMicroseconds(350);
+                Jerial.injectInput(&c, 1, false);
+                
+                return false; // Consumed and injected
             }
             break;
     }
@@ -414,12 +466,34 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
     if ( tud_cdc_n_available( itf ) ) {
         size_t rd = tud_cdc_n_read( itf, buf, sizeof( buf ) );
         if ( rd > 0 ) {
+            // Track USB->UART data activity for inactivity timeout
+            // CRITICAL: Only track when tag parsing is DISABLED (during flashing)
+            // This lets us detect when the Arduino upload finishes (500ms of no data)
+            if ( !asyncPassthroughTagParsingEnabled && s_tag_parsing_inactivity_timeout_ms > 0 ) {
+                // Tag parsing disabled - track data to detect upload completion
+                s_last_usb_to_uart_data_time = millis();
+            }
+            
             size_t forward_idx = 0;
             
-            // Process each byte through tag detector (USBSer1 → UART)
+            // // Copy raw data to USBSer1 (CDC 1) for debugging BEFORE tag processing
+            // if ( tud_cdc_n_connected( 1 ) ) {
+            //     for ( size_t i = 0; i < rd; i++ ) {
+            //         tud_cdc_n_write_char( 1, buf[i] );
+            //     }
+            //     tud_cdc_n_write_flush( 1 );
+            // }
+            
+            // Process each byte through tag detector (USB→UART)
             for ( size_t i = 0; i < rd; i++ ) {
-                if ( process_command_tag_byte( buf[i], &usb_to_uart_parser, "USB→UART" ) ) {
-                    // Byte should be forwarded to UART
+                if ( asyncPassthroughTagParsingEnabled ) {
+                    // Tag parsing enabled - check for command tags
+                    if ( process_command_tag_byte( buf[i], &usb_to_uart_parser, "USB→UART" ) ) {
+                        // Byte should be forwarded to UART
+                        forward_buf[forward_idx++] = buf[i];
+                    }
+                } else {
+                    // Tag parsing disabled - pass through all bytes directly (binary upload)
                     forward_buf[forward_idx++] = buf[i];
                 }
             }
@@ -440,39 +514,93 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     uint32_t avail = tud_cdc_n_write_available( itf );
     uint8_t c;
     
+    // CRITICAL: Limit processing to prevent multi-second blocking
+    // Process max 128 bytes per call to keep service responsive
+    // With 4096-byte ring buffer, processing everything at once can take 5-7 seconds!
+    const uint32_t MAX_BYTES_PER_CALL = 1024;
+    uint32_t processed = 0;
+    
     // If in forwarding mode, stream all bytes to main Serial until end token or timeout
     if ( s_forward_active ) {
+        unsigned long forwardStart = micros();
         bool ended = false;
-        while ( ring_pop_byte( &c ) ) {
+        
+        // CRITICAL: Reduce chunk size during forwarding (Serial.write is VERY slow!)
+        // Even 128 bytes can take 800-3400ms when writing to Serial!
+        const uint32_t MAX_FORWARD_BYTES = 256;  // Smaller chunk for Serial output
+        uint32_t forwardCount = 0;
+        
+        while ( ring_pop_byte( &c ) && forwardCount < MAX_FORWARD_BYTES ) {
             Serial.write( c );
             s_forward_last_byte_us = micros();
             wrote++;
+            processed++;
+            forwardCount++;
             // Check for end on newline or token match
             if ( is_end_token_seen( c ) ) { ended = true; break; }
             // Timeout: if idle > 8*usPerByteSerial1, end session
             if ( micros() - s_forward_last_byte_us > ( 8 * usPerByteSerial1 ) ) { ended = true; break; }
         }
         if ( ended ) {
-            Serial.flush();
+            // Serial.flush();  // REMOVED: Too slow! Data will flush naturally
             s_forward_active = false;
         }
+        
+        unsigned long forwardTime = micros() - forwardStart;
+        #if DEBUG_INJECTED_COMMANDS
+        if (forwardTime > 50000) {
+            Serial.printf("⏱️  forwarding took %lu ms (%u bytes)\n", forwardTime / 1000, forwardCount);
+        }
+        #endif
     }
     
     // Process UART->USB data through tag parser (for Arduino-sent commands)
-    while ( avail > 0 && ring_pop_byte( &c ) ) {
-        // Process through tag detector (UART → USB)
-        if ( process_command_tag_byte( c, &uart_to_usb_parser, "UART→USB" ) ) {
-            // Byte should be forwarded to USB
-            tud_cdc_n_write_char( itf, c );
-            wrote++;
-            avail--;
+    // Limit to MAX_BYTES_PER_CALL to prevent blocking
+    while ( avail > 0 && ring_pop_byte( &c ) && processed < MAX_BYTES_PER_CALL ) {
+        // ALWAYS passthrough raw data to USBSer1 (CDC 1) for debugging
+        // This shows the complete data stream including tags
+        if ( tud_cdc_n_connected( 1 ) ) {
+            tud_cdc_n_write_char( 1, c );
         }
-        // If consumed by tag parser, don't forward to USB
+        wrote++;
+        avail--;
+        if ( asyncPassthroughTagParsingEnabled ) {
+            // Tag parsing enabled - check for command tags
+            if ( process_command_tag_byte( c, &uart_to_usb_parser, "UART→USB" ) ) {
+                // Byte should be forwarded to USB Serial (CDC 0) for display
+                // tud_cdc_n_write_char( itf, c );
+                // wrote++;
+                // avail--;
+            }
+            // If consumed by tag parser, don't forward to CDC 0
+        } else {
+            // Tag parsing disabled - pass through all bytes directly (for upload)
+            // tud_cdc_n_write_char( itf, c );
+            // wrote++;
+            // avail--;
+        }
+        processed++;
+    }
+    
+    // Flush USBSer1 (CDC 1) if we wrote to it
+    if ( processed > 0 && tud_cdc_n_connected( 1 ) ) {
+        tud_cdc_n_write_flush( 1 );
     }
     
     if ( wrote > 0 || s_uart_flush_pending ) {
+        unsigned long flushStart = micros();
         tud_cdc_n_write_flush( itf );
+        unsigned long flushTime = micros() - flushStart;
+        if (flushTime > 50000) {
+            Serial.printf("⏱️  tud_cdc_n_write_flush took %lu ms\n", flushTime / 1000);
+        }
+        
+        unsigned long tudStart = micros();
         tud_task(); // service USB to reduce latency under load
+        unsigned long tudTime = micros() - tudStart;
+        if (tudTime > 50000) {
+            Serial.printf("⏱️  tud_task (in bridge) took %lu ms\n", tudTime / 1000);
+        }
     }
     s_uart_flush_pending = ( uartReceivedTail != uartReceivedHead );
 }
@@ -555,12 +683,66 @@ void begin( unsigned long baud ) {
 }
 
 void task( ) {
+    unsigned long taskStart = micros();
+    unsigned long t0, t1;
+    
+    // CRITICAL: Check DTR state FIRST, before any data processing
+    // This ensures DTR pulse detection takes absolute priority over command injection
+    // USBSer1 is declared extern at file scope (line 21), outside the namespace
+    t0 = micros();
+    checkDTRState( USBSer1 );
+    t1 = micros();
+    #if DEBUG_INJECTED_COMMANDS
+    if ((t1 - t0) > 50000) {  // > 50ms
+        Serial.printf("⏱️  checkDTRState took %lu ms\n", (t1 - t0) / 1000);
+    }
+    #endif
+    
+    // Check if tag parsing should be re-enabled
+    if ( !asyncPassthroughTagParsingEnabled ) {
+        bool should_reenable = false;
+        const char* reenable_reason = nullptr;
+        
+        // Check absolute timeout (e.g., 10 seconds after disable) - safety fallback
+        if ( s_tag_parsing_timeout_ms > 0 ) {
+            uint32_t elapsed = millis() - s_tag_parsing_disabled_time;
+            if ( elapsed >= s_tag_parsing_timeout_ms ) {
+                should_reenable = true;
+                reenable_reason = "absolute timeout (10s safety)";
+            }
+        }
+        
+        // Check inactivity timeout (e.g., 2000ms after last USB->UART data)
+        // This detects when Arduino upload has finished
+        // Increased from 500ms to 2000ms to handle normal pauses during uploads
+        if ( !should_reenable && s_tag_parsing_inactivity_timeout_ms > 0 && s_last_usb_to_uart_data_time > 0 ) {
+            uint32_t inactivity = millis() - s_last_usb_to_uart_data_time;
+            if ( inactivity >= s_tag_parsing_inactivity_timeout_ms ) {
+                should_reenable = true;
+                reenable_reason = "upload complete (2s idle)";
+            }
+        }
+        
+        if ( should_reenable ) {
+            asyncPassthroughTagParsingEnabled = true;
+            s_tag_parsing_timeout_ms = 0;  // Clear timeouts
+            s_tag_parsing_inactivity_timeout_ms = 0;
+            s_last_usb_to_uart_data_time = 0;
+            
+            // Single clean message when re-enabling (no flush - too slow!)
+            #if DEBUG_INJECTED_COMMANDS
+            Serial.printf("✓ Tag parsing re-enabled: %s\n", reenable_reason);
+            #endif
+        }
+    }
+    
     // If suspended by MicroPython, avoid touching UART hardware
     if ( s_uart_suspended_by_mpy ) {
         tud_task();
         return;
     }
     // Apply pending line coding from host
+    t0 = micros();
     if ( s_apply_line_coding_pending && s_line_coding_override == false ) {
         // Apply to pico-sdk UART
         uint data_bits = 8;
@@ -596,23 +778,65 @@ void task( ) {
         serial1baud = s_line_coding.bit_rate;
         set_micros_per_byte( &s_line_coding );
         s_apply_line_coding_pending = false;
+        
+        t1 = micros();
+        #if DEBUG_INJECTED_COMMANDS
+        if ((t1 - t0) > 50000) {
+            Serial.printf("⏱️  line_coding took %lu ms\n", (t1 - t0) / 1000);
+        }
+        #endif
     }
 
 
     // USB -> UART when either pending flag set or data available
+    t0 = micros();
     if ( s_usb_rx_pending || ( tud_inited( ) && tud_cdc_n_available( ASYNC_PASSTHROUGH_CDC_ITF ) ) ) {
         bridge_usb_to_uart( ASYNC_PASSTHROUGH_CDC_ITF );
         s_usb_rx_pending = false;
     }
+    t1 = micros();
+    #if DEBUG_INJECTED_COMMANDS
+    if ((t1 - t0) > 50000) {
+        Serial.printf("⏱️  bridge_usb_to_uart took %lu ms\n", (t1 - t0) / 1000);
+    }
+    #endif
+    
     // UART -> USB
+    t0 = micros();
     bridge_uart_to_usb( ASYNC_PASSTHROUGH_CDC_ITF );
+    t1 = micros();
+    #if DEBUG_INJECTED_COMMANDS
+    if ((t1 - t0) > 50000) {
+        Serial.printf("⏱️  bridge_uart_to_usb took %lu ms\n", (t1 - t0) / 1000);
+    }
+    #endif
 
     // Check if uartReceived starts with any forward prefix and route to main Serial
+    t0 = micros();
     process_uart_forward_prefixes();
+    t1 = micros();
+    #if DEBUG_INJECTED_COMMANDS
+    if ((t1 - t0) > 50000) {
+        Serial.printf("⏱️  process_uart_forward_prefixes took %lu ms\n", (t1 - t0) / 1000);
+    }
+    #endif
 
     // Service USB stack regardless to minimize latency and prevent CDC TX stalling
+    t0 = micros();
     tud_task();
-
+    t1 = micros();
+    #if DEBUG_INJECTED_COMMANDS
+    if ((t1 - t0) > 50000) {
+        Serial.printf("⏱️  tud_task took %lu ms\n", (t1 - t0) / 1000);
+    }
+    #endif
+    
+    unsigned long taskEnd = micros();
+    #if DEBUG_INJECTED_COMMANDS
+    if ((taskEnd - taskStart) > 100000) {  // > 100ms total
+        Serial.printf("⏱️  AsyncPassthrough::task() TOTAL: %lu ms\n", (taskEnd - taskStart) / 1000);
+    }
+    #endif
 }
 
 bool registerForwardPrefix( const char* prefix ) {
@@ -682,6 +906,118 @@ size_t listForwardEnds( const char** out, size_t max ) {
 
 void setForwardEndOnNewline( bool enable ) {
     s_forward_end_on_newline = enable;
+}
+
+void setTagParsingEnabled( bool enable ) {
+    if ( !enable && asyncPassthroughTagParsingEnabled ) {
+        // Tag parsing is being disabled - record the time
+        s_tag_parsing_disabled_time = millis();
+    }
+    
+    asyncPassthroughTagParsingEnabled = enable;
+    
+    // If re-enabling, clear any pending timeouts
+    if ( enable ) {
+        s_tag_parsing_timeout_ms = 0;
+        s_tag_parsing_inactivity_timeout_ms = 0;
+        s_last_usb_to_uart_data_time = 0;
+    }
+}
+
+void disableTagParsingWithTimeout( uint32_t timeout_ms ) {
+    asyncPassthroughTagParsingEnabled = false;
+    s_tag_parsing_disabled_time = millis();
+    s_tag_parsing_timeout_ms = timeout_ms;
+    s_tag_parsing_inactivity_timeout_ms = 0;  // Clear inactivity timeout when using absolute timeout
+    s_last_usb_to_uart_data_time = 0;
+}
+
+void disableTagParsingWithInactivityTimeout( uint32_t absolute_timeout_ms, uint32_t inactivity_timeout_ms ) {
+    // If already disabled with an inactivity timeout active, don't reset the state
+    // This prevents multiple DTR pulses or calls from breaking the inactivity tracking
+    if ( !asyncPassthroughTagParsingEnabled && s_tag_parsing_inactivity_timeout_ms > 0 ) {
+        // Already disabled and tracking - preserve existing state
+        // Don't print anything here to avoid spam during flashing
+        return;
+    }
+    
+    asyncPassthroughTagParsingEnabled = false;
+    s_tag_parsing_disabled_time = millis();
+    s_tag_parsing_timeout_ms = absolute_timeout_ms;
+    s_tag_parsing_inactivity_timeout_ms = inactivity_timeout_ms;
+    s_last_usb_to_uart_data_time = 0;  // Will be set when first data arrives
+}
+
+bool getTagParsingEnabled() {
+    return asyncPassthroughTagParsingEnabled;
+}
+
+// ============================================================================
+// DTR Pulse Detection and Arduino Reset
+// ============================================================================
+
+// DTR state tracking
+static bool s_dtr_state[3] = { false, false, false };
+static bool s_dtr_pulse_detected = false;
+
+void checkDTRState(Adafruit_USBD_CDC& cdc) {
+    bool current_dtr = cdc.dtr();
+    
+    // Shift the array to the left, keeping only last 3 states
+    if (current_dtr != s_dtr_state[2]) {
+        s_dtr_state[0] = s_dtr_state[1];
+        s_dtr_state[1] = s_dtr_state[2];
+        s_dtr_state[2] = current_dtr;
+        
+        // Detect pulses going either direction (some things invert the DTR line)
+        // Windows: just check for any change
+        // macOS/Linux: check for full off-on-off or on-off-on pulse
+        if (s_dtr_state[1] == 1 && s_dtr_state[2] == 0) {
+            // Detected high-to-low pulse
+            s_dtr_pulse_detected = true;
+            
+            // Disable tag parsing during Arduino flash to prevent interference
+            // CRITICAL: Only disable if not already disabled to prevent timer reset
+            // Increased timeouts: 200ms inactivity (handles upload pauses), 2s max (safety)
+            if (asyncPassthroughEnabled && asyncPassthroughTagParsingEnabled) {
+                disableTagParsingWithInactivityTimeout(5000, 2000);
+                #if DEBUG_INJECTED_COMMANDS
+                Serial.println("✓ DTR pulse - tag parsing disabled for flashing");
+                #endif
+                // No flush - too slow during rapid commands!
+            }
+        } else if (s_dtr_state[1] == 0 && s_dtr_state[2] == 1) {
+            // Detected low-to-high pulse
+            s_dtr_pulse_detected = true;
+            
+            // Disable tag parsing during Arduino flash to prevent interference
+            // CRITICAL: Only disable if not already disabled to prevent timer reset
+            // Increased timeouts: 200ms inactivity (handles upload pauses), 2s max (safety)
+            if (asyncPassthroughEnabled && asyncPassthroughTagParsingEnabled) {
+                disableTagParsingWithInactivityTimeout(5000, 2000);
+                #if DEBUG_INJECTED_COMMANDS
+                Serial.println("✓ DTR pulse - tag parsing disabled for flashing");
+                #endif
+                // No flush - too slow during rapid commands!
+            }
+        }
+    }
+}
+
+bool wasDTRPulseDetected() {
+    return s_dtr_pulse_detected;
+}
+
+void clearDTRPulse() {
+    s_dtr_pulse_detected = false;
+}
+
+void resetArduino(int resetPin) {
+    // Pull reset line low for 3ms, then high
+    pinMode(resetPin, OUTPUT);
+    digitalWrite(resetPin, LOW);
+    delay(3);
+    digitalWrite(resetPin, HIGH);
 }
 
 } // namespace AsyncPassthrough

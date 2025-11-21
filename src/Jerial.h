@@ -10,6 +10,8 @@
 // Forward declarations
 class ScriptHistory;
 class TermControl;
+class InjectionBufferStream;
+class MultiSourceStream;
 
 // Global variable for interactive mode tracking
 extern int termInInteractiveMode;
@@ -52,6 +54,202 @@ enum class JerialEndpoint {
     CUSTOM           // Custom stream pointer
 };
 
+// ============================================================================
+// InjectionBufferStream - Stream wrapper for injection buffer
+// ============================================================================
+/**
+ * Clean Stream Architecture for Command Injection
+ * 
+ * Problem: AsyncPassthrough needs to inject commands (from Arduino-sent <j> tags)
+ *          into the terminal input flow for processing by the main loop.
+ * 
+ * Solution: Use composable Stream classes:
+ * 
+ * 1. InjectionBufferStream - Wraps JerialClass::injection_buffer as a Stream
+ * 2. MultiSourceStream - Multiplexes injection + real input with priority
+ * 3. TermControl reads from MultiSourceStream naturally via stream->read()
+ * 
+ * Flow:
+ *   AsyncPassthrough → Jerial.injectInput() → injection_buffer
+ *   Main loop → Jerial.service() → TermControl::service()
+ *   TermControl → MultiSourceStream::read() → InjectionBufferStream (priority)
+ *   TermControl → MultiSourceStream::read() → Serial (fallback)
+ *   TermControl → line buffering → completed_line
+ *   Main loop → Jerial.getCompletedLine() → SingleCharCommands
+ * 
+ * Benefits:
+ *   - No special-case injection processing logic
+ *   - Natural Stream interface throughout
+ *   - Composable architecture (can add more sources easily)
+ *   - Injected commands flow through same line buffering as user input
+ */
+class InjectionBufferStream : public Stream {
+public:
+    InjectionBufferStream(uint8_t* buffer, size_t buffer_size, uint16_t* read_pos, uint16_t* write_pos)
+        : buffer(buffer), buffer_size(buffer_size), read_pos(read_pos), write_pos(write_pos),
+          tag_buffer_pos(0), skip_next_tag_char(false) {
+        memset(tag_buffer, 0, sizeof(tag_buffer));
+    }
+    
+    virtual int available() override {
+        // Note: This doesn't account for filtered tags, but that's fine for availability checks
+        if (*read_pos != *write_pos) {
+            int count = *write_pos - *read_pos;
+            if (count < 0) {
+                count += buffer_size;
+            }
+            // Debug
+            // Serial.printf("InjectionStream::available() = %d (r=%d w=%d)\n", count, *read_pos, *write_pos);
+            // Serial.flush();
+            return count;
+        }
+        return 0;
+    }
+    
+    virtual int read() override {
+        // Read with automatic <j> and </j> tag filtering
+        while (*read_pos != *write_pos) {
+            uint8_t c = buffer[*read_pos];
+            *read_pos = (*read_pos + 1) % buffer_size;
+            
+            // Serial.printf("InjectionStream::read(): got '%c' (%d) from buffer[%d]\n", 
+            //               (char)c, c, (*read_pos - 1 + buffer_size) % buffer_size);
+            // Serial.flush();
+            
+            // Apply tag filtering
+            if (!shouldSkipChar((char)c)) {
+                // Serial.printf("  -> returning '%c' (not a tag)\n", (char)c);
+                // Serial.flush();
+                return c;  // Return non-tag character
+            }
+            // Serial.printf("  -> skipped (part of tag)\n");
+            // Serial.flush();
+            // Character was part of a tag, continue to next
+        }
+        return -1;
+    }
+    
+    virtual int peek() override {
+        // Simple peek without tag filtering (not used in critical path)
+        if (*read_pos != *write_pos) {
+            return buffer[*read_pos];
+        }
+        return -1;
+    }
+    
+    virtual void flush() override {}
+    virtual size_t write(uint8_t) override { return 0; }  // Injection buffer is read-only
+    
+private:
+    uint8_t* buffer;
+    size_t buffer_size;
+    uint16_t* read_pos;
+    uint16_t* write_pos;
+    
+    // Tag filtering state (for <j> and </j> tags)
+    char tag_buffer[4];
+    uint8_t tag_buffer_pos;
+    bool skip_next_tag_char;
+    
+    // Tag filtering logic (detects and skips <j> and </j> tags)
+    bool shouldSkipChar(char c) {
+        if (tag_buffer_pos == 0) {
+            if (c == '<') {
+                tag_buffer[0] = '<';
+                tag_buffer_pos = 1;
+                return true;  // Skip the '<'
+            }
+            return false;  // Normal character
+        }
+        
+        tag_buffer[tag_buffer_pos++] = c;
+        
+        // Check for complete opening tag "<j>"
+        if (tag_buffer_pos == 3 && 
+            tag_buffer[0] == '<' && tag_buffer[1] == 'j' && tag_buffer[2] == '>') {
+            tag_buffer_pos = 0;
+            return true;  // Skip entire tag
+        }
+        
+        // Check for complete closing tag "</j>"
+        if (tag_buffer_pos == 4 && 
+            tag_buffer[0] == '<' && tag_buffer[1] == '/' && 
+            tag_buffer[2] == 'j' && tag_buffer[3] == '>') {
+            tag_buffer_pos = 0;
+            return true;  // Skip entire tag
+        }
+        
+        // Check if this can't possibly be a tag anymore
+        bool not_a_tag = false;
+        if (tag_buffer_pos == 2 && tag_buffer[1] != 'j' && tag_buffer[1] != '/') {
+            not_a_tag = true;
+        } else if (tag_buffer_pos == 3 && tag_buffer[1] == 'j' && tag_buffer[2] != '>') {
+            not_a_tag = true;
+        } else if (tag_buffer_pos == 3 && tag_buffer[1] == '/' && tag_buffer[2] != 'j') {
+            not_a_tag = true;
+        } else if (tag_buffer_pos >= 4) {
+            not_a_tag = true;
+        }
+        
+        if (not_a_tag) {
+            // This isn't a tag, we need to emit the buffered characters
+            // But we can't easily do that in this architecture, so we'll just
+            // reset and treat the current character as non-tag
+            // NOTE: This is a limitation - partial tags like "<x" won't be emitted correctly
+            // In practice this doesn't matter for our use case (injected commands are clean)
+            tag_buffer_pos = 0;
+            return false;  // Don't skip current character
+        }
+        
+        return true;  // Still accumulating potential tag
+    }
+};
+
+// ============================================================================
+// MultiSourceStream - Multiplexes multiple input streams with priority
+// ============================================================================
+class MultiSourceStream : public Stream {
+public:
+    MultiSourceStream(Stream* priority, Stream* fallback)
+        : priority_stream(priority), fallback_stream(fallback) {}
+    
+    virtual int available() override {
+        int n = priority_stream ? priority_stream->available() : 0;
+        if (n > 0) return n;
+        return fallback_stream ? fallback_stream->available() : 0;
+    }
+    
+    virtual int read() override {
+        if (priority_stream && priority_stream->available() > 0) {
+            int c = priority_stream->read();
+            // Debug
+            // Serial.printf("MuxRead: injection char '%c' (%d)\n", (char)c, c);
+            // Serial.flush();
+            return c;
+        }
+        return fallback_stream ? fallback_stream->read() : -1;
+    }
+    
+    virtual int peek() override {
+        if (priority_stream && priority_stream->available() > 0) {
+            return priority_stream->peek();
+        }
+        return fallback_stream ? fallback_stream->peek() : -1;
+    }
+    
+    virtual void flush() override {
+        if (fallback_stream) fallback_stream->flush();
+    }
+    
+    virtual size_t write(uint8_t byte) override {
+        return fallback_stream ? fallback_stream->write(byte) : 0;
+    }
+    
+private:
+    Stream* priority_stream;
+    Stream* fallback_stream;
+};
+
 class JerialClass : public Stream {
 public:
     JerialClass();
@@ -68,6 +266,8 @@ public:
     virtual size_t write(uint8_t byte) override;
     virtual size_t write(const uint8_t *buffer, size_t size) override;
     virtual int availableForWrite() override;
+
+    
     
     // ============================================================================
     // Terminal Control - Line Editing and History (for USB Serial endpoints)
@@ -219,11 +419,29 @@ public:
     void clearInjectedInput();
     
     /**
-     * Enable/disable automatic tag stripping for all input
-     * When enabled, <j> and </j> tags are automatically removed from all input
+     * Get the injection stream (for adding as high-priority input source)
+     * This stream wraps the injection buffer and automatically strips tags
      */
-    void setAutoStripTags(bool enabled) { auto_strip_tags = enabled; }
-    bool isAutoStripTags() const { return auto_strip_tags; }
+    Stream* getInjectionStream() { return injection_stream; }
+    
+    /**
+     * Check if injection buffer has a complete line (ending in \n)
+     * This is a fast, thread-safe check without consuming data
+     * @return true if there's at least one complete line in the buffer
+     */
+    bool hasInjectedCompleteLine() const;
+    
+    /**
+     * Extract a complete line directly from injection buffer (fast path)
+     * This bypasses TermControl and reads directly from injection_buffer
+     * Thread-safe: uses atomic positions
+     * @return The completed line (without newline), or empty string if none
+     */
+    String getInjectedCompleteLine();
+
+    volatile int hasInjectedCommand = 0;
+    // Note: Tag stripping is now handled automatically by InjectionBufferStream
+    // for injected commands. User-typed input doesn't have tags.
     
     // ============================================================================
     // Utility Functions
@@ -319,17 +537,19 @@ private:
     uint16_t injection_read_pos;
     uint16_t injection_write_pos;
     
-    // Tag stripping
-    bool auto_strip_tags;
-    char tag_buffer[4];           // Buffer to detect <j> or </j> tags
-    uint8_t tag_buffer_pos;       // Current position in tag buffer
-    bool in_tag;                  // Currently inside a tag
+    // Stream wrappers for clean architecture
+    InjectionBufferStream* injection_stream;
+    MultiSourceStream* mux_stream;
+    
+    // Legacy tag buffer members (kept for compatibility but unused)
+    // Tag filtering now happens in InjectionBufferStream
+    char tag_buffer[4];
+    uint8_t tag_buffer_pos;
+    bool in_tag;
     
     // Internal helpers
     size_t writeToOutputs(uint8_t byte);
     size_t writeToOutputs(const uint8_t *buffer, size_t size);
-    size_t stripTagsAndInject(const char* data, size_t length);
-    int readWithTagFilter();      // Read with tag filtering applied
     void createTermControlIfNeeded(Stream* stream); // Create TermControl for USB Serial endpoints
     void destroyTermControl();    // Clean up TermControl instance
 };
@@ -373,10 +593,6 @@ public:
     ScriptHistory* getHistory() { return history; } // Get access to history instance
     void setColoredPrompt(const char* prompt, int color_code = 79); // Set colored prompt
     bool hasInput() const { return hasCompletedLine(); } // Alias for compatibility
-    
-    // Tag stripping
-    void setAutoStripTags(bool enabled) { auto_strip_tags = enabled; }
-    bool isAutoStripTags() const { return auto_strip_tags; }
 
 private:
     Stream* stream;                     // Underlying stream (usually Serial)
@@ -391,9 +607,16 @@ private:
     int line_length;
     int cursor_position;
     
-    // Completed line ready for external parsing
+    // Completed line ready for external parsing (single slot - legacy)
     String completed_line;
     bool line_ready;
+    
+    // Command queue for injected commands (prevents blocking in AsyncPassthrough)
+    static const int COMMAND_QUEUE_SIZE = 8;
+    String command_queue[COMMAND_QUEUE_SIZE];
+    volatile uint8_t queue_head;  // Next slot to write
+    volatile uint8_t queue_tail;  // Next slot to read
+    volatile uint8_t queue_count; // Number of items in queue
     
     // Settings
     String prompt_text;
@@ -407,11 +630,6 @@ private:
         ANSI_BRACKET,
         ANSI_MAIN_SERIAL_ENQ
     } ansi_state;
-    
-    // Tag stripping
-    bool auto_strip_tags;
-    char tag_buffer[4];           // Buffer to detect <j> or </j> tags
-    uint8_t tag_buffer_pos;       // Current position in tag buffer
     
     // Internal methods
     void handleNormalChar(char c);
@@ -432,9 +650,6 @@ private:
     void insertCharAtCursor(char c);
     void deleteCharAtCursor();
     int calculateVisualLength(const String& text);
-    
-    // Tag filtering
-    bool shouldSkipChar(char c);
 };
 
 

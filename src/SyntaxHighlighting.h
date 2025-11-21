@@ -6,21 +6,21 @@
 #define TERM_COLOR_SUPPORT 256
 
 #define HL_NORMAL 0
-#define HL_COMMENT 1
-#define HL_MLCOMMENT 2
-#define HL_KEYWORD1 3
-#define HL_KEYWORD2 4
-#define HL_STRING 5
-#define HL_NUMBER 6
-#define HL_MATCH 7
-#define HL_JUMPERLESS_FUNC 8
-#define HL_JUMPERLESS_TYPE 9
-#define HL_JFS_FUNC 10
-#define HL_TERMINAL_FUNC 11
-#define HL_TERMINAL_NUMBER 12
-#define HL_TERMINAL_NODE1 13
-#define HL_TERMINAL_NODE2 14
-#define HL_TERMINAL_STRING 15
+#define HL_COMMENT 2
+#define HL_MLCOMMENT 3
+#define HL_KEYWORD1 4 
+#define HL_KEYWORD2 5
+#define HL_STRING 6
+#define HL_NUMBER 7
+#define HL_MATCH 8
+#define HL_JUMPERLESS_FUNC 9
+#define HL_JUMPERLESS_TYPE 10
+#define HL_JFS_FUNC 11
+#define HL_TERMINAL_FUNC 12
+#define HL_TERMINAL_NUMBER 13
+#define HL_TERMINAL_NODE1 14
+#define HL_TERMINAL_NODE2 15
+#define HL_TERMINAL_STRING 16
 
 enum SyntaxHighlightingType {
   SYNTAX_PYTHON,

@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MIT
 
+// Debug flag for injected command buffer tracing
+// Set to 1 to see buffer contents when extracting injected commands
+#define DEBUG_INJECTED_COMMANDS 0
+
 #include "Jerial.h"
 #include "Adafruit_TinyUSB.h"
 #include "ArduinoStuff.h"
 #include "Python_Proper.h" // For ScriptHistory
+#include "SingleCharCommands.h"
 
 // External USB CDC instances (defined in ArduinoStuff.cpp)
 extern Adafruit_USBD_CDC USBSer1;
@@ -33,8 +38,9 @@ TermControl::TermControl( Stream* underlying_stream, bool create_own_history )
       echo_enabled( true ),
       syntax_highlighter( underlying_stream ),
       ansi_state( ANSI_NORMAL ),
-      auto_strip_tags( false ),
-      tag_buffer_pos( 0 ) {
+      queue_head( 0 ),
+      queue_tail( 0 ),
+      queue_count( 0 ) {
 
     // Create our own history instance if requested
     if ( create_own_history ) {
@@ -47,7 +53,6 @@ TermControl::TermControl( Stream* underlying_stream, bool create_own_history )
     // Initialize current line buffer and display buffer
     memset( current_line, 0, sizeof( current_line ) );
     memset( display_buffer, 0, sizeof( display_buffer ) );
-    memset( tag_buffer, 0, sizeof( tag_buffer ) );
     display_length = 0;
 }
 
@@ -98,26 +103,31 @@ size_t TermControl::write( const uint8_t* buffer, size_t size ) {
 
 // Terminal-specific functionality
 bool TermControl::service( ) {
-    if ( !stream )
+    if ( !stream ) {
+
         return false;
+    }
 
     bool line_was_ready_before = line_ready;
+    
+    int avail = stream->available();
+    if (avail > 0) {
+        #if DEBUG_JERIAL == 1
+        Serial.printf("TermControl::service(): stream->available() = %d\n", avail);
+        Serial.flush();
+        #endif
+        
+    }
 
     while ( stream->available( ) > 0 ) {
         char c = (char)stream->read( );
+        #if DEBUG_JERIAL == 1
+        Serial.printf("TermControl read: '%c' (%d)\n", c, (int)c);
+        Serial.flush();
+        #endif
+        // Note: Tag filtering now happens in InjectionBufferStream
+        // User-typed input doesn't have tags, so no filtering needed here
         
-        // Apply tag filtering if enabled
-        if ( auto_strip_tags && shouldSkipChar( c ) ) {
-            // If we're in the middle of parsing a tag, wait briefly for more data
-            if ( tag_buffer_pos > 0 && stream->available() == 0 ) {
-                uint32_t wait_start = millis();
-                while (stream->available() == 0 && (millis() - wait_start) < 5) {
-                    delayMicroseconds(100);
-                }
-            }
-            continue; // Skip this character, it's part of a tag
-        }
-
         // Handle ANSI escape sequences
         switch ( ansi_state ) {
         case ANSI_NORMAL:
@@ -172,10 +182,20 @@ bool TermControl::service( ) {
 }
 
 bool TermControl::hasCompletedLine( ) const {
-    return line_ready;
+    // Check both legacy single slot and command queue
+    return line_ready || queue_count > 0;
 }
 
 String TermControl::getCompletedLine( ) {
+    // First check queue (injected commands have priority)
+    if ( queue_count > 0 ) {
+        String result = command_queue[queue_tail];
+        queue_tail = (queue_tail + 1) % COMMAND_QUEUE_SIZE;
+        queue_count--;
+        return result;
+    }
+    
+    // Fall back to legacy single slot (user typed input)
     if ( !line_ready )
         return "";
 
@@ -201,9 +221,26 @@ void TermControl::injectCompletedLine( const char* line ) {
         return;
     }
     
-    // Set the completed line directly
-    completed_line = String( line );
-    line_ready = true;
+    // CRITICAL: NON-BLOCKING queue-based injection
+    // Add to circular buffer - drops oldest if full (better than blocking)
+    
+    if ( queue_count >= COMMAND_QUEUE_SIZE ) {
+        // Queue full - drop this command with warning
+        if ( stream ) {
+            stream->print( "⚠️  Command queue full (" );
+            stream->print( COMMAND_QUEUE_SIZE );
+            stream->print( "), dropped: '" );
+            stream->print( line );
+            stream->println( "'" );
+            // stream->flush(); // Blocking flush causes latency in AsyncPassthrough!
+        }
+        return;
+    }
+    
+    // Add to queue
+    command_queue[queue_head] = String( line );
+    queue_head = (queue_head + 1) % COMMAND_QUEUE_SIZE;
+    queue_count++;
     
     // Optionally add to history
     if ( history && strlen(line) > 0 ) {
@@ -529,58 +566,6 @@ void TermControl::deleteCharAtCursor( ) {
     current_line[ line_length ] = '\0';
 }
 
-// Tag Filtering
-bool TermControl::shouldSkipChar( char c ) {
-    if ( tag_buffer_pos == 0 ) {
-        if ( c == '<' ) {
-            tag_buffer[0] = '<';
-            tag_buffer_pos = 1;
-            return true;
-        }
-        return false;
-    }
-    
-    tag_buffer[tag_buffer_pos++] = c;
-    
-    // Check for complete opening tag "<j>"
-    if ( tag_buffer_pos == 3 && 
-        tag_buffer[0] == '<' && tag_buffer[1] == 'j' && tag_buffer[2] == '>' ) {
-        tag_buffer_pos = 0;
-        return true;
-    }
-    
-    // Check for complete closing tag "</j>"
-    if ( tag_buffer_pos == 4 && 
-        tag_buffer[0] == '<' && tag_buffer[1] == '/' && 
-        tag_buffer[2] == 'j' && tag_buffer[3] == '>' ) {
-        tag_buffer_pos = 0;
-        return true;
-    }
-    
-    // Check if this can't possibly be a tag anymore
-    bool not_a_tag = false;
-    if ( tag_buffer_pos == 2 && tag_buffer[1] != 'j' && tag_buffer[1] != '/' ) {
-        not_a_tag = true;
-    } else if ( tag_buffer_pos == 3 && tag_buffer[1] == 'j' && tag_buffer[2] != '>' ) {
-        not_a_tag = true;
-    } else if ( tag_buffer_pos == 3 && tag_buffer[1] == '/' && tag_buffer[2] != 'j' ) {
-        not_a_tag = true;
-    } else if ( tag_buffer_pos >= 4 ) {
-        not_a_tag = true;
-    }
-    
-    if ( not_a_tag ) {
-        for ( int i = 0; i < tag_buffer_pos - 1; i++ ) {
-            handleNormalChar( tag_buffer[i] );
-        }
-        tag_buffer_pos = 0;
-        return false;
-    }
-    
-    return true;
-}
-
-
 // ============================================================================
 // JerialClass Implementation
 // ============================================================================
@@ -597,9 +582,10 @@ JerialClass::JerialClass()
       term_control_active(false),
       injection_read_pos(0),
       injection_write_pos(0),
-      auto_strip_tags(false),
       tag_buffer_pos(0),
-      in_tag(false) {
+      in_tag(false),
+      injection_stream(nullptr),
+      mux_stream(nullptr) {
     // Initialize arrays
     for (int i = 0; i < JERIAL_MAX_OUTPUTS; i++) {
         output_streams[i] = nullptr;
@@ -607,10 +593,29 @@ JerialClass::JerialClass()
     }
     memset(injection_buffer, 0, sizeof(injection_buffer));
     memset(tag_buffer, 0, sizeof(tag_buffer));
+    
+    // Create injection stream wrapper (with tag filtering)
+    injection_stream = new InjectionBufferStream(
+        (uint8_t*)injection_buffer,
+        sizeof(injection_buffer),
+        &injection_read_pos,
+        &injection_write_pos
+    );
+    
+    // Debug: Confirm injection stream created
+    // Note: Can't Serial.println here - Serial not initialized yet!
 }
 
 JerialClass::~JerialClass() {
     destroyTermControl();
+    if (injection_stream) {
+        delete injection_stream;
+        injection_stream = nullptr;
+    }
+    if (mux_stream) {
+        delete mux_stream;
+        mux_stream = nullptr;
+    }
 }
 
 // ============================================================================
@@ -618,13 +623,15 @@ JerialClass::~JerialClass() {
 // ============================================================================
 
 int JerialClass::available() {
-    // Check injection buffer first
-    if (injection_read_pos != injection_write_pos) {
-        int injected_count = injection_write_pos - injection_read_pos;
-        if (injected_count < 0) {
-            injected_count += sizeof(injection_buffer);
-        }
-        return injected_count;
+    // CRITICAL: Check InjectionBufferStream first (with tag filtering!)
+    // This works regardless of line buffering mode
+    if (injection_stream && injection_stream->available() > 0) {
+        int avail = injection_stream->available();
+        #if DEBUG_JERIAL == 1
+        Serial.printf("Jerial.available(): injection_stream has %d chars\n", avail);
+        Serial.flush();
+        #endif
+        return avail;
     }
     
     // If terminal control is active, check it
@@ -640,11 +647,17 @@ int JerialClass::available() {
 }
 
 int JerialClass::read() {
-    // Read from injection buffer first (priority over actual input)
-    if (injection_read_pos != injection_write_pos) {
-        uint8_t c = injection_buffer[injection_read_pos];
-        injection_read_pos = (injection_read_pos + 1) % sizeof(injection_buffer);
-        return c;
+    // CRITICAL: Read from InjectionBufferStream first (with tag filtering!)
+    // This works regardless of line buffering mode
+    if (injection_stream && injection_stream->available() > 0) {
+        int c = injection_stream->read();
+        if (c >= 0) {
+            #if DEBUG_JERIAL == 1
+            Serial.printf("Jerial.read(): got '%c' (%d) from injection_stream\n", (char)c, c);
+            Serial.flush();
+            #endif
+            return c;
+        }
     }
     
     // If terminal control is active, read through it
@@ -653,13 +666,9 @@ int JerialClass::read() {
     }
     
     // Read from actual input stream
+    // User-typed input doesn't have tags
     if (!input_stream) {
         return -1;
-    }
-    
-    // Apply tag filtering if enabled
-    if (auto_strip_tags) {
-        return readWithTagFilter();
     }
     
     return input_stream->read();
@@ -733,9 +742,29 @@ int JerialClass::availableForWrite() {
 // ============================================================================
 
 bool JerialClass::service() {
+    // TermControl reads from MultiSourceStream which automatically checks:
+    // 1. InjectionBufferStream (priority) - for AsyncPassthrough commands
+    // 2. Real input stream (Serial) - for user input
+    // No manual switching needed!
+    
+    static uint32_t last_debug = 0;
+    #if DEBUG_JERIAL == 1
+    if (millis() - last_debug > 1000) {
+        last_debug = millis();
+        Serial.printf("Jerial.service(): term_control_active=%d, term_control=%p, injection_stream=%p, mux_stream=%p\n",
+                      term_control_active, term_control, injection_stream, mux_stream);
+        Serial.printf("  Injection buffer: r=%d w=%d (has data: %d)\n",
+                      injection_read_pos, injection_write_pos, injection_read_pos != injection_write_pos);
+        Serial.flush();
+    }
+    #endif
     if (term_control_active && term_control) {
         return term_control->service();
     }
+    #if DEBUG_JERIAL == 1
+    Serial.println("⚠️  TermControl not active!");
+    Serial.flush();
+    #endif
     return false;
 }
 
@@ -896,10 +925,20 @@ bool JerialClass::hasOutputStream(Stream* stream) const {
 // ============================================================================
 
 void JerialClass::setInputStream(Stream* stream) {
+
+    #if DEBUG_JERIAL == 1
+    Serial.printf("setInputStream(%p) called\n", stream);
+    Serial.flush();
+    #endif
     input_stream = stream;
     
     // Create or destroy terminal control based on endpoint type
     JerialEndpoint endpoint = getEndpointType(stream);
+    #if DEBUG_JERIAL == 1
+        Serial.printf("  Endpoint type: %d, supports terminal: %d\n", (int)endpoint, supportsTerminalControl(endpoint));
+        Serial.flush();
+    #endif
+    
     if (supportsTerminalControl(endpoint)) {
         createTermControlIfNeeded(stream);
     } else {
@@ -949,15 +988,14 @@ bool JerialClass::addInputSource(JerialEndpoint endpoint) {
 }
 
 bool JerialClass::serviceInputs() {
-    // Injection buffer has priority
-    if (injection_read_pos != injection_write_pos) {
-        return true;
-    }
-    
-    // Check all registered input sources for available data
+    // Check all registered input sources for available data (in priority order)
+    // Injection stream should be first in the list (added in main)
     for (int i = 0; i < input_source_count; i++) {
         if (input_sources[i] && input_sources[i]->available() > 0) {
-            setInputStream(input_sources[i]);
+            // Switch to this input source if it has data
+            if (input_stream != input_sources[i]) {
+                setInputStream(input_sources[i]);
+            }
             return true;
         }
     }
@@ -965,39 +1003,46 @@ bool JerialClass::serviceInputs() {
 }
 
 bool JerialClass::injectInput(const char* data, bool strip_tags) {
+    // Note: strip_tags parameter is legacy - InjectionBufferStream now handles tag filtering on read
+    (void)strip_tags;  // Suppress unused parameter warning
+    
     if (!data) {
         return false;
-    }
-    
-    // Apply auto-strip if enabled, or explicit strip_tags parameter
-    if (strip_tags || auto_strip_tags) {
-        return stripTagsAndInject(data, strlen(data)) > 0;
     }
     
     return injectInput((const uint8_t*)data, strlen(data), false);
 }
 
 bool JerialClass::injectInput(const uint8_t* data, size_t size, bool strip_tags) {
+    // Note: strip_tags parameter is legacy - InjectionBufferStream now handles tag filtering on read
+    (void)strip_tags;  // Suppress unused parameter warning
+    
     if (!data || size == 0) {
         return false;
     }
     
-    // Apply auto-strip if enabled, or explicit strip_tags parameter
-    if (strip_tags || auto_strip_tags) {
-        return stripTagsAndInject((const char*)data, size) > 0;
-    }
-    
-    // Check if we have space in injection buffer
+    // Write raw data to injection buffer - InjectionBufferStream will filter tags on read
     for (size_t i = 0; i < size; i++) {
         uint16_t next_write = (injection_write_pos + 1) % sizeof(injection_buffer);
         
         if (next_write == injection_read_pos) {
-            return false;
+            // Serial.printf("⚠️  Injection buffer full! Dropped %zu bytes\n", size - i);
+            // Serial.flush();
+            return false;  // Buffer full
         }
         
         injection_buffer[injection_write_pos] = data[i];
+        
         injection_write_pos = next_write;
     }
+
+    // Note: hasInjectedCommand flag is set by AsyncPassthrough when closing tag </j> is detected
+    // This ensures the flag is only set when a complete command (with closing tag) is ready,
+    // not on every character injection that happens to end with \n
+    
+    // Debug: Confirm injection (disabled for performance)
+    // Serial.printf("✓ Injected %zu chars (buffer: %d -> %d)\n", size, injection_read_pos, injection_write_pos);
+    // Serial.flush();
     
     return true;
 }
@@ -1008,144 +1053,101 @@ void JerialClass::clearInjectedInput() {
     memset(injection_buffer, 0, sizeof(injection_buffer));
 }
 
+/**
+ * Fast, thread-safe check for complete line in injection buffer
+ * Scans buffer for newline without consuming data
+ */
+bool JerialClass::hasInjectedCompleteLine() const {
+    // Read positions once for thread safety
+    uint16_t read_pos = injection_read_pos;
+    uint16_t write_pos = injection_write_pos;
+    
+    if (read_pos == write_pos) {
+        return false;  // Buffer empty
+    }
+    
+    // Scan buffer for newline
+    uint16_t pos = read_pos;
+    while (pos != write_pos) {
+        if (injection_buffer[pos] == '\n') {
+            return true;  // Found complete line
+        }
+        pos = (pos + 1) % sizeof(injection_buffer);
+    }
+    
+    return false;  // No newline found
+}
+
+/**
+ * Extract complete line directly from injection buffer (fast path)
+ * Bypasses slow TermControl processing for immediate command execution
+ * Thread-safe: modifies read position atomically
+ * 
+ * NOTE: AsyncPassthrough already filters <j> and </j> tags before injection,
+ * so we don't need tag filtering here. Just read characters directly.
+ */
+String JerialClass::getInjectedCompleteLine() {
+    String line;
+    line.reserve(128);  // Pre-allocate for performance
+    
+    // Read positions once for thread safety
+    uint16_t read_pos = injection_read_pos;
+    uint16_t write_pos = injection_write_pos;
+    
+    if (read_pos == write_pos) {
+        return line;  // Buffer empty
+    }
+    
+    #if DEBUG_INJECTED_COMMANDS
+    // Debug: Show buffer contents
+    Serial.printf("DEBUG getInjectedCompleteLine: read=%d write=%d\n", read_pos, write_pos);
+    Serial.print("  Buffer contents: [");
+    uint16_t debug_pos = read_pos;
+    int char_count = 0;
+    while (debug_pos != write_pos && char_count < 50) {
+        char c = injection_buffer[debug_pos];
+        if (c >= 32 && c < 127) {
+            Serial.print(c);
+        } else {
+            Serial.printf("<%02X>", (unsigned char)c);
+        }
+        debug_pos = (debug_pos + 1) % sizeof(injection_buffer);
+        char_count++;
+    }
+    Serial.println("]");
+    Serial.flush();
+    #endif
+    
+    // Extract characters until newline
+    // AsyncPassthrough has already filtered tags, so just read directly
+    while (read_pos != write_pos) {
+        char c = injection_buffer[read_pos];
+        read_pos = (read_pos + 1) % sizeof(injection_buffer);
+        
+        // Check for newline (line complete)
+        if (c == '\n') {
+            // Update read position atomically
+            injection_read_pos = read_pos;
+            break;
+        }
+        
+        // Add character to line (skip carriage returns)
+        if (c != '\r') {
+            line += c;
+        }
+    }
+    
+    #if DEBUG_INJECTED_COMMANDS
+    Serial.printf("  Extracted line: \"%s\"\n", line.c_str());
+    Serial.flush();
+    #endif
+    
+    return line;
+}
+
 // ============================================================================
 // Tag Stripping
 // ============================================================================
-
-size_t JerialClass::stripTagsAndInject(const char* data, size_t length) {
-    if (!data || length == 0) {
-        return 0;
-    }
-    
-    size_t written = 0;
-    size_t i = 0;
-    
-    while (i < length) {
-        // Check for opening tag "<j>"
-        if (i + 2 < length && data[i] == '<' && data[i+1] == 'j' && data[i+2] == '>') {
-            i += 3;
-            continue;
-        }
-        
-        // Check for closing tag "</j>"
-        if (i + 3 < length && data[i] == '<' && data[i+1] == '/' && data[i+2] == 'j' && data[i+3] == '>') {
-            i += 4;
-            continue;
-        }
-        
-        // Not a tag - inject this character
-        uint16_t next_write = (injection_write_pos + 1) % sizeof(injection_buffer);
-        
-        if (next_write == injection_read_pos) {
-            return written;
-        }
-        
-        injection_buffer[injection_write_pos] = data[i];
-        injection_write_pos = next_write;
-        written++;
-        i++;
-    }
-    
-    return written;
-}
-
-int JerialClass::readWithTagFilter() {
-    if (!input_stream) {
-        return -1;
-    }
-    
-    // If we have buffered characters from a non-tag sequence, return them first
-    if (tag_buffer_pos > 0 && tag_buffer[0] != '<') {
-        char result = tag_buffer[0];
-        for (int i = 1; i < tag_buffer_pos; i++) {
-            tag_buffer[i-1] = tag_buffer[i];
-        }
-        tag_buffer_pos--;
-        return result;
-    }
-    
-    while (true) {
-        // If we have a partial tag buffer, wait briefly for more data
-        if (tag_buffer_pos > 0 && input_stream->available() == 0) {
-            // Wait up to 5ms for more data when we might have a tag
-            uint32_t wait_start = millis();
-            while (input_stream->available() == 0 && (millis() - wait_start) < 5) {
-                delayMicroseconds(100); // Small delay to allow data to arrive
-            }
-            
-            // If still no data after waiting, return buffered characters
-            if (input_stream->available() == 0) {
-                char result = tag_buffer[0];
-                for (int i = 1; i < tag_buffer_pos; i++) {
-                    tag_buffer[i-1] = tag_buffer[i];
-                }
-                tag_buffer_pos--;
-                return result;
-            }
-        }
-        
-        int c = input_stream->read();
-        if (c == -1) {
-            if (tag_buffer_pos > 0) {
-                char result = tag_buffer[0];
-                for (int i = 1; i < tag_buffer_pos; i++) {
-                    tag_buffer[i-1] = tag_buffer[i];
-                }
-                tag_buffer_pos--;
-                return result;
-            }
-            return -1;
-        }
-        
-        if (tag_buffer_pos == 0) {
-            if (c == '<') {
-                tag_buffer[0] = '<';
-                tag_buffer_pos = 1;
-                continue;
-            } else {
-                return c;
-            }
-        }
-        
-        tag_buffer[tag_buffer_pos++] = (char)c;
-        
-        // Check for complete opening tag "<j>"
-        if (tag_buffer_pos == 3 && 
-            tag_buffer[0] == '<' && tag_buffer[1] == 'j' && tag_buffer[2] == '>') {
-            tag_buffer_pos = 0;
-            continue;
-        }
-        
-        // Check for complete closing tag "</j>"
-        if (tag_buffer_pos == 4 && 
-            tag_buffer[0] == '<' && tag_buffer[1] == '/' && 
-            tag_buffer[2] == 'j' && tag_buffer[3] == '>') {
-            tag_buffer_pos = 0;
-            continue;
-        }
-        
-        // Check if this can't possibly be a tag anymore
-        bool not_a_tag = false;
-        if (tag_buffer_pos == 2 && tag_buffer[1] != 'j' && tag_buffer[1] != '/') {
-            not_a_tag = true;
-        } else if (tag_buffer_pos == 3 && tag_buffer[1] == 'j' && tag_buffer[2] != '>') {
-            not_a_tag = true;
-        } else if (tag_buffer_pos == 3 && tag_buffer[1] == '/' && tag_buffer[2] != 'j') {
-            not_a_tag = true;
-        } else if (tag_buffer_pos >= 4) {
-            not_a_tag = true;
-        }
-        
-        if (not_a_tag) {
-            char result = tag_buffer[0];
-            for (int i = 1; i < tag_buffer_pos; i++) {
-                tag_buffer[i-1] = tag_buffer[i];
-            }
-            tag_buffer_pos--;
-            return result;
-        }
-    }
-}
 
 // ============================================================================
 // Internal TermControl Management
@@ -1156,20 +1158,34 @@ void JerialClass::createTermControlIfNeeded(Stream* stream) {
         return;
     }
     
-    // If we already have terminal control, reuse it
-    if (term_control) {
-        term_control_active = true;
-        return;
+    // CRITICAL: Always recreate MultiSourceStream to ensure it wraps the current stream
+    // Delete old mux_stream if it exists
+    if (mux_stream) {
+        delete mux_stream;
+        mux_stream = nullptr;
     }
     
-    // Create new terminal control instance
-    term_control = new TermControl(stream, true);
+    // Create MultiSourceStream that prioritizes injection over the real stream
+    mux_stream = new MultiSourceStream(injection_stream, stream);
+    // Serial.println("✓ MultiSourceStream created (injection + Serial)");
+    // Serial.flush();
+    
+    // CRITICAL: Recreate TermControl to point at the new mux_stream
+    // Otherwise it keeps reading from the old stream!
+    if (term_control) {
+        // Serial.println("⚠️  Recreating TermControl with mux_stream");
+        // Serial.flush();
+        delete term_control;
+        term_control = nullptr;
+    }
+    
+    // Create terminal control with the multiplexed stream
+    // TermControl reads from mux_stream, which checks injection first, then Serial
+    term_control = new TermControl(mux_stream, true);
     term_control_active = true;
     
-    // Apply auto strip tags setting
-    if (term_control) {
-        term_control->setAutoStripTags(auto_strip_tags);
-    }
+    // Serial.println("✓ TermControl created/updated with mux_stream");
+    // Serial.flush();
 }
 
 void JerialClass::destroyTermControl() {

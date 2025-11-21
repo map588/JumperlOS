@@ -214,6 +214,50 @@ private:
 };
 
 /**
+ * @brief Injected command processor - handles commands from AsyncPassthrough immediately
+ * CRITICAL priority - executes injected commands as soon as they arrive to prevent buffer pile-up
+ * 
+ * This service checks for completed injected commands (from Arduino via <j> tags)
+ * and executes them immediately, preventing the buffer from filling up when the
+ * main loop is busy. Commands are executed synchronously via singleCharCommands.
+ */
+class InjectedCommandService : public Service {
+public:
+    static InjectedCommandService& getInstance();
+    InjectedCommandService(const InjectedCommandService&) = delete;
+    InjectedCommandService& operator=(const InjectedCommandService&) = delete;
+    
+    ServiceStatus service() override;
+    const char* getName() const override { return "InjectedCmd"; }
+    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    
+private:
+    InjectedCommandService() = default;
+    ~InjectedCommandService() = default;
+    static InjectedCommandService* instance;
+};
+
+/**
+ * @brief AsyncPassthrough service - handles USB CDC1 <-> UART0 bridging
+ * CRITICAL priority - must run every loop to prevent data loss and maintain low latency
+ */
+class AsyncPassthroughService : public Service {
+public:
+    static AsyncPassthroughService& getInstance();
+    AsyncPassthroughService(const AsyncPassthroughService&) = delete;
+    AsyncPassthroughService& operator=(const AsyncPassthroughService&) = delete;
+    
+    ServiceStatus service() override;
+    const char* getName() const override { return "AsyncPassthrough"; }
+    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    
+private:
+    AsyncPassthroughService() = default;
+    ~AsyncPassthroughService() = default;
+    static AsyncPassthroughService* instance;
+};
+
+/**
  * @brief TinyUSB task service - handles USB communication
  * HIGH priority - USB communication is time-sensitive
  */
@@ -287,6 +331,8 @@ extern jOSmanager& jOS;
 
 // System service references
 extern TermSerialService& termSerialService;
+extern InjectedCommandService& injectedCommandService;
+extern AsyncPassthroughService& asyncPassthroughService;
 extern TinyUSBService& tinyUSBService;
 extern USBPeriodicService& usbPeriodicService;
 extern OLEDService& oledService;

@@ -1519,7 +1519,7 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
         if ( lowHigh == 0 ) {
             gpio_put( gpio, 0 );
             gpioState[ gpioDef[ gpioOutputFound ][ 2 ] ] = 0;
-            Serial.print( "\r                      \r" );
+            Serial.print( "\r                                  \r" );
             Serial.print( " gpio " );
             Serial.print( gpioDef[ gpioOutputFound ][ 2 ] + 1 );
             // printNodeOrName(gpioDef[gpioOutputFound][1], 1);
@@ -1532,7 +1532,7 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
         } else if ( lowHigh == 1 ) {
             gpio_put( gpio, 1 );
             gpioState[ gpioDef[ gpioOutputFound ][ 2 ] ] = 1;
-            Serial.print( "\r                      \r" );
+            Serial.print( "\r                                  \r" );
             Serial.print( " gpio " );
             // Serial.print(gpioDef[gpioOutputFound][0]);
             Serial.print( gpioDef[ gpioOutputFound ][ 2 ] + 1 );
@@ -1547,14 +1547,14 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
             bool currentState = gpio_get_out_level( gpio );
             gpioState[ gpioDef[ gpioOutputFound ][ 2 ] ] = !currentState;
             gpio_put( gpio, !currentState );
-
+            Serial.print( "\r                                  \r" );
             Serial.print( " gpio " );
             Serial.print( gpioDef[ gpioOutputFound ][ 2 ] + 1 );
             Serial.print( "\t " );
             Serial.print( currentState ? "high" : "low" );
             Serial.print( " > " );
             Serial.print( !currentState ? "high" : "low" );
-            Serial.println( );
+           // Serial.println( );
             Serial.flush( );
             return !currentState;
         }

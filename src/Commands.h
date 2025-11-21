@@ -8,6 +8,10 @@ extern volatile int showProbeLEDs;
 
 extern volatile int core1request;
 
+// Guard flags to prevent auto-save during command processing (prevents deadlock)
+extern volatile bool refreshLocalInProgress;
+extern volatile bool refreshInProgress;
+
 struct rowLEDs {
   uint32_t color[5];
 
@@ -20,6 +24,12 @@ void refresh(int flashOrLocal = 0, int ledShowOption = -1, int fillUnused = 1, i
 
 void refreshConnections(int ledShowOption = 1,int fillUnused = 1, int clean = 0);
 void refreshLocalConnections(int ledShowOption = 1, int fillUnused = 1, int clean = 0);
+
+// Check and restore all locked connections from config
+// Call after clear, load, or any operation that might remove connections
+// Returns number of locked connections added (0 if all were already present)
+int handleLockedConnections();
+
 void updateLEDs(void);
 void printSlots(int fileNo = -1);
 bool checkFloating(int node);

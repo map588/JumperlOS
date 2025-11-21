@@ -114,7 +114,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.5.0.7"; //! remember to update this
+const char firmwareVersion[] = "5.5.1.0"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -171,15 +171,17 @@ void setup( ) {
     
     // Configure Jerial for both input and output
     // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
+    // InjectionBufferStream is automatically prioritized via MultiSourceStream layer
     Jerial.setInputStream(JerialEndpoint::USB_SERIAL);  // Input with terminal control
     Jerial.addOutputStream(JerialEndpoint::USB_SERIAL); // Output to USB
     //Jerial.addOutputStream(JerialEndpoint::USB_SER2);  // Output to Serial1
     //Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
     //Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
+    Jerial.addInputSource(Jerial.getInjectionStream()); // Add injection stream as high-priority input source
     
     // Enable automatic tag stripping for input
     // This removes <j> and </j> tags from incoming USB commands to prevent weird behavior
-    Jerial.setAutoStripTags(true);
+    // Jerial.setAutoStripTags(true);
     
     initDAC( );
     // Serial.println("DAC initialized");
@@ -277,9 +279,11 @@ startupTimers[ 4 ] = millis( );
 
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
-    jOS.registerService( &probeButton );       // CRITICAL - high-frequency button checking
-    jOS.registerService( &termSerialService ); // CRITICAL - terminal input (when line buffering enabled)
-    jOS.registerService( &menus );             // CRITICAL - direct user input
+    jOS.registerService( &probeButton );            // CRITICAL - high-frequency button checking
+    jOS.registerService( &termSerialService );      // CRITICAL - terminal input (when line buffering enabled)
+    jOS.registerService( &injectedCommandService ); // CRITICAL - immediate command execution from injection buffer
+    jOS.registerService( &asyncPassthroughService );// CRITICAL - USB CDC1<->UART0 bridging (prevent data loss)
+    jOS.registerService( &menus );                  // CRITICAL - direct user input
 
     // HIGH priority services - time-sensitive operations
     jOS.registerService( &tinyUSBService ); // HIGH - USB communication
@@ -402,6 +406,9 @@ unsigned long busyTimers[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 String currentCommandLine = "";
 
 void loop( ) {
+    // Declare variables at function scope to avoid goto scope issues
+    bool useLineBuffering = false;
+    bool hasInjectedData = false;
 
 menu:
 
@@ -566,12 +573,22 @@ if ( configChanged == true && millis( ) > 3000 ) {
 
 
     //! This is the main busy wait loop waiting for input
+    // CRITICAL: Use Jerial.available() to check injection buffer + Serial
+    // CRITICAL: Force line buffering when injection buffer has data (commands need full lines!)
+    
+    // Calculate whether to use line buffering (variables declared at function scope)
+    hasInjectedData = (Jerial.getInjectionStream() && Jerial.getInjectionStream()->available() > 0);
+    useLineBuffering = (jumperlessConfig.display.terminal_line_buffering == 1) || hasInjectedData;
 
-    while ( ( ( jumperlessConfig.display.terminal_line_buffering == 1 && !Jerial.hasCompletedLine( ) ) ||
-              ( jumperlessConfig.display.terminal_line_buffering == 0 && Serial.available( ) == 0 ) ) &&
+    while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
+              ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
+        
+        // Recalculate useLineBuffering each iteration
+        hasInjectedData = (Jerial.getInjectionStream() && Jerial.getInjectionStream()->available() > 0);
+        useLineBuffering = (jumperlessConfig.display.terminal_line_buffering == 1) || hasInjectedData;
 
-        unsigned long loopStart = debugWaitLoopTiming ? micros( ) : 0;
+        unsigned long loopStart = micros( );
 
         busyTimers[ 0 ] = micros( );
 
@@ -579,7 +596,16 @@ if ( configChanged == true && millis( ) > 3000 ) {
         // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services
         jOS.serviceAll( );
 
-
+if (Jerial.hasInjectedCommand == 1) {
+    // Serial.println("injected command detected");
+    // Serial.flush();
+    // jOS.serviceCritical();
+   // continue;
+}
+// if (Jerial.hasCompletedLine() == 1) {
+//     Serial.println("completed line detected");
+//     Serial.flush();
+// }
 
         // if (configChanged == true) {
         //     Jerial.print("config changed, saving...");
@@ -596,16 +622,12 @@ if ( configChanged == true && millis( ) > 3000 ) {
         if (millis() - lastSecondSerialCheck > 10) {
             lastSecondSerialCheck = millis();
             
-            // Handle async passthrough (if enabled)
-            if (jumperlessConfig.serial_1.async_passthrough == true) {
-                AsyncPassthrough::task();
-            }
+            // AsyncPassthrough::task() now handled by asyncPassthroughService (CRITICAL priority)
             
             // Handle Arduino flashing and serial passthrough
             secondSerialHandler();
         }
-
-        busyTimers[ 1 ] = micros( );
+        busyTimers[ 2 ] = micros( );
 
         // Check if logic analyzer is active (blocks normal operation)
         if ( logicAnalyzer.is_running( ) == true || logicAnalyzer.is_armed( ) == true ) {
@@ -620,13 +642,14 @@ if ( configChanged == true && millis( ) > 3000 ) {
             core1passthrough = 0;
             goto loadfile;
         }
+        busyTimers[ 3 ] = micros( );
 
         // Check if terminal has completed line (includes injected commands - works regardless of buffering mode)
         if ( Jerial.hasCompletedLine() ) {
             break; // Line is ready for processing (could be user input or injected command)
         }
 
-        busyTimers[ 9 ] = micros( );
+        busyTimers[ 4 ] = micros( );
 
         if ( debugWaitLoopTiming ) {
             unsigned long loopEnd = micros( );
@@ -655,14 +678,29 @@ if ( configChanged == true && millis( ) > 3000 ) {
             // delay(100);
         }
 #endif
-        if ( jumperlessConfig.display.terminal_line_buffering == 1 ) {
-            // Optionally service again at the end of the loop body
+        if ( useLineBuffering ) {
+            // Service Jerial to process line buffering (user input or injected commands)
             Jerial.service( );
         }
     }
     // Check for completed lines first (includes both injected and buffered input)
     // This works regardless of line buffering mode - injected commands always work
-    if ( Jerial.hasCompletedLine( ) ) {
+    // CRITICAL: Use line buffering when injection buffer has data
+    static unsigned long lastCommandProcessedTime = 0;
+    if ( useLineBuffering && Jerial.hasCompletedLine( ) ) {
+        // Track command processing latency
+        
+        unsigned long timeSinceLastCommand = millis() - lastCommandProcessedTime;
+        if (lastCommandProcessedTime > 0 && timeSinceLastCommand > 500) {
+            #if debugJerial
+            Serial.print("⏱️  Main loop gap: ");
+            Serial.print(timeSinceLastCommand);
+            Serial.println(" ms between commands");
+            Serial.flush();
+            #endif
+        }
+        lastCommandProcessedTime = millis();
+        
         String cmdLine = Jerial.getCompletedLine( ); // Get and consume the line
         cmdLine.trim( );
         currentCommandLine = cmdLine; // Store for backwards compatibility with parsers
@@ -672,11 +710,16 @@ if ( configChanged == true && millis( ) > 3000 ) {
         } else {
             input = '\n';
         }
-    } else if ( jumperlessConfig.display.terminal_line_buffering != 1 ) {
+    } else if ( !useLineBuffering ) {
         // Only read single character if NOT in line buffering mode
         // (line buffering mode already handled by Jerial.service() above)
-        if ( Serial.available( ) > 0 ) {
-            input = Serial.read( );
+        // NOTE: Jerial.read() now handles injection buffer with tag filtering automatically
+        if ( Jerial.available( ) > 0 ) {
+            input = Jerial.read( );
+            #if debugJerial
+            Serial.printf("Main: Read char '%c' (%d) from Jerial\n", (char)input, input);
+            Serial.flush();
+            #endif
             // Set currentCommandLine with just the single character for backwards compatibility
             // CRITICAL: Cast to char first! String(int) creates decimal string "87", not "W"
             currentCommandLine = String( (char)input );
@@ -818,13 +861,13 @@ startupTimers[ 12 ] = millis( );
     // Load YAML state from slot file into globalState
     String loadError;
     if ( !mgr.loadSlot( netSlot, loadError ) ) {
-        // if ( debugFP ) {
+         if ( debugFP ) {
         Serial.print( "Warning: Failed to load slot " );
         Serial.print( netSlot );
         Serial.print( ": " );
         Serial.println( loadError );
         Serial.println( "Starting with empty slot" );
-        // }
+         }
         // Empty slot is OK - just start fresh
         mgr.clearActiveSlot( );
     }
@@ -870,6 +913,11 @@ int passthroughStatus = 0;
 unsigned long serialInfoTimer = 0;
 
 unsigned long la_timer = 0;
+bool debugWaitLoopTimingCore2 = true;
+unsigned long lastCore2LoopStart = 5000000;
+unsigned long t[22];
+
+
 
 void loop1( ) {
 
@@ -878,9 +926,21 @@ void loop1( ) {
         // replyWithSerialInfo( );
     }
 
+// if (micros() - lastCore2LoopStart > 5000000 &&  (micros( ) - schedulerTimer > schedulerUpdateTime)) {
+//     debugWaitLoopTimingCore2 = true;
+//     lastCore2LoopStart = micros( );
+// }
+//     else {
+//         debugWaitLoopTimingCore2 = false;
+//     }
+
+for ( int i = 0; i < 22; i++ ) {
+t[i] = 0;
+}
+
     // Core 2 timing instrumentation (only when debug enabled)
     static unsigned long core2LoopStart = 0;
-    if ( debugWaitLoopTiming ) {
+    if ( debugWaitLoopTimingCore2 ) {
         core2LoopStart = micros( );
     }
 
@@ -907,7 +967,7 @@ void loop1( ) {
     // Route PulseView traffic to the new logic analyzer
     // OPTIMIZATION: Only poll USB when logic analyzer is actually running or recently active
     // USB polling is expensive (1-55ms!), so skip it when LA is idle
-    unsigned long t0 = debugWaitLoopTiming ? micros( ) : 0;
+    t[0] = micros( );
     bool laActive = logicAnalyzer.is_running( ) || logicAnalyzer.is_armed( );
     // Check if LA had recent command (but ignore initial boot where last_command_time = 0)
     bool laRecentlyActive = ( logicAnalyzer.last_command_time > 0 ) &&
@@ -921,39 +981,44 @@ void loop1( ) {
         }
     }
 
-    if ( debugWaitLoopTiming ) {
-        unsigned long t1 = micros( );
-        if ( ( t1 - t0 ) > 1000 ) {
-            Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t1 - t0 );
+    if ( debugWaitLoopTimingCore2 ) {
+        t[1] = micros( );
+        if ( ( t[1] - t[0] ) > 1000 ) {
+           // Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t[1] - t[0] );
         }
     }
 
     // OPTIMIZATION: Only service wavegen when it's actually running
     // wavegen.service() contains a blocking while() loop for I2C streaming!
-    unsigned long t2 = debugWaitLoopTiming ? micros( ) : 0;
-    if ( wavegen.isRunning( ) ) {
-        Serial.println("CORE2: wavegen.service() is being called");
-        wavegen.service( );
-    }
-    if ( debugWaitLoopTiming ) {
-        unsigned long t3 = micros( );
-        if ( ( t3 - t2 ) > 1000 ) {
-            Serial.printf( "CORE2: wavegen.service() took %lu us\n", t3 - t2 );
-        }
+    t[2] = micros( );
+    // if ( wavegen.isRunning( ) ) {
+    //     //Serial.println("CORE2: wavegen.service() is being called");
+    //     wavegen.service( );
+    // }
+    if ( debugWaitLoopTimingCore2 ) {
+        t[3] = micros( );
+        // if ( ( t[3] - t[2] ) > 1000 ) {
+        //    // Serial.printf( "CORE2: wavegen.service() took %lu us\n", t[3] - t[2] );
+        // }
     }
 
     if ( doomOn == 1 ) {
         playDoom( );
         doomOn = 0;
     } else if ( pauseCore2 == 0 && logicAnalyzer.getIsRunning( ) == false ) {
-        unsigned long t4 = debugWaitLoopTiming ? micros( ) : 0;
+        t[4] = micros( );
         core2stuff( );
-        if ( debugWaitLoopTiming ) {
-            unsigned long t5 = micros( );
-            if ( ( t5 - t4 ) > 5000 ) { // Report if core2stuff takes > 5ms
-                Serial.printf( "CORE2: core2stuff() took %lu us (%.2f ms)\n", t5 - t4, ( t5 - t4 ) / 1000.0 );
-            }
-        }
+      //  if ( debugWaitLoopTimingCore2    ) {
+            t[5] = micros( );
+         //   if ( ( t[5] - t[4] ) > 500 ) { // Report if core2stuff takes > 5ms
+         //      // Serial.printf( "CORE2: core2stuff() took %lu us (%.2f ms)\n", t[5] - t[4], ( t[5] - t[4] ) / 1000.0 );
+         //   }
+         // }
+    } else if ( pauseCore2 == 0) {
+        // Serial.println("CORE2: pauseCore2 == 0");
+        // Serial.flush();
+
+        
     }
 
     // REMOVED: AsyncPassthrough::task() and secondSerialHandler() moved to Core 0
@@ -978,15 +1043,19 @@ void loop1( ) {
             dumpLEDTimer = millis( );
         }
     }
-
+    unsigned long core2LoopEnd = micros( );
     // Core 2 total loop timing
-    if ( debugWaitLoopTiming && core2LoopStart > 0 ) {
-        unsigned long core2LoopEnd = micros( );
-        if ( ( core2LoopEnd - core2LoopStart ) > 20000 ) { // Report if loop takes > 20ms
-            Serial.printf( "CORE2: *** FULL LOOP took %lu us (%.2f ms) ***\n",
-                           core2LoopEnd - core2LoopStart, ( core2LoopEnd - core2LoopStart ) / 1000.0 );
-        }
-    }
+    // if ( debugWaitLoopTimingCore2 && core2LoopEnd - core2LoopStart > 30000) {
+       
+    //    // if ( ( core2LoopEnd - core2LoopStart ) > 20000 ) { // Report if loop takes > 20ms
+    //         Serial.printf( "CORE2: *** FULL LOOP took %lu us (%.2f ms) ***\n",
+    //                        core2LoopEnd - core2LoopStart, ( core2LoopEnd - core2LoopStart ) / 1000.0 );
+    //    // }
+    //     for ( int i = 1; i < 22; i++ ) {
+    //         Serial.printf( "CORE2:   t[%d] - t[%d] = %lu us\n", i, i - 1, t[i] - t[i - 1] );
+    //         Serial.flush();
+    //     }
+    // }
 }
 
 void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
@@ -1052,34 +1121,31 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                         clearBeforeSend = 0;
                     }
 
-                    unsigned long t0 = debugWaitLoopTiming ? micros( ) : 0;
+                    t[6] = micros( );
                     showNets( );
-                    if ( debugWaitLoopTiming ) {
-                        unsigned long t1 = micros( );
-                        if ( ( t1 - t0 ) > 5000 ) {
-                            Serial.printf( "CORE2:   showNets() took %lu us\n", t1 - t0 );
+                    if ( debugWaitLoopTimingCore2 ) {
+                        t[7] = micros( );
+                        if ( ( t[7] - t[6] ) > 5000 ) {
+                           // Serial.printf( "CORE2:   showNets() took %lu us\n", t[7] - t[6] );
                         }
                     }
 
-                    unsigned long t2 = debugWaitLoopTiming ? micros( ) : 0;
+                    t[8] = micros( );
                     readGPIO( ); // if want, I can make this update the LEDs like 10 times
                                  // faster by putting outside this loop,
+                    t[9] = micros( );
                     showLEDmeasurements( );
-                    if ( debugWaitLoopTiming ) {
-                        unsigned long t3 = micros( );
-                        if ( ( t3 - t2 ) > 2000 ) {
-                            Serial.printf( "CORE2:   readGPIO+showLEDmeasurements() took %lu us\n", t3 - t2 );
-                        }
-                    }
+             
 
-                    unsigned long t4 = debugWaitLoopTiming ? micros( ) : 0;
+        
+                   
+
+                    t[10] = micros( );
                     showAllRowAnimations( );
-                    if ( debugWaitLoopTiming ) {
-                        unsigned long t5 = micros( );
-                        if ( ( t5 - t4 ) > 2000 ) {
-                            Serial.printf( "CORE2:   showAllRowAnimations() took %lu us\n", t5 - t4 );
-                        }
-                    }
+                    
+                        t[11] = micros( );
+           
+                    
 
                     core2busy = false;
                     netUpdateRefreshCount = 0;
@@ -1088,29 +1154,19 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
             core2busy = true;
 
-            unsigned long t6 = debugWaitLoopTiming ? micros( ) : 0;
+            t[12] = micros( );
             leds.show( );
-            if ( debugWaitLoopTiming ) {
-                unsigned long t7 = micros( );
-                if ( ( t7 - t6 ) > 3000 ) { // leds.show() is typically the slowest!
-                    Serial.printf( "CORE2:   leds.show() took %lu us (%.2f ms) ⚠️ BLOCKING\n",
-                                   t7 - t6, ( t7 - t6 ) / 1000.0 );
-                }
-            }
 
-            // probeLEDs.clear();
+                t[13] = micros( );
+
 
             // Update probe LEDs to reflect current state
             if ( checkingButton == 0 || showProbeLEDs == 2 ) {
-                unsigned long t8 = debugWaitLoopTiming ? micros( ) : 0;
+                t[14] = micros( );
                 probeLEDhandler( );
-                if ( debugWaitLoopTiming ) {
-                    unsigned long t9 = micros( );
-                    if ( ( t9 - t8 ) > 2000 ) {
-                        Serial.printf( "CORE2:   probeLEDhandler() took %lu us\n", t9 - t8 );
-                    }
-                }
-                // core2busy = false;
+               
+                t[15] = micros( );
+   
             }
             core2busy = false;
             if ( rails != 3 && swirled == 0 ) {
@@ -1121,19 +1177,15 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
             swirled = 0;
             if ( inClickMenu == 1 ) {
-                unsigned long t10 = debugWaitLoopTiming ? micros( ) : 0;
+                    t[16] = micros( );
                 rotaryEncoderStuff( );
-                if ( debugWaitLoopTiming ) {
-                    unsigned long t11 = micros( );
-                    if ( ( t11 - t10 ) > 2000 ) {
-                        Serial.printf( "CORE2:   rotaryEncoderStuff() took %lu us ⚠️ ENCODER\n", t11 - t10 );
-                    }
-                }
+                t[17] = micros( );
+   
             }
             core2busy = false;
 
         } else if ( sendAllPathsCore2 != 0 ) {
-
+t[18] = micros( );
             if ( sendAllPathsCore2 == 1 ) {
                 sendPaths( 0 );
             } else if ( sendAllPathsCore2 == -1 ) {
@@ -1142,7 +1194,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                 sendPaths( sendAllPathsCore2 );
             }
             sendAllPathsCore2 = 0;
-
+t[19] = micros( );
         } else if ( millis( ) - lastSwirlTime > 51 && loadingFile == 0 &&
                     showLEDsCore2 == 0 && core1busy == false ) {
            
@@ -1194,7 +1246,9 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
         //     rotaryEncoderStuff( );
 
         } else {
+t[20] = micros( );
             rotaryEncoderStuff( );
+t[21] = micros( );
         }
 
         schedulerTimer = micros( );

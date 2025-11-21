@@ -641,27 +641,9 @@ void inputNodeFileList(int addRotaryConnections) {
       connIdx = commaIdx + 1;
     }
 
-    if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
-      // Jerial.println("Lock connection is enabled");
-      // Jerial.flush();
-      if (globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) && globalState.hasConnection(jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl)) {
-         // jumperlessConfig.top_oled.lock_connection = 1;
-          // Jerial.println("has connection");
-          // Jerial.flush();
-      } else {
-        state.connections.bridges[state.connections.numBridges][0] = jumperlessConfig.top_oled.sda_row;
-        state.connections.bridges[state.connections.numBridges][1] = jumperlessConfig.top_oled.gpio_sda;
-        state.connections.bridges[state.connections.numBridges][2] = -1;
-        state.connections.numBridges++;
-        state.connections.bridges[state.connections.numBridges][0] = jumperlessConfig.top_oled.scl_row;
-        state.connections.bridges[state.connections.numBridges][1] = jumperlessConfig.top_oled.gpio_scl;
-        state.connections.bridges[state.connections.numBridges][2] = -1;
-        state.connections.numBridges++;
-        // Jerial.println("no connection, adding bridge");
-        // Jerial.flush();
-      }
-  }
-
+    // Use centralized locked connections handler instead of inline logic
+    extern int handleLockedConnections();
+    handleLockedConnections();
     
    // Jerial.println("◆ Active slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
     
@@ -793,6 +775,10 @@ void inputNodeFileList(int addRotaryConnections) {
       connIdx = commaIdx + 1;
     }
     
+    // Use centralized locked connections handler
+    extern int handleLockedConnections();
+    handleLockedConnections();
+    
     Jerial.println("◆ Slot " + String(slotNum) + ": parsed " + String(connCount) + " connections");
     
     // Save the populated state to the slot
@@ -861,7 +847,7 @@ void saveCurrentSlotToSlot(int slotFrom, int slotTo, int flashOrLocalfrom,
 
 void savePreformattedNodeFile(int source, int slot, int keepEncoder, const String& preformattedData) {
   // NEW: Parse input directly into RAM state (no file I/O until auto-save)
-  
+  unsigned long startTime = micros();
   specialFunctionsString.clear();
   
   if (source == 0 || true) {
@@ -871,13 +857,14 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       serialCommandBufferIndex = 0;
     }
 
-    // Check if line buffering is enabled to determine data source
+    // Check if line buffering is enabled or if we have preformatted data (e.g., from injected commands)
     extern struct config jumperlessConfig;
-    bool usePreformattedData = (jumperlessConfig.display.terminal_line_buffering == 1) && 
-                                (preformattedData.length() > 1);
+    // CRITICAL FIX: Always use preformattedData if it has content > 1 char (includes injected commands!)
+    // Line buffering check is secondary - injected commands should ALWAYS use preformatted path
+    bool usePreformattedData = (preformattedData.length() > 1);
     
     if (usePreformattedData) {
-      // Line buffering mode: use the pre-parsed complete line from TermControl
+      // Line buffering mode OR injected command: use the pre-parsed complete line
       // Skip the first character (command) and any leading whitespace
       String dataOnly = preformattedData;
       if (dataOnly.length() > 0) {
@@ -893,7 +880,7 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
     } else {
       // Single-char mode: read directly from serial (old behavior)
       if (debugFP) {
-        Jerial.println("DEBUG: Reading from Serial (line buffering OFF or short line)");
+        Jerial.println("DEBUG: Reading from Serial (no preformatted data)");
       }
       specialFunctionsString.read(Jerial);
     }
@@ -1068,16 +1055,40 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
       }
     }
     
-    Jerial.print("Loaded ");
-    Jerial.print(connCount);
-    Jerial.println(" connections into RAM (will auto-save)");
+    // Jerial.print("Loaded ");
+    // Jerial.print(connCount);
+    // Jerial.println(" connections into RAM (will auto-save)");
+    // unsigned long endTime = micros();
+    // unsigned long duration = endTime - startTime;
+    // Jerial.print("Parse time: ");
+    // Jerial.print(duration);
+    // Jerial.println(" us");
+    // Jerial.flush();
     
-    // Mark as dirty and refresh once at the end (batch optimization)
+    // Mark as dirty and refresh immediately (user needs instant hardware feedback)
     if (connCount > 0) {
       globalState.markDirty();
+      
+      // Refresh immediately but with optimizations to keep it fast
+      unsigned long refreshStart = millis();
       refreshLocalConnections(-1, 1, 1);
+      unsigned long refreshTime = millis() - refreshStart;
+      
+      // Warn if refresh is taking too long (indicates performance problem)
+      if (refreshTime > 300) {
+        Serial.print("⚠️  Slow refresh: ");
+        Serial.print(refreshTime);
+        Serial.println(" ms");
+        Serial.flush();
+      }
     }
-    
+
+    // endTime = micros();
+    // duration = endTime - startTime;
+    // Jerial.print("After Refresh: ");
+    // Jerial.print(duration);
+    // Jerial.println(" us");
+    // Jerial.flush();
   }
   
   // No file write here - auto-save scheduler handles it
@@ -1266,7 +1277,7 @@ void clearNodeFile(int slot, int flashOrLocal) {
     globalState.addConnection(117, 71, errorMsg);
   }
   
-  if (jumperlessConfig.top_oled.lock_connection == 1) {
+  if (jumperlessConfig.top_oled.lock_connection == 1 && !oledUsingHardwiredPins) {
     // Add OLED locked connections
     globalState.addConnection(jumperlessConfig.top_oled.sda_row, 
                              jumperlessConfig.top_oled.gpio_sda, errorMsg);

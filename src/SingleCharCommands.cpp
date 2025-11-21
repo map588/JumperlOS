@@ -730,24 +730,12 @@ CommandResult cmd_loadNodeFile(char c, const String& line) {
     // Jerial.println("Loading node file...");
     // Jerial.println(line);
     
+    // savePreformattedNodeFile handles parsing to RAM, marking dirty, and refresh
+    // No need to call refreshConnections again - that would do the work twice!
     savePreformattedNodeFile(serSource, netSlot, rotaryEncoderMode, line);
     
-    // Validate the saved node file
-    int validation_result = validateNodeFileSlot(netSlot, false);
-    if (validation_result == 0) {
-        extern bool debugFP;
-        if (debugFP) {
-            Jerial.println("NodeFile validated successfully");
-        }
-        refreshConnections(-1);
-    } else {
-        extern bool debugFP;
-        if (debugFP) {
-            Jerial.println("NodeFile validation failed: " + 
-                          String(getNodeFileValidationError(validation_result)));
-            Jerial.println("Connections not refreshed due to invalid node file");
-        }
-    }
+    // Validation happens inside savePreformattedNodeFile via refreshLocalConnections
+    // which calls the same validation logic. Don't duplicate the work here.
     
     input = ' ';
     probeActive = 0;
@@ -760,7 +748,7 @@ CommandResult cmd_loadNodeFile(char c, const String& line) {
     
     connectFromArduino = '\0';
     readInNodesArduino = 0;
-    return CMD_SHOW_MENU;
+    return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_refreshConnections(char c, const String& line) {

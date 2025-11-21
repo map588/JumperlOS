@@ -99,6 +99,11 @@ Adafruit_NeoPixel bbleds(LED_COUNT + LED_COUNT_TOP, LED_PIN, NEO_GRB + NEO_KHZ80
 Adafruit_NeoPixel topleds(LED_COUNT_TOP, LED_PIN_TOP, NEO_GRB + NEO_KHZ800);
 //#endif
 
+// #include "RamMacros.h"
+
+uint8_t *ram_bb_pixels = NULL;
+uint8_t *ram_top_pixels = NULL;
+
 Adafruit_NeoPixel probeLEDs(1, PROBE_LED_PIN, NEO_GRB + NEO_KHZ800);
 // Adafruit_NeoPixel probeLEDs(1, 9, NEO_GRB + NEO_KHZ800);
 
@@ -127,6 +132,12 @@ void ledClass::begin(void) {
   bbleds.begin();
   bbleds.setBrightness(254);
   topleds.setBrightness(254);
+
+  // Get pointers to pixel buffers for RAM-resident operations
+  ram_bb_pixels = bbleds.getPixels();
+  if (splitLEDs == 1) {
+    ram_top_pixels = topleds.getPixels();
+  }
   }
 
 void ledClass::show(void) {
@@ -136,46 +147,88 @@ void ledClass::show(void) {
   bbleds.show();
   }
 
-void ledClass::setPixelColor(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+// RAM-resident helper to set pixel color directly in buffer
+// Avoids calling flash-resident Adafruit_NeoPixel::setPixelColor
+// ASSUMES NEO_GRB format!
+inline void __not_in_flash_func(setPixelColorRamHelper)(uint8_t* pixels, uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  if (!pixels) return;
+  uint8_t *p = &pixels[n * 3];
+  p[0] = g; // Green
+  p[1] = r; // Red
+  p[2] = b; // Blue
+}
+
+void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
   if (n >= LED_COUNT && splitLEDs == 1) {
-    topleds.setPixelColor(n - LED_COUNT, r, g, b);
+    // topleds.setPixelColor(n - LED_COUNT, r, g, b);
+    if (ram_top_pixels) {
+        setPixelColorRamHelper(ram_top_pixels, n - LED_COUNT, r, g, b);
     } else {
-    bbleds.setPixelColor(n, r, g, b);
+        // Fallback if pointers not set (shouldn't happen after begin)
+        topleds.setPixelColor(n - LED_COUNT, r, g, b);
+    }
+    } else {
+    // bbleds.setPixelColor(n, r, g, b);
+    if (ram_bb_pixels) {
+        setPixelColorRamHelper(ram_bb_pixels, n, r, g, b);
+    } else {
+        bbleds.setPixelColor(n, r, g, b);
+    }
     }
   }
 
-void ledClass::setPixelColor(uint16_t n, uint32_t c) {
+void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
+  uint8_t r = (uint8_t)(c >> 16);
+  uint8_t g = (uint8_t)(c >> 8);
+  uint8_t b = (uint8_t)c;
+
   if (n >= LED_COUNT && splitLEDs == 1) {
 
-    topleds.setPixelColor(n - LED_COUNT, c);
+    // topleds.setPixelColor(n - LED_COUNT, c);
+    if (ram_top_pixels) {
+        setPixelColorRamHelper(ram_top_pixels, n - LED_COUNT, r, g, b);
+    } else {
+        topleds.setPixelColor(n - LED_COUNT, c);
+    }
 
     } else {
-    bbleds.setPixelColor(n, c);
+    // bbleds.setPixelColor(n, c);
+    if (ram_bb_pixels) {
+        setPixelColorRamHelper(ram_bb_pixels, n, r, g, b);
+    } else {
+        bbleds.setPixelColor(n, c);
+    }
     }
   }
 
 // blendType: 0 = no blend, 1 = only if brighter than current color, 2 = blend with current color
-void ledClass::setPixelColor(uint16_t n, uint32_t c, int blendType) {
+// Note: This uses flash functions (RgbToHsv, blendColors) so it might still stall if blendType != 0
+// But most calls are blendType 0
+void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c, int blendType) {
   if (blendType == 0) {
-    bbleds.setPixelColor(n, c);
+    // bbleds.setPixelColor(n, c);
+    setPixelColor(n, c); // Calls RAM-resident overload above
   } else if (blendType == 1) {
     hsvColor currentColor = RgbToHsv(leds.getPixelColor(n));
     hsvColor newColor = RgbToHsv(c);
     if (currentColor.v < newColor.v) {
-      bbleds.setPixelColor(n, c);
+      // bbleds.setPixelColor(n, c);
+      setPixelColor(n, c);
     }
   } else if (blendType == 2) {
-uint32_t currentColor = leds.getPixelColor(n);
-uint32_t newColor = c;
+    uint32_t currentColor = leds.getPixelColor(n);
+    uint32_t newColor = c;
     uint32_t blendedColor = blendColors(currentColor, newColor, 0.5);
-    bbleds.setPixelColor(n, blendedColor);
+    // bbleds.setPixelColor(n, blendedColor);
+    setPixelColor(n, blendedColor);
   }
 }
-void ledClass::fill(uint32_t c, uint16_t first, uint16_t count) {
-  if (splitLEDs == 1) {
-    topleds.fill(c, first, count);
-    }
-  bbleds.fill(c, first, count);
+void __not_in_flash_func(ledClass::fill)(uint32_t c, uint16_t first, uint16_t count) {
+  // Fallback to simple iteration using our RAM-resident setPixelColor
+  uint16_t end = first + count;
+  for (uint16_t i = first; i < end; i++) {
+    setPixelColor(i, c);
+  }
   }
 
 void ledClass::setBrightness(uint8_t b) {
@@ -185,17 +238,36 @@ void ledClass::setBrightness(uint8_t b) {
   bbleds.setBrightness(b);
   }
 
-void ledClass::clear(void) {
+void __not_in_flash_func(ledClass::clear)(void) {
   if (splitLEDs == 1) {
-    topleds.clear();
+    if (ram_top_pixels) {
+        memset(ram_top_pixels, 0, LED_COUNT_TOP * 3);
+    } else {
+        topleds.clear();
     }
-  bbleds.clear();
+    }
+  
+  int bb_count = (splitLEDs == 1) ? LED_COUNT : (LED_COUNT + LED_COUNT_TOP);
+  if (ram_bb_pixels) {
+      memset(ram_bb_pixels, 0, bb_count * 3);
+  } else {
+      bbleds.clear();
+  }
   }
 
-uint32_t ledClass::getPixelColor(uint16_t n) {
+uint32_t __not_in_flash_func(ledClass::getPixelColor)(uint16_t n) {
   if (n >= LED_COUNT && splitLEDs == 1) {
+    if (ram_top_pixels) {
+        uint8_t *p = &ram_top_pixels[(n - LED_COUNT) * 3];
+        // GRB
+        return ((uint32_t)p[1] << 16) | ((uint32_t)p[0] << 8) | (uint32_t)p[2];
+    }
     return topleds.getPixelColor(n - LED_COUNT);
     } else {
+    if (ram_bb_pixels) {
+        uint8_t *p = &ram_bb_pixels[n * 3];
+        return ((uint32_t)p[1] << 16) | ((uint32_t)p[0] << 8) | (uint32_t)p[2];
+    }
     return bbleds.getPixelColor(n);
     }
   }
@@ -3143,8 +3215,8 @@ void  setupSwirlColors(void) {
 
 
 
-
-void logoSwirl(int start, int spread, int probe) {
+// Mark to run from RAM to avoid flash contention during saves
+void __not_in_flash_func(logoSwirl)(int start, int spread, int probe) {
 
   // int fiddyNine = 58;
 
@@ -3539,8 +3611,8 @@ int scaleScale(int value) {
 
   }
 
-
-void lightUpRail(int logo, int rail, int onOff, int brightness2,
+// Mark to run from RAM to avoid flash contention during saves
+void __not_in_flash_func(lightUpRail)(int logo, int rail, int onOff, int brightness2,
                  int switchPosition) {
 
 
@@ -3719,7 +3791,8 @@ void lightUpRail(int logo, int rail, int onOff, int brightness2,
   }
 //int displayMode = jumperlessConfig.display.lines_wires; // 0 = lines 1= wires
 
-void showNets(void) {
+// Mark to run from RAM to avoid flash contention during saves
+void __not_in_flash_func(showNets)(void) {
   // Serial.println(rp2040.cpuid());
   // core2busy = true;
   //                if (debugNTCC > 0) {
@@ -4335,8 +4408,8 @@ void clearLEDs(void) {
   }
 
 
-
-void clearLEDsExceptRails(void) {
+// Mark to run from RAM to avoid flash contention during saves
+void __not_in_flash_func(clearLEDsExceptRails)(void) {
   for (int i = 0; i < 300; i++) {
 
     leds.setPixelColor(i, 0);

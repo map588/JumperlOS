@@ -6,6 +6,7 @@
 #define ASYNC_PASSTHROUGH_ENABLED 1
 
 extern bool asyncPassthroughEnabled;
+extern bool asyncPassthroughTagParsingEnabled;
 extern unsigned long microsPerByteSerial1;
 extern unsigned long serial1baud;
 extern volatile bool s_line_coding_override;
@@ -42,9 +43,41 @@ namespace AsyncPassthrough {
     // Control whether newline (\n or \r) also ends forwarding (default true)
     void setForwardEndOnNewline(bool enable);
     
+    // Control whether tag parsing is enabled (default true)
+    // When disabled, all data passes through without checking for command tags
+    void setTagParsingEnabled(bool enable);
+    
+    // Disable tag parsing for a specific duration, then auto-re-enable
+    // Useful for Arduino flashing where you want to temporarily disable tag parsing
+    // Example: disableTagParsingWithTimeout(5000) disables for 5 seconds
+    void disableTagParsingWithTimeout(uint32_t timeout_ms);
+    
+    // Disable tag parsing with smart re-enable based on upload completion detection
+    // Re-enables when EITHER condition is met:
+    //   1. absolute_timeout_ms elapsed since disable (safety fallback)
+    //   2. inactivity_timeout_ms elapsed since last USB->UART data (upload finished)
+    // Example: disableTagParsingWithInactivityTimeout(5000, 500)
+    //   - Re-enables after 500ms of no data (upload done) OR 5 seconds max (safety)
+    void disableTagParsingWithInactivityTimeout(uint32_t absolute_timeout_ms, uint32_t inactivity_timeout_ms);
+    
+    bool getTagParsingEnabled();
+    
     // Apply a new UART line coding immediately (baud/data/parity/stop)
     // Keeps passthrough active while updating hardware and timing
     void applyLineCodingOverride(uint32_t baud, uint8_t data_bits, uint8_t parity, uint8_t stop_bits);
+    
+    // DTR pulse detection and Arduino reset handling
+    // Call this frequently to monitor DTR state changes on CDC interface
+    void checkDTRState(Adafruit_USBD_CDC& cdc);
+    
+    // Returns true if a DTR pulse was detected since last check
+    bool wasDTRPulseDetected();
+    
+    // Clear the DTR pulse flag
+    void clearDTRPulse();
+    
+    // Trigger Arduino reset via GPIO pin
+    void resetArduino(int resetPin);
 }
 
 #endif

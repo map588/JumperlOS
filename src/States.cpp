@@ -79,6 +79,10 @@ void ConnectionState::clear() {
     pathsCacheValid = false;
     chipStatesCacheValid = false;
     clearAllNTCC();
+    
+    // Restore locked connections after clearing
+    extern int handleLockedConnections();
+    handleLockedConnections();
     return;
     // Clear nets
     for (int i = 0; i < MAX_NETS; i++) {
@@ -441,6 +445,10 @@ bool JumperlessState::hasConnection(int node1, int node2) const {
 void JumperlessState::clearAllConnections() {
     connections.clear();
     markDirty();
+    
+    // Restore locked connections after clearing
+    extern int handleLockedConnections();
+    handleLockedConnections();
 }
 
 int JumperlessState::getConnectionDuplicates(int node1, int node2) const {
@@ -2745,6 +2753,7 @@ void printStateBackupInfo(void) {
  */
 ServiceStatus SlotManager::service() {
     lastStatus = ServiceStatus::IDLE;
+    unsigned long serviceStart = micros();
     
     extern bool usbMountedByHost;
     extern bool usbFilesystemBusy;
@@ -2762,17 +2771,33 @@ ServiceStatus SlotManager::service() {
     bool inPreviewMode = previewModeActive;
     bool usbModeActive = mscModeEnabled;  // Need to monitor files when USB mode is active
     
+    // OPTIMIZATION: During rapid command processing, skip expensive file monitoring
+    // Only check files if it's been >2s since last check (prevents 600-700ms delays)
+    extern volatile bool refreshLocalInProgress;
+    static unsigned long lastFileMonitorTime = 0;
+    bool skipFileMonitoring = (millis() - lastFileMonitorTime < 2000) || refreshLocalInProgress;
+    
     // FAST EXIT: If nothing is dirty, no editor is open, not in preview mode, and USB mode is off
     // We need to keep monitoring when USB is active for external file changes from host
     if (!hasDirtyState && !hasEditorOpen && !inPreviewMode && !usbModeActive) {
         return ServiceStatus::IDLE;  // Ultra-fast return for the common case
     }
     
+    // FAST EXIT: If only monitoring files but we're in rapid command mode, skip it
+    if (!hasDirtyState && skipFileMonitoring) {
+        return ServiceStatus::IDLE;  // Skip expensive file monitoring during rapid commands
+    }
+    
+    // DIAGNOSTIC: Track what work we're doing if service is slow
+    const char* slowReason = nullptr;
+    
     // Debug output (only when we're actually doing work)
     static unsigned long lastServiceDebug = 0;
     if (mscModeEnabled && debugUSB && (millis() - lastServiceDebug > 2000)) {
+        #if debugFP
         Serial.println("◆ SlotManager::service() - active work detected");
         Serial.flush();
+        #endif
         lastServiceDebug = millis();
     }
     
@@ -2800,25 +2825,31 @@ ServiceStatus SlotManager::service() {
             // A slot file is being edited
             if (!previewModeActive) {
                 // Enter preview mode
+                #if debugFP
                 Serial.print("Slot ");
                 Serial.print(editingSlotNumber);
                 Serial.println(" opened in editor - entering preview mode");
+                #endif
                 
                 String errorMsg;
                 if (enterPreviewMode(editingSlotNumber, errorMsg)) {
                     lastEditingSlotNumber = editingSlotNumber;
                     lastFileModTime = 0;  // Reset to trigger initial load
                 } else {
+                    #if debugFP
                     Serial.print("Failed to enter preview mode: ");
                     Serial.println(errorMsg);
+                    #endif
                 }
             }
         } else {
             // No slot file is being edited
             if (previewModeActive && lastEditingSlotNumber >= 0) {
                 // Exit preview mode (user closed editor without applying)
+                #if debugFP
                 Serial.print("Editor closed - exiting preview mode for slot ");
                 Serial.println(lastEditingSlotNumber);
+                #endif
                 
                 String errorMsg;
                 exitPreview(false, errorMsg);  // Don't apply changes
@@ -2835,11 +2866,22 @@ ServiceStatus SlotManager::service() {
     unsigned long timeSinceLastFileCheck = millis() - lastFileCheckTime;
     
     // OPTIMIZATION: Only monitor files when we have a reason to:
-    // - Editor is open (internal editing)
+    // - Editor is open (internal editing)  
     // - Preview mode is active (viewing changes)
     // - USB mode is active (host may be editing files externally)
     // This avoids ~60 f_stat() calls per minute during normal standalone operation
-    bool shouldMonitorFiles = (hasEditorOpen || inPreviewMode || usbModeActive);
+    bool shouldMonitorFiles = (hasEditorOpen || inPreviewMode || usbModeActive) && !skipFileMonitoring;
+    
+    // CRITICAL: Verify USB mode is actually active before expensive file ops
+    // mscModeEnabled alone isn't enough - check if editor OR mounted
+    if (!hasEditorOpen && !inPreviewMode && !usbMountedByHost) {
+        shouldMonitorFiles = false;  // No reason to check files
+    }
+    
+    // Update file monitor time if we're actually checking
+    if (shouldMonitorFiles && timeSinceLastFileCheck > 1000) {
+        lastFileMonitorTime = millis();
+    }
     
     if (mscModeEnabled && debugUSB && shouldMonitorFiles && timeSinceLastFileCheck > 5000) {
         Serial.print("USB: ⚠ File check interval: ");
@@ -2850,6 +2892,7 @@ ServiceStatus SlotManager::service() {
     
     if (shouldMonitorFiles && timeSinceLastFileCheck > 1000) {
         lastFileCheckTime = millis();
+        slowReason = "file monitoring";
         
         if (mscModeEnabled && debugUSB) {
             Serial.println("USB: ▶ File check cycle starting");
@@ -3152,9 +3195,18 @@ ServiceStatus SlotManager::service() {
     // AUTO-SAVE: Only runs if state is dirty and USB is not mounted
     // This section was already optimized with the early exit check above
     // ============================================================================
-    if (hasDirtyState && !usbMountedByHost) {
+    
+    // CRITICAL: Don't auto-save while command processing is active (prevents deadlock)
+    // Both refreshLocalConnections() and saveSlot() need core synchronization
+    extern volatile bool refreshLocalInProgress;
+    extern volatile bool core1busy;
+    
+    if (hasDirtyState && !usbMountedByHost && !refreshLocalInProgress && !core1busy) {
         unsigned long timeSinceModified = millis() - activeState.getLastModifiedTime();
-        if (timeSinceModified > 1000) {  // 2 second delay after last modification
+        if (timeSinceModified > 5000) {  // 5 second delay for rapid command bursts (Arduino uploads, etc)
+            slowReason = "auto-save";
+            unsigned long saveStart = micros();
+            
             if (debugWaitLoopTiming) {
                 Serial.printf("DEBUG: Auto-save triggered (dirty for %lu ms)\n", timeSinceModified);
             }
@@ -3166,6 +3218,12 @@ ServiceStatus SlotManager::service() {
             
             // saveSlot will handle core synchronization and clearDirty
             if (saveSlot(activeSlotNumber, errorMsg)) {
+                unsigned long saveTime = micros() - saveStart;
+                if (debugWaitLoopTiming) {
+                if (saveTime > 100000) {
+                    Serial.printf("⏱️  saveSlot took %lu ms\n", saveTime / 1000);
+                }
+                }
                 // Successfully auto-saved
                 lastStatus = ServiceStatus::BUSY;
                 if (debugWaitLoopTiming) {
@@ -3213,6 +3271,20 @@ ServiceStatus SlotManager::service() {
         }
     }
     
+    // DIAGNOSTIC: Report if service took too long
+    unsigned long serviceTime = micros() - serviceStart;
+    if (debugWaitLoopTiming) {
+    if (serviceTime > 100000) {  // > 100ms
+        Serial.printf("⏱️  States::service() took %lu ms", serviceTime / 1000);
+        if (slowReason) {
+            Serial.printf(" [%s]", slowReason);
+        }
+        Serial.println();
+        Serial.printf("    hasDirty=%d hasEditor=%d preview=%d usb=%d skipFile=%d\n",
+            hasDirtyState, hasEditorOpen, inPreviewMode, usbModeActive, skipFileMonitoring);
+        Serial.flush();
+    }
+    }
     return lastStatus;
 }
 

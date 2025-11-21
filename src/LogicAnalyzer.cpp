@@ -91,7 +91,8 @@ bool LogicAnalyzer::is_slow_mode() const {
 	return sample_rate_hz < 5000;
 }
 
-void LogicAnalyzer::handler() {
+// Mark to run from RAM to avoid flash contention during saves (includes USB operations)
+void __not_in_flash_func(LogicAnalyzer::handler)() {
 #ifdef USE_TINYUSB
 	if (!USBSer2 || !USBSer2.available()) return;
 	char ch = USBSer2.read();

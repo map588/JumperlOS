@@ -16,6 +16,8 @@
 
 #include "USBfs.h"
 #include "externVars.h"
+#include "config.h"
+#include "configManager.h"
 
 volatile int sendAllPathsCore2 =
     0; // this signals the core 2 to send all the paths to the CH446Q
@@ -65,13 +67,33 @@ void refresh(int flashOrLocal, int ledShowOption, int fillUnused, int clean) {
 
 //#define DEBUG_REFRESH 1
 
+// Guard against overlapping refresh operations
+// Note: Not static because these are exported via Commands.h for auto-save deadlock prevention
+volatile bool refreshInProgress = false;
+static volatile bool refreshPending = false;
+static volatile uint32_t lastRefreshTime = 0;
+
 void refreshConnections(int ledShowOption, int fillUnused, int clean) {
 
   // CRITICAL: This should ONLY be called from Core 0
   if (rp2040.cpuid() != 0) {
-    Serial.println("ERROR: refreshConnections() called from Core 2! This should only run on Core 0.");
+    Serial.println("ERROR: refreshConnections() called from Core 0.");
     return;
   }
+
+  // OPTIMIZATION: Prevent overlapping refreshes
+  // If already refreshing, mark as pending and return immediately
+  // This will re-run after current refresh completes
+  if (refreshInProgress) {
+    refreshPending = true;
+    return;
+  }
+  
+  // NO BATCHING: Process commands immediately as they arrive
+  // The hardware is fast enough to handle rapid updates
+  refreshInProgress = true;
+  refreshPending = false;
+  lastRefreshTime = millis();
 
   // CRITICAL: Wait for core 2 to finish any LED rendering before modifying shared data
   // Core 2 reads from globalState.connections.nets[] in assignNetColors()
@@ -139,14 +161,17 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   // CRITICAL: Wait for core 2 to actually process the sendAllPathsCore2 signal
   // sendPaths() (in CH446Q.cpp line 160) clears sendAllPathsCore2 to 0 when done
   // This prevents race condition where we continue before paths are physically sent
+  // OPTIMIZATION: Reduced timeout from 3000ms to 1000ms to handle rapid command bursts
   unsigned long pathsTimeout = millis();
-  while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 3000)) {
+  while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 1000)) {
     delayMicroseconds(100);
   }
   if (sendAllPathsCore2 != 0) {
     Serial.println("WARNING: Core 2 did not process sendAllPathsCore2 in time!");
     Serial.print("sendAllPathsCore2 still = ");
     Serial.println(sendAllPathsCore2);
+    // Force clear to prevent permanent blocking
+    sendAllPathsCore2 = 0;
   }
 
   if (ledShowOption != 0) {
@@ -166,11 +191,154 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   Serial.println(millis() - start);
 #endif
   
+  refreshInProgress = false;
+  
+  // If another refresh was requested while we were busy, do it now
+  if (refreshPending) {
+    refreshPending = false;
+    refreshConnections(ledShowOption, fillUnused, clean);
+  }
   
   // sendPaths();
 }
 
+// ============================================================================
+// Locked Connections Management
+// ============================================================================
+/**
+ * @brief Check and restore all locked connections from config
+ * 
+ * This function ensures that connections marked as "locked" in jumperlessConfig
+ * are always present in the active state, even after clear/load operations.
+ * 
+ * Locked connections:
+ * - serial_1 (UART0): RP_UART_TX(116)<->NANO_D0(70), RP_UART_RX(117)<->NANO_D1(71)
+ * - serial_2 (Routable Serial): Implementation pending - needs node mapping
+ * - top_oled (I2C): gpio_sda<->sda_row, gpio_scl<->scl_row
+ * 
+ * @return Number of locked connections added (0 if all were already present)
+ */
+int handleLockedConnections() {
+  int connectionsAdded = 0;
+  SlotManager& mgr = SlotManager::getInstance();
+  JumperlessState& state = mgr.getActiveState();
+  
+  // OLED Lock Connection (I2C)
+  // Check both jumperlessConfig.top_oled.lock_connection and globalState.config.oledLockConnection
+  if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
+    int sda_gpio = jumperlessConfig.top_oled.gpio_sda;
+    int sda_row = jumperlessConfig.top_oled.sda_row;
+    int scl_gpio = jumperlessConfig.top_oled.gpio_scl;
+    int scl_row = jumperlessConfig.top_oled.scl_row;
+    
+    // Check if SDA connection exists
+    if (!globalState.hasConnection(sda_row, sda_gpio)) {
+      if (state.connections.numBridges < MAX_BRIDGES) {
+        state.connections.bridges[state.connections.numBridges][0] = sda_row;
+        state.connections.bridges[state.connections.numBridges][1] = sda_gpio;
+        state.connections.bridges[state.connections.numBridges][2] = -1;  // duplicates
+        state.connections.numBridges++;
+        connectionsAdded++;
+        
+        if (debugFP) {
+          Serial.print("🔒 Restored locked OLED SDA: ");
+          Serial.print(sda_row);
+          Serial.print("-");
+          Serial.println(sda_gpio);
+        }
+      }
+    }
+    
+    // Check if SCL connection exists
+    if (!globalState.hasConnection(scl_row, scl_gpio)) {
+      if (state.connections.numBridges < MAX_BRIDGES) {
+        state.connections.bridges[state.connections.numBridges][0] = scl_row;
+        state.connections.bridges[state.connections.numBridges][1] = scl_gpio;
+        state.connections.bridges[state.connections.numBridges][2] = -1;  // duplicates
+        state.connections.numBridges++;
+        connectionsAdded++;
+        
+        if (debugFP) {
+          Serial.print("🔒 Restored locked OLED SCL: ");
+          Serial.print(scl_row);
+          Serial.print("-");
+          Serial.println(scl_gpio);
+        }
+      }
+    }
+  }
+  
+  // Serial 1 Lock Connection (UART0)
+  if (jumperlessConfig.serial_1.lock_connection == 1) {
+    // TX: RP_UART_TX (116) <-> NANO_D0 (70)
+    if (!globalState.hasConnection(RP_UART_TX, NANO_D0)) {
+      if (state.connections.numBridges < MAX_BRIDGES) {
+        state.connections.bridges[state.connections.numBridges][0] = RP_UART_TX;
+        state.connections.bridges[state.connections.numBridges][1] = NANO_D0;
+        state.connections.bridges[state.connections.numBridges][2] = -1;  // duplicates
+        state.connections.numBridges++;
+        connectionsAdded++;
+        
+        if (debugFP) {
+          Serial.println("🔒 Restored locked Serial1 TX: 116-70");
+        }
+      }
+    }
+    
+    // RX: RP_UART_RX (117) <-> NANO_D1 (71)
+    if (!globalState.hasConnection(RP_UART_RX, NANO_D1)) {
+      if (state.connections.numBridges < MAX_BRIDGES) {
+        state.connections.bridges[state.connections.numBridges][0] = RP_UART_RX;
+        state.connections.bridges[state.connections.numBridges][1] = NANO_D1;
+        state.connections.bridges[state.connections.numBridges][2] = -1;  // duplicates
+        state.connections.numBridges++;
+        connectionsAdded++;
+        
+        if (debugFP) {
+          Serial.println("🔒 Restored locked Serial1 RX: 117-71");
+        }
+      }
+    }
+  }
+  
+  // Serial 2 Lock Connection (Routable Serial)
+  if (jumperlessConfig.serial_2.lock_connection == 1) {
+    // TODO: Determine node mappings for serial_2
+    // This is left as a placeholder since the exact node numbers aren't clear
+    // from the codebase. When determined, follow the same pattern as above:
+    //
+    // if (!globalState.hasConnection(SERIAL2_TX_GPIO, SERIAL2_TX_ROW)) {
+    //   // Add bridge
+    // }
+    // if (!globalState.hasConnection(SERIAL2_RX_GPIO, SERIAL2_RX_ROW)) {
+    //   // Add bridge
+    // }
+    
+    if (debugFP && connectionsAdded == 0) {
+      Serial.println("⚠️  Serial2 lock enabled but node mapping not yet implemented");
+    }
+  }
+  
+  // Mark dirty if we added connections
+  if (connectionsAdded > 0) {
+    state.markDirty();
+    
+    if (debugFP) {
+      Serial.print("🔒 Total locked connections restored: ");
+      Serial.println(connectionsAdded);
+    }
+  }
+  
+  return connectionsAdded;
+}
+
 //#define DEBUG_REFRESH 1
+
+// Separate guard for local refresh operations
+// Note: Not static because these are exported via Commands.h for auto-save deadlock prevention
+volatile bool refreshLocalInProgress = false;
+static volatile bool refreshLocalPending = false;
+static volatile uint32_t lastRefreshLocalTime = 0;
 
 void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
 
@@ -180,11 +348,26 @@ void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
     return;
   }
 
+  // OPTIMIZATION: Prevent overlapping refreshes
+  // Queue up another refresh if one is already running
+  if (refreshLocalInProgress) {
+    refreshLocalPending = true;
+    return;
+  }
+  
+  refreshLocalInProgress = true;
+  refreshLocalPending = false;
+  lastRefreshLocalTime = millis();
+
   // CRITICAL: Wait for core 2 to finish any LED rendering before modifying shared data
   // Core 2 reads from globalState.connections.nets[] in assignNetColors()
   // while we're about to modify it in getNodesToConnect()
-  waitCore2();
-   pauseCore2 = true;
+  unsigned long waitTime = waitCore2();
+  if (waitTime > 10000) {  // More than 10ms wait is suspicious
+    Serial.printf("⚠️  WARNING: waitCore2() took %lu us\n", waitTime);
+    Serial.flush();
+  }
+  //pauseCore2 = true;
 unsigned long start2 = millis();
   clearAllNTCC();
   core1busy = true;
@@ -224,7 +407,7 @@ unsigned long start2 = millis();
   Serial.println(millis() - start2);
 #endif
   core1busy = false;
-  pauseCore2 = false;
+  //pauseCore2 = false;
 
   // Signal Core 2 to send paths (Core 2 handles this in loop1 -> core2stuff)
   if (clean == 1) {
@@ -235,16 +418,18 @@ unsigned long start2 = millis();
 
   // CRITICAL: Wait for core 2 to actually process the sendAllPathsCore2 signal
   // sendPaths() (in CH446Q.cpp line 160) clears sendAllPathsCore2 to 0 when done
-  // This prevents race condition where we continue before paths are physically sent
   unsigned long pathsTimeout = millis();
-  while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 3000)) {
+  while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 1000)) {
     delayMicroseconds(100);
   }
   if (sendAllPathsCore2 != 0) {
-    Serial.println("WARNING: refreshLocalConnections - Core 2 did not process sendAllPathsCore2 in time!");
+    Serial.println("WARNING: Core 2 did not process sendAllPathsCore2 in time!");
     Serial.print("sendAllPathsCore2 still = ");
     Serial.println(sendAllPathsCore2);
+    // Force clear to prevent permanent blocking
+    sendAllPathsCore2 = 0;
   }
+
 
   if (ledShowOption != 0) {
     showLEDsCore2 = ledShowOption;
@@ -261,6 +446,17 @@ unsigned long start2 = millis();
   Serial.print("refreshLocalConnections after waitCore2 time = ");
   Serial.println(millis() - start2);
 #endif
+
+  refreshLocalInProgress = false;
+  // Serial.print("refreshLocalConnections time = ");
+  // Serial.print(millis() - lastRefreshLocalTime);
+  // Serial.println(" ms");
+  
+  // If another refresh was requested while we were busy, do it now
+  // if (refreshLocalPending) {
+  //   refreshLocalPending = false;
+  //   refreshLocalConnections(ledShowOption, fillUnused, clean);
+  // }
 
   // Serial.print("Free heap = ");
   // Serial.println(rp2040.getFreeHeap());

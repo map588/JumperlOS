@@ -245,7 +245,7 @@ if (false) {
 
   lastButtonEncoderState = encoderButtonState;
 
-  buttonState = digitalRead(BUTTON_ENC);
+  buttonState = gpio_get(BUTTON_ENC);
   // Serial.print("buttonState: ");
   // Serial.println(buttonState);
 

@@ -372,66 +372,67 @@ int secondSerialHandler( void ) {
     // return 0;
     int ret = 0;
 
-    // if (jumperlessConfig.serial_1.function == 2 ||
-    // jumperlessConfig.serial_2.function == 2) {
-    //   return 0;
-    //   }
 
-    // if ( jumperlessConfig.serial_1.function != 0 &&
-    //      (long)millis( ) - (long)lastSerial1Check > 50 ) {
-
-    //     if ( millis( ) - lastSerial1TxRead > 1000 &&
-    //          millis( ) - lastSerial1RxRead > 1000 ) {
-    //         //       Serial.println("Serial1 lastTx: " + String(millis() -
-    //         //       lastSerial1TxRead));
-    //         // Serial.println("Serial1 lastRx: " + String(millis() -
-    //         // lastSerial1RxRead));
     if ( jumperlessConfig.serial_1.async_passthrough == false ) {
         checkForConfigChangesUSBSer1( true );
     }
-    //     }
-    //     lastSerial1Check = millis( );
-    // }
 
-    // if ( jumperlessConfig.serial_2.function != 0 &&
-    //      (long)millis( ) - (long)lastSerial2Check > 50 ) {
-    //     if ( millis( ) - lastSerial2TxRead > 1000 &&
-    //          millis( ) - lastSerial2RxRead > 1000 ) {
-    //         checkForConfigChangesUSBSer2( true );
-    //     }
-    //     lastSerial2Check = millis( );
-    // }
 
     if ( ManualArduinoReset ) {
         ManualArduinoReset = false;
+        
+        // Disable tag parsing during manual reset (likely for flashing)
+        // Smart re-enable: 2 seconds after last data (upload done) OR 10 seconds max (safety)
+        #if ASYNC_PASSTHROUGH_ENABLED == 1
+        if ( jumperlessConfig.serial_1.async_passthrough == true ) {
+            AsyncPassthrough::disableTagParsingWithInactivityTimeout( 10000, 2000 );
+            // Use AsyncPassthrough reset for consistency
+            AsyncPassthrough::resetArduino( RESETPIN );
+        } else {
+            SetArduinoResetLine( LOW );
+            delay( 3 );
+            SetArduinoResetLine( HIGH );
+        }
+        #else
         SetArduinoResetLine( LOW );
         delay( 3 );
         SetArduinoResetLine( HIGH );
+        #endif
     }
 
-    //   checkForDTRpulse();
-
-    //  if (arduinoDTRpulse) {
-
-    //       flashArduino(1200);
-
-    //   }
-
-    // ret = handleSerialPassthrough(2, 0);
-
-    // do {
+    // Use AsyncPassthrough for DTR detection when in async mode
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    if ( jumperlessConfig.serial_1.async_passthrough == true ) {
+        // DTR checking happens automatically in AsyncPassthrough::task() with CRITICAL priority
+        // Just check if a pulse was detected and handle Arduino reset
+        if ( AsyncPassthrough::wasDTRPulseDetected() ) {
+            // Tag parsing already disabled by AsyncPassthrough::checkDTRState()
+            flashArduino( 1200 );
+            AsyncPassthrough::clearDTRPulse();
+        }
+        // Normal passthrough happens automatically in AsyncPassthrough::task()
+    } else {
+        // Fallback to legacy DTR detection for non-async mode
+        checkForDTRpulse( );
+        if ( arduinoDTRpulse ) {
+            flashArduino( 1200 );
+            arduinoDTRpulse = false;
+        } else {
+            ret = handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
+        }
+    }
+    #else
     checkForDTRpulse( );
     if ( arduinoDTRpulse ) {
         flashArduino( 1200 );
         arduinoDTRpulse = false;
     } else {
-
         if ( jumperlessConfig.serial_1.async_passthrough == false ) {
             ret = handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
-            // Serial.println(jumperlessConfig.serial_1.async_passthrough);
         }
     }
-    // } while ( Serial1.available( ) > 0 || USBSer1.available( ) > 0 );
+    #endif
+
 
     if ( ret != 0 ) {
         serialPassthroughStatus = 1;
