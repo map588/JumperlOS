@@ -11,6 +11,7 @@
 #include "Jerial.h" // TermControl is now part of Jerial
 #include "LEDs.h"
 #include "SyntaxHighlighting.h"
+#include "CommandBuffer.h"  // For UART response capture
 
 extern "C" {
 #include "py/gc.h"
@@ -183,8 +184,11 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     // Basic output to global stream (regular MicroPython output)
     if (global_mp_stream) {
         for (size_t i = 0; i < len; i++) {
-            // Check for interrupt more frequently during output
-            if (i % 10 == 0) { // Check every 10 characters
+            // CRITICAL: Service USB every 32 characters to prevent CDC buffer deadlock
+            // Without this, Serial.write() can block if CDC TX buffer is full,
+            // and USB never gets serviced, causing a permanent freeze
+            if (i % 32 == 0) {
+                tud_task();  // Service USB to drain CDC TX buffer
                 mp_hal_check_interrupt();
             }
             
@@ -193,7 +197,17 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
             }
             global_mp_stream->write(str[i]);
         }
-        global_mp_stream->flush();
+        // Service USB after output to ensure data starts transmitting
+        tud_task();
+    }
+    
+    // UART Response Capture: If this command came from UART, also queue output there
+    if (CommandBuffer::getInstance().shouldRespondToUART() && len > 0) {
+        cmdBuffer.queueForUART((const uint8_t*)str, len);
+        // Add carriage return for UART if the output ends with newline
+        if (str[len-1] == '\n') {
+            cmdBuffer.queueForUART((const uint8_t*)"\r", 1);
+        }
     }
 }
 
@@ -3482,6 +3496,7 @@ String parseCommandWithPrefix(const char* command) {
  * @param command The command to execute (e.g., "gpio_get(2)" or "dac_set(0, 3.3)")
  * @param result_buffer Optional buffer to store string result (can be nullptr)
  * @param buffer_size Size of result buffer
+ * @param response_target Optional stream to send output to (nullptr = use global_mp_stream)
  * @return true if command executed successfully, false otherwise
  */
 bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t buffer_size) {
@@ -3499,6 +3514,24 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
   // Parse command and add prefix if needed
   String parsed_command = parseCommandWithPrefix(command);
   
+  // Debug output - always enabled for now to track command execution
+  #if DEBUG_INJECTED_COMMANDS
+  Serial.printf("executeSinglePythonCommand: input=\"%s\", parsed=\"%s\", response_target=%p\n", 
+                command, parsed_command.c_str(), response_target);
+  Serial.flush();
+  #endif
+
+  // Temporarily switch to response target if specified
+  Stream* original_stream = global_mp_stream;
+    // if (response_target != nullptr) {
+    //   global_mp_stream = response_target;
+    // }
+
+  SyntaxHighlighting highlighter(&Jerial);
+  highlighter.displayPythonWithHighlighting(parsed_command, &Jerial);
+  Jerial.println();
+  Jerial.flush();
+  
   // Clear result buffer
   if (result_buffer && buffer_size > 0) {
     memset(result_buffer, 0, buffer_size);
@@ -3508,13 +3541,25 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
   
   // Execute the command directly - MicroPython will handle errors internally
   mp_embed_exec_str(parsed_command.c_str());
+
+  
+  // CRITICAL: Force garbage collection after each command to prevent heap exhaustion
+  // Without this, repeated commands can fragment/exhaust the MicroPython heap
+  mp_embed_exec_str("import gc; gc.collect()");
   
 
+  
   if (result_buffer && buffer_size > 0) {
     strncpy(result_buffer, "OK", buffer_size - 1);
     result_buffer[buffer_size - 1] = '\0';
-  }
+ 
+  Jerial.println(result_buffer);
+
+   }
+  // Restore original stream
+  // global_mp_stream = original_stream;
   
+  // MINIMAL DEBUG: Removed verbose output to reduce USB buffer pressure
   return success;
 }
 

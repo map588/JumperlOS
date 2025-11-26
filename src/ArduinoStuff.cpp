@@ -166,24 +166,16 @@ int serConfigChangedUSBSer2 = 0;
 // SerialPIO SerialPIO1(0, 1, 1024);
 
 void initSecondSerial( void ) {
-    // Wait for TinyUSB to be ready
-    // delay(100);
-
-    // Serial.print("Initializing USB CDC interfaces (");
-    // Serial.print(USB_CDC_ENABLE_COUNT);
-    // Serial.println(" enabled)");
+    // Initialize USB CDC interfaces
+    // Note: AsyncPassthrough uses pico-sdk UART directly, NOT Arduino Serial1
+    // So we don't start Serial1 at all - AsyncPassthrough::begin() handles UART init
 
 #if USB_CDC_ENABLE_COUNT >= 2
-    // USBSer1 maps to CDC interface 1. Avoid starting Arduino Serial1 if
-    // async passthrough is using pico-sdk UART on the same pins.
+    // USBSer1 maps to CDC interface 1 (Arduino Serial passthrough)
     if ( jumperlessConfig.serial_1.function != 0 ) {
         USBSer1.begin( baudRateUSBSer1 );
-        if ( jumperlessConfig.serial_1.async_passthrough == false ) {
-            Serial1.setFIFOSize( 8192 );
-            Serial1.setTX( 0 );
-            Serial1.setRX( 1 );
-            Serial1.begin( baudRateUSBSer1, makeSerialConfig( 8, 0, 1 ) );
-        }
+        // Don't start Arduino Serial1 - AsyncPassthrough uses pico-sdk UART directly
+        // This avoids conflicts between Arduino's UART handling and pico-sdk IRQ-based handling
     }
 #endif
 
@@ -369,80 +361,22 @@ int serialPassthroughStatus = 0;
 int serialPassthroughStatusTimeout = 50;
 
 int secondSerialHandler( void ) {
-    // return 0;
-    int ret = 0;
-
-
-    if ( jumperlessConfig.serial_1.async_passthrough == false ) {
-        checkForConfigChangesUSBSer1( true );
-    }
-
-
-    if ( ManualArduinoReset ) {
-        ManualArduinoReset = false;
-        
-        // Disable tag parsing during manual reset (likely for flashing)
-        // Smart re-enable: 2 seconds after last data (upload done) OR 10 seconds max (safety)
-        #if ASYNC_PASSTHROUGH_ENABLED == 1
-        if ( jumperlessConfig.serial_1.async_passthrough == true ) {
-            AsyncPassthrough::disableTagParsingWithInactivityTimeout( 10000, 2000 );
-            // Use AsyncPassthrough reset for consistency
-            AsyncPassthrough::resetArduino( RESETPIN );
-        } else {
-            SetArduinoResetLine( LOW );
-            delay( 3 );
-            SetArduinoResetLine( HIGH );
-        }
-        #else
-        SetArduinoResetLine( LOW );
-        delay( 3 );
-        SetArduinoResetLine( HIGH );
-        #endif
-    }
-
-    // Use AsyncPassthrough for DTR detection when in async mode
+    // AsyncPassthrough handles all serial bridging via asyncPassthroughService (CRITICAL priority)
+    // This function now only handles DTR pulse detection for Arduino flashing
+    
     #if ASYNC_PASSTHROUGH_ENABLED == 1
-    if ( jumperlessConfig.serial_1.async_passthrough == true ) {
-        // DTR checking happens automatically in AsyncPassthrough::task() with CRITICAL priority
-        // Just check if a pulse was detected and handle Arduino reset
-        if ( AsyncPassthrough::wasDTRPulseDetected() ) {
-            // Tag parsing already disabled by AsyncPassthrough::checkDTRState()
-            flashArduino( 1200 );
-            AsyncPassthrough::clearDTRPulse();
-        }
-        // Normal passthrough happens automatically in AsyncPassthrough::task()
-    } else {
-        // Fallback to legacy DTR detection for non-async mode
-        checkForDTRpulse( );
-        if ( arduinoDTRpulse ) {
-            flashArduino( 1200 );
-            arduinoDTRpulse = false;
-        } else {
-            ret = handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
-        }
+    // DTR checking happens automatically in AsyncPassthrough::task()
+    // Just check if a pulse was detected and handle Arduino reset
+    if ( AsyncPassthrough::wasDTRPulseDetected() ) {
+        // Tag parsing already disabled by AsyncPassthrough::checkDTRState()
+        // 3000ms timeout gives bootloader time to sync with avrdude
+        flashArduino( 3000 );
+        AsyncPassthrough::clearDTRPulse();
     }
-    #else
-    checkForDTRpulse( );
-    if ( arduinoDTRpulse ) {
-        flashArduino( 1200 );
-        arduinoDTRpulse = false;
-    } else {
-        if ( jumperlessConfig.serial_1.async_passthrough == false ) {
-            ret = handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
-        }
-    }
+    // Normal passthrough happens automatically in AsyncPassthrough::task()
     #endif
-
-
-    if ( ret != 0 ) {
-        serialPassthroughStatus = 1;
-        lastSerialPassthrough = millis( );
-    } else if ( millis( ) - lastSerialPassthrough >
-                serialPassthroughStatusTimeout ) {
-        serialPassthroughStatus = 0;
-    }
-
-    return ret;
+    
+    return 0;
 }
 
 char arduinoCommandStrings[ 10 ][ 50 ] = {
@@ -453,21 +387,20 @@ char arduinoCommandStrings[ 10 ][ 50 ] = {
 
 };
 
+// DEPRECATED: checkForDTRpulse() - no longer used, DTR detection is handled by AsyncPassthrough::checkDTRState()
+// Keeping for reference/fallback but not called in normal operation
 bool checkForDTRpulse( void ) {
     if ( USBSer1.dtr( ) != arduinoDTR[ 2 ] ) {
-        // Shift the array to the left, keeping only last 3 states
         arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
         arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
         arduinoDTR[ 2 ] = USBSer1.dtr( );
 
-        //! to make this work with Windows, we just check for any change in DTR, macOS and Linux send a full off-on-off pulse
-
-        if ( /* arduinoDTR[ 0 ] == 0 && */ arduinoDTR[ 1 ] == 1 && arduinoDTR[ 2 ] == 0 ) { // detect pulses going either direction (some things invert the DTR line)
+        if ( arduinoDTR[ 1 ] == 1 && arduinoDTR[ 2 ] == 0 ) {
             arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
             arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
             arduinoDTR[ 2 ] = USBSer1.dtr( );
             arduinoDTRpulse = true;
-        } else if ( /*arduinoDTR[ 0 ] == 1 && */ arduinoDTR[ 1 ] == 0 && arduinoDTR[ 2 ] == 1 ) {
+        } else if ( arduinoDTR[ 1 ] == 0 && arduinoDTR[ 2 ] == 1 ) {
             arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
             arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
             arduinoDTR[ 2 ] = USBSer1.dtr( );
@@ -480,198 +413,45 @@ bool checkForDTRpulse( void ) {
 }
 
 void flashArduino( unsigned long timeoutTime ) {
-
-    ARDUINO_DEBUG_PRINTLN( "Arduino DTR pulse detected" );
-    Serial.flush( );
-
+    // Arduino flashing with async passthrough:
+    // NOTE: Arduino reset now happens IMMEDIATELY in AsyncPassthrough::checkDTRState()
+    // This function just ensures UART is connected and services passthrough
+    
+    ARDUINO_DEBUG_PRINTLN( "Arduino DTR pulse - servicing passthrough" );
+    
     arduinoConnected = checkIfArduinoIsConnected( );
     int arduinoWasConnected = arduinoConnected;
-
-    ARDUINO_DEBUG_PRINTF( "Arduino %s connected%s\n", arduinoConnected ? "" : "not", arduinoConnected ? "" : "...  connecting automatically" );
-    ARDUINO_DEBUG_PRINTLN( );
-    Serial.flush( );
-    if ( arduinoConnected == 0 ) {
-        // flashArduinoNextLoop = 1;
-        // connectArduino();
-        if ( jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
-            connectArduino( 1, 1 );
-            while ( arduinoConnected == 0 ) {
-                // delay(1);
-                arduinoConnected = checkIfArduinoIsConnected( );
-            }
-
-        } else {
-            ARDUINO_DEBUG_PRINTLN( "Arduino not connected (enter A to connect UART)" );
-            ARDUINO_DEBUG_PRINTLN( "trying to flash anyway\n\r" );
-            Serial.flush( );
+    
+    // Auto-connect UART if not already connected and config allows
+    if ( arduinoConnected == 0 && jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
+        if ( debugArduino > 0 ) {
+            Serial.println( "Arduino not connected - connecting UART automatically" );
         }
+        connectArduino( 1, 1 );
+        arduinoConnected = checkIfArduinoIsConnected( );
     }
 
     flashingArduino = true;
-    // checkForConfigChangesUSBSer1(true);
-
-    char d = 0xdd;
-    char c = 0xcc;
-
-    // uint8_t usbSer1Buffer[100];
-    // int usbSer1BufferIndex = 0;
-
-    // uint8_t serial1Buffer[100];
-    // int serial1BufferIndex = 0;
-
-    unsigned long serTimeout = millis( );
-
-    while ( USBSer1.available( ) == 0 ) {
-        if ( millis( ) - serTimeout > 2000 ) {
-            // ARDUINO_DEBUG_PRINTLN("Arduino not connected (enter A to connect UART)");
-            // ARDUINO_DEBUG_PRINTLN("trying to flash anyway\n\r");
-            // return;
-            break;
-        }
+    
+    // CRITICAL: Service the passthrough actively during the flash window
+    // The Arduino was already reset in checkDTRState(), now we bridge data
+    unsigned long flashStart = millis();
+    
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    while (millis() - flashStart < timeoutTime) {
+        // Service passthrough - bridges USB↔UART data
+        AsyncPassthrough::task();
+        
+        // Service USB for tighter timing
+        #ifdef USE_TINYUSB
+        extern void tud_task(void);
+        tud_task();
+        #endif
+        
+        delayMicroseconds(50);
     }
-
-    uint8_t peeked = 0x00;
-
-    // if (USBSer1.peek() == 0x30) {
-    //   while (USBSer1.available() == 0)
-    //     ;
-    //   peeked = USBSer1.read();
-    //   if (USBSer1.peek() == 0x20) {
-
-    //     Serial1.write(0x30);
-    //     Serial1.flush();
-    //     resetArduino();
-    //   }
-    // } else {
-    //   // ARDUINO_DEBUG_PRINTLN("unpeeked");
-    //   // Serial.flush();
-    //   return;
-    // }
-
-    uint16_t prevConfig = getSerial1Config( );
-    uint16_t prevBaudRate = baudRateUSBSer1;
-
-    if ( jumperlessConfig.serial_1.async_passthrough == false ) {
-
-        ARDUINO_DEBUG_PRINTLN( "Flash Arduino started" );
-        // checkForConfigChangesUSBSer1(true);
-
-        stopbitsUSBSer1 = 1;
-        numbitsUSBSer1 = 8;
-        paritytypeUSBSer1 = 0;
-
-        Serial1.begin( 115200, makeSerialConfig( numbitsUSBSer1, paritytypeUSBSer1, stopbitsUSBSer1 ) );
-
-        //  checkForConfigChangesSerial1(true);
-        Serial.flush( );
-    }
-
-    resetArduino( );
-
-    if ( jumperlessConfig.serial_1.async_passthrough == false ) {
-        // delay(80);
-        lastTimeResetArduino = millis( );
-
-        unsigned long flashTimeout = millis( );
-
-        // timeoutTime = 800;
-
-        int totalBytesTransferred = 0;
-        int totalBytesSent = 0;
-        int totalBytesReceived = 0;
-
-        int dtrStatus = USBSer1.dtr( );
-        int lastDTRStatus = dtrStatus;
-
-        unsigned long totalTimeout = millis( );
-
-        while ( 1 ) {
-
-            int ret =
-                handleSerialPassthrough( 0, 0, printSerial1Passthrough == 2 ? 1 : 0, 0 );
-
-            if ( ret != 0 ) {
-                totalBytesTransferred += abs( ret );
-                if ( ret > 0 ) {
-                    totalBytesSent += ret;
-                } else {
-                    totalBytesReceived += abs( ret );
-                }
-
-                flashTimeout = millis( );
-            }
-
-            if ( millis( ) - totalTimeout > 15000 ) {
-                break;
-            }
-
-            // if (USBSer1.peek() == 0x12) {
-            //   USBSer1.read();
-            //   ARDUINO_DEBUG_PRINTLN("DC2 reset");
-            //   Serial.flush();
-            //   resetArduino(2, 1000);
-            //   }
-            // USBSer1.peek
-            // dtrStatus = USBSer1.dtr();
-            // if (dtrStatus != lastDTRStatus) {
-            //   lastDTRStatus = dtrStatus;
-
-            //     ARDUINO_DEBUG_PRINTLN("DTR reset");
-            //     Serial.flush();
-            //     resetArduino(2, 1000);
-
-            //   }
-
-            if ( ( millis( ) - flashTimeout > timeoutTime ) && totalBytesTransferred > 20 ) {
-                // ARDUINO_DEBUG_PRINTLN("Flash Arduino timeout");
-                // ARDUINO_DEBUG_PRINTLN();
-                // Serial.flush();
-                break;
-            }
-
-            if ( totalBytesTransferred < 20 ) {
-                // ARDUINO_DEBUG_PRINTLN("totalBytesTransferred is 0");
-                // Serial.flush();
-                serTimeout = millis( );
-            }
-
-            if ( millis( ) - serTimeout >
-                 3200 ) { // this is a timeout before the arduino wakes up from reset
-                break;
-            }
-        }
-
-        arduinoInReset = 0;
-        FirstDTR = true;
-
-        ARDUINO_DEBUG_PRINT( "Flash Arduino done" );
-        ARDUINO_DEBUG_PRINT( "\n\r" );
-
-        ARDUINO_DEBUG_PRINT( "totalBytesTransferred: " );
-        ARDUINO_DEBUG_PRINT( totalBytesTransferred );
-        ARDUINO_DEBUG_PRINT( "totalBytesSent: " );
-        ARDUINO_DEBUG_PRINT( totalBytesSent );
-        ARDUINO_DEBUG_PRINT( "totalBytesReceived: " );
-        ARDUINO_DEBUG_PRINT( totalBytesReceived );
-        ARDUINO_DEBUG_PRINT( "\n\r" );
-        Serial.flush( );
-
-        // if ( arduinoWasConnected == 0 ) {
-        //     disconnectArduino( 0 );
-        // }
-
-        // checkForConfigChangesUSBSer1( );
-
-        // Serial1.write('\0');
-        // Serial1.flush();
-        // Serial1.end();
-        // Serial1.begin( 115200, makeSerialConfig( numbitsUSBSer1, paritytypeUSBSer1, stopbitsUSBSer1 ) );
-        Serial1.begin( prevBaudRate, prevConfig );
-        if ( arduinoWasConnected == 0 ) {
-            disconnectArduino( 1 );
-        }
-    }
-
+    #endif
+    
     flashingArduino = false;
 }
 
@@ -683,254 +463,8 @@ int USBSer1Available = 0;
 int Serial1Available = 0;
 int countCheck = 0;
 
-int handleSerialPassthrough( int serial, int print, int printPassthroughFlashing,
-                             int checkForCommands ) {
-    int ret = 0;
-    int sent = 0;
-    int received = 0;
-
-    if ( jumperlessConfig.serial_1.async_passthrough == true ) {
-        return 0;
-    }
-
-    // if (jumperlessConfig.serial_1.autoconnect_flashing == 1) {
-    //     autoConnectArduino( );
-    // }
-
-    if ( jumperlessConfig.serial_1.function == 1 && ( serial == 0 || serial == 2 ) ) {
-
-        // if ( countCheck > 100000 ) {
-        //     ARDUINO_DEBUG_PRINTLN( "countCheck: " + String( countCheck ) );
-        //     Serial.flush( );
-        //     countCheck = 0;
-        // }
-        // countCheck++;
-        unsigned long serial1Timeout = millis( );
-        USBSer1Available = USBSer1.available( );
-        Serial1Available = Serial1.available( );
-        char serial1Buffer[ 512 ];
-
-        for ( int i = 0; i < sizeof( serial1Buffer ); i++ ) {
-            serial1Buffer[ i ] = '\0';
-        }
-        bool bufferFull = false;
-
-        int serial1BufferIndex = 0;
-
-        if ( Serial1.available( ) > 0 ) {
-            // ARDUINO_DEBUG_PRINTLN( "Serial1.available: " + String( Serial1.available( ) ) );
-            // Serial.flush( );
-            serial1Timeout = millis( );
-
-            unsigned long lastSerial1Read = micros( );
-
-            int negativeRead = 0;
-            serial1BufferIndex = 0;
-
-            int loopCount = 0;
-
-            // ARDUINO_DEBUG_PRINTLN( "Serial1.available: " + String( Serial1.available( ) ) );
-            // Serial.print("baudRateUSBSer1: " + String( baudRateUSBSer1 ) );
-            // ARDUINO_DEBUG_PRINTLN( "paritytypeUSBSer1: " + String( paritytypeUSBSer1 ) );
-            // ARDUINO_DEBUG_PRINTLN( "stopbitsUSBSer1: " + String( stopbitsUSBSer1 ) );
-            // ARDUINO_DEBUG_PRINTLN( "numbitsUSBSer1: " + String( numbitsUSBSer1 ) );
-            // ARDUINO_DEBUG_PRINTLN( "microsPerByteSerial1: " + String( microsPerByteSerial1 ) );
-            // Serial.flush( );
-            // Serial1.
-            while ( 1 ) {
-
-                if ( Serial1.available( ) > 0 ) {
-
-                    int c = Serial1.read( );
-
-                    // if ( c == -1 ) {
-                    //     negativeRead++;
-                    //     ARDUINO_DEBUG_PRINTLN( "negativeRead: " + String( negativeRead ) );
-                    //     Serial.flush( );
-                    // }
-
-                    serial1Buffer[ serial1BufferIndex++ ] = c;
-                    lastSerial1Read = micros( );
-
-                    while ( micros( ) - lastSerial1Read < microsPerByteSerial1 * 3 && Serial1.available( ) == 0 ) {
-                        // delayMicroseconds(1);
-                        // loopCount++;
-                    }
-
-                    if ( Serial1.getWriteError( ) > 0 ) {
-                        ARDUINO_DEBUG_PRINTF( "Serial1 write error: %d", Serial1.getWriteError( ) );
-                        Serial.flush( );
-                        break;
-                    }
-                }
-                if ( micros( ) - lastSerial1Read > microsPerByteSerial1 * 10 ) {
-                    // ARDUINO_DEBUG_PRINTLN("serial1Timeout");
-                    //  Serial.flush();
-                    break;
-                }
-
-                unsigned long delayTime = micros( );
-
-                if ( millis( ) - serial1Timeout > 400 ) {
-                    // ARDUINO_DEBUG_PRINTLN("serial1Timeout");
-                    // Serial.flush();
-                    break;
-                }
-            }
-            serial1Buffer[ serial1BufferIndex ] = '\0';
-
-            // printMicrosPerByte( );
-            //  Serial.print( "microsPerByteSerial1: " );
-            //  ARDUINO_DEBUG_PRINTLN( microsPerByteSerial1 );
-            //  Serial.print( "loopCount: " );
-            //  ARDUINO_DEBUG_PRINTLN( loopCount );
-            //  Serial.flush( );
-
-            // for (int i = 0; i < serial1BufferIndex; i++){
-            //   // if (i % 32 == 0 ){
-            //   //   ARDUINO_DEBUG_PRINTLN();
-            //   // }
-            //   Serial.print(serial1Buffer[i]);
-            //  // Serial.print(" ");
-
-            //   }
-
-            // ARDUINO_DEBUG2_PRINT(serial1BufferIndex);
-            // ARDUINO_DEBUG2_PRINT("  ")
-            // ARDUINO_DEBUG_PRINTLN(serial1Buffer[serial1BufferIndex], HEX);
-
-            // serial1BufferIndex--;
-            
-            // Route through Jerial instead of directly to USBSer1
-            // This way Serial1 data appears on Serial, OLED, and USBSer1
-            Jerial.write( (const uint8_t*)serial1Buffer, serial1BufferIndex );
-            Jerial.flush( );
-
-            ret += serial1BufferIndex;
-            received = serial1BufferIndex;
-
-            if ( print || printSerial1Passthrough == 1 ||
-                 printPassthroughFlashing == 1 ) {
-                ARDUINO_DEBUG2_PRINT( "received << " );
-                for ( int i = 0; i < serial1BufferIndex; i++ ) {
-                    ARDUINO_DEBUG2_PRINTF( "%02x ", serial1Buffer[ i ] );
-                    // ARDUINO_DEBUG_PRINT( " " );
-                }
-
-                // serial1Buffer[ 0 ] = '\0';
-                serial1BufferIndex = 0;
-                ARDUINO_DEBUG2_PRINTLN( );
-                Serial.flush( );
-            }
-
-            gpioReadingColors[ 9 ] = 0x00191f;
-            // gpioReading[9] = 1;
-            lastSerial1RxRead = millis( );
-            showLEDsCore2 = 2;
-            // lastTimeResetArduino = millis( );
-            // USBSer1Available = USBSer1.available( );
-            // Serial1Available = Serial1.available( );
-
-            return 0 - received;
-            //  ARDUINO_DEBUG_PRINT(c);
-        }
-        if ( millis( ) - lastSerial1RxRead > 50 ) {
-            gpioReadingColors[ 9 ] = 0x010508;
-            // gpioReading[9] = 0;
-            showLEDsCore2 = 2;
-        }
-
-        if ( USBSer1.available( ) > 0 ) {
-
-            serial1Timeout = millis( );
-
-            while ( USBSer1.available( ) > 0 ) {
-
-                int c = USBSer1.read( );
-
-                serial1Buffer[ serial1BufferIndex++ ] = c;
-
-                if ( serial1BufferIndex >= sizeof( serial1Buffer ) - 1 ) {
-                    // ARDUINO_DEBUG_PRINTLN( "Serial1 buffer full" );
-                    // Serial.flush( );
-                    // bufferFull = true;
-                    break;
-                }
-
-                unsigned long delayTime = micros( );
-
-                while ( ( micros( ) - delayTime < microsPerByteSerial1 * 2 ) &&
-                        USBSer1.available( ) == 0 ) {
-                    // wait for the next byte or continue if there is one
-                }
-
-                if ( millis( ) - serial1Timeout > 400 ) {
-                    bufferFull = true;
-                    break;
-                }
-            }
-            // serial1Buffer[++serial1BufferIndex] = '\0';
-            // serial1BufferIndex--;
-
-            ret += serial1BufferIndex;
-            sent = serial1BufferIndex;
-
-            // Write directly to Serial1 (not through Jerial to avoid echo loop)
-            Serial1.write( serial1Buffer, serial1BufferIndex );
-            // Serial1.flush( );
-
-            // if ( Serial1.getWriteError( ) > 0 ) {
-            //     ARDUINO_DEBUG_PRINTLN( "Serial1 write error: " + String( Serial1.getWriteError( ) ) );
-            //     Serial.flush( );
-            //     Serial1.clearWriteError( );
-            //     // break;
-            // }
-            //  }
-
-            // ARDUINO_DEBUG_PRINT("USBSer1: ");
-            // ARDUINO_DEBUG_PRINTLN(c, HEX);
-            if ( print || printSerial1Passthrough == 1 ||
-                 printPassthroughFlashing == 1 ) {
-
-                ARDUINO_DEBUG3_PRINT( "sent     >> " );
-                for ( int i = 0; i < serial1BufferIndex; i++ ) {
-                    ARDUINO_DEBUG3_PRINTF( "%02x ", serial1Buffer[ i ] );
-                    // ARDUINO_DEBUG_PRINT( " " );
-                }
-                ARDUINO_DEBUG3_PRINTLN( );
-                // ARDUINO_DEBUG_PRINTLN(serial1BufferIndex);
-                // ARDUINO_DEBUG_PRINTLN();
-                Serial.flush( );
-            }
-
-            gpioReadingColors[ 8 ] = 0x1f1900;
-            // gpioReading[8] = 1;
-            lastSerial1TxRead = millis( );
-            showLEDsCore2 = 2;
-            lastTimeResetArduino = millis( );
-            // Serial.write(c);
-            USBSer1Available = USBSer1.available( );
-            Serial1Available = Serial1.available( );
-
-            //   if (USBSer1.available() == 0) {
-            //  Serial1.write('\0');
-            //  Serial1.flush();
-            //   }
-
-            return sent;
-        }
-
-        if ( millis( ) - lastSerial1TxRead > 50 ) {
-            gpioReadingColors[ 8 ] = 0x080501;
-            // gpioReading[8] = 0;
-            showLEDsCore2 = 2;
-        }
-
-        //}
-    }
-
-    return ret;
-}
+// REMOVED: handleSerialPassthrough() - deprecated, async passthrough is now always used
+// Data bridging is handled by AsyncPassthrough::task() via asyncPassthroughService
 void resetArduino( int topBottomBoth, unsigned long holdMicroseconds ) {
     SetArduinoResetLine( LOW, topBottomBoth );
     delayMicroseconds( holdMicroseconds );
@@ -983,20 +517,36 @@ void connectArduino( int flashOrLocal, int refreshConnections ) {
     // Use RAM-based state system
     addBridgeToState( RP_UART_RX, NANO_D1 );
     addBridgeToState( RP_UART_TX, NANO_D0 );
-    // ManualArduinoReset = true;
-    // goto loadfile;
     refresh( flashOrLocal, -1, 1, 0 );
 
-    // sendPaths();
-
-//    leds.show( );
-
+    // CRITICAL FIX: Reduced timeout and service AsyncPassthrough during wait
+    // The original 2-second timeout was blocking AsyncPassthrough::task()
+    // which prevented data bridging during Arduino flashing
+    unsigned long connectTimeout = millis();
+    const unsigned long CONNECT_TIMEOUT_MS = 500;  // Reduced to 500ms
+    
     while ( checkIfArduinoIsConnected( ) == 0 ) {
+        // CRITICAL: Service AsyncPassthrough to keep data bridging active
+        // Without this, avrdude's sync bytes don't reach Arduino during flashing
+        #if ASYNC_PASSTHROUGH_ENABLED == 1
+        AsyncPassthrough::task();
+        #endif
+        
+        // Also service USB directly
+        #ifdef USE_TINYUSB
+        extern void tud_task(void);
+        tud_task();
+        #endif
+        
+        // Timeout check to prevent infinite loop
+        if (millis() - connectTimeout > CONNECT_TIMEOUT_MS) {
+            // Timeout - Arduino connection state not detected, but bridges are added
+            // Continue anyway - the hardware connection should still work
+            break;
+        }
+        
+        delayMicroseconds(50);  // Small yield
     }
-    // refreshBlind(0, 0);
-    // sendPaths();
-    //  waitCore2();
-    // sendPaths();
 }
 
 void disconnectArduino( int flashOrLocal ) {
@@ -1065,7 +615,7 @@ int checkArduinoPresence( void ) {
 void autoConnectArduino( void ) {
     if ( checkArduinoPresence( ) == 1 && arduinoPresence == 0 ) {
         arduinoPresence = 1;
-        connectArduino( 0, 1 );
+        connectArduino( 1, 0 );
     }
 }
 

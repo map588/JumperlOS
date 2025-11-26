@@ -1907,7 +1907,28 @@ void oled::showJogo32h( ) {
 
 void oled::oledPeriodic( ) {
 
-    // return;
+     //return;
+    
+    // CRITICAL FIX: Don't attempt OLED operations during command processing
+    // OLED connect() calls refreshConnections() which can cause recursive refresh
+    // issues and potentially stack overflow if commands are being processed rapidly.
+    extern volatile bool refreshInProgress;
+    extern volatile bool refreshLocalInProgress;
+    extern volatile bool core1busy;
+    
+    if (refreshInProgress || refreshLocalInProgress || core1busy) {
+        // Skip OLED maintenance while command processing is active
+        return;
+    }
+    
+    // CRITICAL: Add cooldown after command processing to prevent immediate OLED refresh
+    // This gives USB time to stabilize after rapid command execution
+    static unsigned long s_last_oled_periodic = 0;
+    const unsigned long OLED_COOLDOWN_MS = 100;  // Wait 100ms between OLED operations
+    if (millis() - s_last_oled_periodic < OLED_COOLDOWN_MS) {
+        return;
+    }
+    s_last_oled_periodic = millis();
 
     if ( millis( ) - lastConnectionCheck > connectionCheckInterval ) {
         if ( jumperlessConfig.top_oled.lock_connection == 1 && !oledUsingHardwiredPins) {

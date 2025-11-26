@@ -291,6 +291,12 @@ public:
     String getCompletedLine();
     
     /**
+     * Get the response target stream for the current command
+     * Returns nullptr if no specific target (use default output)
+     */
+    Stream* getResponseTarget();
+    
+    /**
      * Peek at the completed line without consuming it
      */
     String peekCompletedLine() const;
@@ -302,8 +308,40 @@ public:
     
     /**
      * Inject a completed line directly (for programmatic commands)
+     * @param line The command line to inject
+     * @param response_target Optional stream to send the response to (nullptr = use current output)
      */
-    void injectCompletedLine(const char* line);
+    void injectCompletedLine(const char* line, Stream* response_target = nullptr);
+    
+    /**
+     * Set the response target for the NEXT completed line assembled from character injection
+     * This allows character-by-character injection while tracking response routing
+     * Use this when injecting characters via injectInput() - the target will be attached
+     * to the line when it's completed (on newline)
+     */
+    void setPendingResponseTarget(Stream* target);
+    
+    /**
+     * Get the pending response target (used internally by TermControl)
+     */
+    Stream* getPendingResponseTarget();
+    
+    /**
+     * Clear the pending response target (used internally by TermControl)
+     */
+    void clearPendingResponseTarget();
+    
+    /**
+     * Set the current response target for command execution (used by InjectedCommandService)
+     * This bypasses the queue system and directly sets the response target
+     * that will be returned by getResponseTarget()
+     */
+    void setCurrentResponseTarget(Stream* target);
+    
+    /**
+     * Clear the current response target after command execution
+     */
+    void clearCurrentResponseTarget();
     
     /**
      * Get current line being edited (read-only)
@@ -532,6 +570,14 @@ private:
     TermControl* term_control;
     bool term_control_active;
     
+    // Pending response target for next completed line (from character-by-character injection)
+    // Stored at JerialClass level since AsyncPassthrough (interrupt context) needs to set it
+    Stream* pending_response_target;
+    
+    // Current response target for command execution (set by InjectedCommandService)
+    // This bypasses the queue system for fast-path command execution
+    Stream* current_response_target;
+    
     // Injection buffer for programmatic input
     char injection_buffer[512];
     uint16_t injection_read_pos;
@@ -586,7 +632,8 @@ public:
     String getCompletedLine();          // Get the completed line (consumes it)
     String peekCompletedLine() const;   // Get the completed line without consuming it
     void clearCompletedLine();          // Clear completed line without consuming
-    void injectCompletedLine(const char* line); // Inject a completed line directly
+    void injectCompletedLine(const char* line, Stream* response_target = nullptr); // Inject a completed line directly
+    Stream* getResponseTarget();        // Get response target for current command
     const char* getCurrentLineBuffer(); // Get current line being edited (read-only)
     void setPrompt(const char* prompt); // Set prompt string
     void enableEcho(bool enabled);      // Enable/disable character echoing
@@ -614,9 +661,13 @@ private:
     // Command queue for injected commands (prevents blocking in AsyncPassthrough)
     static const int COMMAND_QUEUE_SIZE = 8;
     String command_queue[COMMAND_QUEUE_SIZE];
+    Stream* response_targets[COMMAND_QUEUE_SIZE];  // Target stream for each command's response
     volatile uint8_t queue_head;  // Next slot to write
     volatile uint8_t queue_tail;  // Next slot to read
     volatile uint8_t queue_count; // Number of items in queue
+    
+    // Last retrieved response target (captured when getCompletedLine() is called)
+    Stream* last_response_target;
     
     // Settings
     String prompt_text;

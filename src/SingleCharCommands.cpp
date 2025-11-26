@@ -1180,24 +1180,117 @@ CommandResult cmd_pythonDeinit(char c, const String& line) {
     return CMD_DONT_SHOW_MENU;
 }
 
-CommandResult cmd_pythonCommand(char c, const String& line) {
-    String pythonCommand = "";
-    if (jumperlessConfig.display.terminal_line_buffering == 1) {
-        pythonCommand = line;
-        pythonCommand = pythonCommand.substring(1); // Remove the '>' prefix
-        pythonCommand.trim();
-    } else {
-        while (Jerial.available() > 0) {
-            pythonCommand += Jerial.readString();
+// Helper function to strip '>' characters from the beginning of lines
+static String stripLeadingArrows(const String& input) {
+    String result;
+    result.reserve(input.length());
+    
+    bool atLineStart = true;
+    for (size_t i = 0; i < input.length(); i++) {
+        char c = input[i];
+        
+        // Skip '>' at the beginning of lines
+        if (atLineStart && c == '>') {
+            continue;
+        }
+        
+        // Skip whitespace at line start (after we've removed '>')
+        if (atLineStart && (c == ' ' || c == '\t')) {
+            continue;
+        }
+        
+        result += c;
+        
+        // Track line boundaries
+        if (c == '\n' || c == '\r') {
+            atLineStart = true;
+        } else if (c != ' ' && c != '\t') {
+            atLineStart = false;
         }
     }
     
-    if (pythonCommand.length() > 1) {
-        executeSinglePythonCommand(pythonCommand.c_str());
+    return result;
+}
+
+CommandResult cmd_pythonCommand(char c, const String& line) {
+    String pythonCommand = "";
+    
+    // PRIORITY 1: Use the line parameter if it has content (CommandBuffer path)
+    // This ensures commands from UART tags work regardless of terminal_line_buffering setting
+    String trimmedLine = line;
+    trimmedLine.trim();
+    
+    if (trimmedLine.length() > 0 && trimmedLine[0] == '>') {
+        // Line has content starting with '>' - use it directly
+        pythonCommand = trimmedLine.substring(1);
+        pythonCommand.trim();
+    } else if (trimmedLine.length() > 0) {
+        // Line has content but no '>' prefix - use as-is
+        pythonCommand = trimmedLine;
+    } else if (jumperlessConfig.display.terminal_line_buffering == 1) {
+        // Fallback: line buffering mode but line was empty (shouldn't happen)
+        pythonCommand = line;
+        pythonCommand.trim();
+        if (pythonCommand.length() > 0 && pythonCommand[0] == '>') {
+            pythonCommand = pythonCommand.substring(1);
+            pythonCommand.trim();
+        }
+    } else {
+        // Fallback: Read from Jerial (character-by-character mode, no line buffering)
+        // CRITICAL FIX: Only read until the FIRST newline to process one command at a time
+        // This prevents long Python execution from blocking DTR checks
+        while (Jerial.available() > 0) {
+            char c = Jerial.read();
+            if (c == '\n') {
+                break;  // Stop at first newline - process one command at a time
+            }
+            if (c != '\r') {  // Skip carriage returns
+                pythonCommand += c;
+            }
+        }
+    }
+    
+    // Strip '>' from the beginning of all lines
+    pythonCommand = stripLeadingArrows(pythonCommand);
+    pythonCommand.trim();
+    
+    // Get the response target for this command (if any)
+    Stream* response_target = Jerial.getResponseTarget();
+    
+    #if DEBUG_INJECTED_COMMANDS
+    // Debug output - always enabled for now to track command execution
+    Serial.print("cmd_pythonCommand: Received line=[");
+    for (size_t i = 0; i < line.length(); i++) {
+        char c = line[i];
+        if (c == '\n') Serial.print("\\n");
+        else if (c == '\r') Serial.print("\\r");
+        else if (c >= 32 && c < 127) Serial.print(c);
+        else Serial.printf("<%02X>", (unsigned char)c);
+    }
+    Serial.print("], extracted pythonCommand=[");
+    for (size_t i = 0; i < pythonCommand.length(); i++) {
+        char c = pythonCommand[i];
+        if (c == '\n') Serial.print("\\n");
+        else if (c == '\r') Serial.print("\\r");
+        else if (c >= 32 && c < 127) Serial.print(c);
+        else Serial.printf("<%02X>", (unsigned char)c);
+    }
+    Serial.printf("] (len=%d), response_target=%p\n", pythonCommand.length(), response_target);
+    Serial.flush();
+    #endif
+    
+    if (pythonCommand.length() > 0) {
+        // Execute command (output goes to USB Serial)
+        // Note: response_target routing for UART is available but not used for MicroPython output
+        // because MicroPython writes directly to global_mp_stream and capturing is complex
+        
+        executeSinglePythonCommand(pythonCommand.c_str(), nullptr, 0);
+        
     } else {
         Jerial.println("Usage: > <python_command>");
     }
     Jerial.flush();
+    tud_task();  // Service USB before return
     return CMD_DONT_SHOW_MENU;
 }
 

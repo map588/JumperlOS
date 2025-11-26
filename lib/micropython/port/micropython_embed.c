@@ -37,13 +37,9 @@ NORETURN void mp_machine_deepsleep(size_t n_args, const mp_obj_t *args) { (void)
 NORETURN void mp_machine_reset(void) { for (;;) {} }
 mp_int_t mp_machine_reset_cause(void) { return 0; }
 
-// Static allocation for heap - adjust size as needed
-// #if OG_JUMPERLESS == 1
-// #define MICROPY_HEAP_SIZE (32 * 1024)
-// #else
-// #define MICROPY_HEAP_SIZE (32 * 1024)
-// #endif
-static char heap[MICROPY_HEAP_SIZE];
+// NOTE: Heap is allocated in Python_Proper.cpp (mp_heap) and passed to mp_embed_init()
+// This file does NOT allocate its own heap - that would waste 128KB of RAM!
+// The heap variable below is REMOVED - caller provides heap buffer
 
 // Note: HAL functions (arduino_serial_write, arduino_serial_read) are implemented
 // in the Arduino C++ code (Python_Proper.cpp) as extern "C" functions
@@ -122,12 +118,12 @@ void gc_collect(void) {
 void nlr_jump_fail(void *val) {
     (void)val;
     // For embedded use, we can't do much here - just reset
-    mp_hal_stdout_tx_strn_cooked("FATAL: uncaught exception\n", 24);
-    // In a real embedded system, you might want to reset here
-    // For now, we'll enter an infinite loop since this is a noreturn function
-    // while(1) {
-    //     // Infinite loop - this should never be reached in normal operation
-    // }
+    mp_hal_stdout_tx_strn_cooked("FATAL: uncaught exception\n", 26);
+    // CRITICAL: This function is marked NORETURN - must not return!
+    // Without this infinite loop, stack corruption WILL occur
+    while(1) {
+        // Infinite loop - this should never be reached in normal operation
+    }
 }
 
 #ifdef __cplusplus

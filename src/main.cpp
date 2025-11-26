@@ -42,6 +42,7 @@ KevinC@ppucc.io
 #include "Highlighting.h"
 #include "JulseView.h"
 #include "JumperlOS.h"
+#include "CommandBuffer.h"  // New simplified command buffer system
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "LogicAnalyzer.h"
@@ -396,6 +397,11 @@ unsigned long core1Timeout = millis( );
 #define debug_startup_timers 0
 #define debug_busy_timers 0
 
+// Debug flag to enable verbose checkpoint output for crash debugging
+// Set to 1 to enable checkpoint markers (H, I, W, X, Y, a-f, etc.)
+// WARNING: This adds significant USB traffic which can affect stability!
+#define DEBUG_MAIN_LOOP_CHECKPOINTS 0
+
 unsigned long busyPrintTime = 0;
 unsigned long busyPrintInterval = 3000;
 unsigned long busyTimers[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -552,25 +558,30 @@ menu:
 
 
 dontshowmenu:
+#if DEBUG_MAIN_LOOP_CHECKPOINTS
+    Serial.write('H');  // Reached dontshowmenu
+    tud_task();
+#endif
 
-if ( configChanged == true && millis( ) > 3000 ) {
-    Jerial.print( "config changed, saving..." );
-    saveConfig( );
-    // Serial.println("\r                             \rconfig saved!\n\r");
-    // Serial.flush();
-    configChanged = false;
-}
+    if ( configChanged == true && millis( ) > 3000 ) {
+        Jerial.print( "config changed, saving..." );
+        saveConfig( );
+        configChanged = false;
+    }
     connectFromArduino = '\0';
     firstConnection = -1;
     core1passthrough = 1;
+    
+#if DEBUG_MAIN_LOOP_CHECKPOINTS
+    Serial.write('I');  // About to enter busy loop
+    tud_task();
+#endif
 
 #if debug_busy_timers == 1
     Serial.println( "Starting main loop: " + String( millis( ) ) + " ms" );
-    Serial.flush( );
+    tud_task();
 #endif
     busyPrintTime = millis( );
-
-
 
     //! This is the main busy wait loop waiting for input
     // CRITICAL: Use Jerial.available() to check injection buffer + Serial
@@ -580,9 +591,17 @@ if ( configChanged == true && millis( ) > 3000 ) {
     hasInjectedData = (Jerial.getInjectionStream() && Jerial.getInjectionStream()->available() > 0);
     useLineBuffering = (jumperlessConfig.display.terminal_line_buffering == 1) || hasInjectedData;
 
+    // DEBUG DISABLED: Heartbeat markers removed to minimize USB pressure
+    static uint32_t heartbeatCounter = 0;
+    static uint32_t lastHeartbeatPrint = 0;
+    
     while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
               ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
+        
+        // Heartbeat disabled for production
+        heartbeatCounter++;
+        bool printHeartbeat = false;  // Was: (heartbeatCounter - lastHeartbeatPrint >= 10000)
         
         // Recalculate useLineBuffering each iteration
         hasInjectedData = (Jerial.getInjectionStream() && Jerial.getInjectionStream()->available() > 0);
@@ -592,29 +611,52 @@ if ( configChanged == true && millis( ) > 3000 ) {
 
         busyTimers[ 0 ] = micros( );
 
+#if DEBUG_MAIN_LOOP_CHECKPOINTS
+        // DEBUG: Checkpoint throughout busy loop to find freeze location
+        static uint32_t loopCount = 0;
+        loopCount++;
+        bool printLoop = (loopCount % 5000 == 0);
+        
+        if (printLoop) { Serial.write('L'); tud_task(); }  // Loop start
+#endif
+        
         // Service all registered subsystems via jOSmanager
         // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services
         jOS.serviceAll( );
+        
+        // DEBUG: Marker after serviceAll - if we see '<{...}' but not '>' then freeze is between
+        // serviceAll() and the marker below
+        if (printHeartbeat) {
+            Serial.write('>');  // After serviceAll marker
+            tud_task();
+            lastHeartbeatPrint = heartbeatCounter;  // Update here so we get consistent '<{...}>'
+        }
+        
+#if DEBUG_MAIN_LOOP_CHECKPOINTS
+        if (printLoop) { Serial.write('S'); tud_task(); }  // After serviceAll
+        
+        // DEBUG: Check Core 2 state
+        if (printLoop) {
+            extern volatile bool core2busy;
+            extern volatile int sendAllPathsCore2;
+            extern volatile int showLEDsCore2;
+            Serial.write('C');
+            Serial.write('2');
+            Serial.write('[');
+            Serial.print((int)core2busy);
+            Serial.write(',');
+            Serial.print(sendAllPathsCore2);
+            Serial.write(',');
+            Serial.print(showLEDsCore2);
+            Serial.write(']');
+            tud_task();
+        }
+#endif
 
-if (Jerial.hasInjectedCommand == 1) {
-    // Serial.println("injected command detected");
-    // Serial.flush();
-    // jOS.serviceCritical();
-   // continue;
-}
-// if (Jerial.hasCompletedLine() == 1) {
-//     Serial.println("completed line detected");
-//     Serial.flush();
-// }
-
-        // if (configChanged == true) {
-        //     Jerial.print("config changed, saving...");
-        //     saveConfig();
-        //     // Serial.println("\r                             \rconfig saved!\n\r");
-        //     // Serial.flush();
-        //     configChanged = false;
-        // }
-
+#if DEBUG_MAIN_LOOP_CHECKPOINTS
+        if (printLoop) { Serial.write('1'); tud_task(); }  // Checkpoint 1
+#endif
+        
         // CRITICAL: Handle Arduino flashing (DTR pulse detection) on Core 0
         // This MUST run on Core 0 because it can call refreshLocalConnections()
         // via flashArduino() -> connectArduino() -> refresh() chain
@@ -625,7 +667,7 @@ if (Jerial.hasInjectedCommand == 1) {
             // AsyncPassthrough::task() now handled by asyncPassthroughService (CRITICAL priority)
             
             // Handle Arduino flashing and serial passthrough
-            secondSerialHandler();
+          //  secondSerialHandler();
         }
         busyTimers[ 2 ] = micros( );
 
@@ -674,15 +716,64 @@ if (Jerial.hasInjectedCommand == 1) {
             Serial.print( millis( ) );
             Serial.println( " ms" );
             Serial.println( "\n\r" );
-            Serial.flush( );
-            // delay(100);
+            tud_task();  // Non-blocking USB service instead of flush
         }
 #endif
         if ( useLineBuffering ) {
             // Service Jerial to process line buffering (user input or injected commands)
             Jerial.service( );
         }
+        
+        // NEW: Check for pending commands from CommandBuffer (from UART tags)
+        // This is the synchronous, simplified path that replaces InjectedCommandService
+        if (CommandBuffer::getInstance().hasPendingCommand()) {
+            break;  // Exit busy loop to process the command
+        }
     }
+    
+    // =========================================================================
+    // NEW: Handle pending commands from CommandBuffer (UART injected commands)
+    // This runs BEFORE checking Jerial, ensuring UART commands are processed promptly
+    // =========================================================================
+    if (CommandBuffer::getInstance().hasPendingCommand()) {
+        String cmdLine = CommandBuffer::getInstance().consumePendingCommand();
+        cmdLine.trim();
+        
+        if (cmdLine.length() > 0) {
+            currentCommandLine = cmdLine;
+            input = cmdLine[0];
+            
+            // Execute the command
+            inMainMenu = true;
+            CommandResult cmdResult = singleCharCommands.executeCommand((char)input, currentCommandLine);
+            inMainMenu = false;
+            
+            // Queue response to UART if command came from there
+            if (CommandBuffer::getInstance().shouldRespondToUART()) {
+                // Response already sent to Serial - copy to UART buffer
+                // (The command handler writes to Serial, which we can intercept)
+                // For now, the command handlers need to check shouldRespondToUART()
+                // and queue responses via CommandBuffer::getInstance().queueForUART()
+                CommandBuffer::getInstance().setRespondToUART(false);  // Reset flag
+            }
+            
+            CommandBuffer::getInstance().incrementCommandsProcessed();
+            
+            // Handle special command results
+            switch (cmdResult) {
+            case CMD_LOAD_FILE:
+                goto loadfile;
+            case CMD_SHOW_MENU:
+                // Refresh display
+                break;
+            default:
+                break;
+            }
+            
+            goto dontshowmenu;  // Skip menu display
+        }
+    }
+    
     // Check for completed lines first (includes both injected and buffered input)
     // This works regardless of line buffering mode - injected commands always work
     // CRITICAL: Use line buffering when injection buffer has data
@@ -808,7 +899,6 @@ skipinput:
                 Serial.read( );
                 delayMicroseconds( 1000 );
             }
-            Serial.flush( );
             goto menu;
         }
     }
@@ -1058,9 +1148,20 @@ t[i] = 0;
     // }
 }
 
+// DEBUG: Set to 1 to disable Core 2 processing for crash debugging
+#define DEBUG_DISABLE_CORE2_PROCESSING 0
+
 void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 {
     core2busy = false;
+    
+#if DEBUG_DISABLE_CORE2_PROCESSING
+    // Skip all Core 2 processing for crash debugging
+    // If crash stops when this is enabled, the bug is in Core 2 code
+    sendAllPathsCore2 = 0;
+    showLEDsCore2 = 0;
+    return;
+#endif
 
     if ( showLEDsCore2 < 0 ) {
         showLEDsCore2 = abs( showLEDsCore2 );

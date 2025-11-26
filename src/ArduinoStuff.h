@@ -91,7 +91,7 @@ int checkArduinoResetPin0(void);
 int checkArduinoResetPin1(void);
 void autoConnectArduino(void);
 
-int handleSerialPassthrough(int serial = 2, int print = 0, int printPassthroughFlashing = 0, int checkForCommands = 1);
+// REMOVED: handleSerialPassthrough() - deprecated, async passthrough is now always used
 
 void printMicrosPerByte(void);
 void printUSBInterfaceNames(void);

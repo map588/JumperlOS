@@ -1,4 +1,6 @@
 #include "Commands.h"
+#include "AsyncPassthrough.h"
+#include <hardware/sync.h>  // For __dmb() memory barrier
 #include "CH446Q.h"
 #include "FileParsing.h"
 #include "Graphics.h"
@@ -34,17 +36,29 @@ unsigned long waitCore2() {
   // delayMicroseconds(60);
   unsigned long timeout = micros();
   core1request = 1;
+  __dmb();  // Memory barrier after setting core1request
+  
   while (core2busy || (sendAllPathsCore2 != 0)) {
-    // Serial.println("waiting for core2 to finish");
-    if (micros() - timeout > 25000) {  // Reduced timeout from 50000 to 25000
-      //Serial.println("wait core2 timeout");
+    __dmb();  // Memory barrier to ensure we see latest values from Core 2
+    
+    if (micros() - timeout > 25000) {  // 25ms timeout
       core2busy = false;
       sendAllPathsCore2 = 0;
+      __dmb();  // Ensure Core 2 sees the reset
       break;
     }
-    }
-    // Serial.println(micros() - timeout);
+    
+    // CRITICAL: Service USB during wait to prevent disconnect
+    #ifdef USE_TINYUSB
+    extern void tud_task(void);
+    tud_task();
+    #endif
+    
+    // Small yield to prevent tight loop
+    tight_loop_contents();
+  }
 
+  __dmb();  // Final barrier before continuing
   core1request = 0;
   return micros() - timeout;
 }
@@ -95,10 +109,16 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   refreshPending = false;
   lastRefreshTime = millis();
 
+  // Timing instrumentation
+  unsigned long tStart = millis();
+  unsigned long t[10];
+  int ti = 0;
+
   // CRITICAL: Wait for core 2 to finish any LED rendering before modifying shared data
   // Core 2 reads from globalState.connections.nets[] in assignNetColors()
   // while we're about to modify it in getNodesToConnect()
   waitCore2();
+  t[ti++] = millis(); // t[0] = after waitCore2
   pauseCore2 = true;
   unsigned long start = millis();
   core1busy = true;
@@ -108,46 +128,21 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   
   // NEW: Load bridges from globalState instead of node files
   loadBridgesFromState();
-#ifdef DEBUG_REFRESH
-      Serial.print("refreshConnections loadBridgesFromState = ");
-      Serial.println(millis() - start);
-#endif
+  t[ti++] = millis(); // t[1] = after loadBridgesFromState
 
   getNodesToConnect();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections getNodesToConnect = ");
-  Serial.println(millis() - start);
-#endif
-  rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections rebuildChangedNetColorsFromBridges = ");
-  Serial.println(millis() - start);
-#endif
-//core1busy = false;
-  bridgesToPaths();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections bridgesToPaths = ");
-  Serial.println(millis() - start);
-#endif
-  checkChangedNetColors(-1);
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections checkChangedNetColors = ");
-  Serial.println(millis() - start);
-#endif
-  chooseShownReadings();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections chooseShownReadings = ");
-  Serial.println(millis() - start);
-#endif
-  //findChangedNetColors();
-  //assignNetColors();
+  t[ti++] = millis(); // t[2] = after getNodesToConnect
   
-  // Restore GPIO configurations from jumperlessConfig after net processing
-  //setGPIO();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections setGPIO = ");
-  Serial.println(millis() - start);
-#endif
+  rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
+  t[ti++] = millis(); // t[3] = after rebuildChangedNetColorsFromBridges
+
+  bridgesToPaths();
+  t[ti++] = millis(); // t[4] = after bridgesToPaths
+  
+  checkChangedNetColors(-1);
+  chooseShownReadings();
+  t[ti++] = millis(); // t[5] = after checkChangedNetColors + chooseShownReadings
+  
   pauseCore2 = false;
   core1busy = false;
 
@@ -157,39 +152,44 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   } else {
     sendAllPathsCore2 = 1;   // 1 means send paths without cleaning
   }
+  __dmb();  // Ensure Core 2 sees the signal
 
   // CRITICAL: Wait for core 2 to actually process the sendAllPathsCore2 signal
-  // sendPaths() (in CH446Q.cpp line 160) clears sendAllPathsCore2 to 0 when done
-  // This prevents race condition where we continue before paths are physically sent
-  // OPTIMIZATION: Reduced timeout from 3000ms to 1000ms to handle rapid command bursts
+  // IMPORTANT: Must call tud_task() during wait to prevent USB disconnect!
   unsigned long pathsTimeout = millis();
   while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 1000)) {
+    __dmb();  // Memory barrier to see Core 2's update
     delayMicroseconds(100);
+    // CRITICAL: Service USB during wait to prevent disconnect
+    #ifdef USE_TINYUSB
+    extern void tud_task(void);
+    tud_task();
+    #endif
   }
+  t[ti++] = millis(); // t[6] = after sendAllPathsCore2 wait
+  
   if (sendAllPathsCore2 != 0) {
     Serial.println("WARNING: Core 2 did not process sendAllPathsCore2 in time!");
-    Serial.print("sendAllPathsCore2 still = ");
-    Serial.println(sendAllPathsCore2);
-    // Force clear to prevent permanent blocking
     sendAllPathsCore2 = 0;
+    __dmb();  // Ensure the clear is visible
   }
 
   if (ledShowOption != 0) {
     showLEDsCore2 = ledShowOption;
     waitCore2();  // Wait for core 2 to finish rendering (which calls assignNetColors)
   }
+  t[ti++] = millis(); // t[7] = after showLEDs wait
   
   // Now that core 2 has computed netColors[], we can safely read them for terminal colors
   assignTermColor();
-#ifdef DEBUG_REFRESH
-  Serial.print("refreshConnections assignTermColor = ");
-  Serial.println(millis() - start);
-#endif
-#ifdef DEBUG_REFRESH
-  Serial.print("after waitCore2 time = ");  
-
-  Serial.println(millis() - start);
-#endif
+  t[ti++] = millis(); // t[8] = after assignTermColor
+  
+  // Print timing breakdown for slow refreshes
+  unsigned long totalTime = t[ti-1] - tStart;
+  if (totalTime > 100) {
+    Serial.printf("⏱️ refresh: waitC2=%lu load=%lu nodes=%lu colors=%lu paths=%lu misc=%lu sendPaths=%lu LEDs=%lu term=%lu TOTAL=%lums\n",
+                  t[0]-tStart, t[1]-t[0], t[2]-t[1], t[3]-t[2], t[4]-t[3], t[5]-t[4], t[6]-t[5], t[7]-t[6], t[8]-t[7], totalTime);
+  }
   
   refreshInProgress = false;
   
@@ -415,12 +415,20 @@ unsigned long start2 = millis();
   } else {
     sendAllPathsCore2 = 1;   // 1 means send paths without cleaning
   }
+  __dmb();  // Ensure Core 2 sees the signal
 
   // CRITICAL: Wait for core 2 to actually process the sendAllPathsCore2 signal
   // sendPaths() (in CH446Q.cpp line 160) clears sendAllPathsCore2 to 0 when done
+  // IMPORTANT: Must call tud_task() during wait to prevent USB disconnect!
   unsigned long pathsTimeout = millis();
   while (sendAllPathsCore2 != 0 && (millis() - pathsTimeout < 1000)) {
-    delayMicroseconds(100);
+    __dmb();  // Memory barrier to see Core 2's update
+    delayMicroseconds(10);
+    // CRITICAL: Service USB during wait to prevent disconnect
+    #ifdef USE_TINYUSB
+    extern void tud_task(void);
+    tud_task();
+    #endif
   }
   if (sendAllPathsCore2 != 0) {
     Serial.println("WARNING: Core 2 did not process sendAllPathsCore2 in time!");
@@ -428,6 +436,7 @@ unsigned long start2 = millis();
     Serial.println(sendAllPathsCore2);
     // Force clear to prevent permanent blocking
     sendAllPathsCore2 = 0;
+    __dmb();  // Ensure the clear is visible
   }
 
 

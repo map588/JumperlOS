@@ -40,7 +40,13 @@ TermControl::TermControl( Stream* underlying_stream, bool create_own_history )
       ansi_state( ANSI_NORMAL ),
       queue_head( 0 ),
       queue_tail( 0 ),
-      queue_count( 0 ) {
+      queue_count( 0 ),
+      last_response_target( nullptr ) {
+
+    // Initialize response targets array
+    for ( int i = 0; i < COMMAND_QUEUE_SIZE; i++ ) {
+        response_targets[i] = nullptr;
+    }
 
     // Create our own history instance if requested
     if ( create_own_history ) {
@@ -190,19 +196,44 @@ String TermControl::getCompletedLine( ) {
     // First check queue (injected commands have priority)
     if ( queue_count > 0 ) {
         String result = command_queue[queue_tail];
+        
+        // CRITICAL: Capture response target at the SAME TIME as getting command
+        last_response_target = response_targets[queue_tail];
+        response_targets[queue_tail] = nullptr;  // Clear slot
+        
+        #if DEBUG_INJECTED_COMMANDS
+        Serial.printf("TermControl::getCompletedLine(): from queue[%d]: '%s', captured response_target=%p\n",
+                     queue_tail, result.c_str(), last_response_target);
+        Serial.flush();
+        #endif
+        
         queue_tail = (queue_tail + 1) % COMMAND_QUEUE_SIZE;
         queue_count--;
         return result;
     }
     
-    // Fall back to legacy single slot (user typed input)
+    // Fall back to legacy single slot (user typed input - no response target)
     if ( !line_ready )
         return "";
 
+    last_response_target = nullptr;  // User input has no specific target
     String result = completed_line;
     completed_line = "";
     line_ready = false;
     return result;
+}
+
+Stream* TermControl::getResponseTarget( ) {
+    // Simply return the last captured response target
+    Stream* target = last_response_target;
+    last_response_target = nullptr;  // Clear after retrieval
+    
+    #if DEBUG_INJECTED_COMMANDS
+    Serial.printf("TermControl::getResponseTarget(): returning %p\n", target);
+    Serial.flush();
+    #endif
+    
+    return target;
 }
 
 String TermControl::peekCompletedLine( ) const {
@@ -216,7 +247,7 @@ void TermControl::clearCompletedLine( ) {
     line_ready = false;
 }
 
-void TermControl::injectCompletedLine( const char* line ) {
+void TermControl::injectCompletedLine( const char* line, Stream* response_target ) {
     if ( !line ) {
         return;
     }
@@ -237,8 +268,9 @@ void TermControl::injectCompletedLine( const char* line ) {
         return;
     }
     
-    // Add to queue
+    // Add to queue with response target
     command_queue[queue_head] = String( line );
+    response_targets[queue_head] = response_target;
     queue_head = (queue_head + 1) % COMMAND_QUEUE_SIZE;
     queue_count++;
     
@@ -247,6 +279,7 @@ void TermControl::injectCompletedLine( const char* line ) {
         history->addToHistory( String( line ) );
     }
 }
+
 
 const char* TermControl::getCurrentLineBuffer( ) {
     return current_line;
@@ -333,6 +366,15 @@ void TermControl::handleBackspace( ) {
 }
 
 void TermControl::handleEnter( ) {
+    // Get pending response target from Jerial (set by AsyncPassthrough)
+    Stream* pending_target = Jerial.getPendingResponseTarget();
+    
+    #if DEBUG_INJECTED_COMMANDS
+    Serial.printf("TermControl::handleEnter(): line_length=%d, pending_response_target=%p\n",
+                 line_length, pending_target);
+    Serial.flush();
+    #endif
+    
     if ( echo_enabled && stream ) {
         stream->print( JERIAL_NEWLINE_OUT );
         stream->flush( );
@@ -344,7 +386,37 @@ void TermControl::handleEnter( ) {
         history->addToHistory( String( current_line ) );
     }
 
-    // Make line available for parsing
+    // If there's a pending response target, queue this line with the target
+    // (This happens when line is assembled from character-by-character injection)
+    if ( pending_target != nullptr && line_length > 0 ) {
+        current_line[ line_length ] = '\0';
+        
+        // Add to queue with response target instead of using completed_line
+        if ( queue_count < COMMAND_QUEUE_SIZE ) {
+            #if DEBUG_INJECTED_COMMANDS
+            Serial.printf("TermControl::handleEnter(): Queuing '%s' with response_target=%p (queue slot %d)\n",
+                         current_line, pending_target, queue_head);
+            Serial.flush();
+            #endif
+            
+            command_queue[queue_head] = String( current_line );
+            response_targets[queue_head] = pending_target;
+            queue_head = (queue_head + 1) % COMMAND_QUEUE_SIZE;
+            queue_count++;
+        } else {
+            #if DEBUG_INJECTED_COMMANDS
+            Serial.printf("⚠️  TermControl::handleEnter(): Queue full, dropping '%s'\n", current_line);
+            Serial.flush();
+            #endif
+        }
+        
+        // Clear the pending target in Jerial
+        Jerial.clearPendingResponseTarget();
+        clearCurrentLine( );
+        return;
+    }
+
+    // Make line available for parsing (normal user input)
     completed_line = String( current_line );
     line_ready = true;
 
@@ -573,13 +645,15 @@ void TermControl::deleteCharAtCursor( ) {
 // Global Jerial instance
 JerialClass Jerial;
 
-JerialClass::JerialClass() 
+JerialClass::JerialClass()
     : output_count(0),
       broadcast_enabled(true),
       input_stream(nullptr),
       input_source_count(0),
       term_control(nullptr),
       term_control_active(false),
+      pending_response_target(nullptr),
+      current_response_target(nullptr),
       injection_read_pos(0),
       injection_write_pos(0),
       tag_buffer_pos(0),
@@ -693,12 +767,33 @@ int JerialClass::peek() {
 }
 
 void JerialClass::flush() {
-    // Flush all output streams
+    // CRITICAL FIX: Don't call output_streams[i]->flush() directly!
+    // For USB CDC streams, flush() can block INDEFINITELY if the USB host
+    // stops reading (which happens during rapid command processing when
+    // the host's USB buffers fill up). This causes Core 0 to freeze.
+    //
+    // Instead, we service USB non-blocking with tud_task() which sends
+    // any pending data without blocking. The USB protocol guarantees
+    // eventual delivery without requiring blocking waits.
+    //#ifdef USE_TINYUSB
+    extern void tud_task(void);
+    // Service USB multiple times to give it a chance to transmit
+    // for (int i = 0; i < 3; i++) {
+    //     tud_task();
+    //     delayMicroseconds(50);  // Small yield between calls
+    // }
+
+    // Serial.flush();
+    
+    // tud_task();
+    // #else
+    // Non-TinyUSB fallback: call flush() but this path is rarely used
     for (int i = 0; i < output_count; i++) {
         if (output_streams[i]) {
             output_streams[i]->flush();
         }
     }
+    //#endif
 }
 
 size_t JerialClass::write(uint8_t byte) {
@@ -742,6 +837,20 @@ int JerialClass::availableForWrite() {
 // ============================================================================
 
 bool JerialClass::service() {
+    // CRITICAL: If there's an injected command pending, DON'T process it here!
+    // Let InjectedCommandService handle it directly for faster execution.
+    // This prevents both paths from trying to consume the same injection buffer.
+    // if (hasInjectedCommand) {
+    //     // Don't process injection buffer - InjectedCommandService will handle it
+    //     // Only process regular user input from Serial
+    //     if (term_control_active && term_control && input_stream && input_stream->available() > 0) {
+    //         // There's user input, process just that (not injection buffer)
+    //         // But TermControl reads from MultiSourceStream which includes injection...
+    //         // So we skip entirely when injection is pending
+    //     }
+    //     return false;  // Signal that InjectedCommandService should handle this
+    // }
+    
     // TermControl reads from MultiSourceStream which automatically checks:
     // 1. InjectionBufferStream (priority) - for AsyncPassthrough commands
     // 2. Real input stream (Serial) - for user input
@@ -795,10 +904,61 @@ void JerialClass::clearCompletedLine() {
     }
 }
 
-void JerialClass::injectCompletedLine(const char* line) {
+void JerialClass::injectCompletedLine(const char* line, Stream* response_target) {
     if (term_control_active && term_control) {
-        term_control->injectCompletedLine(line);
+        term_control->injectCompletedLine(line, response_target);
     }
+}
+
+Stream* JerialClass::getResponseTarget() {
+    // CRITICAL: Check current_response_target first (set by InjectedCommandService for fast-path)
+    // This handles commands from UART that bypass TermControl's queue
+    if (current_response_target != nullptr) {
+        Stream* target = current_response_target;
+        current_response_target = nullptr;  // Consume it
+        
+        #if DEBUG_INJECTED_COMMANDS
+        Serial.printf("JerialClass::getResponseTarget(): returning current_response_target=%p\n", target);
+        Serial.flush();
+        #endif
+        
+        return target;
+    }
+    
+    // Fall back to TermControl's queue-based response routing
+    if (term_control_active && term_control) {
+        return term_control->getResponseTarget();
+    }
+    return nullptr;
+}
+
+void JerialClass::setPendingResponseTarget(Stream* target) {
+    #if DEBUG_INJECTED_COMMANDS
+    Serial.printf("JerialClass::setPendingResponseTarget(%p)\n", target);
+    Serial.flush();
+    #endif
+    
+    pending_response_target = target;
+}
+
+Stream* JerialClass::getPendingResponseTarget() {
+    return pending_response_target;
+}
+
+void JerialClass::clearPendingResponseTarget() {
+    pending_response_target = nullptr;
+}
+
+void JerialClass::setCurrentResponseTarget(Stream* target) {
+    #if DEBUG_INJECTED_COMMANDS
+    Serial.printf("JerialClass::setCurrentResponseTarget(%p)\n", target);
+    Serial.flush();
+    #endif
+    current_response_target = target;
+}
+
+void JerialClass::clearCurrentResponseTarget() {
+    current_response_target = nullptr;
 }
 
 const char* JerialClass::getCurrentLineBuffer() {
@@ -1101,13 +1261,17 @@ String JerialClass::getInjectedCompleteLine() {
     #if DEBUG_INJECTED_COMMANDS
     // Debug: Show buffer contents
     Serial.printf("DEBUG getInjectedCompleteLine: read=%d write=%d\n", read_pos, write_pos);
-    Serial.print("  Buffer contents: [");
+    Serial.print("  Buffer contents (first 100 chars): [");
     uint16_t debug_pos = read_pos;
     int char_count = 0;
-    while (debug_pos != write_pos && char_count < 50) {
+    while (debug_pos != write_pos && char_count < 100) {
         char c = injection_buffer[debug_pos];
         if (c >= 32 && c < 127) {
             Serial.print(c);
+        } else if (c == '\n') {
+            Serial.print("\\n");
+        } else if (c == '\r') {
+            Serial.print("\\r");
         } else {
             Serial.printf("<%02X>", (unsigned char)c);
         }

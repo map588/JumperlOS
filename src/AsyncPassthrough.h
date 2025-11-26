@@ -78,6 +78,152 @@ namespace AsyncPassthrough {
     
     // Trigger Arduino reset via GPIO pin
     void resetArduino(int resetPin);
+    
+    // ============================================================================
+    // UART Response Functions - Route command responses back to Arduino
+    // ============================================================================
+    
+    // Queue a response to be sent back over UART
+    // Use this when a command was received from UART and the response should go back
+    bool queueUARTResponse(const char* data, size_t len);
+    bool queueUARTResponse(const String& data);
+    
+    // Send any pending UART responses (called from task())
+    void sendPendingUARTResponses();
+    
+    // Check if the current command came from UART (for response routing)
+    bool wasCommandFromUART();
+    
+    // Clear the command-from-UART flag after processing
+    void clearCommandFromUARTFlag();
+    
+    // ============================================================================
+    // UART IRQ Control - For safe command processing
+    // ============================================================================
+    
+    /**
+     * Suspend UART RX interrupt processing.
+     * Call this when a complete command has been detected and is being extracted.
+     * This prevents the IRQ from pushing more bytes during critical state changes.
+     * IMPORTANT: Keep suspension time minimal to avoid data loss!
+     */
+    void suspendUARTRxIRQ();
+    
+    /**
+     * Resume UART RX interrupt processing.
+     * Call this after command has been copied to CommandBuffer.
+     */
+    void resumeUARTRxIRQ();
+    
+    /**
+     * Check if UART RX IRQ is currently suspended
+     */
+    bool isUARTRxIRQSuspended();
+    
+    /**
+     * Clear all tag parser state and command buffers.
+     * Call this on DTR pulse to ensure clean state for Arduino flashing.
+     */
+    void clearTagParserState();
+    
+    /**
+     * Mark that command processing is in progress.
+     * When set, tag parsing will not accept new commands (they'll be buffered).
+     */
+    void setCommandProcessingActive(bool active);
+    
+    /**
+     * Check if command processing is currently active
+     */
+    bool isCommandProcessingActive();
+    
+    // ============================================================================
+    // UART Framing Error Detection and Resync
+    // ============================================================================
+    
+    /**
+     * Get UART error statistics for debugging
+     * @param framing_errors - total framing errors detected
+     * @param overruns - total overrun errors detected  
+     * @param resyncs - number of times receiver was resynced due to framing errors
+     */
+    void getUARTErrorStats(uint32_t* framing_errors, uint32_t* overruns, uint32_t* resyncs);
+    
+    /**
+     * Reset UART error counters
+     */
+    void resetUARTErrorStats();
+    
+    /**
+     * Manually force a UART receiver resync
+     * This disables/re-enables the RX to clear the shift register and wait for a new start bit
+     * Use when you suspect framing alignment issues
+     */
+    void forceUARTResync();
+    
+    /**
+     * Print UART error statistics to Serial (for debugging)
+     */
+    void printUARTErrorStats();
+    
+    /**
+     * Send a UART break condition to force the remote receiver (Arduino) to resync
+     * A break condition holds the TX line LOW for longer than a frame time,
+     * which forces any UART receiver to discard its current byte and wait for
+     * a new start bit.
+     * 
+     * @param break_duration_us - how long to hold the line LOW (default ~100us = ~11 bit times at 115200)
+     */
+    void sendBreakToRemote(uint32_t break_duration_us = 100);
+    
+    /**
+     * Full bidirectional resync: resyncs both local receiver AND sends break to remote
+     * Use this when you suspect both sides might be out of sync
+     */
+    void fullBidirectionalResync();
+    
+    // ============================================================================
+    // Idle Line Detection and Timing Validation
+    // ============================================================================
+    
+    /**
+     * Check if the UART line is currently idle (no data for > idle threshold)
+     * After an idle period, UART framing is guaranteed to be correct
+     */
+    bool isLineIdle();
+    
+    /**
+     * Get the time in microseconds since the last byte was received
+     * @return microseconds since last RX, or UINT32_MAX if never received
+     */
+    uint32_t getTimeSinceLastRxUs();
+    
+    /**
+     * Get timing statistics for debugging
+     * @param idle_periods - number of idle periods detected
+     * @param bytes_since_idle - bytes received since last idle period
+     * @param timing_anomalies - count of impossible timing detected
+     * @param last_inter_byte_us - time between last two bytes
+     */
+    void getTimingStats(uint32_t* idle_periods, uint32_t* bytes_since_idle, 
+                        uint32_t* timing_anomalies, uint32_t* last_inter_byte_us);
+    
+    /**
+     * Reset timing statistics
+     */
+    void resetTimingStats();
+    
+    /**
+     * Print comprehensive UART diagnostics including timing info
+     */
+    void printFullDiagnostics();
+    
+    /**
+     * Wait for line to become idle (blocking)
+     * @param timeout_ms - maximum time to wait
+     * @return true if line became idle, false if timeout
+     */
+    bool waitForLineIdle(uint32_t timeout_ms);
 }
 
 #endif

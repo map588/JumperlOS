@@ -155,6 +155,21 @@ void jOSmanager::serviceAll() {
     loopCounter++;
     //debugWaitLoopTiming = true;
     
+    // DEBUG: Track current service for crash debugging
+    static const char* currentServiceName = nullptr;
+    static uint8_t currentServiceIndex = 255;
+    
+    // DEBUG: Print service index every 5000 calls to track where freeze happens
+    static uint32_t serviceAllCounter = 0;
+    serviceAllCounter++;
+    bool printServiceDebug = false; //(serviceAllCounter % 5000 == 0);
+    
+    // DEBUG: Mark start of serviceAll
+    if (printServiceDebug) {
+        Serial.write('{');
+        tud_task();
+    }
+    
     // Debug: Print service execution order every N loops
     static unsigned long lastDebugLoop = 0;
     bool printServiceOrder = 0;//debugWaitLoopTiming && (loopCounter % 100 == 0);
@@ -227,11 +242,24 @@ void jOSmanager::serviceAll() {
             Serial.printf("  [%d] %s (%s) - RUNNING...\n", i, svc->getName(), priorityName);
         }
         
+        // DEBUG: Print which service is about to run
+        if (printServiceDebug) {
+            Serial.write('[');
+            Serial.print(i);
+            tud_task();
+        }
+        
         // Execute the service with timing
         unsigned long svcStart = micros();
         ServiceStatus status = svc->service();
         unsigned long svcEnd = micros();
         unsigned long svcTime = svcEnd - svcStart;
+        
+        // DEBUG: Print completion marker
+        if (printServiceDebug) {
+            Serial.write(']');
+            tud_task();
+        }
         
         // CRITICAL: Report ANY service taking > 100ms (causes command delays!)
         if (debugWaitLoopTiming && svcTime > 100000) {  // > 100ms
@@ -268,6 +296,12 @@ void jOSmanager::serviceAll() {
     if (debugWaitLoopTiming && ( micros() - loopStart ) > 20000 ) {
         Serial.printf("DEBUG:   serviceAll() took %lu us (%.2f ms)\n", micros() - loopStart, (micros() - loopStart) / 1000.0);
         Serial.flush();
+    }
+    
+    // DEBUG: Mark end of serviceAll
+    if (printServiceDebug) {
+        Serial.write('}');
+        tud_task();
     }
     //debugWaitLoopTiming = false;
 }
@@ -442,8 +476,25 @@ InjectedCommandService& InjectedCommandService::getInstance() {
  * Thread-safe: Uses atomic buffer position updates
  */
 ServiceStatus InjectedCommandService::service() {
+    // =========================================================================
+    // DISABLED: Commands are now handled synchronously in main.cpp via CommandBuffer
+    // 
+    // The new architecture uses CommandBuffer for all UART-injected commands:
+    // 1. AsyncPassthrough parses <j>/<p> tags and sets pending command in CommandBuffer
+    // 2. Main loop checks CommandBuffer::hasPendingCommand() and processes synchronously
+    // 3. No competing services, no race conditions, no async complexity
+    // 
+    // This service is kept for backwards compatibility but does nothing.
+    // =========================================================================
     lastStatus = ServiceStatus::IDLE;
     
+    // Clear legacy flags that may have been set
+    Jerial.hasInjectedCommand = 0;
+    
+    return lastStatus;
+    
+    // LEGACY CODE BELOW - KEPT FOR REFERENCE
+    #if 0
     // Fast check: is there a complete line in injection buffer?
     // This bypasses slow TermControl and reads directly from buffer
     if (!Jerial.hasInjectedCompleteLine()) {
@@ -451,101 +502,7 @@ ServiceStatus InjectedCommandService::service() {
         Jerial.hasInjectedCommand = 0;
         return lastStatus;
     }
-    
-    // Process ALL available completed lines from injection buffer
-    // This prevents buffer pile-up when commands arrive faster than main loop can process
-    int commandsProcessed = 0;
-    static const int MAX_COMMANDS_PER_SERVICE = 3; // Safety limit
-    
-    static unsigned long lastCmdTime = 0;
-    
-    while (Jerial.hasInjectedCompleteLine() && commandsProcessed < MAX_COMMANDS_PER_SERVICE) {
-        unsigned long cmdStart = micros();
-        
-        // FAST PATH: Extract directly from injection buffer (no TermControl delay)
-        String cmdLine = Jerial.getInjectedCompleteLine();
-        cmdLine.trim();
-        
-        if (cmdLine.length() > 0) {
-            // Get first character as command trigger
-            char cmdChar = cmdLine[0];
-            
-            // Execute via singleCharCommands
-            extern class SingleCharCommands singleCharCommands;
-            extern String currentCommandLine;
-            
-            // Update global command line for backwards compatibility
-            currentCommandLine = cmdLine;
-            
-            // Debug: Track command execution
-            unsigned long timeSinceLastCmd = millis() - lastCmdTime;
-            #if DEBUG_INJECTED_COMMANDS
-            if (lastCmdTime > 0 && timeSinceLastCmd < 50) {
-                Serial.printf("⚡ Rapid injected cmd #%d: %lu ms gap (cmd=\"%s\")\n", 
-                             commandsProcessed + 1, timeSinceLastCmd, cmdLine.c_str());
-                Serial.flush();
-            }
-            #endif
-            // Execute the command
-            unsigned long execStart = micros();
-            CommandResult result = singleCharCommands.executeCommand(cmdChar, cmdLine);
-            unsigned long execEnd = micros();
-            unsigned long execDuration = execEnd - execStart;
-            
-            lastCmdTime = millis();
-            
-            unsigned long cmdEnd = micros();
-            unsigned long cmdDuration = cmdEnd - cmdStart;
-            
-            // Report timing for slow commands
-            if (execDuration > 100000) {  // > 100ms
-                #if DEBUG_INJECTED_COMMANDS
-                Serial.printf("⏱️  Slow injected command \"%s\" took %lu ms (total: %lu µs)\n", 
-                             cmdLine.c_str(), execDuration / 1000, cmdDuration);
-                Serial.flush();
-                #endif
-            } else if (debugWaitLoopTiming && commandsProcessed == 0) {
-                // Debug first command timing - show full command string
-                #if DEBUG_INJECTED_COMMANDS
-                Serial.printf("✓ Injected cmd \"%s\" executed in %lu µs\n", cmdLine.c_str(), cmdDuration);
-                Serial.flush();
-                #endif
-            }
-            
-            commandsProcessed++;
-            lastStatus = ServiceStatus::BUSY;
-            
-            // Note: CommandResult (CMD_SHOW_MENU, CMD_LOAD_FILE, etc.) is not
-            // handled here because injected commands from Arduino shouldn't
-            // trigger main loop gotos. If needed, this could be added.
-        }
-    }
-    
-    // Clear the flag after processing all available commands
-    // Check if injection buffer still has complete lines
-    if (Jerial.hasInjectedCompleteLine()) {
-        // More commands waiting, keep flag set
-        Jerial.hasInjectedCommand = 1;
-        #if DEBUG_INJECTED_COMMANDS
-        if (commandsProcessed >= MAX_COMMANDS_PER_SERVICE) {
-            Serial.printf("⚠️  Hit command limit (%d), %d more waiting\n", 
-                         MAX_COMMANDS_PER_SERVICE, commandsProcessed);
-            Serial.flush();
-        }
-        #endif
-    } else {
-        // Buffer is empty, clear the flag
-        Jerial.hasInjectedCommand = 0;
-    }
-    
-    if (commandsProcessed > 1) {
-        #if DEBUG_INJECTED_COMMANDS
-        Serial.printf("✓ Processed %d injected commands in one service cycle\n", commandsProcessed);
-        Serial.flush();
-        #endif
-    }
-    
-    return lastStatus;
+    #endif
 }
 
 // AsyncPassthroughService - USB CDC1 <-> UART0 bridging

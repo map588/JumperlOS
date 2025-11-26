@@ -423,26 +423,58 @@ void jl_gpio_set_pull(int pin, int pull) {
 
 // Node Functions
 int jl_nodes_connect(int node1, int node2, int save) {
+    // CRITICAL: Service USB before potentially long operation
+    #ifdef USE_TINYUSB
+    extern void tud_task(void);
+    tud_task();
+    #endif
+    
     // Add to RAM state
     addBridgeToState(node1, node2);
     
     if (save) {
         // Immediately save to YAML
-        saveStateToSlot();
-        refreshConnections();
+        //saveStateToSlot();
+        refreshLocalConnections();
     } else {
         // Just refresh locally (save happens later)
         refreshLocalConnections();
     }
+    
+    // CRITICAL: Service USB after operation
+    #ifdef USE_TINYUSB
+    tud_task();
+    #endif
     return 1;
 }
 
 int jl_nodes_disconnect(int node1, int node2) {
+    // CRITICAL: Service USB before potentially long operation
+    #ifdef USE_TINYUSB
+    extern void tud_task(void);
+    tud_task();
+    #endif
+    
+    unsigned long t0 = millis();
     // Remove from RAM state
     removeBridgeFromState(node1, node2);
+    unsigned long t1 = millis();
     // Save immediately
-    saveStateToSlot();
-    refreshConnections(-1);
+   // saveStateToSlot();
+    unsigned long t2 = millis();
+    refreshLocalConnections(-1);
+    unsigned long t3 = millis();
+    
+    // Debug: Show where time is spent
+    if ((t3 - t0) > 100) {
+        Serial.printf("⏱️ disconnect breakdown: removeBridge=%lums, saveState=%lums, refresh=%lums, TOTAL=%lums\n",
+                     t1-t0, t2-t1, t3-t2, t3-t0);
+    }
+    
+    // CRITICAL: Service USB after operation
+    #ifdef USE_TINYUSB
+    tud_task();
+    #endif
     return 1;
 }
 

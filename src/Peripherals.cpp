@@ -547,6 +547,7 @@ int convertPullToJumperless(int pull) {
 
 
 void setGPIO( void ) {
+    ///return;
     // Restore GPIO configurations from jumperlessConfig after
     // refreshConnections()
     for ( int i = 0; i < 10; i++ ) {
@@ -2011,7 +2012,15 @@ float readAdcVoltage( int channel, int samples ) {
 
 int readAdc( int channel, int samples ) {
     // Wait if another core is using the ADC
+    // CRITICAL: Add timeout to prevent permanent hang if ADC is never released
+    unsigned long adcWaitStart = micros();
     while ( readingADC ) {
+        if (micros() - adcWaitStart > 100000) {  // 100ms timeout
+            // ADC held too long - force release and continue
+            // This prevents permanent hang if another core crashes while holding ADC
+            readingADC = false;
+            break;
+        }
         tight_loop_contents( );
     }
     

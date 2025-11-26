@@ -36,6 +36,7 @@
 
 #include "AsyncPassthrough.h"
 #include "class/cdc/cdc_device.h"
+#include "CommandBuffer.h"  // New simplified command buffer system
 #if ASYNC_PASSTHROUGH_ENABLED == 1
 // pico-sdk
 #include "config.h"
@@ -51,6 +52,7 @@
 // Arduino core
 #include <Arduino.h>
 #include "Jerial.h" // Unified serial interface
+#include "Python_Proper.h" // For executeSinglePythonCommand and ScriptHistory
 
 // External Jerial instance
 extern JerialClass Jerial;
@@ -86,15 +88,45 @@ struct TagParserState {
     char tag_buffer[32];           // Buffer for tag name
     uint8_t tag_buffer_idx;
     char current_tag[32];          // Currently open tag name
+    bool needs_python_prefix;      // For <p> tags: true if we need to inject '>'
+    bool seen_first_char;          // For <p> tags: true after first non-whitespace char
+    
+    // Command accumulation buffer - collect entire command before injection
+    // This eliminates the need for per-character delays that caused blocking
+    char command_buffer[256];      // Buffer for accumulating command content
+    uint16_t command_buffer_idx;   // Current position in command buffer
 };
 
 // Separate state machines for each direction
-static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0} };
-static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0} };
+// Initialize with zeroed command buffers
+static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0}, false, false, {0}, 0 };
+static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0}, false, false, {0}, 0 };
 
 // Command injection tracking (no rate limiting - process all commands immediately)
 static uint32_t s_last_command_injection_time = 0;
 static uint32_t s_injected_commands = 0;
+
+// ============================================================================
+// UART Response Queue - Routes command responses back to UART
+// ============================================================================
+
+// Queue for responses that need to be sent back to UART
+#define UART_RESPONSE_QUEUE_SIZE 8
+#define UART_RESPONSE_MAX_LEN 256
+
+struct UARTResponseEntry {
+    char data[UART_RESPONSE_MAX_LEN];
+    uint16_t length;
+    bool pending;
+};
+
+static UARTResponseEntry s_uart_response_queue[UART_RESPONSE_QUEUE_SIZE];
+static volatile uint8_t s_uart_response_head = 0;
+static volatile uint8_t s_uart_response_tail = 0;
+static volatile uint8_t s_uart_response_count = 0;
+
+// Track if current command came from UART (for response routing)
+static volatile bool s_command_from_uart = false;
 
 // ARCHITECTURAL NOTE: Character-by-character injection instead of line buffering
 // ============================================================================
@@ -113,9 +145,10 @@ static uint32_t s_injected_commands = 0;
 static const char* COMMAND_TAGS[] = {
     "jumperlessCommand",
     "j",
-    "jumperless"
+    "jumperless",
+    "p"  // Python tag - works like 'j' but injects '>' prefix for Python commands
 };
-static const uint8_t NUM_COMMAND_TAGS = 3;
+static const uint8_t NUM_COMMAND_TAGS = 4;
 
 // ----------------------------------------------------------------------------
 // Configuration
@@ -243,6 +276,58 @@ volatile uint16_t uartReceivedHead = 0;
 volatile uint16_t uartReceivedTail = 0;
 static volatile uint32_t uartReceivedOverflowCount = 0;
 static volatile uint32_t s_uart_overrun_count = 0;
+static volatile uint32_t s_uart_framing_error_count = 0;
+static volatile uint32_t s_uart_framing_error_total = 0;
+static volatile uint32_t s_uart_resync_count = 0;
+
+// Garbage detection - non-ASCII/non-printable bytes indicate misalignment
+static volatile uint32_t s_uart_garbage_count = 0;        // Consecutive garbage bytes
+static volatile uint32_t s_uart_garbage_total = 0;        // Total garbage bytes seen
+static volatile uint32_t s_uart_garbage_resyncs = 0;      // Resyncs triggered by garbage
+
+// Framing error threshold - after this many consecutive FE errors, force resync
+#define FRAMING_ERROR_RESYNC_THRESHOLD 3
+
+// Garbage detection threshold - after this many consecutive non-ASCII bytes, resync
+// Non-ASCII = bytes outside printable range (0x20-0x7E) plus common control chars
+#define GARBAGE_RESYNC_THRESHOLD 4
+
+// Check if a byte is "garbage" (likely from misaligned framing)
+// Valid bytes: printable ASCII (0x20-0x7E), newline, carriage return, tab
+static inline bool is_garbage_byte(uint8_t c) {
+    // Printable ASCII range
+    if (c >= 0x20 && c <= 0x7E) return false;
+    // Common control characters we expect
+    if (c == '\n' || c == '\r' || c == '\t') return false;
+    // Null can appear in binary protocols
+    if (c == 0x00) return false;
+    // Everything else is suspicious - especially high-bit-set bytes (0x80-0xFF)
+    return true;
+}
+
+// ============================================================================
+// Idle Line Detection and Timing Validation
+// ============================================================================
+
+// Track timing for idle detection and sync validation
+static volatile uint32_t s_last_rx_byte_time_us = 0;
+static volatile uint32_t s_last_idle_detected_time = 0;
+static volatile uint32_t s_bytes_since_last_idle = 0;
+static volatile uint32_t s_idle_periods_detected = 0;
+static volatile bool s_line_was_idle = true;  // Start assuming idle (fresh start = synced)
+
+// Timing anomaly detection
+static volatile uint32_t s_timing_anomaly_count = 0;
+static volatile uint32_t s_last_inter_byte_time_us = 0;
+
+// Idle threshold: line is "idle" if no data for this many microseconds
+// At 115200 baud, one byte takes ~87µs, so 200µs means ~2+ byte times of silence
+#define UART_IDLE_THRESHOLD_US 200
+
+// Timing validation tolerance: bytes should arrive at ≥ usPerByteSerial1
+// Allow up to 20% faster than theoretical minimum (accounts for measurement jitter)
+#define TIMING_TOLERANCE_PERCENT 80
+
 #define UART_RECEIVED_MASK ( (uint16_t)( sizeof( uartReceived ) - 1 ) )
 
 static inline bool ring_push_byte( uint8_t b ) {
@@ -272,20 +357,158 @@ static inline uint8_t ring_peek_at( uint16_t offset ) {
     return uartReceived[ idx ];
 }
 
-static void async_uart_irq_handler( void ) {
-    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
-        uint8_t c = (uint8_t)uart_getc( ASYNC_PASSTHROUGH_UART );
-        ring_push_byte( c );
-    }
-    // Record and clear sticky error flags (e.g., overrun)
+// Force UART receiver resync by disabling/re-enabling RX
+// This flushes the FIFO and forces the receiver to wait for a new start bit
+// Also clears the ring buffer since it likely contains garbage
+static inline void uart_force_receiver_resync( void ) {
     uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+    
+    // Disable UART receiver (clears shift register and FIFO)
+    hw_clear_bits( &hw->cr, UART_UARTCR_RXE_BITS );
+    
+    // Drain any remaining bytes from HW FIFO (they're garbage)
+    while ( !(hw->fr & UART_UARTFR_RXFE_BITS) ) {
+        volatile uint32_t discard = hw->dr;
+        (void)discard;
+    }
+    
+    // Clear error flags
+    hw->rsr = 0xFFFFFFFFu;
+    
+    // CRITICAL: Clear the ring buffer - it likely contains garbage from misalignment
+    // This prevents garbage from being processed by higher layers
+    uartReceivedHead = 0;
+    uartReceivedTail = 0;
+    
+    // Brief delay to ensure the receiver fully stops and line settles
+    // At 115200 baud, one bit time is ~8.7us, so 100us is ~11 bit times (>1 frame)
+    busy_wait_us( 100 );
+    
+    // Re-enable receiver - it will now wait for next valid start bit
+    hw_set_bits( &hw->cr, UART_UARTCR_RXE_BITS );
+    
+    s_uart_resync_count++;
+    s_uart_framing_error_count = 0;  // Reset consecutive error counters
+    s_uart_garbage_count = 0;
+}
+
+static void async_uart_irq_handler( void ) {
+    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+    int i = 0;
+    bool had_framing_error = false;
+    
+    // Get current time for timing validation
+    uint32_t now_us = time_us_32();
+    
+    // Check if we were idle before this IRQ (natural sync point)
+    uint32_t time_since_last = now_us - s_last_rx_byte_time_us;
+    if ( time_since_last > UART_IDLE_THRESHOLD_US && s_last_rx_byte_time_us != 0 ) {
+        // Line was idle - this is a natural sync point!
+        // UART automatically resynced on the start bit of this new data
+        s_line_was_idle = true;
+        s_idle_periods_detected++;
+        s_last_idle_detected_time = now_us;
+        s_bytes_since_last_idle = 0;
+        
+        // After an idle period, we can trust the framing is good
+        // Reset consecutive error counter since we've naturally resynced
+        s_uart_framing_error_count = 0;
+    } else {
+        s_line_was_idle = false;
+    }
+    
+    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+        uint32_t byte_time_us = time_us_32();
+        
+        // Check for errors BEFORE reading the byte (errors are per-byte in FIFO)
+        uint32_t dr = hw->dr;  // Read data register (includes error flags in upper bits)
+        uint8_t c = (uint8_t)( dr & 0xFF );
+        
+        // Timing validation: check if inter-byte time is reasonable
+        // Bytes can't arrive faster than one per usPerByteSerial1
+        if ( i > 0 && s_last_rx_byte_time_us != 0 ) {
+            uint32_t inter_byte_us = byte_time_us - s_last_rx_byte_time_us;
+            s_last_inter_byte_time_us = inter_byte_us;
+            
+            // If bytes are arriving impossibly fast, something is wrong
+            uint32_t min_time_us = (usPerByteSerial1 * TIMING_TOLERANCE_PERCENT) / 100;
+            if ( inter_byte_us > 0 && inter_byte_us < min_time_us ) {
+                // Bytes arriving faster than physically possible - timing anomaly
+                // This could indicate we're misaligned and reading partial bytes
+                s_timing_anomaly_count++;
+            }
+        }
+        
+        s_last_rx_byte_time_us = byte_time_us;
+        s_bytes_since_last_idle++;
+        
+        // Check per-byte error flags from data register
+        // DR bits: [11]=OE, [10]=BE, [9]=PE, [8]=FE
+        bool has_hw_error = false;
+        if ( dr & ( UART_UARTDR_OE_BITS | UART_UARTDR_FE_BITS | UART_UARTDR_PE_BITS | UART_UARTDR_BE_BITS ) ) {
+            if ( dr & UART_UARTDR_FE_BITS ) {
+                s_uart_framing_error_count++;
+                s_uart_framing_error_total++;
+                had_framing_error = true;
+                has_hw_error = true;
+            }
+            if ( dr & UART_UARTDR_OE_BITS ) {
+                s_uart_overrun_count++;
+            }
+            // Don't push bytes with framing errors - they're likely garbage
+            if ( dr & UART_UARTDR_FE_BITS ) {
+                s_uart_garbage_count++;  // Count as garbage too
+                s_uart_garbage_total++;
+                continue;  // Skip this corrupted byte
+            }
+        }
+        
+        // GARBAGE DETECTION: Check if byte is outside expected ASCII range
+        // ONLY when tag parsing is enabled (ASCII mode)
+        // When tag parsing is disabled (e.g., during Arduino flashing), we're in
+        // binary mode and must pass through ALL bytes including STK500 protocol
+        if ( asyncPassthroughTagParsingEnabled && is_garbage_byte(c) ) {
+            s_uart_garbage_count++;
+            s_uart_garbage_total++;
+            // Don't push garbage bytes to the ring buffer
+            continue;
+        }
+        
+        // Good byte received - reset consecutive error/garbage counters
+        if ( !has_hw_error ) {
+            s_uart_framing_error_count = 0;
+        }
+        s_uart_garbage_count = 0;  // Reset garbage streak on valid byte
+        
+        ring_push_byte( c );
+        i++;
+        if (i > 1000) {
+            // This shouldn't happen in normal operation
+            break;
+        }
+    }
+    
+    // Check if we've accumulated too many consecutive framing errors OR garbage bytes
+    // Either indicates persistent misalignment that needs a resync
+    // ONLY check garbage threshold when in ASCII mode (tag parsing enabled)
+    bool needs_resync = false;
+    if ( s_uart_framing_error_count >= FRAMING_ERROR_RESYNC_THRESHOLD ) {
+        needs_resync = true;
+    }
+    if ( asyncPassthroughTagParsingEnabled && s_uart_garbage_count >= GARBAGE_RESYNC_THRESHOLD ) {
+        s_uart_garbage_resyncs++;
+        needs_resync = true;
+    }
+    if ( needs_resync ) {
+        uart_force_receiver_resync();
+    }
+    
+    // Clear any sticky error flags in RSR (Receive Status Register)
     uint32_t rsr = hw->rsr;
     if ( rsr & ( UART_UARTRSR_OE_BITS | UART_UARTRSR_FE_BITS | UART_UARTRSR_PE_BITS | UART_UARTRSR_BE_BITS ) ) {
-        if ( rsr & UART_UARTRSR_OE_BITS ) {
-            s_uart_overrun_count++;
-        }
-        hw->rsr = 0xFFFFFFFFu; // write to RSR (alias of ECR) clears errors
+        hw->rsr = 0xFFFFFFFFu;  // Write to RSR (alias of ECR) clears errors
     }
+    
     s_uart_flush_pending = true;
 }
 
@@ -391,25 +614,69 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                     // Closing tag
                     if ( strcmp( &parser->tag_buffer[1], parser->current_tag ) == 0 ) {
                         // Valid closing tag for current command
-                        // Inject newline to complete the command AND set flag for InjectedCommandService
-                        Jerial.injectInput("\n", false);
-                        Jerial.hasInjectedCommand = 1;  // Signal complete command ready
-                        s_injected_commands++;
+                        // Safety: ensure buffer index is within bounds
+                        if (parser->command_buffer_idx >= sizeof(parser->command_buffer)) {
+                            parser->command_buffer_idx = sizeof(parser->command_buffer) - 1;
+                        }
+                        // Null-terminate the accumulated command
+                        parser->command_buffer[parser->command_buffer_idx] = '\0';
+                        
+                        s_command_from_uart = true;
+                        
+                        // NEW: Use CommandBuffer for synchronous command handling
+                        // This replaces the complex Jerial injection buffer system
+                        if (parser->command_buffer_idx > 0) {
+                            s_injected_commands++;
+                            
+                            // Determine if this is a <p> (Python) or <j> (raw) command
+                            bool isPythonTag = (strcmp(parser->current_tag, "p") == 0);
+                            bool accepted = false;
+                            
+                            if (isPythonTag) {
+                                accepted = CommandBuffer::getInstance().setPendingPCommand(parser->command_buffer);
+                            } else {
+                                accepted = CommandBuffer::getInstance().setPendingJCommand(parser->command_buffer);
+                            }
+                            
+                            if (!accepted) {
+                                // Previous command still pending - can't accept new one
+                                // Reset state but don't lose the command
+                                // In practice this shouldn't happen if main loop processes fast enough
+                                parser->state = TAG_SEARCHING;
+                                parser->command_buffer_idx = 0;
+                                return false;
+                            }
+                        }
+                        
                         s_last_command_injection_time = millis();
-                        //delay(1);
-                        // Reset state
+                        
+                        // Reset state - just reset indices, no need to memset large buffers
                         parser->state = TAG_SEARCHING;
-                        memset( parser->current_tag, 0, sizeof(parser->current_tag) );
+                        parser->current_tag[0] = '\0';  // Just null-terminate, don't memset
+                        parser->command_buffer_idx = 0;  // Just reset index
+                        parser->needs_python_prefix = false;
+                        parser->seen_first_char = false;
                     } else {
                         // Mismatched closing tag, treat as normal text
                         parser->state = TAG_SEARCHING;
+                        parser->command_buffer_idx = 0;  // Just reset index
                     }
                     return false; // Consumed
                     
                 } else if ( is_command_tag( parser->tag_buffer ) ) {
-                    // Valid opening command tag - will inject characters as they arrive
+                    // Valid opening command tag
                     strcpy( parser->current_tag, parser->tag_buffer );
                     parser->state = TAG_IN_COMMAND;
+                    
+                    // Reset command buffer for new command
+                    parser->command_buffer_idx = 0;
+                    
+                    // For Python tags, prepare to inject '>' prefix if needed
+                    if ( strcmp( parser->current_tag, "p" ) == 0 ) {
+                        parser->needs_python_prefix = true;
+                        parser->seen_first_char = false;
+                    }
+                    
                     return false; // Consumed
                     
                 } else {
@@ -438,17 +705,30 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                 return false; // Start detecting closing tag
                 
             } else {
-                // Inject character immediately into input stream (no buffering)
-                // This allows Jerial's line buffering to handle command completion
-                #if DEBUG_INJECTED_COMMANDS
-                Serial.printf("AsyncPassthrough: Injecting '%c' (%d) from <%s> tag\n", 
-                             (c >= 32 && c < 127) ? c : '?', (int)c, parser->current_tag);
-                Serial.flush();
-                #endif
-                delayMicroseconds(350);
-                Jerial.injectInput(&c, 1, false);
+                // For <p> tags, add '>' prefix only if not already present
+                if ( parser->needs_python_prefix && !parser->seen_first_char ) {
+                    // Skip whitespace when checking for existing '>'
+                    if ( c != ' ' && c != '\t' && c != '\n' && c != '\r' ) {
+                        parser->seen_first_char = true;
+                        
+                        // Only add '>' prefix if the command doesn't already start with it
+                        if ( c != '>' && parser->command_buffer_idx < sizeof(parser->command_buffer) - 1 ) {
+                            parser->command_buffer[parser->command_buffer_idx++] = '>';
+                        }
+                        
+                        parser->needs_python_prefix = false;
+                    }
+                }
                 
-                return false; // Consumed and injected
+                // NON-BLOCKING: Accumulate character into command buffer
+                // The entire command will be injected at once when closing tag is detected
+                // This eliminates the need for blocking delayMicroseconds(350) per character
+                if ( parser->command_buffer_idx < sizeof(parser->command_buffer) - 1 ) {
+                    parser->command_buffer[parser->command_buffer_idx++] = c;
+                }
+                // If buffer is full, just drop characters (command too long)
+                
+                return false; // Consumed (accumulated)
             }
             break;
     }
@@ -500,7 +780,9 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
             
             // Write accumulated bytes to UART (non-blocking)
             if ( forward_idx > 0 ) {
+                delayMicroseconds( 350 );
                 uart_write_blocking( ASYNC_PASSTHROUGH_UART, forward_buf, forward_idx );
+                //delayMicroseconds( 350 );
             }
         }
     }
@@ -517,7 +799,7 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     // CRITICAL: Limit processing to prevent multi-second blocking
     // Process max 128 bytes per call to keep service responsive
     // With 4096-byte ring buffer, processing everything at once can take 5-7 seconds!
-    const uint32_t MAX_BYTES_PER_CALL = 1024;
+    const uint32_t MAX_BYTES_PER_CALL = 2048;
     uint32_t processed = 0;
     
     // If in forwarding mode, stream all bytes to main Serial until end token or timeout
@@ -527,7 +809,7 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
         
         // CRITICAL: Reduce chunk size during forwarding (Serial.write is VERY slow!)
         // Even 128 bytes can take 800-3400ms when writing to Serial!
-        const uint32_t MAX_FORWARD_BYTES = 256;  // Smaller chunk for Serial output
+        const uint32_t MAX_FORWARD_BYTES = 64;  // Smaller chunk for Serial output
         uint32_t forwardCount = 0;
         
         while ( ring_pop_byte( &c ) && forwardCount < MAX_FORWARD_BYTES ) {
@@ -635,6 +917,11 @@ void tud_cdc_line_coding_cb( uint8_t itf, cdc_line_coding_t const* p ) {
 }
 
 // ----------------------------------------------------------------------------
+// External functions from ArduinoStuff.cpp
+// ----------------------------------------------------------------------------
+extern void SetArduinoResetLine(bool state, int topBottomBoth);
+
+// ----------------------------------------------------------------------------
 // Foreground task runner
 // ----------------------------------------------------------------------------
 
@@ -648,18 +935,117 @@ void begin( unsigned long baud ) {
     uart_init( ASYNC_PASSTHROUGH_UART, baud );
     uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
     uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
+    
+    // =========================================================================
+    // AGGRESSIVE STARTUP RESYNC SEQUENCE
+    // =========================================================================
+    // On boot, the Arduino might already be transmitting, or there could be
+    // noise on the line. This can cause the UART to start sampling mid-byte,
+    // leading to persistent framing errors and crashes.
+    // 
+    // This aggressive sequence does MULTIPLE resync attempts to ensure both
+    // sides start clean, even in worst-case scenarios.
+    // =========================================================================
+    
+    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+    
+    // Do multiple resync cycles to handle worst-case scenarios
+    // Each cycle: drain FIFO, disable RX, send break, wait, drain again
+    for (int resync_attempt = 0; resync_attempt < 3; resync_attempt++) {
+        
+        // Step 1: Drain any garbage from RX FIFO (don't process, just discard)
+        int drained = 0;
+        while ( !(hw->fr & UART_UARTFR_RXFE_BITS) && drained < 1000 ) {
+            volatile uint32_t discard = hw->dr;  // Read and discard
+            (void)discard;
+            drained++;
+        }
+        
+        // Step 2: Clear any error flags that accumulated
+        hw->rsr = 0xFFFFFFFFu;
+        
+        // Step 3: Disable receiver to clear shift register state
+        hw_clear_bits( &hw->cr, UART_UARTCR_RXE_BITS );
+        busy_wait_us( 100 );  // Give it time to fully stop
+        
+        // Step 4: Send break condition to force Arduino's UART to resync
+        // Wait for TX FIFO to be empty first
+        int tx_wait = 0;
+        while ( !(hw->fr & UART_UARTFR_TXFE_BITS) && tx_wait < 10000 ) {
+            busy_wait_us(1);
+            tx_wait++;
+        }
+        hw_set_bits( &hw->lcr_h, UART_UARTLCR_H_BRK_BITS );  // Start break (TX LOW)
+        busy_wait_us( 500 );  // Hold break for ~50 bit times at 115200 (longer!)
+        hw_clear_bits( &hw->lcr_h, UART_UARTLCR_H_BRK_BITS );  // End break
+        
+        // Step 5: Wait for line to stabilize and any echo/response to clear
+        busy_wait_us( 1000 );  // ~100 bit times - longer wait
+        
+        // Step 6: Drain any bytes that arrived during break/stabilization
+        drained = 0;
+        while ( !(hw->fr & UART_UARTFR_RXFE_BITS) && drained < 1000 ) {
+            volatile uint32_t discard = hw->dr;
+            (void)discard;
+            drained++;
+        }
+        hw->rsr = 0xFFFFFFFFu;  // Clear errors again
+        
+        // Step 7: Re-enable receiver
+        hw_set_bits( &hw->cr, UART_UARTCR_RXE_BITS );
+        
+        // Brief pause before next attempt (if any)
+        if (resync_attempt < 2) {
+            busy_wait_us( 500 );
+        }
+    }
+    
+    // Final wait to ensure line is truly idle
+    busy_wait_us( 2000 );  // 2ms final stabilization
+    
+    // One more drain in case anything came in during final wait
+    while ( !(hw->fr & UART_UARTFR_RXFE_BITS) ) {
+        volatile uint32_t discard = hw->dr;
+        (void)discard;
+    }
+    hw->rsr = 0xFFFFFFFFu;
+    
+    // Reset all timing/error stats for clean start
+    s_uart_framing_error_count = 0;
+    s_uart_framing_error_total = 0;
+    s_uart_overrun_count = 0;
+    s_uart_resync_count = 0;
+    s_uart_garbage_count = 0;
+    s_uart_garbage_total = 0;
+    s_uart_garbage_resyncs = 0;
+    s_timing_anomaly_count = 0;
+    s_idle_periods_detected = 0;
+    s_bytes_since_last_idle = 0;
+    s_last_rx_byte_time_us = 0;
+    s_line_was_idle = true;  // Fresh start = synced
+    
+    // Clear ring buffer too (should already be empty but be sure)
+    // Use global scope :: because these are file-scope variables, not namespace members
+    ::uartReceivedHead = 0;
+    ::uartReceivedTail = 0;
+    
+    // =========================================================================
+    // END STARTUP RESYNC SEQUENCE
+    // =========================================================================
 
     // Enable RX interrupt for immediate forwarding; include RX timeout interrupt
-#if JL_UART0_INTEROP_MODE == 0
+//#if JL_UART0_INTEROP_MODE == 0
     // Integrate: use shared handler so MicroPython and passthrough can coexist
-    irq_add_shared_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler, 0 );
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-#else
-    // Preempt (default): exclusive handler while not suspended by MicroPython
     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
-    irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 0 ); // highest priority
+    irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 1 );
     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-#endif
+// #else
+//     // Preempt (default): exclusive handler while not suspended by MicroPython
+//     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
+//     // Priority 64 (was 0) - allow main loop to get CPU time during fast command streams
+//     irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 64 );
+//     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
+// #endif
     uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
     // Ensure RX timeout and overrun interrupts are enabled
     hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
@@ -675,14 +1061,22 @@ void begin( unsigned long baud ) {
     s_line_coding.stop_bits = 0; // 1 stop
     set_micros_per_byte( &s_line_coding );
 
-    // Register default forward prefixes
-    registerForwardPrefix( "jcommand:" );
-    registerForwardPrefix( "\x02" ); // SOH
-    registerForwardPrefix( "\x03" ); // DLE
-    registerForwardPrefix( "jl:" );
+    // // Register default forward prefixes
+    // registerForwardPrefix( "jcommand:" );
+    // registerForwardPrefix( "\x02" ); // SOH
+    // registerForwardPrefix( "\x03" ); // DLE
+    // registerForwardPrefix( "jl:" );
 }
 
 void task( ) {
+    // DEBUG DISABLED: All checkpoint output removed to minimize USB pressure
+    // The A12345678 markers were contributing to freeze by adding USB load
+    static uint32_t taskCount = 0;
+    taskCount++;
+    
+    // Checkpoints disabled for production
+    bool printCheckpoints = false;  // Was: (taskCount % 1000 == 0)
+    
     unsigned long taskStart = micros();
     unsigned long t0, t1;
     
@@ -690,11 +1084,17 @@ void task( ) {
     // This ensures DTR pulse detection takes absolute priority over command injection
     // USBSer1 is declared extern at file scope (line 21), outside the namespace
     t0 = micros();
+    
+    if (printCheckpoints) { Serial.write('1'); tud_task(); }
+    
     checkDTRState( USBSer1 );
+    
+    if (printCheckpoints) { Serial.write('2'); tud_task(); }
     t1 = micros();
     #if DEBUG_INJECTED_COMMANDS
     if ((t1 - t0) > 50000) {  // > 50ms
         Serial.printf("⏱️  checkDTRState took %lu ms\n", (t1 - t0) / 1000);
+        Serial.flush();
     }
     #endif
     
@@ -736,11 +1136,17 @@ void task( ) {
         }
     }
     
+    if (printCheckpoints) { Serial.write('3'); tud_task(); }
+    
     // If suspended by MicroPython, avoid touching UART hardware
     if ( s_uart_suspended_by_mpy ) {
         tud_task();
+        checkDTRState( USBSer1 );
         return;
     }
+    
+    if (printCheckpoints) { Serial.write('4'); tud_task(); }
+    
     // Apply pending line coding from host
     t0 = micros();
     if ( s_apply_line_coding_pending && s_line_coding_override == false ) {
@@ -788,12 +1194,16 @@ void task( ) {
     }
 
 
+    if (printCheckpoints) { Serial.write('5'); tud_task(); }
+    
     // USB -> UART when either pending flag set or data available
     t0 = micros();
     if ( s_usb_rx_pending || ( tud_inited( ) && tud_cdc_n_available( ASYNC_PASSTHROUGH_CDC_ITF ) ) ) {
         bridge_usb_to_uart( ASYNC_PASSTHROUGH_CDC_ITF );
         s_usb_rx_pending = false;
     }
+    
+    if (printCheckpoints) { Serial.write('6'); tud_task(); }
     t1 = micros();
     #if DEBUG_INJECTED_COMMANDS
     if ((t1 - t0) > 50000) {
@@ -801,10 +1211,13 @@ void task( ) {
     }
     #endif
     
-    // UART -> USB
+    // UART -> USB (where tag parsing and command injection happen)
     t0 = micros();
     bridge_uart_to_usb( ASYNC_PASSTHROUGH_CDC_ITF );
     t1 = micros();
+    
+    if (printCheckpoints) { Serial.write('7'); tud_task(); }  // After UART->USB bridge
+    
     #if DEBUG_INJECTED_COMMANDS
     if ((t1 - t0) > 50000) {
         Serial.printf("⏱️  bridge_uart_to_usb took %lu ms\n", (t1 - t0) / 1000);
@@ -830,6 +1243,11 @@ void task( ) {
         Serial.printf("⏱️  tud_task took %lu ms\n", (t1 - t0) / 1000);
     }
     #endif
+    
+    // Send any pending UART responses (responses to commands from Arduino)
+    sendPendingUARTResponses();
+    
+    if (printCheckpoints) { Serial.write('8'); Serial.write('\n'); }  // Task completed
     
     unsigned long taskEnd = micros();
     #if DEBUG_INJECTED_COMMANDS
@@ -963,43 +1381,36 @@ static bool s_dtr_pulse_detected = false;
 void checkDTRState(Adafruit_USBD_CDC& cdc) {
     bool current_dtr = cdc.dtr();
     
-    // Shift the array to the left, keeping only last 3 states
+    // Shift the array to track state changes
     if (current_dtr != s_dtr_state[2]) {
         s_dtr_state[0] = s_dtr_state[1];
         s_dtr_state[1] = s_dtr_state[2];
         s_dtr_state[2] = current_dtr;
         
         // Detect pulses going either direction (some things invert the DTR line)
-        // Windows: just check for any change
-        // macOS/Linux: check for full off-on-off or on-off-on pulse
+        bool pulse_detected = false;
         if (s_dtr_state[1] == 1 && s_dtr_state[2] == 0) {
-            // Detected high-to-low pulse
-            s_dtr_pulse_detected = true;
-            
-            // Disable tag parsing during Arduino flash to prevent interference
-            // CRITICAL: Only disable if not already disabled to prevent timer reset
-            // Increased timeouts: 200ms inactivity (handles upload pauses), 2s max (safety)
-            if (asyncPassthroughEnabled && asyncPassthroughTagParsingEnabled) {
-                disableTagParsingWithInactivityTimeout(5000, 2000);
-                #if DEBUG_INJECTED_COMMANDS
-                Serial.println("✓ DTR pulse - tag parsing disabled for flashing");
-                #endif
-                // No flush - too slow during rapid commands!
-            }
+            pulse_detected = true;  // high-to-low pulse
         } else if (s_dtr_state[1] == 0 && s_dtr_state[2] == 1) {
-            // Detected low-to-high pulse
+            pulse_detected = true;  // low-to-high pulse
+        }
+        
+        if (pulse_detected && millis() > 3000) {  // Ignore pulses during boot
             s_dtr_pulse_detected = true;
             
-            // Disable tag parsing during Arduino flash to prevent interference
-            // CRITICAL: Only disable if not already disabled to prevent timer reset
-            // Increased timeouts: 200ms inactivity (handles upload pauses), 2s max (safety)
+            // CRITICAL: Disable tag parsing IMMEDIATELY
             if (asyncPassthroughEnabled && asyncPassthroughTagParsingEnabled) {
                 disableTagParsingWithInactivityTimeout(5000, 2000);
-                #if DEBUG_INJECTED_COMMANDS
-                Serial.println("✓ DTR pulse - tag parsing disabled for flashing");
-                #endif
-                // No flush - too slow during rapid commands!
             }
+            
+            // CRITICAL: Reset Arduino IMMEDIATELY - don't wait for main loop!
+            // This matches standard Arduino auto-reset timing
+            SetArduinoResetLine(LOW, 2);   // Assert reset (both top and bottom)
+            delayMicroseconds(5000);       // Hold reset for 5ms
+            SetArduinoResetLine(HIGH, 2);  // Release reset
+            
+            // Small delay to let bootloader start before data arrives
+           // delayMicroseconds(50000);  // 50ms for bootloader to initialize
         }
     }
 }
@@ -1016,8 +1427,247 @@ void resetArduino(int resetPin) {
     // Pull reset line low for 3ms, then high
     pinMode(resetPin, OUTPUT);
     digitalWrite(resetPin, LOW);
-    delay(3);
+    delay(5);
     digitalWrite(resetPin, HIGH);
+    pinMode(resetPin, INPUT);
+}
+
+// ============================================================================
+// UART Response Functions - Send command responses back to Arduino
+// ============================================================================
+
+bool queueUARTResponse(const char* data, size_t len) {
+    if (!data || len == 0) return false;
+    if (len > UART_RESPONSE_MAX_LEN - 1) len = UART_RESPONSE_MAX_LEN - 1;
+    
+    if (s_uart_response_count >= UART_RESPONSE_QUEUE_SIZE) {
+        // Queue full - drop oldest
+        s_uart_response_tail = (s_uart_response_tail + 1) % UART_RESPONSE_QUEUE_SIZE;
+        s_uart_response_count--;
+    }
+    
+    UARTResponseEntry* entry = &s_uart_response_queue[s_uart_response_head];
+    memcpy(entry->data, data, len);
+    entry->data[len] = '\0';
+    entry->length = len;
+    entry->pending = true;
+    
+    s_uart_response_head = (s_uart_response_head + 1) % UART_RESPONSE_QUEUE_SIZE;
+    s_uart_response_count++;
+    
+    return true;
+}
+
+bool queueUARTResponse(const String& data) {
+    return queueUARTResponse(data.c_str(), data.length());
+}
+
+void sendPendingUARTResponses() {
+    // CRITICAL: Non-blocking UART transmission
+    // At 115200 baud, each byte takes ~87us. Limit bytes per call to prevent blocking.
+    const uint32_t MAX_BYTES_PER_CALL = 64;  // ~5.5ms max per call
+    uint32_t bytesSent = 0;
+    
+    // First, drain the legacy queue (for backwards compatibility)
+    while (s_uart_response_count > 0 && bytesSent < MAX_BYTES_PER_CALL) {
+        UARTResponseEntry* entry = &s_uart_response_queue[s_uart_response_tail];
+        if (entry->pending && entry->length > 0) {
+            // Write bytes one at a time, checking FIFO space
+            while (entry->length > 0 && bytesSent < MAX_BYTES_PER_CALL) {
+                if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
+                    uart_putc_raw(ASYNC_PASSTHROUGH_UART, entry->data[0]);
+                    // Shift data (inefficient but simple for legacy queue)
+                    memmove(entry->data, entry->data + 1, entry->length - 1);
+                    entry->length--;
+                    bytesSent++;
+                } else {
+                    // UART FIFO full, try again next call
+                    return;
+                }
+            }
+            if (entry->length == 0) {
+                entry->pending = false;
+            }
+        }
+        if (!entry->pending) {
+            s_uart_response_tail = (s_uart_response_tail + 1) % UART_RESPONSE_QUEUE_SIZE;
+            s_uart_response_count--;
+        }
+    }
+    
+    // Second, drain the CommandBuffer outgoing buffer (new system)
+    CommandBuffer& cb = CommandBuffer::getInstance();
+    while (cb.hasOutgoingData() && bytesSent < MAX_BYTES_PER_CALL) {
+        if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
+            int byte = cb.getOutgoingByte();
+            if (byte >= 0) {
+                uart_putc_raw(ASYNC_PASSTHROUGH_UART, (uint8_t)byte);
+                bytesSent++;
+            }
+        } else {
+            // UART FIFO full, try again next call
+            return;
+        }
+    }
+}
+
+bool wasCommandFromUART() {
+    return s_command_from_uart;
+}
+
+void clearCommandFromUARTFlag() {
+    s_command_from_uart = false;
+}
+
+// ============================================================================
+// UART Framing Error Detection and Resync - Public API
+// ============================================================================
+
+void getUARTErrorStats(uint32_t* framing_errors, uint32_t* overruns, uint32_t* resyncs) {
+    if (framing_errors) *framing_errors = s_uart_framing_error_total;
+    if (overruns) *overruns = s_uart_overrun_count;
+    if (resyncs) *resyncs = s_uart_resync_count;
+}
+
+void resetUARTErrorStats() {
+    s_uart_framing_error_total = 0;
+    s_uart_framing_error_count = 0;
+    s_uart_overrun_count = 0;
+    s_uart_resync_count = 0;
+    s_uart_garbage_count = 0;
+    s_uart_garbage_total = 0;
+    s_uart_garbage_resyncs = 0;
+}
+
+void forceUARTResync() {
+    // Call the internal resync function
+    uart_force_receiver_resync();
+}
+
+void printUARTErrorStats() {
+    Serial.printf("UART Error Stats:\n");
+    Serial.printf("  Framing errors: %lu (consecutive: %lu)\n", 
+                  s_uart_framing_error_total, s_uart_framing_error_count);
+    Serial.printf("  Overrun errors: %lu\n", s_uart_overrun_count);
+    Serial.printf("  Receiver resyncs: %lu\n", s_uart_resync_count);
+    Serial.printf("  Ring buffer overflow: %lu\n", uartReceivedOverflowCount);
+}
+
+void sendBreakToRemote(uint32_t break_duration_us) {
+    uart_hw_t* hw = uart_get_hw(ASYNC_PASSTHROUGH_UART);
+    
+    // Wait for TX FIFO to drain before sending break
+    // This ensures we don't corrupt any pending data
+    while (!(hw->fr & UART_UARTFR_TXFE_BITS)) {
+        // TX FIFO not empty, wait
+        tight_loop_contents();
+    }
+    
+    // Set BRK bit in Line Control Register to force TX LOW
+    // This holds the TX line in the "space" (LOW) state
+    hw_set_bits(&hw->lcr_h, UART_UARTLCR_H_BRK_BITS);
+    
+    // Hold break for specified duration
+    // At 115200 baud, one bit time is ~8.7µs
+    // A frame is ~10-11 bits, so ~87-96µs minimum for a valid break
+    // We default to 100µs which gives a bit of margin
+    busy_wait_us(break_duration_us);
+    
+    // Clear BRK bit to return TX to normal (idle HIGH)
+    hw_clear_bits(&hw->lcr_h, UART_UARTLCR_H_BRK_BITS);
+    
+    // Small delay to let the remote receiver stabilize
+    busy_wait_us(10);
+}
+
+void fullBidirectionalResync() {
+    // Step 1: Resync our local receiver
+    forceUARTResync();
+    
+    // Step 2: Send break to force remote receiver to resync
+    // Use longer break (200µs) for better reliability
+    sendBreakToRemote(200);
+    
+    // Step 3: Brief pause to let both sides stabilize
+    busy_wait_us(50);
+    
+    Serial.println("Full bidirectional UART resync completed");
+}
+
+// ============================================================================
+// Idle Line Detection and Timing Validation - Public API
+// ============================================================================
+
+bool isLineIdle() {
+    if (s_last_rx_byte_time_us == 0) return true;  // Never received = idle
+    uint32_t now = time_us_32();
+    uint32_t elapsed = now - s_last_rx_byte_time_us;
+    return elapsed > UART_IDLE_THRESHOLD_US;
+}
+
+uint32_t getTimeSinceLastRxUs() {
+    if (s_last_rx_byte_time_us == 0) return UINT32_MAX;
+    return time_us_32() - s_last_rx_byte_time_us;
+}
+
+void getTimingStats(uint32_t* idle_periods, uint32_t* bytes_since_idle, 
+                    uint32_t* timing_anomalies, uint32_t* last_inter_byte_us) {
+    if (idle_periods) *idle_periods = s_idle_periods_detected;
+    if (bytes_since_idle) *bytes_since_idle = s_bytes_since_last_idle;
+    if (timing_anomalies) *timing_anomalies = s_timing_anomaly_count;
+    if (last_inter_byte_us) *last_inter_byte_us = s_last_inter_byte_time_us;
+}
+
+void resetTimingStats() {
+    s_idle_periods_detected = 0;
+    s_bytes_since_last_idle = 0;
+    s_timing_anomaly_count = 0;
+    s_last_inter_byte_time_us = 0;
+    s_last_rx_byte_time_us = 0;
+    s_line_was_idle = true;
+}
+
+void printFullDiagnostics() {
+    Serial.println("=== UART Full Diagnostics ===");
+    
+    // Error stats
+    Serial.println("Error Statistics:");
+    Serial.printf("  Framing errors: %lu (consecutive: %lu)\n", 
+                  s_uart_framing_error_total, s_uart_framing_error_count);
+    Serial.printf("  Garbage bytes: %lu (consecutive: %lu)\n",
+                  s_uart_garbage_total, s_uart_garbage_count);
+    Serial.printf("  Overrun errors: %lu\n", s_uart_overrun_count);
+    Serial.printf("  Receiver resyncs: %lu (garbage-triggered: %lu)\n", 
+                  s_uart_resync_count, s_uart_garbage_resyncs);
+    Serial.printf("  Ring buffer overflow: %lu\n", uartReceivedOverflowCount);
+    
+    // Timing stats
+    Serial.println("Timing Statistics:");
+    Serial.printf("  Idle periods detected: %lu\n", s_idle_periods_detected);
+    Serial.printf("  Bytes since last idle: %lu\n", s_bytes_since_last_idle);
+    Serial.printf("  Timing anomalies: %lu\n", s_timing_anomaly_count);
+    Serial.printf("  Last inter-byte time: %lu us\n", s_last_inter_byte_time_us);
+    Serial.printf("  Expected byte time: %lu us\n", usPerByteSerial1);
+    
+    // Current state
+    Serial.println("Current State:");
+    Serial.printf("  Line idle: %s\n", isLineIdle() ? "YES" : "NO");
+    Serial.printf("  Time since last RX: %lu us\n", getTimeSinceLastRxUs());
+    Serial.printf("  Baud rate: %lu\n", serial1baud);
+    Serial.printf("  Ring buffer: %u bytes pending\n", ring_available());
+    
+    Serial.println("=============================");
+}
+
+bool waitForLineIdle(uint32_t timeout_ms) {
+    uint32_t start = millis();
+    while (millis() - start < timeout_ms) {
+        if (isLineIdle()) {
+            return true;
+        }
+        delayMicroseconds(10);
+    }
+    return false;
 }
 
 } // namespace AsyncPassthrough
@@ -1030,42 +1680,43 @@ void resetArduino(int resetPin) {
 // (defined above to gate task() too)
 
 extern "C" void jl_asyncpassthrough_suspend_uart0( void ) {
-#if JL_UART0_INTEROP_MODE == 1
-    if ( s_uart_suspended_by_mpy ) return;
-    // Disable our IRQs and release exclusive handler so shared handlers can be installed safely
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
-    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, false, false );
-    // Disable RX timeout and overrun interrupts we enabled
-    hw_clear_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
-    // Release exclusive handler slot (set to null)
-    irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, 0 );
-    s_uart_suspended_by_mpy = true;
-#else
-    (void)s_uart_suspended_by_mpy; // unused
-#endif
+// #if JL_UART0_INTEROP_MODE == 1
+//     if ( s_uart_suspended_by_mpy ) return;
+//     // Disable our IRQs and release exclusive handler so shared handlers can be installed safely
+//     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
+//     uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, false, false );
+//     // Disable RX timeout and overrun interrupts we enabled
+//     hw_clear_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
+//     // Release exclusive handler slot (set to null)
+//     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, 0 );
+//     s_uart_suspended_by_mpy = true;
+// #else
+//     (void)s_uart_suspended_by_mpy; // unused
+// #endif
 }
 
 extern "C" void jl_asyncpassthrough_resume_uart0( void ) {
-#if JL_UART0_INTEROP_MODE == 1
-    if ( !s_uart_suspended_by_mpy ) return;
-    // Reconfigure UART hardware and restore our IRQ configuration
-    gpio_set_function( ASYNC_PASSTHROUGH_UART_TX_PIN, GPIO_FUNC_UART );
-    gpio_set_function( ASYNC_PASSTHROUGH_UART_RX_PIN, GPIO_FUNC_UART );
+// #if JL_UART0_INTEROP_MODE == 1
+//     if ( !s_uart_suspended_by_mpy ) return;
+//     // Reconfigure UART hardware and restore our IRQ configuration
+//     gpio_set_function( ASYNC_PASSTHROUGH_UART_TX_PIN, GPIO_FUNC_UART );
+//     gpio_set_function( ASYNC_PASSTHROUGH_UART_RX_PIN, GPIO_FUNC_UART );
 
-    uart_init( ASYNC_PASSTHROUGH_UART, serial1baud );
-    uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
-    uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
+//     uart_init( ASYNC_PASSTHROUGH_UART, serial1baud );
+//     uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
+//     uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
 
-    irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
-    irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 0 );
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
-    hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
-    hw_write_masked( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->ifls,
-                     ( 0u << UART_UARTIFLS_RXIFLSEL_LSB ) | ( 2u << UART_UARTIFLS_TXIFLSEL_LSB ),
-                     UART_UARTIFLS_RXIFLSEL_BITS | UART_UARTIFLS_TXIFLSEL_BITS );
-    s_uart_suspended_by_mpy = false;
-#endif
+//     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
+//     // Priority 64 (was 0) - allow main loop to get CPU time during fast command streams
+//     irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 64 );
+//     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
+//     uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
+//     hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
+//     hw_write_masked( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->ifls,
+//                      ( 0u << UART_UARTIFLS_RXIFLSEL_LSB ) | ( 2u << UART_UARTIFLS_TXIFLSEL_LSB ),
+//                      UART_UARTIFLS_RXIFLSEL_BITS | UART_UARTIFLS_TXIFLSEL_BITS );
+//     s_uart_suspended_by_mpy = false;
+// #endif
 }
 
 // Expose an override for MicroPython to update UART0 line coding
@@ -1100,4 +1751,4 @@ extern "C" void jl_asyncpassthrough_override_line_coding( uint32_t baud, uint8_t
     s_line_coding_override = true;
 }
 
-#endif
+#endif // ASYNC_PASSTHROUGH_ENABLED

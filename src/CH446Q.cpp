@@ -10,6 +10,7 @@
 
 
 #include "hardware/pio.h"
+#include <hardware/sync.h>  // For __dmb() memory barrier
 
 #include "ch446.pio.h"
 #include "FileParsing.h"
@@ -158,6 +159,7 @@ void sendPaths(int clean) {
   //  Serial.print("pathTime = ");
   //  Serial.println(pathTime);
   sendAllPathsCore2 = 0;
+  __dmb();  // Memory barrier so Core 0 sees the update
   //printChipStateArray();
   // }
   }

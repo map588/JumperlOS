@@ -2752,6 +2752,7 @@ void printStateBackupInfo(void) {
  * This enables live updates when host edits files while preventing corruption.
  */
 ServiceStatus SlotManager::service() {
+    // return ServiceStatus::IDLE; //< this isn't the problem, not running slot manager service still freezes
     lastStatus = ServiceStatus::IDLE;
     unsigned long serviceStart = micros();
     
@@ -2769,17 +2770,32 @@ ServiceStatus SlotManager::service() {
     bool hasDirtyState = activeState.isDirty();
     bool hasEditorOpen = (ekilo_get_currently_editing_file() != nullptr);
     bool inPreviewMode = previewModeActive;
-    bool usbModeActive = mscModeEnabled;  // Need to monitor files when USB mode is active
+    
+    // CRITICAL FIX: Only monitor files when host is ACTUALLY mounted, not just when MSC is enabled
+    // mscModeEnabled = USB MSC feature is on (always true after boot)
+    // usbMountedByHost = host computer is actually accessing files (only when connected to PC)
+    // File monitoring is EXPENSIVE (~100ms blocking) and should ONLY run when:
+    // 1. Host is editing files via USB MSC (usbMountedByHost)
+    // 2. User is editing files via Ekilo (hasEditorOpen)
+    bool needsFileMonitoring = usbMountedByHost || hasEditorOpen;
     
     // OPTIMIZATION: During rapid command processing, skip expensive file monitoring
     // Only check files if it's been >2s since last check (prevents 600-700ms delays)
+    // CRITICAL FIX: Check BOTH refreshInProgress AND refreshLocalInProgress!
+    // Commands call refreshConnections() which sets refreshInProgress,
+    // NOT refreshLocalInProgress. Missing this caused the 1-second freeze bug.
     extern volatile bool refreshLocalInProgress;
+    extern volatile bool refreshInProgress;
+    extern volatile bool core1busy;
     static unsigned long lastFileMonitorTime = 0;
-    bool skipFileMonitoring = (millis() - lastFileMonitorTime < 2000) || refreshLocalInProgress;
+    bool skipFileMonitoring = (millis() - lastFileMonitorTime < 2000) || 
+                              refreshLocalInProgress || 
+                              refreshInProgress ||
+                              core1busy;  // Skip if ANY command processing is active
     
-    // FAST EXIT: If nothing is dirty, no editor is open, not in preview mode, and USB mode is off
-    // We need to keep monitoring when USB is active for external file changes from host
-    if (!hasDirtyState && !hasEditorOpen && !inPreviewMode && !usbModeActive) {
+    // FAST EXIT: If nothing is dirty, no editor, no preview, and no need for file monitoring
+    // This is the common case during UART command processing - exit immediately
+    if (!hasDirtyState && !hasEditorOpen && !inPreviewMode && !needsFileMonitoring) {
         return ServiceStatus::IDLE;  // Ultra-fast return for the common case
     }
     
@@ -2803,7 +2819,7 @@ ServiceStatus SlotManager::service() {
     
     // Mark that we're about to do filesystem operations (if we're doing file work)
     // This prevents host from mounting mid-operation via driveReady callback
-    if (hasEditorOpen || usbModeActive) {
+    if (needsFileMonitoring) {
         usbFilesystemBusy = true;
     }
     
@@ -2865,18 +2881,13 @@ ServiceStatus SlotManager::service() {
     // ============================================================================
     unsigned long timeSinceLastFileCheck = millis() - lastFileCheckTime;
     
-    // OPTIMIZATION: Only monitor files when we have a reason to:
-    // - Editor is open (internal editing)  
-    // - Preview mode is active (viewing changes)
-    // - USB mode is active (host may be editing files externally)
-    // This avoids ~60 f_stat() calls per minute during normal standalone operation
-    bool shouldMonitorFiles = (hasEditorOpen || inPreviewMode || usbModeActive) && !skipFileMonitoring;
-    
-    // CRITICAL: Verify USB mode is actually active before expensive file ops
-    // mscModeEnabled alone isn't enough - check if editor OR mounted
-    if (!hasEditorOpen && !inPreviewMode && !usbMountedByHost) {
-        shouldMonitorFiles = false;  // No reason to check files
-    }
+    // OPTIMIZATION: Only monitor files when we have a REAL reason to:
+    // - Editor is open (internal editing via Ekilo)  
+    // - Preview mode is active (viewing changes in slot browser)
+    // - Host is actually mounted and editing files (USB MSC mounted by PC)
+    // This avoids ~60 f_stat() calls per minute during normal UART operation
+    // CRITICAL: needsFileMonitoring is already the correct check (usbMountedByHost || hasEditorOpen)
+    bool shouldMonitorFiles = (needsFileMonitoring || inPreviewMode) && !skipFileMonitoring;
     
     // Update file monitor time if we're actually checking
     if (shouldMonitorFiles && timeSinceLastFileCheck > 1000) {
@@ -2980,10 +2991,22 @@ ServiceStatus SlotManager::service() {
                 // disk_ioctl(CTRL_SYNC) calls from ~60/minute to only when files change.
                 // Excessive SYNC calls cause filesystem crashes after many operations.
                 
+                // CRITICAL FIX: Service USB before potentially blocking filesystem operation
+                // f_stat() can take 10-100ms and block USB servicing
+                #ifdef USE_TINYUSB
+                extern void tud_task(void);
+                tud_task();
+                #endif
+                
                 fatfs::FILINFO fno;
                 memset(&fno, 0, sizeof(fno));  // Zero out structure for safety
                 
                 fatfs::FRESULT stat_result = fatfs::f_stat(filename.c_str(), &fno);
+                
+                // CRITICAL FIX: Service USB after filesystem operation
+                #ifdef USE_TINYUSB
+                tud_task();
+                #endif
                 
                 if (mscModeEnabled && debugUSB) {
                     Serial.print("USB:   f_stat returned: ");
@@ -3015,6 +3038,11 @@ ServiceStatus SlotManager::service() {
                         
                         delay(150);  // Let host finish writing
                         
+                        // CRITICAL FIX: Service USB before blocking sync operation
+                        #ifdef USE_TINYUSB
+                        tud_task();
+                        #endif
+                        
                         // Track sync failures to avoid repeated crashes
                         static int consecutiveSyncFailures = 0;
                         const int MAX_SYNC_FAILURES = 3;
@@ -3025,6 +3053,11 @@ ServiceStatus SlotManager::service() {
                             // Attempt sync with basic error detection
                             // Note: disk_ioctl may crash instead of returning error, but we try
                             fatfs::DRESULT sync_result = fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
+                            
+                            // CRITICAL FIX: Service USB after sync
+                            #ifdef USE_TINYUSB
+                            tud_task();
+                            #endif
                             
                             if (sync_result == fatfs::RES_OK) {
                                 __sync_synchronize();  // Memory barrier
@@ -3258,7 +3291,7 @@ ServiceStatus SlotManager::service() {
     }
     
     // Clear busy flag to allow host mounting if requested (only if we set it)
-    if (hasEditorOpen || usbModeActive) {
+    if (needsFileMonitoring) {
         usbFilesystemBusy = false;
     }
     
@@ -3280,8 +3313,8 @@ ServiceStatus SlotManager::service() {
             Serial.printf(" [%s]", slowReason);
         }
         Serial.println();
-        Serial.printf("    hasDirty=%d hasEditor=%d preview=%d usb=%d skipFile=%d\n",
-            hasDirtyState, hasEditorOpen, inPreviewMode, usbModeActive, skipFileMonitoring);
+        Serial.printf("    hasDirty=%d hasEditor=%d preview=%d needsFileMon=%d skipFile=%d\n",
+            hasDirtyState, hasEditorOpen, inPreviewMode, needsFileMonitoring, skipFileMonitoring);
         Serial.flush();
     }
     }
