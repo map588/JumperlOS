@@ -10,6 +10,9 @@
 #include "RotaryEncoder.h"
 #include "JumperlessDefines.h"
 #include "States.h"  // For SlotManager service calls
+#include "externVars.h"  // For fs_mutex filesystem synchronization
+#include "FilesystemStuff.h"  // For safe file operations
+#include "JumperlOS.h"  // For ContextManager
 #include <time.h>
 
 // External references
@@ -166,6 +169,7 @@ EditorConfig::EditorConfig() {
     screenrows = DEFAULT_EDITOR_ROWS;  // Use configurable default
     screencols = DEFAULT_EDITOR_COLS;
     numrows = 0;
+    row_capacity = 0;  // Will grow exponentially to reduce fragmentation
     row = nullptr;
     dirty = 0;
     filename = nullptr;
@@ -211,6 +215,25 @@ EditorConfig::EditorConfig() {
     
     // Initialize screen refresh optimization
     screen_dirty = true; // Start with dirty screen to force initial draw
+    
+    // Initialize chunked file loading
+    is_chunked = false;
+    total_file_lines = 0;
+    chunk_start = 0;
+    chunk_loaded_lines = 0;
+    chunked_filename = "";
+    chunk_dirty = false;
+    
+    // Initialize status message history
+    status_history_head = 0;
+    status_history_count = 0;
+    for (int i = 0; i < STATUS_HISTORY_SIZE; i++) {
+        status_history[i][0] = '\0';
+    }
+    
+    // Initialize read-only and low memory modes
+    read_only = false;
+    low_memory_mode = false;
 }
 
 EditorConfig::~EditorConfig() {
@@ -224,6 +247,7 @@ void ekilo_init() {
     E.rowoff = 0;
     E.coloff = 0;
     E.numrows = 0;
+    E.row_capacity = 0;
     E.row = nullptr;
     E.dirty = 0;
     E.filename = nullptr;
@@ -234,8 +258,19 @@ void ekilo_init() {
     Jerial.write(0x0E);
     Jerial.flush();
     
-    // Try to determine screen size - use conservative defaults for Arduino
-    // Reduce available rows by 1 to account for persistent help header
+    // Clear any pending input that might be CPR garbage from TUI or other sources
+    // Do this FIRST before anything else
+    delay(50);  // Wait for any in-flight CPR responses to arrive
+    while (Jerial.available()) {
+        Jerial.read();
+    }
+    delay(10);  // Brief extra wait
+    while (Jerial.available()) {
+        Jerial.read();
+    }
+    
+    // Use conservative defaults - terminal size probing disabled due to 
+    // CPR response timing issues causing garbage output and crashes
     E.screenrows = DEFAULT_EDITOR_ROWS - 1; // Account for help header
     E.screencols = DEFAULT_EDITOR_COLS;
     
@@ -243,38 +278,63 @@ void ekilo_init() {
     E.screen_dirty = true;
 }
 
-// Memory management for dynamic buffer
+// Memory management for dynamic buffer with capacity tracking
+// Uses exponential growth to reduce realloc fragmentation
 struct Buffer {
     char* b;
     int len;
+    int capacity;  // Track capacity to avoid realloc on every append
 };
 
-// Safe memory allocation with size limits
-#define MAX_EDITOR_MEMORY (48 * 1024)  // 32KB limit for editor content
-#define MIN_FREE_HEAP (3 * 1024)      // Reduce to 5KB free (was 10KB)
+// Dynamic memory allocation - use what's available
+#define MIN_FREE_HEAP (1536)      // Keep only 1.5KB reserved for system
+#define CRITICAL_FREE_HEAP (512)  // Emergency threshold
 
 bool check_memory_available(size_t needed) {
     size_t freeHeap = rp2040.getFreeHeap();
+    // Allow allocation if we have enough for what's needed plus a small buffer
     return (freeHeap > needed + MIN_FREE_HEAP);
 }
 
+// More aggressive check for critical operations
+bool check_memory_critical(size_t needed) {
+    size_t freeHeap = rp2040.getFreeHeap();
+    return (freeHeap > needed + CRITICAL_FREE_HEAP);
+}
+
+// Optimized buffer append with exponential growth
+// This dramatically reduces heap fragmentation during screen refresh
 void buffer_append(Buffer* ab, const char* s, int len) {
     if (!ab || !s || len <= 0) return;
     
-    // Check if we have enough memory
-    if (!check_memory_available(len)) {
-        ekilo_set_status_message("ERROR: Not enough memory for buffer operation");
-        return;
+    // Check if we need to grow
+    if (ab->len + len > ab->capacity) {
+        // Exponential growth: start at 4KB, then double
+        // 4KB is enough for a typical 35x80 screen with escape codes
+        int new_capacity = (ab->capacity == 0) ? 4096 : ab->capacity * 2;
+        
+        // Ensure we have enough for this append
+        while (new_capacity < ab->len + len) {
+            new_capacity *= 2;
+        }
+        
+        // Cap at reasonable max to avoid over-allocation
+        if (new_capacity > 32768) new_capacity = ab->len + len + 1024;
+        
+        char* new_buf = (char*)realloc(ab->b, new_capacity);
+        if (new_buf == nullptr) {
+            // Try minimal growth as fallback
+            new_capacity = ab->len + len + 64;
+            new_buf = (char*)realloc(ab->b, new_capacity);
+            if (new_buf == nullptr) {
+                return;  // Failed silently
+            }
+        }
+        ab->b = new_buf;
+        ab->capacity = new_capacity;
     }
     
-    char* new_buf = (char*)realloc(ab->b, ab->len + len);
-    if (new_buf == nullptr) {
-        ekilo_set_status_message("ERROR: Memory allocation failed");
-        return;
-    }
-    
-    memcpy(new_buf + ab->len, s, len);
-    ab->b = new_buf;
+    memcpy(ab->b + ab->len, s, len);
     ab->len += len;
 }
 
@@ -283,6 +343,148 @@ void buffer_free(Buffer* ab) {
     free(ab->b);
     ab->b = nullptr;
     ab->len = 0;
+    ab->capacity = 0;
+}
+
+// ============================================================================
+// Input Handler Implementation - Batches keys and provides acceleration
+// ============================================================================
+
+InputHandler g_input_handler;
+
+void InputHandler::init() {
+    last_key = 0;
+    last_category = KEY_CAT_NONE;
+    last_key_time = 0;
+    repeat_start_time = 0;
+    repeat_count = 0;
+}
+
+KeyCategory InputHandler::categorize(int key) {
+    switch (key) {
+        case ARROW_UP:    return KEY_CAT_UP;
+        case ARROW_DOWN:  return KEY_CAT_DOWN;
+        case ARROW_LEFT:  return KEY_CAT_LEFT;
+        case ARROW_RIGHT: return KEY_CAT_RIGHT;
+        case PAGE_UP:     return KEY_CAT_PAGEUP;
+        case PAGE_DOWN:   return KEY_CAT_PAGEDOWN;
+        default:          return KEY_CAT_OTHER;
+    }
+}
+
+bool InputHandler::shouldAccelerate() {
+    if (repeat_count < 3) return false;  // Need at least 3 repeats
+    uint32_t now = millis();
+    uint32_t held_time = now - repeat_start_time;
+    uint32_t since_last = now - last_key_time;
+    
+    // Reset acceleration if gap too long (key was released and re-pressed)
+    if (since_last > ACCEL_TIMEOUT_MS) {
+        return false;
+    }
+    
+    return held_time > ACCEL_START_MS;
+}
+
+int InputHandler::processInput(Stream* stream, int& moves) {
+    moves = 1;  // Default: single move
+    uint32_t now = millis();
+    
+    // Check if we should reset state (key released)
+    if (last_category != KEY_CAT_NONE && last_category != KEY_CAT_OTHER) {
+        uint32_t gap = now - last_key_time;
+        if (gap > REPEAT_THRESHOLD_MS) {
+            // Key was released - aggressively clear queue and reset state
+            clearRepeats(stream);
+            last_category = KEY_CAT_NONE;
+            repeat_count = 0;
+            repeat_start_time = 0;
+        }
+    }
+    
+    if (!stream->available()) {
+        return 0;
+    }
+    
+    // Read the first key
+    int first_key = ekilo_read_key();
+    if (first_key == 0) return 0;
+    
+    KeyCategory cat = categorize(first_key);
+    
+    // Check if this is a continuation of same direction within timeout
+    if (cat != KEY_CAT_OTHER && cat == last_category) {
+        uint32_t since_last = now - last_key_time;
+        if (since_last < ACCEL_TIMEOUT_MS) {
+            repeat_count++;
+        } else {
+            // Gap too long - treat as new press, reset acceleration
+            repeat_start_time = now;
+            repeat_count = 1;
+        }
+    } else {
+        // New direction or non-repeatable key
+        repeat_start_time = now;
+        repeat_count = 1;
+    }
+    
+    last_key = first_key;
+    last_category = cat;
+    last_key_time = now;
+    
+    // For non-directional keys, just return immediately
+    if (cat == KEY_CAT_OTHER) {
+        return first_key;
+    }
+    
+    // For directional keys, batch only a few pending same-direction keys
+    int batch_count = 1;
+    while (stream->available() && batch_count < MAX_BATCH_SIZE) {
+        int peek_key = ekilo_read_key();
+        if (peek_key == 0) break;
+        
+        KeyCategory peek_cat = categorize(peek_key);
+        if (peek_cat == cat) {
+            // Same direction - batch it
+            batch_count++;
+            repeat_count++;
+        } else {
+            // Different key - stop batching
+            break;
+        }
+    }
+    
+    // Apply conservative acceleration if key is genuinely held
+    if (shouldAccelerate()) {
+        moves = batch_count * ACCEL_MULTIPLIER;
+        if (moves > 8) moves = 8;  // Strict cap
+    } else {
+        moves = batch_count;
+        if (moves > 3) moves = 3;  // Limit even without acceleration
+    }
+    
+    return first_key;
+}
+
+void InputHandler::clearRepeats(Stream* stream) {
+    // Aggressively clear ALL pending directional keys from the buffer
+    // This prevents "runaway" cursor when key is released
+    if (last_category == KEY_CAT_NONE || last_category == KEY_CAT_OTHER) return;
+    
+    int cleared = 0;
+    while (stream->available() && cleared < 100) {  // Clear up to 100 pending keys
+        int peek = ekilo_read_key();
+        if (peek == 0) break;
+        
+        KeyCategory peek_cat = categorize(peek);
+        if (peek_cat != KEY_CAT_OTHER) {
+            // Any directional key - discard it (not just same direction)
+            cleared++;
+        } else {
+            // Non-directional key - stop clearing, this one is important
+            break;
+        }
+    }
 }
 
 // Memory monitoring and cleanup functions
@@ -310,6 +512,7 @@ void ekilo_emergency_cleanup() {
     free(E.row);
     E.row = nullptr;
     E.numrows = 0;
+    E.row_capacity = 0;
     
     free(E.filename);
     E.filename = nullptr;
@@ -344,8 +547,51 @@ String ekilo_get_current_buffer_content() {
     return content;
 }
 
+// Track if we recently sent a CPR query (to filter late responses)
+uint32_t last_cpr_query_time = 0;  // Non-static so probe function can update it
+static const uint32_t CPR_RESPONSE_WINDOW = 1000;  // 1 second window for late responses
+
+// Check if input looks like a stray CPR response remnant (digits;digitsR)
+// Only call this when we have reason to believe CPR garbage might be present
+static bool consume_stray_cpr() {
+    // Only check if we're within the CPR response window
+    if (millis() - last_cpr_query_time > CPR_RESPONSE_WINDOW) {
+        return false;
+    }
+    
+    // Look for pattern: digit(s) ; digit(s) R
+    if (!Jerial.available()) return false;
+    
+    char first = Jerial.peek();
+    if (first < '0' || first > '9') return false;
+    
+    // Looks like it might be CPR remnant - consume it
+    char buf[20];
+    int n = 0;
+    
+    while (Jerial.available() && n < 15) {
+        char c = Jerial.read();
+        buf[n++] = c;
+        if (c == 'R') {
+            // Definitely was a CPR - we consumed it
+            return true;
+        }
+        if (c != ';' && (c < '0' || c > '9')) {
+            // Not CPR pattern - stop, but we've already consumed some chars
+            break;
+        }
+    }
+    
+    return n > 0;  // We consumed something
+}
+
 // Arduino-compatible key reading
 int ekilo_read_key() {
+    // First, check for and consume any stray CPR responses
+    while (consume_stray_cpr()) {
+        // Keep consuming until buffer is clean
+    }
+    
     if (!Jerial.available()) return 0;
     
     char c = Jerial.read();
@@ -366,20 +612,38 @@ int ekilo_read_key() {
         seq[1] = Jerial.read();
         
         if (seq[0] == '[') {
+            // Check if this is a CPR response (ESC [ digits ; digits R)
             if (seq[1] >= '0' && seq[1] <= '9') {
-                if (!Jerial.available()) return ESC;
-                char seq2 = Jerial.read();
-                if (seq2 == '~') {
-                    switch (seq[1]) {
-                        case '1': return HOME_KEY;
-                        case '3': return DEL_KEY;
-                        case '4': return END_KEY;
-                        case '5': return PAGE_UP;
-                        case '6': return PAGE_DOWN;
-                        case '7': return HOME_KEY;
-                        case '8': return END_KEY;
+                // Could be CPR or function key - read more
+                char buf[20];
+                int n = 0;
+                buf[n++] = seq[1];
+                
+                while (Jerial.available() && n < 15) {
+                    char next = Jerial.read();
+                    buf[n++] = next;
+                    if (next == 'R') {
+                        // This is a CPR response - discard it
+                        return 0;
+                    }
+                    if (next == '~') {
+                        // This is a function key sequence
+                        switch (seq[1]) {
+                            case '1': return HOME_KEY;
+                            case '3': return DEL_KEY;
+                            case '4': return END_KEY;
+                            case '5': return PAGE_UP;
+                            case '6': return PAGE_DOWN;
+                            case '7': return HOME_KEY;
+                            case '8': return END_KEY;
+                        }
+                        return ESC;
+                    }
+                    if (next != ';' && (next < '0' || next > '9')) {
+                        break;  // Unknown sequence
                     }
                 }
+                return ESC;
             } else {
                 switch (seq[1]) {
                     case 'A': return ARROW_UP;
@@ -592,21 +856,28 @@ void ekilo_select_syntax_highlight(const char* filename) {
 void ekilo_update_row(EditorRow* row) {
     if (!row) return;
     
+    // In low memory mode, skip render buffer entirely - use chars directly
+    if (E.low_memory_mode) {
+        free(row->render);
+        row->render = nullptr;
+        row->rsize = row->size;  // Display will use chars directly
+        free(row->hl);
+        row->hl = nullptr;
+        return;
+    }
+    
     int tabs = 0;
     for (int j = 0; j < row->size; j++) {
         if (row->chars[j] == '\t') tabs++;
     }
     
     size_t needed_size = row->size + tabs * 7 + 1;
-    if (!check_memory_available(needed_size)) {
-        ekilo_set_status_message("ERROR: Not enough memory for row update");
-        return;
-    }
     
     free(row->render);
     row->render = (char*)malloc(needed_size);
     if (!row->render) {
-        ekilo_set_status_message("ERROR: Memory allocation failed for row render");
+        // Silently fail - we can still edit, just no fancy rendering
+        row->rsize = 0;
         return;
     }
     
@@ -630,29 +901,36 @@ void ekilo_insert_row(int at, const char* s, size_t len) {
     if (at < 0 || at > E.numrows) return;
     if (!s) return;
     
-    // Check memory limits
-    size_t needed_memory = sizeof(EditorRow) * (E.numrows + 1) + len + 1;
-    if (!check_memory_available(needed_memory)) {
-        ekilo_set_status_message("ERROR: Not enough memory to insert row");
+    // Just check if we have critical memory available - be aggressive about using what we have
+    size_t freeHeap = rp2040.getFreeHeap();
+    size_t needed = sizeof(EditorRow) + len + 64;  // Row struct + content + small buffer
+    
+    if (freeHeap < needed + CRITICAL_FREE_HEAP) {
+        ekilo_set_status_message("ERROR: Low memory (%dKB free, need %d bytes)", freeHeap / 1024, needed);
         return;
     }
     
-    // Check total content size limit
-    size_t total_content = 0;
-    for (int i = 0; i < E.numrows; i++) {
-        total_content += E.row[i].size;
+    // Use exponential growth strategy to reduce realloc fragmentation
+    // Only realloc when we exceed capacity, doubling each time
+    if (E.numrows >= E.row_capacity) {
+        int new_capacity = (E.row_capacity == 0) ? 32 : E.row_capacity * 2;
+        
+        // Cap at reasonable maximum to avoid over-allocation
+        if (new_capacity > 10000) new_capacity = E.numrows + 100;
+        
+        EditorRow* new_rows = (EditorRow*)realloc(E.row, sizeof(EditorRow) * new_capacity);
+        if (!new_rows) {
+            // Try smaller growth if doubling fails
+            new_capacity = E.numrows + 16;
+            new_rows = (EditorRow*)realloc(E.row, sizeof(EditorRow) * new_capacity);
+            if (!new_rows) {
+                ekilo_set_status_message("ERROR: Memory allocation failed for row array");
+                return;
+            }
+        }
+        E.row = new_rows;
+        E.row_capacity = new_capacity;
     }
-    if (total_content + len > MAX_EDITOR_MEMORY) {
-        ekilo_set_status_message("ERROR: File too large (max %dKB)", MAX_EDITOR_MEMORY / 1024);
-        return;
-    }
-    
-    EditorRow* new_rows = (EditorRow*)realloc(E.row, sizeof(EditorRow) * (E.numrows + 1));
-    if (!new_rows) {
-        ekilo_set_status_message("ERROR: Memory allocation failed for row array");
-        return;
-    }
-    E.row = new_rows;
     
     memmove(&E.row[at + 1], &E.row[at], sizeof(EditorRow) * (E.numrows - at));
     for (int j = at + 1; j <= E.numrows; j++) E.row[j].idx++;
@@ -706,14 +984,14 @@ void ekilo_row_insert_char(EditorRow* row, int at, int c) {
         else return;
     }
     
-    if (!check_memory_available(row->size + 2)) {
-        ekilo_set_status_message("ERROR: Not enough memory to insert character");
-        return;
-    }
-    
     char* new_chars = (char*)realloc(row->chars, row->size + 2);
     if (!new_chars) {
-        ekilo_set_status_message("ERROR: Memory allocation failed for character insertion");
+        // Show error but don't spam
+        static uint32_t last_error_time = 0;
+        if (millis() - last_error_time > 2000) {
+            ekilo_set_status_message("ERROR: Low memory - can't insert");
+            last_error_time = millis();
+        }
         return;
     }
     row->chars = new_chars;
@@ -739,14 +1017,9 @@ void ekilo_row_del_char(EditorRow* row, int at) {
 void ekilo_row_append_string(EditorRow* row, char* s, size_t len) {
     if (!row || !s || len == 0) return;
     
-    if (!check_memory_available(row->size + len + 1)) {
-        ekilo_set_status_message("ERROR: Not enough memory to append string");
-        return;
-    }
-    
     char* new_chars = (char*)realloc(row->chars, row->size + len + 1);
     if (!new_chars) {
-        ekilo_set_status_message("ERROR: Memory allocation failed for string append");
+        ekilo_set_status_message("ERROR: Low memory - can't append");
         return;
     }
     row->chars = new_chars;
@@ -841,13 +1114,24 @@ void ekilo_del_char() {
     E.screen_dirty = true;
 }
 
-// Set status message
+// Set status message and add to history
 void ekilo_set_status_message(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
     va_end(ap);
     E.statusmsg_time = millis();
+    
+    // Add to status history ring buffer (skip duplicates of last message)
+    int prev_idx = (E.status_history_head - 1 + EditorConfig::STATUS_HISTORY_SIZE) % EditorConfig::STATUS_HISTORY_SIZE;
+    if (E.status_history_count == 0 || strcmp(E.status_history[prev_idx], E.statusmsg) != 0) {
+        strncpy(E.status_history[E.status_history_head], E.statusmsg, sizeof(E.status_history[0]) - 1);
+        E.status_history[E.status_history_head][sizeof(E.status_history[0]) - 1] = '\0';
+        E.status_history_head = (E.status_history_head + 1) % EditorConfig::STATUS_HISTORY_SIZE;
+        if (E.status_history_count < EditorConfig::STATUS_HISTORY_SIZE) {
+            E.status_history_count++;
+        }
+    }
     
     // Make error messages persist much longer (30 seconds vs 5 seconds)
     if (strstr(E.statusmsg, "ERROR:") || strstr(E.statusmsg, "WARNING:")) {
@@ -924,30 +1208,73 @@ void ekilo_move_cursor(int key) {
 int ekilo_open(const char* filename) {
     if (!filename) return -1;
 
+    // Brief delay to ensure any recent file operations have completed
+    // This helps when opening files just created by MicroPython
+    delay(2);
+    yield();
     
-    // Check file exists and get size
-    File file = FatFS.open(filename, "r");
-    if (!file) {
-        ekilo_set_status_message("ERROR: Cannot open file '%s'", filename);
+    // Get file size first using safe function (handles mutex internally)
+    int32_t file_size = safeFileSize(filename, 2000);
+    if (file_size < 0) {
+        // Retry after a brief delay (file might still be syncing)
+        delay(50);
+        file_size = safeFileSize(filename, 2000);
+        if (file_size < 0) {
+            ekilo_set_status_message("ERROR: Cannot open file '%s'", filename);
+            return -1;
+        }
+    }
+    
+    // Validate file size to catch corruption
+    if (file_size > 100000) {  // 100KB sanity limit
+        ekilo_set_status_message("ERROR: File too large (%d KB)", file_size / 1024);
         return -1;
     }
     
-    size_t file_size = file.size();
-    file.close();
-    
-    // Check file size limits
-    if (file_size > MAX_EDITOR_MEMORY) {
-        ekilo_set_status_message("ERROR: File too large (%d KB, max %d KB)", 
-                                file_size / 1024, MAX_EDITOR_MEMORY / 1024);
-        return -1;
+    // For large files, use chunked loading
+    if ((size_t)file_size > EditorConfig::CHUNK_THRESHOLD) {
+        return ekilo_open_chunked(filename) ? 0 : -1;
     }
     
-    // Check available memory
-    if (!check_memory_available(file_size + 1024)) { // Extra 1KB for overhead
-        size_t freeHeap = rp2040.getFreeHeap();
-        ekilo_set_status_message("ERROR: Not enough memory (%dKB free, need %dKB+%dKB reserve)", 
-                                freeHeap / 1024, (file_size + 1024) / 1024, MIN_FREE_HEAP / 1024);
-        return -1;
+    // Check if we have enough memory - if not, fall back to chunked loading
+    size_t freeHeap = rp2040.getFreeHeap();
+    
+    // More aggressive memory threshold - need file size + 4KB overhead for screen buffer
+    // Also require at least 8KB total free to avoid fragmentation issues
+    if (freeHeap < (size_t)file_size + 4096 || freeHeap < 8192) {
+        ekilo_set_status_message("Low memory, using chunked mode...");
+        return ekilo_open_chunked(filename) ? 0 : -1;
+    }
+    
+    // Test for heap fragmentation - try to allocate what we'll need
+    size_t estimated_need = file_size + 4096;  // File + screen buffer
+    void* frag_test = malloc(estimated_need);
+    if (frag_test) {
+        free(frag_test);
+    } else {
+        // Heap is fragmented, use chunked loading
+        ekilo_set_status_message("Fragmented heap, using chunked mode...");
+        return ekilo_open_chunked(filename) ? 0 : -1;
+    }
+    
+    // Mark as non-chunked file
+    E.is_chunked = false;
+    E.chunk_dirty = false;
+    
+    // Check if this file should be read-only
+    // history.txt and other system files are read-only by default
+    // Use C string operations instead of String to avoid heap allocation
+    const char* ext = strrchr(filename, '.');
+    const char* lastSlash = strrchr(filename, '/');
+    const char* basename = lastSlash ? lastSlash + 1 : filename;
+    
+    E.read_only = (ext && strcmp(ext, ".log") == 0) ||
+                  (strcmp(basename, "history.txt") == 0) ||
+                  (strstr(filename, "/python_scripts/history") != nullptr);
+    
+    // Enter low memory mode if memory is tight or already set (saves RAM by skipping syntax highlighting)
+    if (!E.low_memory_mode) {
+        E.low_memory_mode = (freeHeap < (size_t)file_size * 3);  // Less than 3x file size available
     }
     
     // Free existing filename and allocate new one
@@ -962,12 +1289,17 @@ int ekilo_open(const char* filename) {
     free(g_currently_editing_file);
     g_currently_editing_file = strdup(filename);
     
-    ekilo_select_syntax_highlight(filename);
+    // Skip syntax highlighting in low memory mode to save RAM
+    if (!E.low_memory_mode) {
+        ekilo_select_syntax_highlight(filename);
+    } else {
+        E.syntax = nullptr;  // No syntax highlighting
+    }
     
-    // Re-open file for reading
-    file = FatFS.open(filename, "r");
+    // Open file for reading using safe function (holds mutex until close)
+    File file = safeFileOpen(filename, "r", 2000);
     if (!file) {
-        ekilo_set_status_message("ERROR: Cannot reopen file for reading");
+        ekilo_set_status_message("ERROR: Cannot open file for reading");
         free(E.filename);
         E.filename = nullptr;
         return -1;
@@ -976,32 +1308,48 @@ int ekilo_open(const char* filename) {
     // Track memory usage while loading
     size_t total_loaded = 0;
     size_t line_count = 0;
-    const size_t MAX_LINE_LENGTH = 1024; // Reasonable line length limit
+    const size_t MAX_LINE_LENGTH = 512; // Reduced line length limit for safety
+    const size_t MAX_LINES = 2000;      // Safety limit on lines
     
-    while (file.available() && total_loaded < file_size) {
-        String line = file.readStringUntil('\n');
-        
-        // Check line length
-        if (line.length() > MAX_LINE_LENGTH) {
-            file.close();
-            ekilo_set_status_message("ERROR: Line %d too long (max %d chars)", 
-                                    line_count + 1, MAX_LINE_LENGTH);
-            return -1;
+    // Use stack buffer instead of String to avoid heap fragmentation
+    // String allocations in a loop cause severe fragmentation on RP2040
+    char line_buf[MAX_LINE_LENGTH + 1];
+    
+    while (file.available() && total_loaded < (size_t)file_size && line_count < MAX_LINES) {
+        // Check memory before each line read
+        size_t currentFree = rp2040.getFreeHeap();
+        if (currentFree < 1024) {
+            safeFileClose(file, false);  // Read-only, no flush needed
+            ekilo_set_status_message("Loaded %d lines (stopped: low memory)", line_count);
+            E.dirty = 0;  // Not dirty since we're stopping early
+            return 0;     // Return success with partial load
         }
         
-        // Only remove trailing carriage return, preserve leading whitespace for indentation
-        if (line.endsWith("\r")) {
-            line.remove(line.length() - 1);
+        // Read line character-by-character into stack buffer
+        // This avoids heap fragmentation from String allocations
+        size_t len = 0;
+        while (file.available() && len < MAX_LINE_LENGTH) {
+            char c = file.read();
+            if (c == '\n') break;
+            if (c != '\r') {  // Skip carriage returns
+                line_buf[len++] = c;
+            }
         }
+        line_buf[len] = '\0';
         
-        ekilo_insert_row(E.numrows, line.c_str(), line.length());
-        total_loaded += line.length() + 1; // +1 for newline
+        ekilo_insert_row(E.numrows, line_buf, len);
+        total_loaded += len + 1; // +1 for newline
         line_count++;
+        
+        // Yield more frequently to prevent watchdog issues
+        if (line_count % 25 == 0) {
+            yield();
+        }
         
         // Check memory every 10 lines and show progress for large files
         if (line_count % 10 == 0) {
             if (!check_memory_available(1024)) { // Keep 1KB free
-                file.close();
+                safeFileClose(file, false);  // Read-only, no flush needed
                 size_t freeHeap = rp2040.getFreeHeap();
                 ekilo_set_status_message("ERROR: Out of memory at line %d (%dKB free)", line_count, freeHeap / 1024);
                 return -1;
@@ -1020,13 +1368,13 @@ int ekilo_open(const char* filename) {
         
         // Prevent infinite loops on corrupted files
         if (line_count > 10000) { // Reasonable file size limit in lines
-            file.close();
+            safeFileClose(file, false);  // Read-only, no flush needed
             ekilo_set_status_message("ERROR: File too many lines (max 10000)");
             return -1;
         }
     }
     
-    file.close();
+    safeFileClose(file, false);  // Read-only, no flush needed
     E.dirty = 0;
     
     // Mark screen as dirty for refresh after file load
@@ -1048,54 +1396,82 @@ int ekilo_save() {
     for (int j = 0; j < E.numrows; j++)
         len += E.row[j].size + 1;
     
-    // Check memory availability before allocating large buffer
-    if (!check_memory_available(len)) {
-        ekilo_set_status_message("ERROR: Not enough memory to save file (%d KB needed)", len / 1024);
-        return 0;
-    }
-    
+    // Try buffered save first, fall back to streaming if low memory
     char* buf = (char*)malloc(len);
-    if (!buf) {
-        ekilo_set_status_message("ERROR: Memory allocation failed for save buffer");
+    
+    // CRITICAL: Pause Core2 during flash write operations
+    // On RP2040, flash writes disable XIP cache and Core2 will crash
+    // if it tries to execute code from flash during the write.
+    // Keep Core2 paused for entire save operation for safety
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Open file for writing (safeFileOpen handles mutex, we handle Core2 pause)
+    File file = safeFileOpen(E.filename, "w", 2000);
+    if (!file) {
+        unpauseCore2ForFlash(was_paused);
+        if (buf) free(buf);
+        ekilo_set_status_message("ERROR: Could not open file for writing");
         return 0;
     }
     
-    char* p = buf;
-    for (int j = 0; j < E.numrows; j++) {
-        if (E.row[j].chars && E.row[j].size > 0) {
-            memcpy(p, E.row[j].chars, E.row[j].size);
-            p += E.row[j].size;
+    if (buf) {
+        // Buffered write (faster)
+        char* p = buf;
+        for (int j = 0; j < E.numrows; j++) {
+            if (E.row[j].chars && E.row[j].size > 0) {
+                memcpy(p, E.row[j].chars, E.row[j].size);
+                p += E.row[j].size;
+            }
+            *p = '\n';
+            p++;
         }
-        *p = '\n';
-        p++;
-    }
-    
-    File file = FatFS.open(E.filename, "w");
-    if (file) {
         file.write((uint8_t*)buf, len);
-        file.close();
-        
-        // If in REPL mode, store content for return (only if reasonable size)
-        if (E.repl_mode && len < 8192) { // Limit stored content to 8KB
-            E.saved_file_content = String(buf, len);
-            E.should_quit = 1; // Auto-exit after save in REPL mode
-            ekilo_set_status_message("File saved: %s (%d bytes) - content stored for REPL", E.filename, len);
-        } else if (E.repl_mode) {
-            // File too large for REPL return, just signal completion
-            E.should_quit = 1;
-            ekilo_set_status_message("File saved: %s (too large for REPL)", E.filename);
-        }
-        
-        free(buf);
-        E.dirty = 0;
-        ekilo_set_status_message("%d bytes written to flash", len);
-        E.screen_dirty = true; // Status message already marks dirty, but be explicit
-        return len;
     } else {
-        free(buf);
-        ekilo_set_status_message("Can't save! I/O error: %s", "File write failed");
-        return 0;
+        // Streaming write (low memory fallback)
+        ekilo_set_status_message("Saving... (streaming mode)");
+        for (int j = 0; j < E.numrows; j++) {
+            if (E.row[j].chars && E.row[j].size > 0) {
+                file.write((uint8_t*)E.row[j].chars, E.row[j].size);
+            }
+            file.write('\n');
+        }
     }
+    
+    // safeFileClose handles flush and mutex release
+    // Pass true for write mode to ensure proper flush
+    file.flush();  // Explicit flush while Core2 still paused
+    safeFileClose(file, true);
+    
+    // Restore Core2 state
+    unpauseCore2ForFlash(was_paused);
+    
+    // Set transfer path for zero-copy communication with parent context
+    // The parent (e.g., Python REPL) can read directly from this file path
+    // instead of passing content through String objects
+    ContextManager::getInstance().setTransferPath(E.filename);
+    
+    // If in REPL mode, handle save behavior
+    if (E.repl_mode) {
+        // ZERO-COPY: Instead of storing content in E.saved_file_content,
+        // we set the transfer path and the parent context reads from file
+        // Still store content for backward compatibility, but callers should
+        // prefer using ContextManager::getTransferPath() for efficiency
+        if (buf && len < 8192) {
+            E.saved_file_content = String(buf, len);
+        } else {
+            E.saved_file_content = "";  // Clear - use file path instead
+        }
+        E.should_quit = 1;
+        ekilo_set_status_message("File saved: %s (%d bytes)", E.filename, len);
+    }
+    
+    E.dirty = 0;
+    if (!E.repl_mode) {
+        ekilo_set_status_message("%d bytes written to flash", len);
+    }
+    E.screen_dirty = true;
+    if (buf) free(buf);
+    return len;
 }
 
 // Write buffer in chunks for Windows compatibility
@@ -1107,8 +1483,9 @@ void ekilo_write_buffer_chunked(Buffer* ab) {
         return;
     }
     
-    const int CHUNK_SIZE = 64; // Write in 64-byte chunks
-    const int DELAY_MICROS = 10; // 10us delay between chunks
+    // Optimized for speed: larger chunks, minimal delay
+    const int CHUNK_SIZE = 256; // Larger chunks for faster output
+    const int DELAY_MICROS = 2;  // Minimal delay - just enough for USB buffering
     
     int bytes_written = 0;
     while (bytes_written < ab->len) {
@@ -1121,36 +1498,93 @@ void ekilo_write_buffer_chunked(Buffer* ab) {
         
         // Write this chunk
         Jerial.write((uint8_t*)(ab->b + bytes_written), chunk_size);
-        Jerial.flush();
         
         bytes_written += chunk_size;
         
-        // Add delay between chunks (except for the last one)
-        if (bytes_written < ab->len) {
+        // Only flush and delay every few chunks for better throughput
+        if (bytes_written % 1024 == 0 && bytes_written < ab->len) {
+            Jerial.flush();
             delayMicroseconds(DELAY_MICROS);
         }
     }
     
+    Jerial.flush(); // Final flush
     buffer_free(ab);
 }
 
+// Quick cursor position update without full redraw
+static void ekilo_update_cursor_only() {
+    char buf[32];
+    if (E.repl_mode) {
+        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
+    } else {
+        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2, (E.cx - E.coloff) + 1);
+    }
+    Jerial.print(buf);
+    Jerial.flush();
+}
+
+// Track previous scroll state for optimization
+static int prev_rowoff = -1;
+static int prev_coloff = -1;
+
 // Refresh screen - Buffered approach with chunked output for Windows compatibility
 void ekilo_refresh_screen() {
+    // Safety checks
+    if (E.screenrows <= 0) E.screenrows = 24;
+    if (E.screencols <= 0) E.screencols = 80;
+    if (E.cy < 0) E.cy = 0;
+    if (E.cx < 0) E.cx = 0;
+    if (E.numrows > 0 && E.cy >= E.numrows) E.cy = E.numrows - 1;
+    
+    // For chunked files, check if we need to load a new chunk
+    if (E.is_chunked && ekilo_needs_chunk_reload()) {
+        // Calculate file-relative cursor position
+        size_t file_row = E.chunk_start + E.cy;
+        // Load new chunk centered on current position
+        if (ekilo_load_chunk(file_row)) {
+            // Adjust cursor position for new chunk
+            E.cy = file_row - E.chunk_start;
+            if (E.cy < 0) E.cy = 0;
+            if (E.cy >= E.numrows) E.cy = E.numrows - 1;
+        }
+    }
+    
+    // Track if scroll changed (requires full redraw)
+    bool scroll_changed = false;
+    
     // Scroll handling
     if (E.cy < E.rowoff) {
         E.rowoff = E.cy;
+        scroll_changed = true;
     }
     if (E.cy >= E.rowoff + E.screenrows) {
         E.rowoff = E.cy - E.screenrows + 1;
+        scroll_changed = true;
     }
     if (E.cx < E.coloff) {
         E.coloff = E.cx;
+        scroll_changed = true;
     }
     if (E.cx >= E.coloff + E.screencols) {
         E.coloff = E.cx - E.screencols + 1;
+        scroll_changed = true;
     }
     
-    Buffer ab = {nullptr, 0};
+    // Check if scroll position changed
+    if (E.rowoff != prev_rowoff || E.coloff != prev_coloff) {
+        scroll_changed = true;
+        prev_rowoff = E.rowoff;
+        prev_coloff = E.coloff;
+    }
+    
+    // If screen isn't dirty and scroll didn't change, just update cursor
+    if (!E.screen_dirty && !scroll_changed) {
+        ekilo_update_cursor_only();
+        return;
+    }
+    
+    Buffer ab = {nullptr, 0, 0};  // {buffer, length, capacity} - will grow exponentially
     
     // Clear screen and position cursor - use absolute positioning for both modes
     if (E.repl_mode) {
@@ -1199,44 +1633,54 @@ void ekilo_refresh_screen() {
                 buffer_append(&ab, "~", 1);
             }
         } else {
-            int len = E.row[filerow].rsize - E.coloff;
+            // In low memory mode, render may be null - use chars directly
+            char* display_str = E.row[filerow].render ? E.row[filerow].render : E.row[filerow].chars;
+            int display_size = E.row[filerow].render ? E.row[filerow].rsize : E.row[filerow].size;
+            
+            int len = display_size - E.coloff;
             if (len < 0) len = 0;
             if (len > E.screencols) len = E.screencols;
-            char* c = &E.row[filerow].render[E.coloff];
-            unsigned char* hl = &E.row[filerow].hl[E.coloff];
-            int current_color = -1;
-            for (int j = 0; j < len; j++) {
-                if (iscntrl(c[j])) {
-                    // Show control chars as inverted symbols
-                    char sym = (c[j] <= 26) ? '@' + c[j] : '?';
-                    buffer_append(&ab, "\x1b[7m", 4);
-                    buffer_append(&ab, &sym, 1);
-                    buffer_append(&ab, "\x1b[0m", 4); // Use \x1b[0m instead of \x1b[m
-                    if (current_color != -1) {
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", current_color);
-                        buffer_append(&ab, buf, clen);
+            
+            // If we have syntax highlighting, use it
+            if (display_str && E.row[filerow].hl && !E.low_memory_mode) {
+                char* c = &display_str[E.coloff];
+                unsigned char* hl = &E.row[filerow].hl[E.coloff];
+                int current_color = -1;
+                for (int j = 0; j < len; j++) {
+                    if (iscntrl(c[j])) {
+                        // Show control chars as inverted symbols
+                        char sym = (c[j] <= 26) ? '@' + c[j] : '?';
+                        buffer_append(&ab, "\x1b[7m", 4);
+                        buffer_append(&ab, &sym, 1);
+                        buffer_append(&ab, "\x1b[0m", 4);
+                        if (current_color != -1) {
+                            char buf[16];
+                            int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", current_color);
+                            buffer_append(&ab, buf, clen);
+                        }
+                    } else if (hl[j] == HL_NORMAL) {
+                        if (current_color != -1) {
+                            buffer_append(&ab, "\x1b[0m", 4);
+                            current_color = -1;
+                        }
+                        buffer_append(&ab, &c[j], 1);
+                    } else {
+                        int color = ekilo_syntax_to_color(hl[j]);
+                        if (color != current_color) {
+                            current_color = color;
+                            char buf[16];
+                            int clen = snprintf(buf, sizeof(buf), "\x1b[38;5;%dm", color);
+                            buffer_append(&ab, buf, clen);
+                        }
+                        buffer_append(&ab, &c[j], 1);
                     }
-                } else if (hl[j] == HL_NORMAL) {
-                    if (current_color != -1) {
-                        buffer_append(&ab, "\x1b[0m", 4); // Reset all formatting
-                        current_color = -1;
-                    }
-                    buffer_append(&ab, &c[j], 1);
-                } else {
-                    int color = ekilo_syntax_to_color(hl[j]);
-                    if (color != current_color) {
-                        current_color = color;
-                        char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[38;5;%dm", color);
-                        buffer_append(&ab, buf, clen);
-                    }
-                    buffer_append(&ab, &c[j], 1);
                 }
-            }
-            // Reset colors at end of line
-            if (current_color != -1) {
-                buffer_append(&ab, "\x1b[0m", 4);
+                if (current_color != -1) {
+                    buffer_append(&ab, "\x1b[0m", 4);
+                }
+            } else if (display_str) {
+                // No syntax highlighting - just output the text directly
+                buffer_append(&ab, &display_str[E.coloff], len);
             }
         }
         
@@ -1250,8 +1694,8 @@ void ekilo_refresh_screen() {
     
     // Calculate available space for filename
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cy + 1, E.numrows);
-    const char* suffix = E.dirty ? " (modified)" : "";
-    const char* menu_suffix = E.in_menu_mode ? " [MENU MODE]" : "";
+    const char* suffix = E.read_only ? " [READ-ONLY]" : (E.dirty ? " (modified)" : "");
+    const char* menu_suffix = E.in_menu_mode ? " [MENU MODE]" : (E.low_memory_mode ? " [LOW MEM]" : "");
     
     // Calculate space needed for " - XX lines" + suffix + menu + right status + padding
     int fixed_space = strlen(" - ") + 10 + strlen(" lines") + strlen(suffix) + strlen(menu_suffix) + rlen + 2;
@@ -1282,20 +1726,39 @@ void ekilo_refresh_screen() {
     buffer_append(&ab, "\x1b[0m", 4); // Reset formatting
     buffer_append(&ab, "\r\n", 2);
     
-    // Message bar (first line - status or temp messages)
-    int msglen = strlen(E.statusmsg);
-    if (msglen > E.screencols) msglen = E.screencols;
-    // Show error/warning messages for 30 seconds, normal messages for 5 seconds
-    uint32_t timeout = (strstr(E.statusmsg, "ERROR:") || strstr(E.statusmsg, "WARNING:")) ? 30000 : 5000;
-    if (msglen && millis() - E.statusmsg_time < timeout) {
-        buffer_append(&ab, E.statusmsg, msglen);
+    // Message bar - show status history (most recent messages, scrolling)
+    // Show up to 2 lines of status messages
+    for (int line = 0; line < 2; line++) {
+        int msg_idx = (E.status_history_head - 1 - line + EditorConfig::STATUS_HISTORY_SIZE) % EditorConfig::STATUS_HISTORY_SIZE;
+        
+        const char* msg = "";
+        if (line == 0) {
+            // First line: current message (with timeout)
+            uint32_t timeout = (strstr(E.statusmsg, "ERROR:") || strstr(E.statusmsg, "WARNING:")) ? 30000 : 5000;
+            if (strlen(E.statusmsg) > 0 && millis() - E.statusmsg_time < timeout) {
+                msg = E.statusmsg;
+            }
+        } else if (line < E.status_history_count && E.status_history_count > 1) {
+            // Second line: previous message from history (dimmed)
+            msg = E.status_history[msg_idx];
+            buffer_append(&ab, "\x1b[90m", 5); // Dim/gray color
+        }
+        
+        int msglen = strlen(msg);
+        if (msglen > E.screencols) msglen = E.screencols;
+        buffer_append(&ab, msg, msglen);
+        
+        // Pad to full width
+        while (msglen < E.screencols) {
+            buffer_append(&ab, " ", 1);
+            msglen++;
+        }
+        
+        if (line == 1 && E.status_history_count > 1) {
+            buffer_append(&ab, "\x1b[0m", 4); // Reset color
+        }
+        buffer_append(&ab, "\r\n", 2);
     }
-    // Pad message bar to full width
-    while (msglen < E.screencols) {
-        buffer_append(&ab, " ", 1);
-        msglen++;
-    }
-    buffer_append(&ab, "\r\n", 2);
     
     // Help bar (second line - comprehensive commands in magenta)
     buffer_append(&ab, "\x1b[35m", 5); // Magenta color
@@ -1346,6 +1809,9 @@ void ekilo_refresh_screen() {
     // Write buffer in chunks for Windows compatibility
     ekilo_write_buffer_chunked(&ab);
     
+    // Clear dirty flag after full redraw
+    E.screen_dirty = false;
+    
     // Schedule OLED update with context around cursor
     ekilo_schedule_oled_update();
     
@@ -1353,17 +1819,30 @@ void ekilo_refresh_screen() {
     // OLED update will be processed later when screen is clean and serial buffer is empty
 }
 
-// Process keypress
+// Process keypress with batching and acceleration
 void ekilo_process_keypress() {
     static int quit_times = 3;
+    static bool handler_initialized = false;
     
-    int c = ekilo_read_key();
+    // Initialize input handler once
+    if (!handler_initialized) {
+        g_input_handler.init();
+        handler_initialized = true;
+    }
+    
+    // Use input handler for batched/accelerated input
+    int moves = 1;
+    int c = g_input_handler.processInput(&Jerial, moves);
     if (c == 0) return; // No key available
     
     switch (c) {
         case '\n':
         
         case ENTER:
+            if (E.read_only) {
+                ekilo_set_status_message("READ-ONLY - press Ctrl+Q to exit");
+                break;
+            }
             ekilo_insert_newline();
             break;
             
@@ -1396,12 +1875,18 @@ void ekilo_process_keypress() {
             break;
             
         case CTRL_S:
-            ekilo_save();
+            if (E.read_only) {
+                ekilo_set_status_message("READ-ONLY file - cannot save");
+            } else {
+                ekilo_save();
+            }
             break;
             
         case CTRL_P:
             // Save and launch MicroPython REPL
-            ekilo_save();
+            if (!E.read_only) {
+                ekilo_save();
+            }
             E.should_launch_repl = true;
             E.should_quit = 1;
             break;
@@ -1443,26 +1928,37 @@ void ekilo_process_keypress() {
         case BACKSPACE:
         case CTRL_H:
         case DEL_KEY:
+            if (E.read_only) {
+                ekilo_set_status_message("READ-ONLY - press Ctrl+Q to exit");
+                break;
+            }
             if (c == DEL_KEY) ekilo_move_cursor(ARROW_RIGHT);
             ekilo_del_char();
             break;
             
         case PAGE_UP:
         case PAGE_DOWN: {
-            if (c == PAGE_UP) {
-                E.cy = E.rowoff;
-            } else if (c == PAGE_DOWN) {
-                E.cy = E.rowoff + E.screenrows - 1;
-                if (E.cy > E.numrows) E.cy = E.numrows;
+            // Apply batched page movement (moves pages at once if held)
+            for (int m = 0; m < moves; m++) {
+                if (c == PAGE_UP) {
+                    E.cy = E.rowoff;
+                } else if (c == PAGE_DOWN) {
+                    E.cy = E.rowoff + E.screenrows - 1;
+                    if (E.cy > E.numrows) E.cy = E.numrows;
+                }
+                
+                int times = E.screenrows;
+                while (times--)
+                    ekilo_move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
             }
-            
-            int times = E.screenrows;
-            while (times--)
-                ekilo_move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
             E.screen_dirty = true;
             break;
         }
         case TAB:
+            if (E.read_only) {
+                ekilo_set_status_message("READ-ONLY - press Ctrl+Q to exit");
+                break;
+            }
             ekilo_insert_char(' ');
             ekilo_insert_char(' ');
             ekilo_insert_char(' '); 
@@ -1473,7 +1969,10 @@ void ekilo_process_keypress() {
         case ARROW_DOWN:
         case ARROW_LEFT:
         case ARROW_RIGHT:
-            ekilo_move_cursor(c);
+            // Apply batched/accelerated movement - always allowed
+            for (int i = 0; i < moves; i++) {
+                ekilo_move_cursor(c);
+            }
             break;
             
         case CTRL_L:
@@ -1482,6 +1981,16 @@ void ekilo_process_keypress() {
             break;
             
         default:
+            // Block character insertion in read-only mode
+            if (E.read_only) {
+                // Only show message occasionally to avoid spam
+                static uint32_t last_ro_msg = 0;
+                if (millis() - last_ro_msg > 1000) {
+                    ekilo_set_status_message("READ-ONLY file - Ctrl+Q to exit");
+                    last_ro_msg = millis();
+                }
+                break;
+            }
             ekilo_insert_char(c);
             break;
     }
@@ -1555,11 +2064,24 @@ void ekilo_calculate_oled_scrolling() {
     // Don't restrict offset based on line length - let cursor have padding space
 }
 
-// Update OLED with 4 lines around cursor
+// Update OLED with 3 lines around cursor
+// Optimized to avoid String allocations that fragment heap
 void ekilo_update_oled_context() {
     if (!oled.isConnected()) {
         return;
     }
+    
+    // Check memory before OLED update - skip if critically low
+    size_t freeHeap = rp2040.getFreeHeap();
+    if (freeHeap < 2048) {
+        return;  // Skip OLED update when memory is critically low
+    }
+    
+    // Clear framebuffer first to prevent text overlapping (like FileManager does)
+    oled.clearFramebuffer();
+    
+    // Use small font mode like FileManager for consistent text rendering
+    oled.setSmallFont(SMALL_FONT_ANDALE_MONO);
     
     // Calculate horizontal scrolling for current line
     if (E.numrows > 0) {
@@ -1582,77 +2104,55 @@ void ekilo_update_oled_context() {
         startRow = max(0, endRow - 2);
     }
     
-    // Build the display string
-    String displayText = "";
-    int cursorLineInDisplay = -1; // Track which line in display has cursor
-    int displayLineCount = 0;
+    // Use stack buffers instead of String to avoid heap fragmentation
+    // Max visible chars on OLED is ~21 at small font, so 32 is plenty
+    char lineBufs[3][32];
+    int lineCount = 0;
+    int cursorLineInDisplay = -1;
+    
+    // Define constants for drawing
+    const int lineY = 8;        // Start Y position with proper baseline
+    const int lineHeight = 12;  // Line spacing for small font
     
     // Handle empty file case
     if (E.numrows == 0) {
-        displayText = "[Empty File]";
-        displayLineCount = 1;
+        strncpy(lineBufs[0], "[Empty File]", 31);
+        lineBufs[0][31] = '\0';
+        lineCount = 1;
         cursorLineInDisplay = 0;
     } else {
-        for (int i = startRow; i <= endRow && i < E.numrows; i++) {
-            String line = "";
-            
-            // No prefix - just track which line is current
+        int charWidth = oled.getCharacterWidth();
+        const int maxVisibleChars = charWidth > 0 ? min(128 / charWidth, 31) : 21;
+        
+        for (int i = startRow; i <= endRow && i < E.numrows && lineCount < 3; i++) {
+            // Track which line is current
             if (i == currentRow) {
-                cursorLineInDisplay = displayLineCount;
+                cursorLineInDisplay = lineCount;
             }
             
-            // Add line content - apply horizontal scrolling to all visible lines
-            if (E.row[i].chars) {
-                String rowText = String(E.row[i].chars);
-                
-                // Apply horizontal scrolling to all visible lines to keep relative positions
-                int charWidth = oled.getCharacterWidth();
-                const int maxVisibleChars = charWidth > 0 ? (128 / charWidth) : 21;
+            // Copy line content with horizontal scrolling - directly to stack buffer
+            if (E.row[i].chars && E.row[i].size > 0) {
                 int startPos = E.oled_horizontal_offset;
-                int endPos = min(startPos + maxVisibleChars, (int)rowText.length());
-                if (startPos < rowText.length()) {
-                    rowText = rowText.substring(startPos, endPos);
-                } else {
-                    rowText = ""; // Past end of line
-                }
+                int availableLen = E.row[i].size - startPos;
                 
-                line += rowText;
+                if (availableLen > 0) {
+                    int copyLen = min(availableLen, maxVisibleChars);
+                    memcpy(lineBufs[lineCount], E.row[i].chars + startPos, copyLen);
+                    lineBufs[lineCount][copyLen] = '\0';
+                } else {
+                    lineBufs[lineCount][0] = '\0';  // Past end of line
+                }
+            } else {
+                lineBufs[lineCount][0] = '\0';  // Empty line
             }
             
-            displayText += line;
-            if (i < endRow && i < E.numrows - 1) {
-                displayText += "\n";
-            }
-            displayLineCount++;
+            lineCount++;
         }
     }
     
-    // Display on OLED using framebuffer approach
-    oled.clearFramebuffer();
-    oled.setSmallFont(SMALL_FONT_ANDALE_MONO);
-    
-    // Draw each line at precise positions
-    int lineY = 8; // Start position with proper baseline
-    const int lineHeight = 12; // Line spacing for small font (increased to 12 pixels for better readability)
-    
-    String lines[3]; // Changed from 4 to 3 lines
-    int lineCount = 0;
-    
-    // Split displayText into lines
-    int lastStart = 0;
-    for (int i = 0; i <= displayText.length(); i++) {
-        if (i == displayText.length() || displayText[i] == '\n') {
-            if (lineCount < 3) { // Changed from 4 to 3
-                lines[lineCount] = displayText.substring(lastStart, i);
-                lineCount++;
-            }
-            lastStart = i + 1;
-        }
-    }
-    
-    // Draw each line
+    // Draw each line (using stack buffers - no heap allocation)
     for (int i = 0; i < lineCount; i++) {
-        oled.drawText(0, lineY + (i * lineHeight), lines[i].c_str());
+        oled.drawText(0, lineY + (i * lineHeight), lineBufs[i]);
     }
     
     // Add cursor position indicator if current line is visible
@@ -1668,8 +2168,9 @@ void ekilo_update_oled_context() {
             // Get the character at cursor position
             char cursorChar = ' '; // Default to space
             
-            if (visibleCursorPos < lines[cursorLineInDisplay].length()) {
-                cursorChar = lines[cursorLineInDisplay][visibleCursorPos];
+            int lineLen = strlen(lineBufs[cursorLineInDisplay]);
+            if (visibleCursorPos < lineLen) {
+                cursorChar = lineBufs[cursorLineInDisplay][visibleCursorPos];
                 if (cursorChar == '\0' || cursorChar == '\n') {
                     cursorChar = ' '; // Show space for end of line
                 }
@@ -1724,8 +2225,11 @@ void ekilo_update_oled_context() {
     int menuY = lineY + (lineCount * lineHeight) + 6; // 6 pixel gap between file and menu
     
     // Save and cancel options with proper UI styling
-    String saveText = "Save";
-    String cancelText = "Cancel";
+    // Use const char* instead of String to avoid heap allocation
+    const char* saveText = "Save";
+    const char* cancelText = "Cancel";
+    const int saveLen = 4;   // strlen("Save")
+    const int cancelLen = 6; // strlen("Cancel")
     
     // Always show menu buttons, but only highlight when in menu mode
     if (E.in_menu_mode) {
@@ -1734,8 +2238,8 @@ void ekilo_update_oled_context() {
         
         // Calculate positions for side-by-side layout in center of screen
         int charWidth = oled.getCharacterWidth();
-        int saveWidth = saveText.length() * charWidth;
-        int cancelWidth = cancelText.length() * charWidth;
+        int saveWidth = saveLen * charWidth;
+        int cancelWidth = cancelLen * charWidth;
         int buttonHeight = 12;
         int buttonPadding = 4;
         int gapBetweenButtons = 8;
@@ -1752,25 +2256,25 @@ void ekilo_update_oled_context() {
         if (E.menu_selection == 0) { // Save selected
             oled.fillRect(saveButtonX, buttonY, saveWidth + buttonPadding * 2, buttonHeight, SSD1306_WHITE);
             oled.setTextColor(SSD1306_BLACK);
-            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText.c_str());
+            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText);
             oled.setTextColor(SSD1306_WHITE);
         } else {
-            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText.c_str());
+            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText);
         }
         
         // Draw Cancel button
         if (E.menu_selection == 1) { // Cancel selected
             oled.fillRect(cancelButtonX, buttonY, cancelWidth + buttonPadding * 2, buttonHeight, SSD1306_WHITE);
             oled.setTextColor(SSD1306_BLACK);
-            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText.c_str());
+            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText);
             oled.setTextColor(SSD1306_WHITE);
         } else {
-            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText.c_str());
+            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText);
         }
     } else {
         // Show dimmed menu options when not in menu mode
-        oled.drawText(2, menuY, saveText.c_str());
-        oled.drawText(2, menuY + 12, cancelText.c_str());
+        oled.drawText(2, menuY, saveText);
+        oled.drawText(2, menuY + 12, cancelText);
     }
     
     // Flush to display
@@ -2029,91 +2533,6 @@ void ekilo_process_encoder_input() {
     E.last_button_state = current_button_state;
 }
 
-// Main editor function
-int ekilo_main(const char* filename) {
-    ekilo_init();
-    
-    if (filename) {
-        if (ekilo_open(filename) != 0) {
-            // File opening failed - show error and continue with empty editor
-            ekilo_set_status_message("Failed to open file - starting with empty editor");
-        }
-    }
-    
-    ekilo_set_status_message("HELP: Ctrl-S = save | Ctrl-P = save & REPL | Ctrl-Q = quit | Clickwheel = move/type");
-    
-    // Initialize encoder position tracking
-    E.last_encoder_position = encoderPosition;
-    E.last_encoder_update = millis();
-    
-    // Initialize button state
-    E.last_button_state = digitalRead(BUTTON_ENC);
-    E.button_debounce_time = millis();
-    
-    // Initial OLED update
-    ekilo_schedule_oled_update();
-    
-    // Memory monitoring and service calls
-    unsigned long last_memory_check = millis();
-    unsigned long last_service_call = millis();
-    const unsigned long MEMORY_CHECK_INTERVAL = 5000; // Check every 5 seconds
-    const unsigned long SERVICE_CALL_INTERVAL = 100;   // Call services every 100ms for responsiveness
-    
-    while (!E.should_quit) {
-        // Periodic memory monitoring
-        // unsigned long current_time = millis();
-        // if (current_time - last_memory_check > MEMORY_CHECK_INTERVAL) {
-        //     size_t freeHeap = rp2040.getFreeHeap();
-        //     if (freeHeap < MIN_FREE_HEAP) {
-        //         ekilo_set_status_message("WARNING: Low memory (%dKB free) - save your work!", freeHeap / 1024);
-        //         E.screen_dirty = true;
-        //     }
-        //     last_memory_check = current_time;
-        // }
-        
-        // Call SlotManager service periodically for file change detection
-        unsigned long current_time = millis();
-        if (current_time - last_service_call > SERVICE_CALL_INTERVAL) {
-            SlotManager::getInstance().service();
-            last_service_call = current_time;
-        }
-        
-        // Process any pending OLED updates
-        //ekilo_process_oled_update();
-        ekilo_process_keypress();
-        // Process encoder input for cursor movement and character selection
-        //ekilo_process_encoder_input();
-        
-        // Only refresh screen if something changed
-        if (E.screen_dirty) {
-            ekilo_refresh_screen();
-            E.screen_dirty = false;
-        }
-        
-        
-        //delayMicroseconds(1); 
-    }
-    
-    // Check if Ctrl+P was pressed (save and launch REPL)
-    int result = E.should_launch_repl ? 2 : 0; // 2 = launch REPL, 0 = normal exit
-    
-    // Restore normal font before exiting
-    oled.restoreNormalFont();
-    
-    // Cleanup
-    for (int i = 0; i < E.numrows; i++) {
-        ekilo_free_row(&E.row[i]);
-    }
-    free(E.row);
-    free(E.filename);
-    
-    // Clear global tracking
-    free(g_currently_editing_file);
-    g_currently_editing_file = nullptr;
-    
-    return result;
-}
-
 // REPL mode functions
 void ekilo_init_repl_mode() {
     E.repl_mode = true;
@@ -2155,41 +2574,136 @@ void ekilo_cleanup_repl_mode() {
     E.repl_mode = false;
 }
 
-// REPL mode main function - returns saved content
-String ekilo_main_repl(const char* filename) {
-    ekilo_init();
-    ekilo_init_repl_mode();
+// ============================================================================
+// UNIFIED EDITOR ENTRY POINT
+// ============================================================================
+
+// Static storage for result (accessed via ContextManager transfer data)
+static EkiloResult g_ekilo_result;
+
+/**
+ * @brief Get the result of the last ekilo_run() call
+ */
+const EkiloResult* ekilo_get_result() {
+    size_t len = 0;
+    const void* data = ContextManager::getInstance().getTransferData(&len);
+    if (data && len == sizeof(EkiloResult)) {
+        return static_cast<const EkiloResult*>(data);
+    }
+    return nullptr;
+}
+
+/**
+ * @brief Clear the stored ekilo result
+ */
+void ekilo_clear_result() {
+    ContextManager::getInstance().clearTransferData();
+}
+
+/**
+ * @brief Unified eKilo entry point - consolidates ekilo_main and ekilo_main_repl
+ * 
+ * This function:
+ * 1. Initializes the editor
+ * 2. Opens the file (or creates new)
+ * 3. Runs the editor loop
+ * 4. Stores result in ContextManager for caller
+ * 5. Cleans up resources
+ */
+bool ekilo_run(const char* filename, EkiloMode mode) {
+    // Initialize result
+    g_ekilo_result = EkiloResult();
     
+    // Safety check: ensure we have minimum heap before starting
+    size_t freeHeap = rp2040.getFreeHeap();
+    if (freeHeap < 4096) {
+        Jerial.println("ERROR: Not enough memory to start editor");
+        return false;
+    }
+    
+    // Fragmentation detection: try to allocate a 4KB contiguous block
+    // If this fails, the heap is fragmented and we should use low-memory mode
+    bool heap_fragmented = false;
+    void* test_alloc = malloc(4096);
+    if (test_alloc) {
+        free(test_alloc);
+    } else {
+        // Heap is fragmented - we have free memory but not contiguous
+        heap_fragmented = true;
+        Jerial.println("NOTE: Heap fragmented, using low-memory mode");
+    }
+    
+    // Initialize editor
+    ekilo_init();
+    
+    // Force low-memory mode if heap is fragmented
+    if (heap_fragmented) {
+        E.low_memory_mode = true;
+    }
+    
+    // REPL mode setup
+    if (mode == EKILO_MODE_REPL) {
+        ekilo_init_repl_mode();
+    }
+    
+    // Extra safety: verify init succeeded
+    if (E.screenrows <= 0 || E.screencols <= 0) {
+        E.screenrows = 24;
+        E.screencols = 80;
+    }
+    
+    // Open file or set up for new file
     if (filename != nullptr) {
-        // Try to open existing file, but if it fails, still set the filename for new files
-        if (ekilo_open(filename) != 0) {
-            // File doesn't exist - set the filename for saving new file
+        int open_result = ekilo_open(filename);
+        if (open_result != 0) {
+            // File doesn't exist or error - set up for new file
             free(E.filename);
             E.filename = strdup(filename);
             if (!E.filename) {
                 ekilo_set_status_message("ERROR: Memory allocation failed for filename");
-            } else {
-                // Ensure the directory exists for the new file
-                String file_path = String(filename);
-                int last_slash = file_path.lastIndexOf('/');
-                if (last_slash > 0) {
-                    String dir_path = file_path.substring(0, last_slash);
-                    if (!FatFS.exists(dir_path.c_str())) {
-                        FatFS.mkdir(dir_path.c_str());
-                    }
+                if (mode == EKILO_MODE_REPL) {
+                    ekilo_cleanup_repl_mode();
                 }
-                // Enable Python syntax highlighting for new files
-                ekilo_select_syntax_highlight(filename);
-                ekilo_set_status_message("Creating new file: %s", filename);
-                E.screen_dirty = true; // Force initial screen refresh with new filename
+                return false;
             }
+            
+            // Ensure directory exists for new files using safe functions
+            String file_path = String(filename);
+            int last_slash = file_path.lastIndexOf('/');
+            if (last_slash > 0) {
+                String dir_path = file_path.substring(0, last_slash);
+                if (!safeFileExists(dir_path.c_str(), 1000)) {
+                    safeMkdir(dir_path.c_str(), 2000);
+                }
+            }
+            
+            // Set syntax highlighting for new files
+            ekilo_select_syntax_highlight(filename);
+            ekilo_set_status_message("Creating new file: %s", filename);
+            E.screen_dirty = true;
+            
+            // Reset state for empty file
+            for (int i = 0; i < E.numrows; i++) {
+                ekilo_free_row(&E.row[i]);
+            }
+            free(E.row);
+            E.row = nullptr;
+            E.numrows = 0;
+            E.row_capacity = 0;
+            E.cy = 0;
+            E.cx = 0;
         }
     }
     
-    if (E.filename) {
-        ekilo_set_status_message("Editing: %s | Ctrl-S: Save & Load | Ctrl-P: Save & Launch REPL | Ctrl-Q: Exit", E.filename);
+    // Set appropriate status message
+    if (mode == EKILO_MODE_REPL) {
+        if (E.filename) {
+            ekilo_set_status_message("Editing: %s | Ctrl-S: Save & Load | Ctrl-P: Save & REPL | Ctrl-Q: Exit", E.filename);
+        } else {
+            ekilo_set_status_message("REPL Mode | Ctrl-S: Save & Load | Ctrl-P: Save & REPL | Ctrl-Q: Exit");
+        }
     } else {
-        ekilo_set_status_message("REPL Mode | Ctrl-S: Save & Load | Ctrl-P: Save & Launch REPL | Ctrl-Q: Exit");
+        ekilo_set_status_message("HELP: Ctrl-S = save | Ctrl-P = save & REPL | Ctrl-Q = quit | Clickwheel = move/type");
     }
     
     // Initialize encoder position tracking
@@ -2203,672 +2717,562 @@ String ekilo_main_repl(const char* filename) {
     // Initial OLED update
     ekilo_schedule_oled_update();
     
-    // Service call timing
+    // Timing for service calls and memory checks
     unsigned long last_service_call = millis();
-    const unsigned long SERVICE_CALL_INTERVAL = 100;   // Call services every 100ms for responsiveness
+    unsigned long last_memory_check = millis();
+    const unsigned long SERVICE_CALL_INTERVAL = 100;
+    const unsigned long MEMORY_CHECK_INTERVAL = 5000;
     
-    // Editor loop with REPL positioning
+    // ========== MAIN EDITOR LOOP ==========
     while (!E.should_quit) {
-        // Call SlotManager service periodically for file change detection
+        yield();  // Feed watchdog
+        
         unsigned long current_time = millis();
+        
+        // Service calls (SlotManager for file change detection)
         if (current_time - last_service_call > SERVICE_CALL_INTERVAL) {
             SlotManager::getInstance().service();
             last_service_call = current_time;
         }
         
-        // Process any pending OLED updates
-
+        // Memory monitoring
+        if (current_time - last_memory_check > MEMORY_CHECK_INTERVAL) {
+            size_t currentFree = rp2040.getFreeHeap();
+            if (currentFree < 2048) {
+                ekilo_set_status_message("WARNING: Low memory (%dKB) - save your work!", currentFree / 1024);
+                E.screen_dirty = true;
+            }
+            last_memory_check = current_time;
+        }
+        
+        // Process keyboard input
         ekilo_process_keypress();
-
         
-        
-        // Process encoder input for cursor movement and character selection
+        // Process encoder input (FIXED: was missing in REPL mode)
         ekilo_process_encoder_input();
+        
+        // Process OLED updates
         ekilo_process_oled_update();
-        // Only refresh screen if something changed
+        
+        // Refresh screen if needed
         if (E.screen_dirty) {
             ekilo_refresh_screen();
             E.screen_dirty = false;
         }
-        
-        
-       // delayMicroseconds(1);
     }
     
-    // If content was saved, return it with Ctrl+P prefix if needed
-    String savedContent = E.saved_file_content;
+    // ========== STORE RESULT ==========
+    g_ekilo_result.launch_repl = E.should_launch_repl;
+    g_ekilo_result.saved = (E.dirty == 0 && E.filename != nullptr);
+    g_ekilo_result.cancelled = (E.dirty != 0);  // Quit with unsaved changes
     
-    // If Ctrl+P was pressed, prepend a special marker to indicate REPL should be launched
-    if (E.should_launch_repl && savedContent.length() > 0) {
-        savedContent = "[LAUNCH_REPL]" + savedContent;
+    // Store saved file path for zero-copy transfer
+    if (E.filename) {
+        strncpy(g_ekilo_result.saved_path, E.filename, sizeof(g_ekilo_result.saved_path) - 1);
+        g_ekilo_result.saved_path[sizeof(g_ekilo_result.saved_path) - 1] = '\0';
+        
+        // Also set transfer path in ContextManager
+        ContextManager::getInstance().setTransferPath(E.filename);
     }
     
-    // Restore normal font before exiting
+    // Store result in ContextManager transfer data
+    ContextManager::getInstance().setTransferData(&g_ekilo_result, sizeof(g_ekilo_result));
+    
+    // ========== CLEANUP ==========
     oled.restoreNormalFont();
     
-    // Cleanup
     for (int i = 0; i < E.numrows; i++) {
         ekilo_free_row(&E.row[i]);
     }
     free(E.row);
     free(E.filename);
+    E.row = nullptr;
+    E.numrows = 0;
+    E.row_capacity = 0;
+    E.filename = nullptr;
     
     // Clear global tracking
     free(g_currently_editing_file);
     g_currently_editing_file = nullptr;
     
-    ekilo_cleanup_repl_mode();
+    if (mode == EKILO_MODE_REPL) {
+        ekilo_cleanup_repl_mode();
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// LEGACY WRAPPERS (for backward compatibility)
+// ============================================================================
+
+// Legacy ekilo_main - wraps ekilo_run
+int ekilo_main(const char* filename) {
+    if (!ekilo_run(filename, EKILO_MODE_NORMAL)) {
+        return -1;
+    }
+    
+    const EkiloResult* result = ekilo_get_result();
+    if (result && result->launch_repl) {
+        return 2;  // Signal to launch REPL
+    }
+    return 0;  // Normal exit
+}
+
+// Legacy ekilo_main_repl - wraps ekilo_run
+String ekilo_main_repl(const char* filename) {
+    if (!ekilo_run(filename, EKILO_MODE_REPL)) {
+        return "";
+    }
+    
+    const EkiloResult* result = ekilo_get_result();
+    if (!result) {
+        return "";
+    }
+    
+    // Build return string for backward compatibility
+    // NOTE: This creates a copy - new code should use ekilo_get_result() instead
+    String savedContent = "";
+    if (result->saved && result->saved_path[0] != '\0') {
+        // Read content from saved file for backward compatibility using safe function
+        File f = safeFileOpen(result->saved_path, "r", 2000);
+        if (f) {
+            savedContent = f.readString();
+            safeFileClose(f, false);  // Read-only, no flush
+        }
+    }
+    
+    // Add REPL launch prefix if needed
+    if (result->launch_repl && savedContent.length() > 0) {
+        savedContent = "[LAUNCH_REPL]" + savedContent;
+    }
     
     return savedContent;
 }
 
-// Inline editing mode - provides eKilo-style editing without screen clearing or file operations
-String ekilo_inline_edit(const String& initial_content) {
-    // Initialize a minimal editor state without clearing screen
-    EditorConfig inline_editor;
-    inline_editor.cx = 0;
-    inline_editor.cy = 0;
-    inline_editor.rowoff = 0;
-    inline_editor.coloff = 0;
-    inline_editor.numrows = 0;
-    inline_editor.row = nullptr;
-    inline_editor.dirty = 0;
-    inline_editor.filename = nullptr;
-    inline_editor.syntax = &syntax_db[0]; // Set Python syntax highlighting
-    inline_editor.should_quit = 0;
-    strcpy(inline_editor.statusmsg, "");
-    inline_editor.statusmsg_time = 0;
+// ============================================================================
+// REMOVED: ekilo_inline_edit (dead code - was never called)
+// See git history if you need to recover this ~600 line function.
+// ============================================================================
+
+
+// ============================================================================
+// Terminal Size Detection
+// ============================================================================
+
+// Probe terminal size using CSI 6n (Cursor Position Report)
+// Returns true if successful, false if terminal doesn't respond
+bool ekilo_probe_terminal_size(uint16_t& rows, uint16_t& cols) {
+    // Mark that we're sending a CPR query (for stray response filtering)
+    extern uint32_t last_cpr_query_time;
+    last_cpr_query_time = millis();
     
-    // Helper functions for inline syntax highlighting
-    auto inline_update_syntax = [&](EditorRow* row) {
-        if (!row || row->rsize <= 0 || !inline_editor.syntax) return;
-        
-        unsigned char* new_hl = (unsigned char*)realloc(row->hl, row->rsize);
-        if (!new_hl) {
-            free(row->hl);
-            row->hl = nullptr;
-            return;
-        }
-        row->hl = new_hl;
-        memset(row->hl, HL_NORMAL, row->rsize);
-        
-        const char** keywords = inline_editor.syntax->keywords;
-        const char* scs = inline_editor.syntax->singleline_comment_start;
-        int scs_len = scs ? strlen(scs) : 0;
-        
-        int prev_sep = 1;
-        int in_string = 0;
-        
-        int i = 0;
-        while (i < row->rsize) {
-            char c = row->render[i];
-            unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NORMAL;
-            
-            // Handle comments
-            if (scs_len && !in_string) {
-                if (!strncmp(&row->render[i], scs, scs_len)) {
-                    memset(&row->hl[i], HL_COMMENT, row->rsize - i);
-                    break;
-                }
-            }
-            
-            // Handle strings
-            if (inline_editor.syntax->flags & HL_HIGHLIGHT_STRINGS) {
-                if (in_string) {
-                    row->hl[i] = HL_STRING;
-                    if (c == '\\' && i + 1 < row->rsize) {
-                        row->hl[i + 1] = HL_STRING;
-                        i += 2;
-                        continue;
-                    }
-                    if (c == in_string) in_string = 0;
-                    i++;
-                    prev_sep = 1;
-                    continue;
-                } else {
-                    if (c == '"' || c == '\'') {
-                        in_string = c;
-                        row->hl[i] = HL_STRING;
-                        i++;
-                        continue;
-                    }
-                }
-            }
-            
-            // Handle numbers
-            if (inline_editor.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
-                if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
-                    (c == '.' && prev_hl == HL_NUMBER)) {
-                    row->hl[i] = HL_NUMBER;
-                    i++;
-                    prev_sep = 0;
-                    continue;
-                }
-            }
-            
-                            // Handle keywords
-                if (prev_sep) {
-                    int j;
-                    for (j = 0; keywords[j]; j++) {
-                        int klen = strlen(keywords[j]);
-                        int highlight_type = HL_KEYWORD1;
-                        
-                        // Check for different keyword types based on suffix
-                        if (klen >= 3 && !strncmp(&keywords[j][klen - 3], "|||", 3)) {
-                            highlight_type = HL_JUMPERLESS_TYPE;
-                            klen -= 3;
-                        } else if (klen >= 2 && !strncmp(&keywords[j][klen - 2], "||", 2)) {
-                            highlight_type = HL_JUMPERLESS_FUNC;
-                            klen -= 2;
-                        } else if (klen >= 1 && keywords[j][klen - 1] == '|') {
-                            highlight_type = HL_KEYWORD2;
-                            klen--;
-                        }
-                        
-                        if (!strncmp(&row->render[i], keywords[j], klen) &&
-                            is_separator(row->render[i + klen])) {
-                            memset(&row->hl[i], highlight_type, klen);
-                            i += klen;
-                            break;
-                        }
-                    }
-                    if (keywords[j] != nullptr) {
-                        prev_sep = 0;
-                        continue;
-                    }
-                }
-            
-            prev_sep = is_separator(c);
-            i++;
-        }
-    };
+    // Clear any pending input thoroughly
+    delay(10);  // Brief delay for any in-flight data
+    while (Jerial.available()) Jerial.read();
     
-    // Helper function to display a line with syntax highlighting
-    auto display_line_with_syntax = [&](const char* line, int line_length, bool is_current_line) {
-        if (!line || line_length == 0) return;
-        
-        // Create temporary render buffer for this line
-        char* render = (char*)malloc(line_length + 1);
-        unsigned char* hl = (unsigned char*)malloc(line_length);
-        if (!render || !hl) {
-            free(render);
-            free(hl);
-            Jerial.print(line);
-            return;
-        }
-        
-        // Simple render (no tabs for inline editor)
-        memcpy(render, line, line_length);
-        render[line_length] = '\0';
-        memset(hl, HL_NORMAL, line_length);
-        
-        // Apply syntax highlighting
-        if (inline_editor.syntax) {
-            const char** keywords = inline_editor.syntax->keywords;
-            const char* scs = inline_editor.syntax->singleline_comment_start;
-            int scs_len = scs ? strlen(scs) : 0;
-            
-            int prev_sep = 1;
-            int in_string = 0;
-            
-            for (int i = 0; i < line_length; i++) {
-                char c = render[i];
-                unsigned char prev_hl = (i > 0) ? hl[i - 1] : HL_NORMAL;
-                
-                // Handle comments
-                if (scs_len && !in_string) {
-                    if (i <= line_length - scs_len && !strncmp(&render[i], scs, scs_len)) {
-                        for (int j = i; j < line_length; j++) hl[j] = HL_COMMENT;
-                        break;
-                    }
-                }
-                
-                // Handle strings
-                if (inline_editor.syntax->flags & HL_HIGHLIGHT_STRINGS) {
-                    if (in_string) {
-                        hl[i] = HL_STRING;
-                        if (c == '\\' && i + 1 < line_length) {
-                            hl[i + 1] = HL_STRING;
-                            i++;
-                            continue;
-                        }
-                        if (c == in_string) in_string = 0;
-                        prev_sep = 1;
-                        continue;
-                    } else {
-                        if (c == '"' || c == '\'') {
-                            in_string = c;
-                            hl[i] = HL_STRING;
-                            continue;
-                        }
-                    }
-                }
-                
-                // Handle numbers
-                if (inline_editor.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
-                    if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
-                        (c == '.' && prev_hl == HL_NUMBER)) {
-                        hl[i] = HL_NUMBER;
-                        prev_sep = 0;
-                        continue;
-                    }
-                }
-                
-                // Handle keywords
-                if (prev_sep) {
-                    int j;
-                    for (j = 0; keywords[j]; j++) {
-                        int klen = strlen(keywords[j]);
-                        int highlight_type = HL_KEYWORD1;
-                        
-                        // Check for different keyword types based on suffix
-                        if (klen >= 4 && !strncmp(&keywords[j][klen - 4], "||||", 4)) {
-                            highlight_type = HL_JFS_FUNC;
-                            klen -= 4;
-                        } else if (klen >= 3 && !strncmp(&keywords[j][klen - 3], "|||", 3)) {
-                            highlight_type = HL_JUMPERLESS_TYPE;
-                            klen -= 3;
-                        } else if (klen >= 2 && !strncmp(&keywords[j][klen - 2], "||", 2)) {
-                            highlight_type = HL_JUMPERLESS_FUNC;
-                            klen -= 2;
-                        } else if (klen >= 1 && keywords[j][klen - 1] == '|') {
-                            highlight_type = HL_KEYWORD2;
-                            klen--;
-                        }
-                        
-                        if (i <= line_length - klen && !strncmp(&render[i], keywords[j], klen) &&
-                            (i + klen >= line_length || is_separator(render[i + klen]))) {
-                            for (int k = 0; k < klen; k++) {
-                                hl[i + k] = highlight_type;
-                            }
-                            i += klen - 1;
-                            break;
-                        }
-                    }
-                    if (keywords[j] != nullptr) {
-                        prev_sep = 0;
-                        continue;
-                    }
-                }
-                
-                prev_sep = is_separator(c);
-            }
-        }
-        
-        // Display the line with colors
-        int current_color = -1;
-        for (int i = 0; i < line_length; i++) {
-            int color = ekilo_syntax_to_color(hl[i]);
-            if (color != current_color) {
-                if (current_color != -1) {
-                    Jerial.print("\x1b[0m"); // Reset
-                }
-                current_color = color;
-                Jerial.print("\x1b[38;5;");
-                Jerial.print(color);
-                Jerial.print("m");
-            }
-            Jerial.write(render[i]);
-        }
-        if (current_color != -1) {
-            Jerial.print("\x1b[0m"); // Reset at end
-        }
-        
-        free(render);
-        free(hl);
-    };
-    
-    // Helper function to calculate Python autoindent
-    auto calculate_python_indent = [&](const String& line) -> String {
-        // Calculate current indentation level
-        int current_indent = 0;
-        for (int i = 0; i < line.length(); i++) {
-            if (line.charAt(i) == ' ') {
-                current_indent++;
-            } else {
-                break;
-            }
-        }
-        
-        String trimmed_line = line;
-        trimmed_line.trim();
-        
-        String indent_spaces = "";
-        if (trimmed_line.endsWith(":")) {
-            // Increase indentation level by 4 spaces for Python blocks
-            for (int i = 0; i < current_indent + 4; i++) {
-                indent_spaces += " ";
-            }
-        } else if (current_indent > 0) {
-            // Maintain current indentation level
-            for (int i = 0; i < current_indent; i++) {
-                indent_spaces += " ";
-            }
-        }
-        
-        return indent_spaces;
-    };
-    
-    // Don't clear screen - we're working inline
-    Jerial.println("--- Python Inline Editor Mode ---");
-    Jerial.println("Ctrl+S: Accept and return | Ctrl+Q: Cancel | Arrow keys: Navigate");
-    // Jerial.println("Auto-indent and syntax highlighting enabled");
-    Jerial.println();
-    
-    // Load initial content if provided
-    if (initial_content.length() > 0) {
-        // Split content by lines and insert each row
-        int start = 0;
-        int pos = 0;
-        while (pos <= initial_content.length()) {
-            if (pos == initial_content.length() || initial_content[pos] == '\n') {
-                String line = initial_content.substring(start, pos);
-                
-                // Insert this line into the editor
-                if (inline_editor.numrows == 0) {
-                    inline_editor.row = (EditorRow*)malloc(sizeof(EditorRow));
-                } else {
-                    inline_editor.row = (EditorRow*)realloc(inline_editor.row, sizeof(EditorRow) * (inline_editor.numrows + 1));
-                }
-                
-                if (inline_editor.row) {
-                    EditorRow* new_row = &inline_editor.row[inline_editor.numrows];
-                    new_row->idx = inline_editor.numrows;
-                    new_row->size = line.length();
-                    new_row->chars = (char*)malloc(line.length() + 1);
-                    if (new_row->chars) {
-                        memcpy(new_row->chars, line.c_str(), line.length());
-                        new_row->chars[line.length()] = '\0';
-                        new_row->rsize = 0;
-                        new_row->render = nullptr;
-                        new_row->hl = nullptr;
-                        new_row->hl_oc = 0;
-                        
-                        // Update render for this row
-                        int tabs = 0;
-                        for (int j = 0; j < new_row->size; j++) {
-                            if (new_row->chars[j] == '\t') tabs++;
-                        }
-                        
-                        new_row->render = (char*)malloc(new_row->size + tabs * 7 + 1);
-                        if (new_row->render) {
-                            int idx = 0;
-                            for (int j = 0; j < new_row->size; j++) {
-                                if (new_row->chars[j] == '\t') {
-                                    new_row->render[idx++] = ' ';
-                                    while (idx % 8 != 0) new_row->render[idx++] = ' ';
-                                } else {
-                                    new_row->render[idx++] = new_row->chars[j];
-                                }
-                            }
-                            new_row->render[idx] = '\0';
-                            new_row->rsize = idx;
-                        }
-                        
-                        inline_editor.numrows++;
-                    }
-                }
-                start = pos + 1;
-            }
-            pos++;
-        }
-        
-        // Position cursor at end of content
-        if (inline_editor.numrows > 0) {
-            inline_editor.cy = inline_editor.numrows - 1;
-            inline_editor.cx = inline_editor.row[inline_editor.cy].size;
-        }
-    }
-    
-    // Display current content with syntax highlighting
-    for (int i = 0; i < inline_editor.numrows; i++) {
-        if (inline_editor.row[i].chars) {
-            Jerial.print("... ");
-            display_line_with_syntax(inline_editor.row[i].chars, inline_editor.row[i].size, false);
-            Jerial.println();
-        }
-    }
-    
-    // Show current prompt
-    if (inline_editor.numrows == 0) {
-        Jerial.print(">>> ");
-    } else {
-        Jerial.print("... ");
-    }
+    // Save cursor position
+    Jerial.print("\x1b[s");
+    // Move to far bottom-right corner
+    Jerial.print("\x1b[9999;9999H");
+    // Query cursor position (CSI 6n)
+    Jerial.print("\x1b[6n");
     Jerial.flush();
     
-    // Simple editing loop - much simpler than full eKilo
-    String current_line = "";
-    if (inline_editor.numrows > 0 && inline_editor.cy < inline_editor.numrows) {
-        current_line = String(inline_editor.row[inline_editor.cy].chars);
-    }
+    // Wait a bit for response to arrive
+    delay(50);
     
-    while (!inline_editor.should_quit) {
+    // Read response with timeout: ESC [ rows ; cols R
+    char buf[32];
+    size_t n = 0;
+    uint32_t start = millis();
+    const uint32_t timeout = 300;  // 300ms timeout (response should be quick)
+    
+    while ((millis() - start) < timeout && n < sizeof(buf) - 1) {
         if (Jerial.available()) {
-            int c = Jerial.read();
-            
-            // Handle escape sequences (arrow keys) - consume completely
-            if (c == 27) { // ESC
-                // Wait for more characters and consume the entire sequence
-                unsigned long start_time = millis();
-                while (millis() - start_time < 10) { // Wait up to 10ms
-                    if (Jerial.available() >= 2) break;
-                    delayMicroseconds(100);
-                }
-                
-                if (Jerial.available() >= 2) {
-                    char seq1 = Jerial.read();
-                    char seq2 = Jerial.read();
-                    if (seq1 == '[') {
-                        switch (seq2) {
-                            case 'A': // Up arrow - navigate to previous line
-                                if (inline_editor.cy > 0) {
-                                    // Save current line
-                                    if (inline_editor.cy < inline_editor.numrows) {
-                                        free(inline_editor.row[inline_editor.cy].chars);
-                                        inline_editor.row[inline_editor.cy].chars = (char*)malloc(current_line.length() + 1);
-                                        if (inline_editor.row[inline_editor.cy].chars) {
-                                            memcpy(inline_editor.row[inline_editor.cy].chars, current_line.c_str(), current_line.length());
-                                            inline_editor.row[inline_editor.cy].chars[current_line.length()] = '\0';
-                                            inline_editor.row[inline_editor.cy].size = current_line.length();
-                                        }
-                                    }
-                                    
-                                    // Move to previous line
-                                    inline_editor.cy--;
-                                    current_line = String(inline_editor.row[inline_editor.cy].chars);
-                                    
-                                    // Redraw current line
-                                    Jerial.print("\r... ");
-                                    display_line_with_syntax(current_line.c_str(), current_line.length(), true);
-                                }
-                                break;
-                                
-                            case 'B': // Down arrow - navigate to next line
-                                if (inline_editor.cy < inline_editor.numrows - 1) {
-                                    // Save current line
-                                    if (inline_editor.cy < inline_editor.numrows) {
-                                        free(inline_editor.row[inline_editor.cy].chars);
-                                        inline_editor.row[inline_editor.cy].chars = (char*)malloc(current_line.length() + 1);
-                                        if (inline_editor.row[inline_editor.cy].chars) {
-                                            memcpy(inline_editor.row[inline_editor.cy].chars, current_line.c_str(), current_line.length());
-                                            inline_editor.row[inline_editor.cy].chars[current_line.length()] = '\0';
-                                            inline_editor.row[inline_editor.cy].size = current_line.length();
-                                        }
-                                    }
-                                    
-                                    // Move to next line
-                                    inline_editor.cy++;
-                                    current_line = String(inline_editor.row[inline_editor.cy].chars);
-                                    
-                                    // Redraw current line
-                                    Jerial.print("\r... ");
-                                    display_line_with_syntax(current_line.c_str(), current_line.length(), true);
-                                }
-                                break;
-                                
-                            case 'C': // Right arrow - ignore for now
-                            case 'D': // Left arrow - ignore for now
-                                break;
-                        }
-                    }
-                } else {
-                    // Consume any remaining escape sequence characters
-                    while (Jerial.available() > 0) {
-                        Jerial.read();
-                    }
-                }
-                continue;
-            }
-            
-            switch (c) {
-                case 19: // Ctrl+S - Accept and return content
-                {
-                    Jerial.println();
-                    Jerial.println("--- Content Accepted ---");
-                    
-                    // Build final content string
-                    String final_content = "";
-                    
-                    // Add all rows except the last one
-                    for (int i = 0; i < inline_editor.numrows; i++) {
-                        if (i == inline_editor.cy) {
-                            // Use the edited current line
-                            final_content += current_line;
-                        } else if (inline_editor.row[i].chars) {
-                            final_content += String(inline_editor.row[i].chars);
-                        }
-                        if (i < inline_editor.numrows - 1) {
-                            final_content += "\n";
-                        }
-                    }
-                    
-                    // If we're on a new line or have no rows, add current line
-                    if (inline_editor.numrows == 0 || inline_editor.cy >= inline_editor.numrows) {
-                        if (final_content.length() > 0) final_content += "\n";
-                        final_content += current_line;
-                    }
-                    
-                    // Cleanup
-                    for (int i = 0; i < inline_editor.numrows; i++) {
-                        free(inline_editor.row[i].chars);
-                        free(inline_editor.row[i].render);
-                        free(inline_editor.row[i].hl);
-                    }
-                    free(inline_editor.row);
-                    
-                    return final_content;
-                }
-                
-                case 17: // Ctrl+Q - Cancel
-                    Jerial.println();
-                    Jerial.println("--- Editing Cancelled ---");
-                    
-                    // Cleanup
-                    for (int i = 0; i < inline_editor.numrows; i++) {
-                        free(inline_editor.row[i].chars);
-                        free(inline_editor.row[i].render);
-                        free(inline_editor.row[i].hl);
-                    }
-                    free(inline_editor.row);
-                    
-                    return "";
-                
-                case '\r':
-                case '\n': // Enter - new line with autoindent
-                {
-                    Jerial.println();
-                    
-                    // Calculate autoindent for the next line based on current line
-                    String auto_indent = calculate_python_indent(current_line);
-                    
-                    // Add current line to editor
-                    if (inline_editor.numrows == 0) {
-                        inline_editor.row = (EditorRow*)malloc(sizeof(EditorRow));
-                    } else {
-                        inline_editor.row = (EditorRow*)realloc(inline_editor.row, sizeof(EditorRow) * (inline_editor.numrows + 1));
-                    }
-                    
-                    if (inline_editor.row) {
-                        EditorRow* new_row = &inline_editor.row[inline_editor.numrows];
-                        new_row->idx = inline_editor.numrows;
-                        new_row->size = current_line.length();
-                        new_row->chars = (char*)malloc(current_line.length() + 1);
-                        if (new_row->chars) {
-                            memcpy(new_row->chars, current_line.c_str(), current_line.length());
-                            new_row->chars[current_line.length()] = '\0';
-                            new_row->rsize = current_line.length();
-                            new_row->render = (char*)malloc(current_line.length() + 1);
-                            if (new_row->render) {
-                                memcpy(new_row->render, current_line.c_str(), current_line.length());
-                                new_row->render[current_line.length()] = '\0';
-                            }
-                            new_row->hl = nullptr;
-                            new_row->hl_oc = 0;
-                            inline_update_syntax(new_row);
-                            inline_editor.numrows++;
-                        }
-                    }
-                    
-                    // Move to new line with autoindent
-                    inline_editor.cy = inline_editor.numrows;
-                    current_line = auto_indent;
-                    
-                    // Show prompt with autoindent
-                    Jerial.print("... ");
-                    if (auto_indent.length() > 0) {
-                        Jerial.print("\x1b[90m"); // Dark gray for indent
-                        Jerial.print(auto_indent);
-                        Jerial.print("\x1b[0m"); // Reset color
-                    }
-                    break;
-                }
-                
-                case '\b':
-                case 127: // Backspace
-                    if (current_line.length() > 0) {
-                        current_line = current_line.substring(0, current_line.length() - 1);
-                        Jerial.print("\b \b"); // Erase character
-                    }
-                    break;
-                
-                case '\t': // Tab - smart Python indent (4 spaces)
-                    current_line += "    ";
-                    Jerial.print("\x1b[90m    \x1b[0m"); // Show indent in gray
-                    break;
-                
-                default:
-                    if (c >= 32 && c <= 126) { // Printable characters
-                        current_line += (char)c;
-                        
-                        // For real-time syntax highlighting, redraw the current line
-                        // but only every few characters to avoid flickering
-                        static int char_count = 0;
-                        char_count++;
-                        
-                        if (char_count % 3 == 0 || c == ':' || c == '"' || c == '\'' || c == '#') {
-                            // Redraw line with syntax highlighting for important characters
-                            Jerial.print("\r... ");
-                            display_line_with_syntax(current_line.c_str(), current_line.length(), true);
-                        } else {
-                            // Just echo the character for performance
-                            Jerial.write(c);
-                        }
-                    }
-                    break;
-            }
-            Jerial.flush();
+            char c = Jerial.read();
+            // Skip until we see ESC
+            if (n == 0 && c != '\x1b') continue;
+            buf[n++] = c;
+            // Response ends with 'R'
+            if (c == 'R') break;
         }
-        delayMicroseconds(100);
+        delayMicroseconds(500);
+    }
+    buf[n] = '\0';
+    
+    // Restore cursor position
+    Jerial.print("\x1b[u");
+    Jerial.flush();
+    
+    // Clear any remaining garbage from buffer (late responses, echoes)
+    delay(20);
+    while (Jerial.available()) Jerial.read();
+    
+    // Parse response: ESC [ rows ; cols R
+    int r = 0, c = 0;
+    if (sscanf(buf, "\x1b[%d;%dR", &r, &c) == 2) {
+        rows = (uint16_t)r;
+        cols = (uint16_t)c;
+        return true;
     }
     
-    // Cleanup (shouldn't reach here normally)
-    for (int i = 0; i < inline_editor.numrows; i++) {
-        free(inline_editor.row[i].chars);
-        free(inline_editor.row[i].render);
-        free(inline_editor.row[i].hl);
+    return false;
+}
+
+// Re-probe terminal size and resize editor
+void ekilo_resize_to_terminal() {
+    uint16_t term_rows = 0, term_cols = 0;
+    if (ekilo_probe_terminal_size(term_rows, term_cols)) {
+        E.screenrows = constrain(term_rows - 4, 16, 60);
+        E.screencols = constrain(term_cols, 40, 200);
+        E.screen_dirty = true;
+        ekilo_set_status_message("Resized to %dx%d", E.screencols, E.screenrows);
+    } else {
+        ekilo_set_status_message("Terminal size detection failed");
     }
-    free(inline_editor.row);
+}
+
+// ============================================================================
+// Chunked File Loading for Large Files
+// ============================================================================
+
+// Open a large file using chunked loading
+bool ekilo_open_chunked(const char* filename) {
+    if (!filename) return false;
     
-    return "";
+    // First pass: count total lines in file using safe file functions
+    File file = safeFileOpen(filename, "r", 2000);
+    if (!file) {
+        ekilo_set_status_message("ERROR: Cannot open file '%s'", filename);
+        return false;
+    }
+    
+    // Count lines WITHOUT allocating String objects - just count newlines
+    // This avoids heap fragmentation from repeated String allocations
+    size_t total_lines = 0;
+    while (file.available()) {
+        char c = file.read();
+        if (c == '\n') {
+            total_lines++;
+        }
+        // Safety limit
+        if (total_lines > 50000) {
+            safeFileClose(file, false);  // Read-only, no flush
+            ekilo_set_status_message("ERROR: File too large (>50000 lines)");
+            return false;
+        }
+        // Yield every 1000 chars to prevent watchdog timeout
+        if ((total_lines & 0x3FF) == 0) {
+            yield();
+        }
+    }
+    // Account for last line if file doesn't end with newline
+    if (file.position() > 0) {
+        total_lines++;  // Count the line we're on even without trailing newline
+    }
+    safeFileClose(file, false);  // Read-only, no flush
+    
+    // Setup chunked state
+    E.is_chunked = true;
+    E.total_file_lines = total_lines;
+    E.chunk_start = 0;
+    E.chunk_loaded_lines = 0;
+    E.chunked_filename = String(filename);
+    E.chunk_dirty = false;
+    E.low_memory_mode = true;  // Chunked files always use low memory mode
+    
+    // Check if this file should be read-only
+    String fname = String(filename);
+    E.read_only = fname.endsWith("history.txt") || 
+                  fname.endsWith(".log") ||
+                  fname.startsWith("/python_scripts/history");
+    
+    // Free existing filename and allocate new one
+    free(E.filename);
+    E.filename = strdup(filename);
+    
+    // Update global tracking
+    free(g_currently_editing_file);
+    g_currently_editing_file = strdup(filename);
+    
+    // Skip syntax highlighting in chunked mode to save memory
+    E.syntax = nullptr;
+    
+    // Load initial chunk around line 0
+    if (!ekilo_load_chunk(0)) {
+        E.is_chunked = false;
+        return false;
+    }
+    
+    E.dirty = 0;
+    E.screen_dirty = true;
+    
+    ekilo_set_status_message("Chunked load: %d lines total, showing %d-%d", 
+                            total_lines, E.chunk_start, E.chunk_start + E.chunk_loaded_lines);
+    return true;
+}
+
+// Load a chunk of lines centered around center_line
+bool ekilo_load_chunk(size_t center_line) {
+    if (!E.is_chunked) return true;  // Not chunked, nothing to do
+    
+    // Calculate chunk bounds FIRST (before any allocations)
+    size_t half_chunk = EditorConfig::CHUNK_SIZE / 2;
+    size_t start = (center_line > half_chunk) ? center_line - half_chunk : 0;
+    size_t end = start + EditorConfig::CHUNK_SIZE;
+    if (end > E.total_file_lines) {
+        end = E.total_file_lines;
+        if (end > EditorConfig::CHUNK_SIZE) {
+            start = end - EditorConfig::CHUNK_SIZE;
+        } else {
+            start = 0;
+        }
+    }
+    
+    // If chunk hasn't moved much, don't reload
+    if (E.chunk_loaded_lines > 0 && 
+        start >= E.chunk_start && 
+        end <= E.chunk_start + E.chunk_loaded_lines) {
+        return true;  // Already have this chunk loaded
+    }
+    
+    // Pre-allocate new row array BEFORE freeing old one to check memory
+    size_t needed_rows = end - start;
+    EditorRow* new_rows = (EditorRow*)malloc(sizeof(EditorRow) * needed_rows);
+    if (!new_rows) {
+        ekilo_set_status_message("ERROR: Cannot allocate chunk (%d rows)", needed_rows);
+        return false;
+    }
+    memset(new_rows, 0, sizeof(EditorRow) * needed_rows);
+    
+    // Save dirty chunk if needed (before any file operations)
+    if (E.chunk_dirty) {
+        ekilo_save_chunk_to_temp();
+    }
+    
+    // NOW free existing rows (after we know we have memory for new ones)
+    for (int i = 0; i < E.numrows; i++) {
+        ekilo_free_row(&E.row[i]);
+    }
+    free(E.row);
+    E.row = new_rows;
+    E.numrows = 0;
+    E.row_capacity = needed_rows;  // Pre-allocated for chunk size
+    
+    // Open file and seek to start line using safe file function
+    File file = safeFileOpen(E.chunked_filename.c_str(), "r", 2000);
+    if (!file) {
+        ekilo_set_status_message("ERROR: Cannot reopen chunked file");
+        return false;
+    }
+    
+    // Skip to start line - use a char buffer instead of String to save memory
+    size_t current_line = 0;
+    while (current_line < start && file.available()) {
+        while (file.available()) {
+            char c = file.read();
+            if (c == '\n') break;
+        }
+        current_line++;
+    }
+    
+    // Load chunk - read directly into pre-allocated rows
+    E.chunk_start = start;
+    char line_buf[256];  // Stack buffer for reading lines
+    
+    while (current_line < end && file.available() && E.numrows < (int)needed_rows) {
+        // Read line into stack buffer
+        int len = 0;
+        while (file.available() && len < 255) {
+            char c = file.read();
+            if (c == '\n') break;
+            if (c != '\r') {
+                line_buf[len++] = c;
+            }
+        }
+        line_buf[len] = '\0';
+        
+        // Allocate and copy into row
+        int row_idx = E.numrows;
+        E.row[row_idx].idx = row_idx;
+        E.row[row_idx].size = len;
+        E.row[row_idx].chars = (char*)malloc(len + 1);
+        if (E.row[row_idx].chars) {
+            memcpy(E.row[row_idx].chars, line_buf, len + 1);
+        } else {
+            E.row[row_idx].size = 0;
+        }
+        
+        // In low memory/chunked mode, skip render and highlight buffers
+        E.row[row_idx].render = nullptr;
+        E.row[row_idx].rsize = len;
+        E.row[row_idx].hl = nullptr;
+        E.row[row_idx].hl_oc = 0;
+        
+        E.numrows++;
+        current_line++;
+    }
+    E.chunk_loaded_lines = E.numrows;
+    
+    safeFileClose(file, false);  // Read-only, no flush needed
+    
+    E.chunk_dirty = false;
+    E.screen_dirty = true;
+    E.low_memory_mode = true;  // Chunked files always use low memory mode
+    
+    return true;
+}
+
+// Check if scroll position requires loading a new chunk
+bool ekilo_needs_chunk_reload() {
+    if (!E.is_chunked) return false;
+    
+    // Current cursor position in file coordinates
+    size_t file_row = E.chunk_start + E.cy;
+    
+    // Check if we're getting close to chunk boundaries
+    size_t buffer = EditorConfig::CHUNK_BUFFER;
+    
+    // Need reload if cursor is within buffer of chunk edges
+    if (E.cy < (int)buffer && E.chunk_start > 0) {
+        return true;  // Near top of chunk, need to load earlier lines
+    }
+    if (E.cy >= (int)(E.chunk_loaded_lines - buffer) && 
+        E.chunk_start + E.chunk_loaded_lines < E.total_file_lines) {
+        return true;  // Near bottom of chunk, need to load later lines
+    }
+    
+    return false;
+}
+
+// Save current chunk edits back to the original file
+// Uses atomic write pattern: write to temp, then rename
+void ekilo_save_chunk_to_temp() {
+    if (!E.is_chunked || !E.chunk_dirty) return;
+    if (E.chunked_filename.length() == 0) return;
+    
+    // Mark as dirty in case we fail
+    E.dirty = 1;
+    
+    // Create temp file path
+    String tempPath = E.chunked_filename + ".tmp";
+    
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Open original file for reading
+    File origFile = safeFileOpen(E.chunked_filename.c_str(), "r", 2000);
+    if (!origFile) {
+        unpauseCore2ForFlash(was_paused);
+        ekilo_set_status_message("ERROR: Cannot open original file");
+        return;
+    }
+    
+    // Open temp file for writing
+    File tempFile = safeFileOpen(tempPath.c_str(), "w", 2000);
+    if (!tempFile) {
+        safeFileClose(origFile, false);
+        unpauseCore2ForFlash(was_paused);
+        ekilo_set_status_message("ERROR: Cannot create temp file");
+        return;
+    }
+    
+    // Phase 1: Copy lines BEFORE the chunk from original file
+    size_t line_num = 0;
+    char line_buf[512];
+    while (line_num < E.chunk_start && origFile.available()) {
+        // Read line from original
+        int len = 0;
+        while (origFile.available() && len < 510) {
+            char c = origFile.read();
+            if (c == '\n') {
+                line_buf[len++] = '\n';
+                break;
+            }
+            if (c != '\r') {
+                line_buf[len++] = c;
+            }
+        }
+        // Write to temp file
+        if (len > 0) {
+            tempFile.write((uint8_t*)line_buf, len);
+        }
+        line_num++;
+    }
+    
+    // Phase 2: Write edited chunk from memory
+    for (int i = 0; i < E.numrows; i++) {
+        if (E.row[i].chars && E.row[i].size > 0) {
+            tempFile.write((uint8_t*)E.row[i].chars, E.row[i].size);
+        }
+        tempFile.write('\n');
+    }
+    
+    // Phase 3: Skip original chunk lines, then copy rest
+    // Skip the lines that were in the chunk
+    size_t chunk_end = E.chunk_start + E.chunk_loaded_lines;
+    while (line_num < chunk_end && origFile.available()) {
+        // Just skip these lines
+        while (origFile.available()) {
+            char c = origFile.read();
+            if (c == '\n') break;
+        }
+        line_num++;
+    }
+    
+    // Copy remaining lines from original
+    while (origFile.available()) {
+        int len = 0;
+        while (origFile.available() && len < 510) {
+            char c = origFile.read();
+            if (c == '\n') {
+                line_buf[len++] = '\n';
+                break;
+            }
+            if (c != '\r') {
+                line_buf[len++] = c;
+            }
+        }
+        if (len > 0) {
+            tempFile.write((uint8_t*)line_buf, len);
+        }
+    }
+    
+    // Flush and close files
+    tempFile.flush();
+    safeFileClose(tempFile, true);
+    safeFileClose(origFile, false);
+    
+    // Atomic rename: remove original, rename temp to original
+    fs_mutex_acquire();
+    if (FatFS.exists(E.chunked_filename.c_str())) {
+        FatFS.remove(E.chunked_filename.c_str());
+    }
+    bool renamed = FatFS.rename(tempPath.c_str(), E.chunked_filename.c_str());
+    fs_mutex_release();
+    
+    unpauseCore2ForFlash(was_paused);
+    
+    if (renamed) {
+        E.chunk_dirty = false;
+        E.dirty = 0;
+        
+        // Recalculate total lines (chunk size may have changed)
+        // We need to count lines in the new file
+        size_t new_total = 0;
+        File countFile = safeFileOpen(E.chunked_filename.c_str(), "r", 1000);
+        if (countFile) {
+            while (countFile.available()) {
+                char c = countFile.read();
+                if (c == '\n') new_total++;
+            }
+            safeFileClose(countFile, false);
+            E.total_file_lines = new_total > 0 ? new_total : 1;
+        }
+        
+        ekilo_set_status_message("Chunk saved: %d lines merged", E.numrows);
+    } else {
+        ekilo_set_status_message("ERROR: Failed to save chunk");
+    }
 } 

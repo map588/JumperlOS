@@ -23,6 +23,8 @@
 #include "LogicAnalyzer.h"
 #include "WaveGen.h"
 #include "States.h"
+#include "externVars.h"  // For fs_mutex filesystem synchronization
+#include "FilesystemStuff.h"  // For safe file operations
 
 extern LogicAnalyzer logicAnalyzer; // defined in main.cpp
 extern WaveGen wavegen; // defined in main.cpp
@@ -45,6 +47,21 @@ extern SafeString nodeFileString;
 
 // Forward declarations
 int justReadProbe(bool allowDuplicates);
+
+// Include JumperlOS for service management
+#include "JumperlOS.h"
+
+/**
+ * @brief Run essential services during MicroPython execution
+ * 
+ * This is called from mp_hal_delay_ms() to keep the system responsive
+ * while Python scripts are running. It runs:
+ * - Peripherals service (current sense measurements for marching ants)
+ * - TinyUSB task (keep USB alive)
+ */
+extern "C" void jl_service_python(void) {
+    jOS.serviceAll();
+}
 
 // Python connection context - controls whether Python changes persist or are isolated
 #define PYTHON_SLOT_NUMBER 99  // Special slot for Python isolated context
@@ -250,40 +267,72 @@ float jl_adc_get(int channel) {
 }
 
 // INA Functions
+// NOTE: INA219 uses I2C which may conflict with Core 2 operations (OLED, etc.)
+// We temporarily pause Core 2 during I2C operations to prevent bus conflicts
+// and potential crashes from concurrent I2C access.
+
 float jl_ina_get_current(int sensor) {
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;  // Prevent Core 2 I2C conflicts
+    delayMicroseconds(50);  // Allow Core 2 to finish any in-progress I2C
+    
+    float result = 0.0f;
     if (sensor == 0) {
-        return INA0.getCurrent();
+        result = INA0.getCurrent();
     } else if (sensor == 1) {
-        return INA1.getCurrent();
+        result = INA1.getCurrent();
     }
-    return 0.0f;
+    
+    pauseCore2 = was_paused;
+    return result;
 }
 
 float jl_ina_get_voltage(int sensor) {
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);
+    
+    float result = 0.0f;
     if (sensor == 0) {
-        return INA0.getBusVoltage();
+        result = INA0.getBusVoltage();
     } else if (sensor == 1) {
-        return INA1.getBusVoltage();
+        result = INA1.getBusVoltage();
     }
-    return 0.0f;
+    
+    pauseCore2 = was_paused;
+    return result;
 }
 
 float jl_ina_get_bus_voltage(int sensor) {
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);
+    
+    float result = 0.0f;
     if (sensor == 0) {
-        return INA0.getBusVoltage();
+        result = INA0.getBusVoltage();
     } else if (sensor == 1) {
-        return INA1.getBusVoltage();
+        result = INA1.getBusVoltage();
     }
-    return 0.0f;
+    
+    pauseCore2 = was_paused;
+    return result;
 }
 
 float jl_ina_get_power(int sensor) {
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);
+    
+    float result = 0.0f;
     if (sensor == 0) {
-        return INA0.getPower();
+        result = INA0.getPower();
     } else if (sensor == 1) {
-        return INA1.getPower();
+        result = INA1.getPower();
     }
-    return 0.0f;
+    
+    pauseCore2 = was_paused;
+    return result;
 }
 
 // GPIO Functions
@@ -423,68 +472,46 @@ void jl_gpio_set_pull(int pin, int pull) {
 
 // Node Functions
 int jl_nodes_connect(int node1, int node2, int save) {
-    // CRITICAL: Service USB before potentially long operation
-    #ifdef USE_TINYUSB
-    extern void tud_task(void);
-    tud_task();
-    #endif
     
     // Add to RAM state
-    addBridgeToState(node1, node2);
+    addBridgeToState(node1, node2, -1, true);
     
-    if (save) {
-        // Immediately save to YAML
-        //saveStateToSlot();
-        refreshLocalConnections();
-    } else {
-        // Just refresh locally (save happens later)
-        refreshLocalConnections();
-    }
-    
-    // CRITICAL: Service USB after operation
-    #ifdef USE_TINYUSB
-    tud_task();
-    #endif
+    // Update shown readings to detect current sense connections
+    // This enables the marching ants animation when ISENSE_PLUS/MINUS are connected
+    chooseShownReadings();
+
     return 1;
 }
 
 int jl_nodes_disconnect(int node1, int node2) {
-    // CRITICAL: Service USB before potentially long operation
-    #ifdef USE_TINYUSB
-    extern void tud_task(void);
-    tud_task();
-    #endif
-    
-    unsigned long t0 = millis();
     // Remove from RAM state
-    removeBridgeFromState(node1, node2);
-    unsigned long t1 = millis();
-    // Save immediately
-   // saveStateToSlot();
-    unsigned long t2 = millis();
-    refreshLocalConnections(-1);
-    unsigned long t3 = millis();
+    removeBridgeFromState(node1, node2, true);
     
-    // Debug: Show where time is spent
-    if ((t3 - t0) > 100) {
-        Serial.printf("⏱️ disconnect breakdown: removeBridge=%lums, saveState=%lums, refresh=%lums, TOTAL=%lums\n",
-                     t1-t0, t2-t1, t3-t2, t3-t0);
-    }
-    
-    // CRITICAL: Service USB after operation
-    #ifdef USE_TINYUSB
-    tud_task();
-    #endif
+    // Update shown readings to detect current sense disconnections
+    chooseShownReadings();
+
     return 1;
 }
 
 int jl_nodes_clear(void) {
-    // Clear the entire state
+    // Pause Core 2 BEFORE modifying state to prevent race conditions
+    // Core 2 handles LEDs and may be reading state while we modify it
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);  // Allow Core 2 to finish any in-progress operations
+    
+    // Clear the entire state (safe now that Core 2 is paused)
     globalState.clearAllConnections();
     // Save the cleared state
-    saveStateToSlot();
+    //saveStateToSlot();
+    
+    // Unpause Core 2 BEFORE refreshConnections since it internally calls waitCore2
+    // and needs Core 2 to be running to process sendAllPathsCore2/showLEDsCore2
+    pauseCore2 = was_paused;
+    
     refreshConnections(-1, 1, 1);
-    waitCore2();
+    // waitCore2 is called internally by refreshConnections
+    
     return 1;
 }
 
@@ -497,8 +524,16 @@ int jl_nodes_is_connected(int node1, int node2) {
 int jl_nodes_save(int slot) {
     int target_slot = (slot == -1) ? netSlot : slot;  // Use current slot if -1
     
+    // Pause Core 2 while saving to prevent race conditions
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);
+    
     // Save globalState to YAML
     saveStateToSlot(target_slot);
+    
+    // Unpause Core 2 BEFORE refreshConnections since it internally calls waitCore2
+    pauseCore2 = was_paused;
     
     // Refresh connections to make sure everything is in sync
     refreshConnections();
@@ -540,6 +575,11 @@ void jl_init_micropython_local_copy(void) {
 }
 
 void jl_exit_micropython_restore_entry_state(void) {
+    // Pause Core 2 during state modifications to prevent race conditions
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);
+    
     if (connectionContext == PYTHON_CONTEXT_ISOLATED) {
         // ISOLATED MODE: Save Python slot and restore entry state
         SlotManager& mgr = SlotManager::getInstance();
@@ -560,6 +600,9 @@ void jl_exit_micropython_restore_entry_state(void) {
         // GLOBAL MODE: Changes persist, just clear the backup
         clearStateBackup();
     }
+    
+    // Unpause Core 2 BEFORE refreshConnections since it internally calls waitCore2
+    pauseCore2 = was_paused;
     
     // Refresh connections to match the current state
     refreshConnections(-1, 1, 1);
@@ -653,10 +696,17 @@ int jl_switch_slot(int slot) {
     
     // Save current slot if different
     if (netSlot != slot) {
+        // Pause Core 2 briefly while changing slot number
+        bool was_paused = pauseCore2;
+        pauseCore2 = true;
+        delayMicroseconds(50);
+        
         int old_slot = netSlot;
         netSlot = slot;
-        
 
+        // Unpause Core 2 BEFORE refreshConnections since it internally calls waitCore2
+        pauseCore2 = was_paused;
+        
         // Refresh connections for the new slot
         refreshConnections(-1);
         
@@ -764,7 +814,7 @@ bool jl_la_get_control_digital(int channel) {
 int jl_oled_print(const char* text, int size) {
    // mp_hal_check_interrupt();
     if (oled.isConnected()) {
-        oled.clearPrintShow(text, size, true, true, true, -1, -1, 1500);
+        oled.clearPrintShow(text, 2, true, true, true);
         return 1;
     } else {
         return 0;
@@ -903,14 +953,21 @@ extern "C" int jl_pwm_stop(int gpio_pin) {
     return stopPWM(gpio_pin);
 }
 
-// Filesystem Functions
+// Filesystem Functions - all require mutex for thread safety
 int jl_fs_exists(const char* path) {
     if (!path) return 0;
-    return FatFS.exists(path) ? 1 : 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    int result = FatFS.exists(path) ? 1 : 0;
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    
+    return result;
 }
 
 char* jl_fs_listdir(const char* path) {
     if (!path) return nullptr;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
     
     // Use static buffer to avoid memory management issues
     static char listBuffer[2048];
@@ -936,38 +993,28 @@ char* jl_fs_listdir(const char* path) {
         }
     }
     
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
     return listBuffer;
 }
 
 char* jl_fs_read_file(const char* path) {
     if (!path) return nullptr;
     
-    File file = FatFS.open(path, "r");
-    if (!file) {
+    // Use static buffer for file contents
+    static char fileBuffer[4096];
+    size_t bytesRead = 0;
+    
+    if (!safeFileReadAll(path, fileBuffer, sizeof(fileBuffer), &bytesRead, 2000)) {
         return nullptr;
     }
     
-    // Use static buffer for file contents
-    static char fileBuffer[4096];
-    size_t bytesRead = file.readBytes(fileBuffer, sizeof(fileBuffer) - 1);
-    fileBuffer[bytesRead] = '\0';
-    
-    file.close();
     return fileBuffer;
 }
 
 int jl_fs_write_file(const char* path, const char* content) {
     if (!path || !content) return 0;
     
-    File file = FatFS.open(path, "w");
-    if (!file) {
-        return 0;
-    }
-    
-    size_t written = file.write((const uint8_t*)content, strlen(content));
-    file.close();
-    
-    return (written == strlen(content)) ? 1 : 0;
+    return safeFileWriteAll(path, content, 0, 2000) ? 1 : 0;
 }
 
 char* jl_fs_get_current_dir(void) {
@@ -975,110 +1022,444 @@ char* jl_fs_get_current_dir(void) {
     return currentDir;
 }
 
+// ============================================================
+// JFS File Handle Tracking
+// Keeps track of all open JFS file handles so they can be 
+// closed when exiting MicroPython (prevents file conflicts)
+// ============================================================
+#define MAX_JFS_OPEN_FILES 4
+static void* jfs_open_files[MAX_JFS_OPEN_FILES] = {nullptr};
+int debug_fs = 0;
+
+static void jfs_track_file(void* handle) {
+    for (int i = 0; i < MAX_JFS_OPEN_FILES; i++) {
+        if (jfs_open_files[i] == nullptr) {
+            jfs_open_files[i] = handle;
+            if (debug_fs) {
+                Serial.println("DEBUG: jfs_track_file: File is tracked");
+                Serial.flush();
+            }
+            return;
+        }
+    }
+    // No space - file won't be tracked (will still work but won't auto-close)
+    if (debug_fs) {
+        Serial.println("DEBUG: jfs_track_file: No space - file won't be tracked (will still work but won't auto-close)");
+        Serial.flush();
+    }
+}
+
+static void jfs_untrack_file(void* handle) {
+    for (int i = 0; i < MAX_JFS_OPEN_FILES; i++) {
+        if (jfs_open_files[i] == handle) {
+            jfs_open_files[i] = nullptr;
+            if (debug_fs) {
+                Serial.println("DEBUG: jfs_untrack_file: File is untracked");
+                Serial.flush();
+            }
+            return;
+        }
+    }
+    if (debug_fs) {
+        Serial.println("DEBUG: jfs_untrack_file: File is not found in tracked files");
+        Serial.flush();
+    }
+}
+
+// Check if a file handle is still tracked (i.e., not already closed by jl_close_all_jfs_files)
+// This is used to detect use-after-free scenarios where a Python file object
+// holds a stale pointer to an already-deleted File* object
+static bool jfs_is_tracked(void* handle) {
+    if (!handle) return false;
+    for (int i = 0; i < MAX_JFS_OPEN_FILES; i++) {
+        if (jfs_open_files[i] == handle) {
+            if (debug_fs) {
+                Serial.println("DEBUG: jfs_is_tracked: File is tracked");
+                Serial.flush();
+            }
+            return true;
+        }
+    }
+    if (debug_fs) {
+        Serial.println("DEBUG: jfs_is_tracked: File is not tracked");
+        Serial.flush();
+    }
+    return false;
+}
+
+// Close all open JFS files - called when exiting MicroPython
+// CRITICAL: Must flush before close to ensure all buffered data is written to disk
+// This prevents data loss and potential filesystem corruption on script exit
+// THREAD SAFETY: Acquires fs_mutex to prevent concurrent filesystem access
+void jl_close_all_jfs_files(void) {
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_close_all_jfs_files: Closing all open JFS files");
+        Serial.flush();
+    }
+    // CRITICAL: Pause Core2 during flash operations (flush writes to flash)
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
+    for (int i = 0; i < MAX_JFS_OPEN_FILES; i++) {
+        if (jfs_open_files[i] != nullptr) {
+            File* file = (File*)jfs_open_files[i];
+            if (*file) {
+                // CRITICAL: Flush before close to ensure buffered writes are committed
+                // Without this, data written but not flushed could be lost on close
+                file->flush();
+                file->close();
+            }
+            delete file;
+            jfs_open_files[i] = nullptr;
+        }
+    }
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash(was_paused);
+    
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_close_all_jfs_files: All open JFS files closed");
+        Serial.flush();
+    }
+}
+
 // File operations
+// THREAD SAFETY: All file operations acquire fs_mutex to prevent concurrent access
 void* jl_fs_open_file(const char* path, const char* mode) {
     if (!path || !mode) return nullptr;
+    if (debug_fs) {
+        Serial.print("DEBUG: jl_fs_open_file: Opening ");
+        Serial.print(path);
+        Serial.println("...");
+        Serial.flush();
+    }
+    
+    // NOTE: File open is primarily flash READS (directory lookup, FAT scan)
+    // Flash reads don't disable XIP, so Core2 pause may not be needed here.
+    // Only flash WRITES disable XIP and require Core2 synchronization.
+    // Testing: removed Core2 pause from open - only keep mutex for thread safety
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
     
     File* file = new File(FatFS.open(path, mode));
+    if (debug_fs) {
+        Serial.print("DEBUG: jl_fs_open_file: File opened: ");
+        Serial.print(path);
+        Serial.print(" in mode: ");
+        Serial.println(mode);
+        Serial.print("DEBUG: jl_fs_open_file: File handle: ");
+        Serial.println((String)file->name());
+        Serial.flush();
+    }
     if (!*file) {
+        if (debug_fs) {
+            Serial.println("DEBUG: jl_fs_open_file: File not open");
+            Serial.flush();
+        }
         delete file;
+        fs_mutex_release();  // THREAD SAFETY: Unlock before returning
         return nullptr;
+    }
+    
+    // Track the file handle for cleanup on exit
+    jfs_track_file(file);
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_fs_open_file: File opened");
+        Serial.flush();
     }
     return file;
 }
 
 void jl_fs_close_file(void* file_handle) {
     if (file_handle) {
+        // CRITICAL FIX: Use non-blocking mutex acquire to prevent GC finaliser deadlock
+        // 
+        // Problem: Pico SDK mutexes are NOT recursive. If this function is called from
+        // a GC finaliser while another JFS operation (like jl_fs_write_bytes) holds the
+        // mutex, we would deadlock trying to acquire it again on the same core.
+        //
+        // Solution: Try non-blocking acquire. If we can't get the mutex, we're likely
+        // in a GC finaliser during another JFS operation. In that case, just return
+        // without closing - the file handle stays tracked and will be properly cleaned
+        // up by jl_close_all_jfs_files() when exiting Python.
+        if (!fs_mutex_try_acquire()) {
+            // Can't get mutex - likely called from GC finaliser during JFS operation
+            // Leave file tracked - jl_close_all_jfs_files() will clean it up on exit
+            if (debug_fs) {
+                Serial.println("DEBUG: jl_fs_close_file: Can't get mutex - likely called from GC finaliser during JFS operation");
+                Serial.flush();
+            }
+            Serial.flush();
+            return;
+        }
+        
+        // CRITICAL: Check if file is still tracked before closing
+        // This prevents use-after-free crashes when:
+        // 1. jl_close_all_jfs_files() already closed and deleted the File*
+        // 2. A GC finalizer later tries to close the same (now invalid) handle
+        // If not tracked, the file was already closed - skip to avoid crash
+        if (!jfs_is_tracked(file_handle)) {
+            if (debug_fs) {
+                Serial.println("DEBUG: jl_fs_close_file: File not tracked - already closed by jl_close_all_jfs_files()");
+                Serial.flush();
+            }
+            Serial.flush();
+            fs_mutex_release();
+            return;  // Already closed by jl_close_all_jfs_files()
+        }
+        
+        // Untrack the file handle
+        jfs_untrack_file(file_handle);
+        
         File* file = (File*)file_handle;
-        file->close();
+        // Only close if the file is actually open (prevents double-close crashes)
+        if (*file) {
+            // CRITICAL: Pause Core2 during flash operations (flush writes to flash)
+            bool was_paused = pauseCore2ForFlash(100);
+            
+            // CRITICAL: Flush before close to ensure all buffered data is written
+            // This is essential for GC finalizers where files may have pending writes
+            // Without flush, close might lose unflushed buffer data
+            file->flush();
+            file->close();
+            
+            unpauseCore2ForFlash(was_paused);
+        }
         delete file;
+        
+        fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
     }
 }
 
 int jl_fs_read_bytes(void* file_handle, char* buffer, int size) {
-    if (!file_handle || !buffer) return -1;
+    if (!file_handle || !buffer || size <= 0) return -1;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
-    return file->readBytes(buffer, size);
+    if (!*file) {
+        fs_mutex_release();
+        return -1;  // File not open
+    }
+    int result = file->readBytes(buffer, size);
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_fs_read_bytes: Read bytes");
+        Serial.flush();
+    }
+    return result;
 }
 
 int jl_fs_write_bytes(void* file_handle, const char* data, int size) {
-    if (!file_handle || !data) return -1;
+    if (!file_handle || !data || size <= 0) return -1;
+    
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
-    return file->write((const uint8_t*)data, size);
+    if (!*file) {
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
+        return -1;  // File not open
+    }
+    int result = file->write((const uint8_t*)data, size);
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash(was_paused);
+    
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_fs_write_bytes: Written bytes");
+        Serial.flush();
+    }
+    
+    return result;
 }
 
 int jl_fs_seek(void* file_handle, int position, int mode) {
     if (!file_handle) return 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
+    if (!*file) {
+        fs_mutex_release();
+        return 0;  // File not open
+    }
     SeekMode seekMode = SeekSet;
     if (mode == 1) seekMode = SeekCur;
     else if (mode == 2) seekMode = SeekEnd;
-    return file->seek(position, seekMode) ? 1 : 0;
+    int result = file->seek(position, seekMode) ? 1 : 0;
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_fs_seek: Sought to position");
+        Serial.flush();
+    }
+    return result;
 }
 
 int jl_fs_position(void* file_handle) {
     if (!file_handle) return -1;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
-    return file->position();
+    if (!*file) {
+        fs_mutex_release();
+        return -1;  // File not open
+    }
+    int result = file->position();
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    if (debug_fs) {
+        Serial.println("DEBUG: jl_fs_position: Position");
+        Serial.flush();
+    }
+    return result;
 }
 
 int jl_fs_size(void* file_handle) {
     if (!file_handle) return -1;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
-    return file->size();
+    if (!*file) {
+        fs_mutex_release();
+        return -1;  // File not open
+    }
+    int result = file->size();
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    return result;
 }
 
 int jl_fs_available(void* file_handle) {
     if (!file_handle) return 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
-    return file->available();
+    if (!*file) {
+        fs_mutex_release();
+        return 0;  // File not open
+    }
+    int result = file->available();
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    return result;
+}
+
+// Flush file buffer to disk - CRITICAL for read-after-write operations
+// THREAD SAFETY: Acquires fs_mutex to prevent concurrent filesystem access
+void jl_fs_flush(void* file_handle) {
+    if (file_handle) {
+        // CRITICAL: Pause Core2 during flash write operations
+        bool was_paused = pauseCore2ForFlash(100);
+        
+        fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+        
+        File* file = (File*)file_handle;
+        if (*file) {  // Only flush if file is actually open
+            file->flush();
+        }
+
+        if (debug_fs) {
+            Serial.println("DEBUG: jl_fs_flush: Flushed file");
+            Serial.flush();
+        }
+        fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+        unpauseCore2ForFlash(was_paused);
+    }
 }
 
 char* jl_fs_name(void* file_handle) {
     if (!file_handle) return nullptr;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     File* file = (File*)file_handle;
     static char nameBuffer[256];
     strncpy(nameBuffer, file->name(), sizeof(nameBuffer) - 1);
     nameBuffer[sizeof(nameBuffer) - 1] = '\0';
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
     return nameBuffer;
 }
 
-// Directory operations
+// Directory operations - all require mutex for thread safety
 int jl_fs_mkdir(const char* path) {
     if (!path) return 0;
-    return FatFS.mkdir(path) ? 1 : 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    int result = FatFS.mkdir(path) ? 1 : 0;
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    
+    return result;
 }
 
 int jl_fs_rmdir(const char* path) {
     if (!path) return 0;
-    return FatFS.rmdir(path) ? 1 : 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    int result = FatFS.rmdir(path) ? 1 : 0;
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    
+    return result;
 }
 
 int jl_fs_remove(const char* path) {
     if (!path) return 0;
-    return FatFS.remove(path) ? 1 : 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    int result = FatFS.remove(path) ? 1 : 0;
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    
+    return result;
 }
 
 int jl_fs_rename(const char* pathFrom, const char* pathTo) {
     if (!pathFrom || !pathTo) return 0;
-    return FatFS.rename(pathFrom, pathTo) ? 1 : 0;
+    
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    int result = FatFS.rename(pathFrom, pathTo) ? 1 : 0;
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    
+    return result;
 }
 
-// Get filesystem info
+// Get filesystem info - requires mutex for consistent reads
 int jl_fs_total_bytes(void) {
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     FSInfo info;
+    int result = -1;
     if (FatFS.info(info)) {
-        return (int)(info.totalBytes & 0xFFFFFFFF); // Return lower 32 bits
+        result = (int)(info.totalBytes & 0xFFFFFFFF); // Return lower 32 bits
     }
-    return -1;
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    return result;
 }
 
 int jl_fs_used_bytes(void) {
+    fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+    
     FSInfo info;
+    int result = -1;
     if (FatFS.info(info)) {
-        return (int)(info.usedBytes & 0xFFFFFFFF); // Return lower 32 bits  
+        result = (int)(info.usedBytes & 0xFFFFFFFF); // Return lower 32 bits  
     }
-    return -1;
+    
+    fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
+    return result;
 }
 
 } // extern "C" 

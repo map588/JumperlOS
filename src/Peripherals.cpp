@@ -108,7 +108,14 @@ static bool pollCurrentSenseMeasurement() {
         return false;
     }
 
+    // Pause Core 2 during I2C operations to prevent bus conflicts
+    extern volatile bool pauseCore2;
+    bool was_paused = pauseCore2;
+    pauseCore2 = true;
+    delayMicroseconds(50);  // Allow Core 2 to finish any in-progress I2C
+    
     if ( !INA0.getConversionFlag() ) {
+        pauseCore2 = was_paused;
         return false;
     }
 
@@ -141,6 +148,9 @@ static bool pollCurrentSenseMeasurement() {
     currentSenseState.active = true;
     currentSenseState.lastUpdatedMs = now;
 
+    // Restore Core 2 state after I2C operations
+    pauseCore2 = was_paused;
+    
     return true;
 }
 

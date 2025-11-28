@@ -46,6 +46,9 @@ int parseFont(const char* str);                // Now reads from fontList in ole
 const char* getFontString(int fontFamily);     // Get font name from FontFamily enum
 int parseSerialPort(const char* str);
 int parseDumpFormat(const char* str);
+int parseConnectionType(const char* str);
+const char* getConnectionTypeString(int connectionType);
+void updateOledPinsForConnectionType(int connectionType);
 
 // External variables from main.cpp
 extern const char firmwareVersion[];
@@ -110,6 +113,16 @@ const StringIntEntry uartFunctionTable[] = {
     {"leds_oled", 6},
 };
 const int uartFunctionTableSize = sizeof(uartFunctionTable) / sizeof(uartFunctionTable[0]);
+
+const StringIntEntry connectionTypeTable[] = {
+    {"gpio_7_8", 0},
+    {"rp6_rp7", 1},
+    {"internal_i2c0", 2},
+    {"7_8", 0},
+    {"6_7", 1},
+    {"i2c0", 2},
+};
+const int connectionTypeTableSize = sizeof(connectionTypeTable) / sizeof(connectionTypeTable[0]);
 
 
 const StringIntEntry serialPortTable[] = {

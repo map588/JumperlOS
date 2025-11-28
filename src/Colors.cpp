@@ -671,22 +671,17 @@ void changeTerminalColor(int termColor, bool flush, Stream *stream) {
         return;
     }
     
+    // Output the color escape sequence - only flush ONCE at the end if requested
+    // Previously this was flushing before AND after, causing double-flush overhead
     if (termColor != -1) {
-        if (flush) {
-            stream->flush();
-        }
         stream->printf("\033[38;5;%dm", termColor);
-        if (flush) {
-            stream->flush();
-        }
     } else {
-        if (flush) {
-            stream->flush();
-        }
         stream->print("\033[0m"); // Reset all colors and formatting
-        if (flush) {
-            stream->flush();
-        }
+    }
+    
+    // Single flush at the end if requested
+    if (flush) {
+        stream->flush();
     }
 }
 

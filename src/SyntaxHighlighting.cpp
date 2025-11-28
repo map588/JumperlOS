@@ -620,11 +620,14 @@ String SyntaxHighlighting::highlightConnectionsPreserveSpaces(const String& inpu
 }
 
 // Helper function for Python syntax highlighting (used elsewhere)
-// Now uses the centralized SyntaxHighlighting class
+// Now uses the centralized SyntaxHighlighting class with a static instance
+// to avoid object creation overhead on every call
 void displayStringWithSyntaxHighlighting(const String& text, Stream* stream) {
   if (text.length() == 0 || !stream) return;
   
-  // Create a temporary highlighter and use it
-  SyntaxHighlighting highlighter(stream);
+  // Use a static highlighter instance to avoid repeated construction/destruction
+  // The stream is set each time in case it changes between calls
+  static SyntaxHighlighting highlighter(nullptr);
+  highlighter.setStream(stream);
   highlighter.displayPythonWithHighlighting(text, stream);
 }

@@ -26,12 +26,23 @@ typedef uint32_t mp_hal_pin_obj_t;
 #endif
 #define MICROPY_ALLOC_PATH_MAX      (256)
 #define MICROPY_ENABLE_GC           (1)
+
+// GC register scanning configuration for ARM Cortex-M33 (RP2350)
+// Use setjmp-based fallback for safer, more portable GC register scanning.
+// This captures all callee-saved registers reliably via setjmp() instead of
+// relying on architecture-specific inline assembly which can be fragile.
+#define MICROPY_GCREGS_SETJMP       (1)
+
 #define MICROPY_HELPER_REPL         (1)
 #define MICROPY_HELPER_LEXER_UNIX   (0)  // Disable to save memory
 #define MICROPY_MEM_STATS           (1)  // Disable to save memory
 #define MICROPY_KBD_EXCEPTION      (1)
 
 #define MICROPY_CONFIG_ROM_LEVEL  MICROPY_CONFIG_ROM_LEVEL_FULL_FEATURES
+
+// CRITICAL: Enable finalizers for proper cleanup of file handles and other resources
+// This allows __del__ methods to be called during garbage collection
+#define MICROPY_ENABLE_FINALISER    (1)
 
 // REPL configuration - basic only
 #define MICROPY_REPL_AUTO_INDENT    (1)  // Disable to save memory

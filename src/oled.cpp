@@ -6,6 +6,7 @@
 #include "CH446Q.h"
 #include "Commands.h"
 #include "FileParsing.h"
+#include "FilesystemStuff.h"  // For safe file operations
 #include "Graphics.h"
 #include "JumperlOS.h"
 #include "LEDs.h"
@@ -330,13 +331,12 @@ bool loadBitmapFromFile( const char* filepath ) {
         fullPath = String( "/" ) + filepath;
     }
 
-    // First check if file exists before trying to open
-    // This gives us better control over error handling
-    if ( !FatFS.exists( fullPath.c_str( ) ) ) {
+    // First check if file exists before trying to open using safe function
+    if ( !safeFileExists( fullPath.c_str( ), 500 ) ) {
         return false;
     }
 
-    File file = FatFS.open( fullPath.c_str( ), "r" );
+    File file = safeFileOpen( fullPath.c_str( ), "r", 1000 );
     if ( !file ) {
         return false;
     }
@@ -371,7 +371,7 @@ bool loadBitmapFromFile( const char* filepath ) {
 
                 if ( expectedSize <= sizeof( customBitmapBuffer ) ) {
                     size_t bytesRead = file.readBytes( (char*)customBitmapBuffer, expectedSize );
-                    file.close( );
+                    safeFileClose( file, false );
 
                     if ( bytesRead == expectedSize ) {
                         customBitmapLoaded = true;
@@ -400,12 +400,12 @@ bool loadBitmapFromFile( const char* filepath ) {
         customBitmapWidth = 128;
         customBitmapHeight = 31;
     } else {
-        file.close( );
+        safeFileClose( file, false );
         return false;
     }
 
     size_t bytesRead = file.readBytes( (char*)customBitmapBuffer, fileSize );
-    file.close( );
+    safeFileClose( file, false );
 
     if ( bytesRead == fileSize ) {
         customBitmapLoaded = true;
@@ -428,8 +428,13 @@ int oled::init( ) {
     sda_row = jumperlessConfig.top_oled.sda_row;
     scl_row = jumperlessConfig.top_oled.scl_row;
 
-    // Check if using hardwired GPIO 6/7 (RP6/RP7)
-    oledUsingHardwiredPins = ( sda_pin == 6 && scl_pin == 7 );
+    // Check if using hardwired pins based on connection_type:
+    // Type 0 = GPIO 7/8 (via crossbar, NOT hardwired)
+    // Type 1 = RP6/RP7 (hardwired, GPIO 6/7)
+    // Type 2 = internal I2C0 (hardwired, GPIO 4/5)
+    // Type 3 = custom (via crossbar, NOT hardwired)
+    int connType = jumperlessConfig.top_oled.connection_type;
+    oledUsingHardwiredPins = ( connType == 1 || connType == 2 );
 
     // Read display dimensions from config
     displayWidth = jumperlessConfig.top_oled.width;

@@ -3,6 +3,7 @@
 #include "ArduinoJson.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
+#include "FilesystemStuff.h"  // For safe file operations
 // #include "LittleFS.h"
 #include "Commands.h"
 // #include "MachineCommands.h"
@@ -78,22 +79,27 @@ const char rotaryConnectionString[] =
     "{AREF-GND,D11-GND,D10-UART_TX,D12-UART_RX,D13-GPIO_0, ";
 
 void closeAllFiles() {
+  fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
+  
   if (nodeFile) {
+    nodeFile.flush();
     nodeFile.close();
   }
   // if (wokwiFile) {
   //   wokwiFile.close();
   // }
   if (nodeFileBuffer) {
+    nodeFileBuffer.flush();
     nodeFileBuffer.close();
   }
+  
+  fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
 }
 
 int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
 
-  // Jerial.print("openFileThreadSafe   ");
-  // unsigned long start = micros();
-
+  // THREAD SAFETY: Use proper mutex instead of busy-wait
+  fs_mutex_acquire();
 
   core1request = 1;
   while (core2busy == true) {
@@ -137,6 +143,7 @@ int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
     //  Jerial.println("\n\n\rFailed to open nodeFile\n\n\r");
     // openFileThreadSafe(w, slot);
     core1busy = false;
+    fs_mutex_release();  // THREAD SAFETY: Unlock on early return
     return 0;
   } else {
     if (debugFP)
@@ -146,10 +153,12 @@ int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
   // Jerial.print("openFileThreadSafe done   ");
   // Jerial.println(micros() - start);
   //core1busy = false;
+  fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
   return 1;
 }
 
 void writeMenuTree(void) {
+  fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
   while (core2busy == true) {
     // Jerial.println("waiting for core2 to finish");
   }
@@ -183,8 +192,10 @@ void writeMenuTree(void) {
 
   // menuTreeFile.write(menuTree);
   // menuTreeFile.print(menuTreeString);
+  menuTreeFile.flush();
   menuTreeFile.close();
   core1busy = false;
+  fs_mutex_release();  // THREAD SAFETY: Unlock filesystem
 }
 
 // void createLocalNodeFile(int slot) {
@@ -415,10 +426,8 @@ void createSlots(int slot, int overwrite) {
   }
 
   // Create empty history.txt file if it doesn't exist
-  if (!FatFS.exists("/python_scripts/history.txt")) {
-    File historyFile = FatFS.open("/python_scripts/history.txt", "w");
-    if (historyFile) {
-      historyFile.close();
+  if (!safeFileExists("/python_scripts/history.txt", 500)) {
+    if (safeFileWriteAll("/python_scripts/history.txt", "", 0, 1000)) {
       if (debugFP) {
         Jerial.println("Created empty /history.txt file");
       }
@@ -2096,13 +2105,13 @@ int validateNodeFileSlot(int slot, bool verbose) {
     Jerial.println("◆ Fast validating " + filename + "...");
   }
 
-  if (!FatFS.exists(filename)) {
+  if (!safeFileExists(filename.c_str(), 500)) {
     if (verbose)
       Jerial.println("◇ Slot file does not exist");
     return 1; // File doesn't exist, treat as empty
   }
 
-  File slotFile = FatFS.open(filename, "r");
+  File slotFile = safeFileOpen(filename.c_str(), "r", 1000);
   if (!slotFile) {
     if (verbose)
       Jerial.println("◇ Failed to open slot file");
@@ -2113,15 +2122,15 @@ int validateNodeFileSlot(int slot, bool verbose) {
   size_t fileSize = slotFile.size();
   if (fileSize > 512) {
     // File too large, probably corrupted
-    slotFile.close();
+    safeFileClose(slotFile, false);
     if (verbose) Jerial.println("◇ File too large");
     return 5;
   }
 
   char buffer[513]; // Small stack buffer
-  size_t bytesRead = slotFile.readBytes(buffer, min(fileSize, 512));
+  size_t bytesRead = slotFile.readBytes(buffer, min(fileSize, (size_t)512));
   buffer[bytesRead] = '\0'; // Null terminate
-  slotFile.close();
+  safeFileClose(slotFile, false);
 
   return validateNodeFileFast(buffer, bytesRead, verbose);
 }
@@ -2891,22 +2900,16 @@ void initializeNetColorTracking() {
     return;
   }
   
-  // Scan for existing net color files
+  // Scan for existing net color files using safe functions
   int foundFiles = 0;
   for (int slot = 0; slot < 32 && slot < NUM_SLOTS; slot++) {
     String colorFileName = "/net_colors/netColorsSlot" + String(slot) + ".txt";
-    if (FatFS.exists(colorFileName.c_str())) {
-      // Check if file has content
-      File tempFile = FatFS.open(colorFileName.c_str(), "r");
-      if (tempFile && tempFile.size() > 0) {
-        setSlotHasNetColors(slot, true);
-        foundFiles++;
-        if (debugFP) {
-          Jerial.println("Found net colors for slot " + String(slot));
-        }
-      }
-      if (tempFile) {
-        tempFile.close();
+    int32_t fileSize = safeFileSize(colorFileName.c_str(), 300);
+    if (fileSize > 0) {
+      setSlotHasNetColors(slot, true);
+      foundFiles++;
+      if (debugFP) {
+        Jerial.println("Found net colors for slot " + String(slot));
       }
     }
   }

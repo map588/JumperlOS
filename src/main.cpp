@@ -115,7 +115,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.5.1.0"; //! remember to update this
+const char firmwareVersion[] = "5.5.3.0"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -133,6 +133,10 @@ void setup( ) {
     } else {
         Serial.println( "FatFS initialized successfully" );
     }
+
+    // Initialize multicore synchronization primitives BEFORE Core 2 starts
+    // This provides proper mutex-based protection for shared resources
+    core_sync_init();
 
     startupTimers[ 0 ] = millis( );
 
@@ -301,6 +305,20 @@ startupTimers[ 4 ] = millis( );
     jOS.registerService( &oledService ); // LOW - display updates
     jOS.registerService( &probeSwitch ); // LOW - switch position (not time-critical)
     jOS.registerService( &probePads );   // LOW - expensive ADC pad reading
+
+    // Initialize context stack with MAIN_MENU as the root context
+    // This provides proper navigation tracking for all child contexts
+    ContextEntry mainMenuCtx(ContextType::MAIN_MENU);
+    mainMenuCtx.onEnter = nullptr;  // No special setup needed
+    mainMenuCtx.onExit = nullptr;   // Main menu never exits normally
+    mainMenuCtx.onSuspend = nullptr;
+    mainMenuCtx.onResume = [](void*) {
+        // When returning to main menu from any child context, 
+        // ensure any cleanup is done
+        extern void closeAllFiles();
+        closeAllFiles();
+    };
+    ContextManager::getInstance().pushContext(mainMenuCtx);
 
     // Serial.println("Service registration complete");
     // Serial.flush();
@@ -1066,10 +1084,15 @@ t[i] = 0;
     if ( laRecentlyActive || laActive ) {
         // Only check every 20ms when potentially active
         if ( millis( ) - last_la_check >= 20 ) {
+            // Check pauseCore2 before potentially long logic analyzer operation
+            if (pauseCore2) return;  // Exit early to allow flash operations
             last_la_check = millis( );
             logicAnalyzer.handler( );
         }
     }
+    
+    // Check pauseCore2 after logic analyzer (can take 1-55ms!)
+    if (pauseCore2) return;
 
     if ( debugWaitLoopTimingCore2 ) {
         t[1] = micros( );
@@ -1115,12 +1138,18 @@ t[i] = 0;
     // They were causing refreshLocalConnections() to be called from Core 2
     // when handling Arduino flashing (DTR pulse detection)
 
+    // Check pauseCore2 before serial operations
+    if (pauseCore2) return;
+    
     replyWithSerialInfo( );
 
+    // Check pauseCore2 before LED dump
+    if (pauseCore2) return;
+    
     if ( dumpLED == 1 ) {
 
         if ( millis( ) - dumpLEDTimer > dumpLEDrate ) {
-            if ( core1busy == false ) {
+            if ( core1busy == false && !pauseCore2 ) {
                 core2busy = true;
                 core1busy = true;
                 delayMicroseconds( 2000 );
@@ -1162,6 +1191,26 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
     showLEDsCore2 = 0;
     return;
 #endif
+
+    // THREAD SAFETY: Try to acquire the core sync mutex with a short timeout
+    // If Core 1 is holding the lock (e.g., during filesystem operations),
+    // we skip this iteration instead of potentially corrupting shared data
+    if (!core_sync_acquire_timeout_ms(5)) {
+        // Could not acquire mutex within 5ms - Core 1 is busy with shared resources
+        // Skip this frame to prevent concurrent access issues
+        return;
+    }
+    
+    // From here on, we hold the mutex and can safely access shared resources
+    // Make sure to release it before returning!
+    
+    // CRITICAL FIX: Check pauseCore2 immediately after acquiring mutex
+    // If Core1 set pauseCore2=true while we were waiting for mutex, we need to
+    // release and return immediately to avoid flash XIP crashes during file writes
+    if (pauseCore2) {
+        core_sync_release();
+        return;
+    }
 
     if ( showLEDsCore2 < 0 ) {
         showLEDsCore2 = abs( showLEDsCore2 );
@@ -1222,6 +1271,13 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                         clearBeforeSend = 0;
                     }
 
+                    // Check pauseCore2 before long-running showNets() to allow quick exit for flash ops
+                    if (pauseCore2) {
+                        core2busy = false;
+                        core_sync_release();
+                        return;
+                    }
+                    
                     t[6] = micros( );
                     showNets( );
                     if ( debugWaitLoopTimingCore2 ) {
@@ -1254,6 +1310,13 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             }
 
             core2busy = true;
+            
+            // Check pauseCore2 before long-running leds.show() to allow quick exit for flash ops
+            if (pauseCore2) {
+                core2busy = false;
+                core_sync_release();
+                return;
+            }
 
             t[12] = micros( );
             leds.show( );
@@ -1355,4 +1418,8 @@ t[21] = micros( );
         schedulerTimer = micros( );
         core2busy = false;
     }
+    
+    // THREAD SAFETY: Release the core sync mutex
+    // This MUST be called before returning to allow Core 1 to access shared resources
+    core_sync_release();
 }

@@ -30,6 +30,7 @@ struct EditorConfig {
     int screenrows;       // Number of rows on screen
     int screencols;       // Number of columns on screen
     int numrows;          // Number of rows in file
+    int row_capacity;     // Allocated capacity for row array (reduces realloc fragmentation)
     EditorRow* row;        // Array of editor rows
     int dirty;            // File modified flag
     char* filename;       // Current filename
@@ -88,6 +89,29 @@ struct EditorConfig {
     // Screen refresh optimization
     bool screen_dirty;     // Flag to track when screen needs refresh
     
+    // Chunked file loading for large files (>8KB)
+    bool is_chunked;                    // True if using chunked loading
+    size_t total_file_lines;            // Total lines in the file
+    size_t chunk_start;                 // First loaded line number
+    size_t chunk_loaded_lines;          // Number of lines currently loaded
+    static const size_t CHUNK_SIZE = 150;     // Lines loaded at once (~5 pages)
+    static const size_t CHUNK_BUFFER = 75;    // Buffer lines above/below viewport (~2 pages)
+    static const size_t CHUNK_THRESHOLD = 4096; // File size threshold for chunking (4KB - more aggressive)
+    String chunked_filename;            // Filename for chunk reloading
+    bool chunk_dirty;                   // True if chunk has been edited
+    
+    // Status message history for scrolling display
+    static const int STATUS_HISTORY_SIZE = 5;
+    char status_history[5][80];         // Ring buffer of recent messages
+    int status_history_head;            // Next write position
+    int status_history_count;           // Number of messages in buffer
+    
+    // Read-only mode for viewing files without editing
+    bool read_only;                     // True if file is read-only (no edits allowed)
+    
+    // Low memory mode - disables features to save RAM
+    bool low_memory_mode;               // True when memory is critically low
+    
     EditorConfig();
     ~EditorConfig();
 };
@@ -102,11 +126,72 @@ struct SyntaxDefinition {
     int flags;                        // Highlighting flags
 };
 
+// ============================================================================
+// Editor Result - Stores outcome of editor session via ContextManager
+// ============================================================================
+
+/**
+ * @brief Result of an eKilo editor session
+ * 
+ * Stored in ContextManager transfer data to avoid String allocations.
+ * Use ekilo_get_result() after ekilo_run() to retrieve.
+ */
+struct EkiloResult {
+    bool saved;                 // True if file was saved
+    bool launch_repl;           // True if Ctrl+P was pressed (save and launch REPL)
+    bool cancelled;             // True if user quit without saving (Ctrl+Q on dirty file)
+    char saved_path[128];       // Path to saved file (for zero-copy transfer)
+    
+    EkiloResult() : saved(false), launch_repl(false), cancelled(false) {
+        saved_path[0] = '\0';
+    }
+};
+
+/**
+ * @brief Editor mode flags
+ */
+enum EkiloMode : uint8_t {
+    EKILO_MODE_NORMAL = 0,      // Normal full-screen editor mode
+    EKILO_MODE_REPL = 1,        // REPL mode - uses alternate screen, auto-quits on save
+};
+
+// ============================================================================
+// Unified Editor Entry Point
+// ============================================================================
+
+/**
+ * @brief Run the eKilo editor (unified entry point)
+ * 
+ * This is the single entry point for all eKilo operations.
+ * Results are stored in ContextManager transfer data.
+ * 
+ * @param filename File to open (nullptr for new file)
+ * @param mode EKILO_MODE_NORMAL or EKILO_MODE_REPL
+ * @return true if editor ran successfully, false on error
+ */
+bool ekilo_run(const char* filename, EkiloMode mode = EKILO_MODE_NORMAL);
+
+/**
+ * @brief Get the result of the last ekilo_run() call
+ * 
+ * Retrieves result from ContextManager transfer data.
+ * @return Pointer to result, or nullptr if no result available
+ */
+const EkiloResult* ekilo_get_result();
+
+/**
+ * @brief Clear the stored ekilo result
+ */
+void ekilo_clear_result();
+
+// ============================================================================
+// Legacy Entry Points (for backward compatibility)
+// ============================================================================
+
 // Main editor functions
 void ekilo_init();
-int ekilo_main(const char* filename); // Returns: 0=normal exit, 2=save and launch REPL
-String ekilo_main_repl(const char* filename); // REPL mode - returns saved content, "[LAUNCH_REPL]" prefix if Ctrl+P
-String ekilo_inline_edit(const String& initial_content = ""); // Inline editing mode - returns content directly without file operations
+int ekilo_main(const char* filename); // DEPRECATED: Use ekilo_run() instead
+String ekilo_main_repl(const char* filename); // DEPRECATED: Use ekilo_run(filename, EKILO_MODE_REPL)
 int ekilo_open(const char* filename);
 int ekilo_save();
 void ekilo_refresh_screen();
@@ -160,5 +245,66 @@ void ekilo_emergency_cleanup();
 // External monitoring functions
 const char* ekilo_get_currently_editing_file();  // Get currently open file (nullptr if none)
 String ekilo_get_current_buffer_content();       // Get current editor buffer as String (for live preview)
+
+// Terminal size detection
+bool ekilo_probe_terminal_size(uint16_t& rows, uint16_t& cols);
+void ekilo_resize_to_terminal();
+
+// Chunked file loading for large files
+bool ekilo_open_chunked(const char* filename);
+bool ekilo_load_chunk(size_t center_line);
+bool ekilo_needs_chunk_reload();
+void ekilo_save_chunk_to_temp();
+
+// ============================================================================
+// Input Handler - Batches repeated keys and provides acceleration
+// ============================================================================
+
+// Key categories for batching
+enum KeyCategory {
+    KEY_CAT_NONE = 0,
+    KEY_CAT_UP,
+    KEY_CAT_DOWN,
+    KEY_CAT_LEFT,
+    KEY_CAT_RIGHT,
+    KEY_CAT_PAGEUP,
+    KEY_CAT_PAGEDOWN,
+    KEY_CAT_OTHER  // Non-repeatable keys
+};
+
+struct InputHandler {
+    // State tracking
+    int last_key;                    // Last key processed
+    KeyCategory last_category;       // Category of last key
+    uint32_t last_key_time;          // Time of last key
+    uint32_t repeat_start_time;      // When repeat started
+    int repeat_count;                // Number of repeated keys
+    
+    // Configuration - aggressive timeout to prevent runaway cursor
+    static const uint32_t REPEAT_THRESHOLD_MS = 25;   // Quick timeout - 25ms gap = key released
+    static const uint32_t ACCEL_START_MS = 150;       // Start acceleration after 150ms
+    static const uint32_t ACCEL_TIMEOUT_MS = 40;      // Reset acceleration after 40ms gap
+    static const int ACCEL_MULTIPLIER = 3;            // Conservative acceleration (2x)
+    static const int MAX_BATCH_SIZE = 5;              // Limit batch size to stay responsive
+    
+    // Initialize
+    void init();
+    
+    // Get key category for batching
+    KeyCategory categorize(int key);
+    
+    // Process available input and return batched movement
+    // Returns: key code (or 0 if no input), moves = number of times to apply
+    int processInput(Stream* stream, int& moves);
+    
+    // Clear pending repeated keys (call after processing)
+    void clearRepeats(Stream* stream);
+    
+    // Check if we should apply acceleration
+    bool shouldAccelerate();
+};
+
+// Global input handler instance
+extern InputHandler g_input_handler;
 
 #endif // EKILO_EDITOR_H 

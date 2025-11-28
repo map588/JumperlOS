@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "WokwiParser.h"
 #include "FileParsing.h"
+#include "FilesystemStuff.h"  // For safe file operations
 #include "JumperlessDefines.h"
 #include "USBfs.h"
 #include "FatFS.h"
@@ -733,10 +734,13 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
     // by the system when the state is loaded and nets are computed
     
     // Add locked OLED connections if enabled
+    // Skip if using hardwired pins (RP6/RP7 or internal I2C0) - no crossbar needed
     extern struct config jumperlessConfig;
     extern JumperlessState globalState;
+    extern bool oledUsingHardwiredPins;
     
-    if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
+    if ((jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) 
+        && !oledUsingHardwiredPins) {
         // Check if OLED connections already exist in the parsed diagram
         bool hasSdaConnection = false;
         bool hasSclConnection = false;
@@ -758,7 +762,7 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
             }
         }
         
-        // Add missing OLED connections
+        // Add missing OLED connections (only for crossbar-connected types)
         if (!hasSdaConnection && outState.connections.numBridges < MAX_BRIDGES) {
             int bridgeIdx = outState.connections.numBridges;
             outState.connections.bridges[bridgeIdx][0] = jumperlessConfig.top_oled.sda_row;
@@ -825,13 +829,13 @@ bool parseWokwiDiagram(const String& jsonContent, JumperlessState& outState,
 }
 
 bool parseWokwiDiagramFromFile(const String& filename, int slotNum, String& errorMsg) {
-    // Open and read the file
-    if (!FatFS.exists(filename.c_str())) {
+    // Open and read the file using safe functions
+    if (!safeFileExists(filename.c_str(), 500)) {
         errorMsg = "File not found: " + filename;
         return false;
     }
     
-    File file = FatFS.open(filename.c_str(), "r");
+    File file = safeFileOpen(filename.c_str(), "r", 1000);
     if (!file) {
         errorMsg = "Failed to open file: " + filename;
         return false;
@@ -842,7 +846,7 @@ bool parseWokwiDiagramFromFile(const String& filename, int slotNum, String& erro
     while (file.available()) {
         jsonContent += (char)file.read();
     }
-    file.close();
+    safeFileClose(file, false);
     
     if (debugFP) {
         Serial.println("◆ Read " + String(jsonContent.length()) + " bytes from " + filename);

@@ -15,6 +15,7 @@
 #include <FatFS.h>
 #include <cmath>
 #include <cstring>
+#include "FilesystemStuff.h"  // For safe file operations
 
 // External objects
 extern Adafruit_SSD1306 display;
@@ -31,9 +32,9 @@ static const char* IMAGES_DIR = "/images";
 void scanImageDirectory() {
     totalImages = 0;
     
-    if (!FatFS.exists(IMAGES_DIR)) {
+    if (!safeFileExists(IMAGES_DIR, 500)) {
         Jerial.println("Images directory not found. Creating /images...");
-        FatFS.mkdir(IMAGES_DIR);
+        safeMkdir(IMAGES_DIR, 1000);
     }
     
     Dir dir = FatFS.openDir(IMAGES_DIR);
@@ -75,13 +76,13 @@ bool loadAndDisplayImage(const char* filename) {
     // Now build the full path cleanly
     String fullPath = String(IMAGES_DIR) + "/" + filenameStr;
 
-    if (!FatFS.exists(fullPath.c_str())) {
+    if (!safeFileExists(fullPath.c_str(), 500)) {
         Jerial.print("Image not found: ");
         Jerial.println(fullPath);
         return false;
     }
     
-    File file = FatFS.open(fullPath.c_str(), "r");
+    File file = safeFileOpen(fullPath.c_str(), "r", 1000);
     if (!file) {
         Jerial.println("Failed to open image file");
         return false;
@@ -147,20 +148,20 @@ bool loadAndDisplayImage(const char* filename) {
     // Allocate buffer (limit to 1KB)
     if (bitmapSize > 32768) {
         Jerial.println("Image too large");
-        file.close();
+        safeFileClose(file, false);
         return false;
     }
     
     bitmapData = new uint8_t[bitmapSize];
     if (!bitmapData) {
         Jerial.println("Failed to allocate memory");
-        file.close();
+        safeFileClose(file, false);
         return false;
     }
     
     // Read bitmap data
     size_t bytesRead = file.readBytes((char*)bitmapData, bitmapSize);
-    file.close();
+    safeFileClose(file, false);
     
     if (bytesRead != bitmapSize) {
         Jerial.println("Failed to read image data");

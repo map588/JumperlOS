@@ -86,8 +86,8 @@ struct config {
         float adc_4_spread = 5.0;
         float adc_7_zero = 9.0;
         float adc_7_spread = 18.28;
-        int probe_max = 4060;
-        int probe_min = 15;
+        int probe_max = 4040;
+        int probe_min = 10;
         // Hysteresis thresholds to prevent oscillation between modes
         // Switch to SELECT mode when current > high threshold
         // Switch to MEASURE mode when current < low threshold
@@ -143,9 +143,12 @@ struct config {
             int enabled = 0;
             int i2c_address = 0x3C;
             const char* display_type = "SSD1306";
+           
             int width = 128;
             int height = 32;
             int rotation = 0; // 0 = 0 degrees, 1 = 90 degrees, 2 = 180 degrees, 3 = 270 degrees
+
+            int connection_type = 0; // 0 = GPIO 7/8, 1 = RP6/RP7, 2 = internal I2C0, 3 = custom (use sda_pin and scl_pin to set the pins)
             int sda_pin = 26;//the actual hardware pin number
             int scl_pin = 27;//the actual hardware pin number
             int gpio_sda = RP_GPIO_26; //the define number for the hardware pin
@@ -155,7 +158,7 @@ struct config {
             int connect_on_boot = 0;
             int lock_connection = 0;
             int autoconnect_check_interval = -1;
-            int font = 1;
+            int font = 0;
             int show_in_terminal = 0;
             char startup_message[33] = ""; // Startup message for OLED (max 32 chars + null terminator)
         } top_oled;

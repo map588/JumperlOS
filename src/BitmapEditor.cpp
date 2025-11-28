@@ -12,7 +12,8 @@
 #include "Probing.h"
 #include "JumperlOS.h"
 #include <cstring>
-
+#include "FilesystemStuff.h"  // For safe file operations
+#include "externVars.h"       // For pauseCore2ForFlash
 // External objects
 extern class oled oled;
 
@@ -62,12 +63,12 @@ BitmapEditor::~BitmapEditor() {
 bool BitmapEditor::loadFile(const String& filepath) {
     this->filepath = filepath;
     
-    if (!FatFS.exists(filepath.c_str())) {
+    if (!safeFileExists(filepath.c_str(), 500)) {
         Jerial.println("File not found: " + filepath);
         return false;
     }
     
-    File file = FatFS.open(filepath.c_str(), "r+");
+    File file = safeFileOpen(filepath.c_str(), "r+", 1000);
     if (!file) {
         Jerial.println("Failed to open file");
         return false;
@@ -77,7 +78,7 @@ bool BitmapEditor::loadFile(const String& filepath) {
     
     // Handle empty file - create new bitmap with OLED dimensions
     if (fileSize == 0) {
-        file.close();
+        safeFileClose(file, false);
         Jerial.println("Empty file detected - creating new bitmap");
         
         // Use OLED dimensions
@@ -163,12 +164,12 @@ bool BitmapEditor::loadFile(const String& filepath) {
     bitmapData = new uint8_t[dataSize];
     if (!bitmapData) {
         Jerial.println("Failed to allocate memory for bitmap");
-        file.close();
+        safeFileClose(file, false);
         return false;
     }
     
     size_t bytesRead = file.read(bitmapData, dataSize);
-    file.close();
+    safeFileClose(file, false);
     
     if (bytesRead != dataSize) {
         Jerial.println("Failed to read bitmap data");
@@ -935,8 +936,12 @@ void BitmapEditor::showHelp() {
 }
 
 bool BitmapEditor::save() {
-    File file = FatFS.open(filepath.c_str(), "w");
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    File file = safeFileOpen(filepath.c_str(), "w", 1000);
     if (!file) {
+        unpauseCore2ForFlash(was_paused);
         Jerial.println("Failed to open file for writing");
         return false;
     }
@@ -951,7 +956,8 @@ bool BitmapEditor::save() {
     
     // Write bitmap data
     size_t written = file.write(bitmapData, dataSize);
-    file.close();
+    safeFileClose(file, true);  // Write mode, needs flush
+    unpauseCore2ForFlash(was_paused);
     
     if (written == dataSize) {
         modified = false;

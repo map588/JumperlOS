@@ -11,6 +11,8 @@
 #include <cstring>
 #include <time.h>
 #include "Jerial.h" // TermControl is now part of Jerial
+#include "externVars.h"  // For fs_mutex filesystem synchronization
+#include "JumperlOS.h"  // For ContextManager
 
 // External references
 extern class oled oled;
@@ -987,7 +989,11 @@ void FileManager::selectCurrentFile( ) {
 bool FileManager::createFile( const String& filename ) {
     String fullPath = getFullPath( currentPath, filename );
 
+    // THREAD SAFETY: Acquire filesystem mutex
+    fs_mutex_acquire();
+    
     if ( FatFS.exists( fullPath.c_str( ) ) ) {
+        fs_mutex_release();  // THREAD SAFETY: Release before early return
         outputToArea( "File already exists: " + filename, FileColors::ERROR );
         return false;
     }
@@ -995,10 +1001,12 @@ bool FileManager::createFile( const String& filename ) {
     File file = FatFS.open( fullPath.c_str( ), "w" );
     if ( file ) {
         file.close( );
+        fs_mutex_release();  // THREAD SAFETY: Release mutex
         outputToArea( "Created file: " + filename, FileColors::STATUS );
         refreshListing( );
         return true;
     } else {
+        fs_mutex_release();  // THREAD SAFETY: Release mutex on failure
         outputToArea( "Failed to create file: " + filename, FileColors::ERROR );
         return false;
     }
@@ -1007,7 +1015,13 @@ bool FileManager::createFile( const String& filename ) {
 bool FileManager::deleteFile( const String& filename ) {
     String fullPath = getFullPath( currentPath, filename );
 
-    if ( FatFS.remove( fullPath.c_str( ) ) ) {
+    // THREAD SAFETY: Acquire filesystem mutex
+    fs_mutex_acquire();
+    
+    bool success = FatFS.remove( fullPath.c_str( ) );
+    fs_mutex_release();  // THREAD SAFETY: Release mutex
+    
+    if ( success ) {
         outputToArea( "Deleted: " + filename, FileColors::STATUS );
         refreshListing( );
         return true;
@@ -1055,39 +1069,46 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
 
         // Serial.print("return\n\nn\n\n\n\n\n\n\n\n\n\n\n\n\r");
 
-        if ( content.length( ) > 0 ) {
-            // Check if this is the special marker indicating REPL was launched
-            if ( content == "[REPL_LAUNCHED]" ) {
-                // REPL was launched with Ctrl+P but no content was executed
-                // Still exit the file manager to return to main menu
-                lastOpenedFileContent = "";
-                shouldExitForREPL = true; // Signal to exit file manager
-            } else {
-                // Check content size before storing
-                if ( content.length( ) > 8192 ) { // Limit to 8KB
-                    outputToArea( "WARNING: File content too large for REPL mode, truncating", FileColors::ERROR );
-                    content = content.substring( 0, 8192 );
-                }
-                // User saved new content
-                lastOpenedFileContent = content;
-                shouldExitForREPL = true; // Signal to exit file manager
+        // Check for special marker indicating REPL was already launched
+        if ( content == "[REPL_LAUNCHED]" ) {
+            // REPL was launched with Ctrl+P - file already executed
+            // Clear content and exit file manager
+            lastOpenedFileContent = "";
+            shouldExitForREPL = true;
+        }
+        // Check for zero-copy transfer path (new preferred mechanism)
+        else if ( ContextManager::getInstance().hasTransferPath() ) {
+            // Transfer path is set - store empty and let caller use transfer path
+            // The caller (Python REPL) will read directly from the file
+            lastOpenedFileContent = "";
+            shouldExitForREPL = true;
+            // Note: Transfer path is NOT cleared here - caller will clear after reading
+        }
+        // Legacy: content was passed directly (backward compatibility)
+        else if ( content.length( ) > 0 ) {
+            // Check content size before storing
+            if ( content.length( ) > 8192 ) { // Limit to 8KB
+                outputToArea( "WARNING: File content too large for REPL mode, truncating", FileColors::ERROR );
+                content = content.substring( 0, 8192 );
             }
-        } else {
-            // User didn't save - try to load existing file content if it exists
+            lastOpenedFileContent = content;
+            shouldExitForREPL = true;
+        }
+        // No content returned and no transfer path - editor was closed without saving
+        else {
+            // Check if file exists on disk (user may have previously saved it)
             File file = FatFS.open( filename.c_str( ), "r" );
             if ( file ) {
                 size_t fileSize = file.size( );
-                if ( fileSize > 8192 ) { // Limit file size for REPL mode
+                if ( fileSize > 8192 ) {
                     file.close( );
                     outputToArea( "WARNING: File too large for REPL mode (" + String( fileSize / 1024 ) + "KB)", FileColors::ERROR );
                     return false;
                 }
-
                 String existingContent = file.readString( );
                 file.close( );
                 if ( existingContent.length( ) > 0 ) {
                     lastOpenedFileContent = existingContent;
-                    // shouldExitForREPL = true; // Signal to exit file manager
                 }
             }
         }
@@ -1101,8 +1122,12 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
 }
 
 bool FileManager::viewFile( const String& filename ) {
+    // THREAD SAFETY: Acquire filesystem mutex
+    fs_mutex_acquire();
+    
     File file = FatFS.open( filename.c_str( ), "r" );
     if ( !file ) {
+        fs_mutex_release();  // THREAD SAFETY: Release before early return
         changeTerminalColor( FileColors::ERROR, false );
         Serial.println( "Failed to open file: " + filename );
         changeTerminalColor( -1, false ); // Reset colors
@@ -1131,6 +1156,7 @@ bool FileManager::viewFile( const String& filename ) {
     }
 
     file.close( );
+    fs_mutex_release();  // THREAD SAFETY: Release mutex after file operations
     changeTerminalColor( -1, false ); // Reset colors
     Serial.println( "\nPress any key to continue..." );
 
@@ -1947,8 +1973,12 @@ void FileManager::showInteractiveFileView( const String& filename ) {
     // Save current screen
     clearScreen( );
 
+    // THREAD SAFETY: Acquire filesystem mutex
+    fs_mutex_acquire();
+    
     File file = FatFS.open( filename.c_str( ), "r" );
     if ( !file ) {
+        fs_mutex_release();  // THREAD SAFETY: Release before early return
         moveCursor( 5, 5 );
         changeTerminalColor( FileColors::ERROR, false );
         Serial.print( "Failed to open file: " + filename );
@@ -1990,6 +2020,7 @@ void FileManager::showInteractiveFileView( const String& filename ) {
     }
 
     file.close( );
+    fs_mutex_release();  // THREAD SAFETY: Release mutex after file operations
 
     moveCursor( 23, 3 );
     changeTerminalColor( FileColors::STATUS, false );
@@ -2082,6 +2113,18 @@ void printColoredPath( const String& path ) {
 
 // App entry points
 void filesystemApp( bool waitForEnter ) {
+    // Push context onto the stack for proper navigation
+    ContextEntry ctx(ContextType::FILE_MANAGER);
+    ctx.onExit = [](void*) {
+        // Cleanup callback - called when context is popped
+        closeAllFiles();
+        // Clear transfer path to prevent stale file paths from being loaded by Python
+        ContextManager::getInstance().clearTransferPath();
+        if (oled.oledConnected) {
+            oled.restoreNormalFont();
+        }
+    };
+    ContextManager::getInstance().pushContext(ctx);
 
     bool showOledInTerminal = jumperlessConfig.top_oled.show_in_terminal;
     jumperlessConfig.top_oled.show_in_terminal = false;
@@ -2151,24 +2194,21 @@ void filesystemApp( bool waitForEnter ) {
 
         if ( c == 'q' || c == 'Q' ) {
             Serial.println( "  File Manager cancelled." );
+            // Pop context on early exit
+            ContextManager::getInstance().popContext();
             return;
         }
     }
 
     manager.run( );
 
-    // Close any open files before exiting file manager
-    closeAllFiles( );
-
-    // Restore normal font if we were using small fonts
-    if ( oled.oledConnected ) {
-        oled.restoreNormalFont( );
-    }
-
     // Restore original screen state with all scrollback intact
     restoreScreenState( );
 
     jumperlessConfig.top_oled.show_in_terminal = showOledInTerminal;
+    
+    // Pop context - cleanup callback will be called automatically
+    ContextManager::getInstance().popContext();
 }
 
 void eKiloApp( ) {
@@ -2203,6 +2243,7 @@ void eKiloApp( ) {
 }
 
 // Unified eKilo launcher that handles both standalone and REPL modes
+// Uses ContextManager for proper navigation and zero-copy data transfer via file paths
 String launchEkilo( const char* filename, bool replMode ) {
     // Store if we're called from file manager or standalone
     static bool calledFromFileManager = false;
@@ -2215,6 +2256,20 @@ String launchEkilo( const char* filename, bool replMode ) {
         // Auto-generate filename using the same logic as ScriptHistory
         finalFilename = generateNextScriptName( );
     }
+
+    // Push EKILO_EDITOR context onto the stack
+    ContextEntry ctx(ContextType::EKILO_EDITOR);
+    ctx.onExit = [](void*) {
+        // Cleanup callback - close any open files
+        closeAllFiles();
+        // Clear transfer path to prevent stale file paths from being loaded by Python
+        ContextManager::getInstance().clearTransferPath();
+    };
+    // Store filename in transfer path for child contexts (Python REPL)
+    if (finalFilename.length() > 0) {
+        ContextManager::getInstance().setTransferPath(finalFilename.c_str());
+    }
+    ContextManager::getInstance().pushContext(ctx);
 
     // Clear any pending serial data
     while ( Serial.available( ) > 0 ) {
@@ -2253,20 +2308,34 @@ String launchEkilo( const char* filename, bool replMode ) {
         Serial.print( "\x1b[2J\x1b[H" );
     }
 
-    // Launch eKilo editor with appropriate mode
-    String savedContent;
-    int result;
-
-    if ( replMode ) {
-        savedContent = ekilo_main_repl( finalFilename.c_str( ) );
-        result = ( savedContent.length( ) > 0 ) ? 0 : 1; // Convert to result format
-    } else {
-        result = ekilo_main( filename );
-        savedContent = ""; // Standalone mode doesn't return content
+    // ========== MEMORY CLEANUP BEFORE EDITOR ==========
+    // Force garbage collection to free memory and reduce fragmentation
+    // This is critical when launching editor from Python REPL context
+    if (isMicroPythonInitialized()) {
+        forceGarbageCollection();
     }
-
-    // Close any files that might have been opened by the editor
-    closeAllFiles( );
+    
+    // Give system a moment to stabilize after GC
+    yield();
+    delay(5);
+    
+    // ========== UNIFIED EDITOR CALL ==========
+    // Use ekilo_run() - the single entry point for all editor operations
+    EkiloMode mode = replMode ? EKILO_MODE_REPL : EKILO_MODE_NORMAL;
+    const char* fileToOpen = finalFilename.length() > 0 ? finalFilename.c_str() : nullptr;
+    
+    bool success = ekilo_run(fileToOpen, mode);
+    
+    // Get result from ContextManager (zero-copy)
+    const EkiloResult* result = ekilo_get_result();
+    bool shouldLaunchREPL = result && result->launch_repl;
+    bool fileSaved = result && result->saved;
+    
+    // Store saved path for later use
+    String savedFilePath = "";
+    if (result && result->saved_path[0] != '\0') {
+        savedFilePath = String(result->saved_path);
+    }
 
     // Screen restoration based on mode
     if ( replMode ) {
@@ -2278,44 +2347,28 @@ String launchEkilo( const char* filename, bool replMode ) {
         delay( 10 );
     }
 
-    // Check if Ctrl+P was pressed (save and launch REPL)
-    bool shouldLaunchREPL = false;
-    if ( replMode ) {
-        shouldLaunchREPL = savedContent.startsWith( "[LAUNCH_REPL]" );
-        if ( shouldLaunchREPL ) {
-            // Remove the prefix and get the actual content
-            savedContent = savedContent.substring( 13 ); // Remove "[LAUNCH_REPL]" prefix
-        }
-    } else {
-        shouldLaunchREPL = ( result == 2 );
-    }
-
     if ( shouldLaunchREPL ) {
         // Clear screen and launch MicroPython REPL
         Serial.print( "\x1b[2J\x1b[H" );
-        // changeTerminalColor(FileColors::STATUS, false);
-        // Serial.println("☺ File saved successfully");
-        // Serial.println("🐍 Launching MicroPython REPL...");
-        // changeTerminalColor(-1, false); // Reset colors
 
-        // Brief pause to let user see the message
-        // delay(500);
-
-        // Launch MicroPython REPL with appropriate method
-        if ( replMode && finalFilename.length( ) > 0 ) {
-            enterMicroPythonREPLWithFile( &Serial, finalFilename );
+        // Launch MicroPython REPL with file path from result (zero-copy)
+        if ( savedFilePath.length( ) > 0 ) {
+            enterMicroPythonREPLWithFile( &Serial, savedFilePath );
         } else {
             enterMicroPythonREPL( &Serial );
         }
 
-        // After REPL exits, handle return appropriately
+        // After REPL exits, pop context and return
+        ContextManager::getInstance().popContext();
+        ekilo_clear_result();  // Clean up result data
+        
+        // Return marker to signal that REPL was already launched
+        // This prevents the caller from trying to load the file again
         if ( calledFromFileManager ) {
-            // If called from file manager, just return (file manager will handle display)
-            return replMode ? savedContent : "";
+            return "[REPL_LAUNCHED]";
         } else {
-            // If called standalone, return to main menu
             Serial.print( "\x1b[2J\x1b[H" );
-            return replMode ? savedContent : "";
+            return "[REPL_LAUNCHED]";
         }
     }
 
@@ -2325,9 +2378,9 @@ String launchEkilo( const char* filename, bool replMode ) {
 
     // Brief status message
     changeTerminalColor( FileColors::STATUS, false );
-    if ( result == 0 || savedContent.length( ) > 0 ) {
-        if ( replMode && finalFilename.length( ) > 0 ) {
-            Serial.println( "☺ File saved as " + finalFilename );
+    if ( success && fileSaved ) {
+        if ( savedFilePath.length( ) > 0 ) {
+            Serial.println( "☺ File saved as " + savedFilePath );
         } else {
             Serial.println( "☺ Editor session completed successfully" );
         }
@@ -2337,7 +2390,7 @@ String launchEkilo( const char* filename, bool replMode ) {
             Serial.println( "⌘ Returning to main menu..." );
         }
     } else {
-        Serial.println( "☹ Editor session ended with error" );
+        Serial.println( "☹ Editor session ended" );
         if ( calledFromFileManager ) {
             Serial.println( "⌘ Returning to file manager..." );
         } else {
@@ -2369,12 +2422,14 @@ String launchEkilo( const char* filename, bool replMode ) {
     termInInteractiveMode = 1;
     Serial.flush( );
 
-    // Return appropriate content based on mode
-    if ( replMode ) {
-        return savedContent;
-    } else {
-        return ""; // Standalone mode doesn't return content
-    }
+    // Pop EKILO_EDITOR context - cleanup callback will be called
+    ContextManager::getInstance().popContext();
+    ekilo_clear_result();  // Clean up result data
+
+    // Transfer path is set in ContextManager for zero-copy access
+    // Return empty string so callers use the transfer path mechanism
+    // Callers should check hasTransferPath() and read from getTransferPath()
+    return "";
 }
 
 // Legacy wrapper for standalone mode (maintains backward compatibility)
@@ -2433,9 +2488,20 @@ String FileManager::promptForFilename( const String& prompt ) {
 }
 
 // REPL mode version - returns content if file was saved
+// Uses context system for proper navigation and cleanup
 String filesystemAppPythonScriptsREPL( ) {
+    // Push FILE_MANAGER context onto the stack
+    ContextEntry ctx(ContextType::FILE_MANAGER);
+    ctx.onExit = [](void*) {
+        // Cleanup callback - close any open files
+        closeAllFiles();
+        // Clear transfer path to prevent stale file paths from being loaded by Python
+        ContextManager::getInstance().clearTransferPath();
+    };
+    ContextManager::getInstance().pushContext(ctx);
+    
     // Clear screen for file manager interface
-        saveScreenState( );
+    saveScreenState( );
 
     FileManager manager;
     // Set REPL mode so the manager knows to use launchEkiloREPL
@@ -2458,21 +2524,6 @@ String filesystemAppPythonScriptsREPL( ) {
     }
 
     manager.run( );
-
-    // Serial.println("Run done");
-    // Serial.flush();
-    // delay(2000);
-
-    String content = manager.getLastSavedFileContent( );
-    // Serial.print("DEBUG: content = '");
-    // Serial.print(content);
-    // Serial.println("'");
-    // Serial.print("DEBUG: content.length() = ");
-    // Serial.println(content.length());
-    // Serial.print("DEBUG: shouldExitForREPL = ");
-    // Serial.println(manager.getShouldExitForREPL());
-    // Serial.flush();
-    // delay(2000);
 
     // Close any open files before exiting REPL mode file manager
     closeAllFiles( );
@@ -2498,7 +2549,12 @@ String filesystemAppPythonScriptsREPL( ) {
     }
     manager.setREPLMode( false );
 
-    return content;
+    // Pop FILE_MANAGER context - this preserves the transfer path for caller
+    ContextManager::getInstance().popContext();
+
+    // Return empty string - caller should use hasTransferPath() to check for file
+    // The transfer path (if set by eKilo) is preserved for the caller to read
+    return "";
 }
 
 String FileManager::getLastSavedFileContent( ) {
@@ -2578,6 +2634,7 @@ int getConfiguredEditorLines( ) {
 //==============================================================================
 
 // Recursively delete all contents of a directory
+// Note: fs_mutex is acquired by caller (provisionMicroPythonExamples)
 bool deleteDirectoryContents( const String& path ) {
     Dir dir = FatFS.openDir( path );
     bool success = true;
@@ -2652,8 +2709,16 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
         return false;
     }
 
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // THREAD SAFETY: Acquire filesystem mutex
+    fs_mutex_acquire();
+    
     File file = FatFS.open( filename, "w" );
     if ( !file ) {
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
         return false;
     }
 
@@ -2666,13 +2731,18 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
 
         if ( bytesWritten != bytesToWrite ) {
             file.close( );
+            fs_mutex_release();
+            unpauseCore2ForFlash(was_paused);
             return false;
         }
 
         totalBytesWritten += bytesWritten;
     }
 
+    file.flush();
     file.close( );
+    fs_mutex_release();
+    unpauseCore2ForFlash(was_paused);
     return true;
 }
 
@@ -2701,9 +2771,17 @@ bool writeStringToFile( const char* filename, const char* content ) {
         return false;
     }
 
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // THREAD SAFETY: Acquire filesystem mutex
+    fs_mutex_acquire();
+    
     // Reduce verbosity - only show messages for errors or final verification
     File file = FatFS.open( filename, "w" );
     if ( !file ) {
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
         addFilesystemMessage( "ERROR: Cannot open " + String( filename ) + " for writing", 196 );
         return false;
     }
@@ -2718,6 +2796,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
         if ( bytesWritten != bytesToWrite ) {
             addFilesystemMessage( "ERROR: Write failed at byte " + String( totalBytesWritten ), 196 );
             file.close( );
+            fs_mutex_release();
+            unpauseCore2ForFlash(was_paused);
             return false;
         }
 
@@ -2736,6 +2816,7 @@ bool writeStringToFile( const char* filename, const char* content ) {
         }
     }
 
+    file.flush();
     file.close( );
 
     // Quick verification - don't spend too much time on this
@@ -2743,6 +2824,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
     if ( verifyFile ) {
         size_t actualSize = verifyFile.size( );
         verifyFile.close( );
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
         if ( actualSize != contentLength ) {
             addFilesystemMessage( "ERROR: Size mismatch " + String( actualSize ) + " vs " + String( contentLength ), 196 );
             return false;
@@ -2751,6 +2834,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
     } else {
         // Don't fail on verification errors - the file might still be usable
         // Just continue silently
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
     }
 
     return true;
@@ -3115,6 +3200,221 @@ bool verifyMicroPythonExamples( ) {
     return allFilesExist;
 }
 
+// =============================================================================
+// Safe File Operations
+// =============================================================================
+// These functions provide thread-safe file I/O with proper Core2 synchronization.
+// All file operations in the codebase should use these functions.
+
+File safeFileOpen(const char* path, const char* mode, uint32_t timeout_ms) {
+    if (!path || !mode) return File();
+    
+    // Acquire filesystem mutex
+    if (timeout_ms == 0) {
+        fs_mutex_acquire();
+    } else if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        return File();  // Timeout - couldn't get mutex
+    }
+    
+    File file = FatFS.open(path, mode);
+    
+    // Note: Mutex is NOT released here - caller must call safeFileClose()
+    // This keeps the file exclusively locked while in use
+    if (!file) {
+        fs_mutex_release();  // Release if open failed
+    }
+    
+    return file;
+}
+
+void safeFileClose(File& file, bool was_write_mode) {
+    if (!file) {
+        return;
+    }
+    
+    if (was_write_mode) {
+        // Pause Core2 before flush (flash write operation)
+        bool was_paused = pauseCore2ForFlash(100);
+        file.flush();
+        file.close();
+        unpauseCore2ForFlash(was_paused);
+    } else {
+        file.close();
+    }
+    
+    fs_mutex_release();
+}
+
+bool safeFileReadAll(const char* path, char* buffer, size_t buffer_size, 
+                     size_t* bytes_read, uint32_t timeout_ms) {
+    if (!path || !buffer || buffer_size == 0) return false;
+    
+    *bytes_read = 0;
+    
+    // Acquire filesystem mutex
+    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        return false;
+    }
+    
+    File file = FatFS.open(path, "r");
+    if (!file) {
+        fs_mutex_release();
+        return false;
+    }
+    
+    size_t file_size = file.size();
+    size_t to_read = (file_size < buffer_size - 1) ? file_size : buffer_size - 1;
+    
+    *bytes_read = file.readBytes(buffer, to_read);
+    buffer[*bytes_read] = '\0';  // Null terminate
+    
+    file.close();
+    fs_mutex_release();
+    
+    return true;
+}
+
+bool safeFileWriteAll(const char* path, const char* content, size_t content_len,
+                      uint32_t timeout_ms) {
+    if (!path || !content) return false;
+    
+    if (content_len == 0) {
+        content_len = strlen(content);
+    }
+    
+    // Pause Core2 for entire write operation
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Acquire filesystem mutex
+    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        unpauseCore2ForFlash(was_paused);
+        return false;
+    }
+    
+    File file = FatFS.open(path, "w");
+    if (!file) {
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
+        return false;
+    }
+    
+    size_t written = file.write((const uint8_t*)content, content_len);
+    file.flush();
+    file.close();
+    
+    fs_mutex_release();
+    unpauseCore2ForFlash(was_paused);
+    
+    return (written == content_len);
+}
+
+int safeFileWrite(File& file, const uint8_t* data, size_t len) {
+    if (!file || !data || len == 0) return -1;
+    
+    // Note: Assumes caller already holds fs_mutex from safeFileOpen()
+    // Pause Core2 for the write operation
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    int written = file.write(data, len);
+    
+    unpauseCore2ForFlash(was_paused);
+    
+    return written;
+}
+
+bool safeFileFlush(File& file) {
+    if (!file) return false;
+    
+    // Pause Core2 for flush operation (commits to flash)
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    file.flush();
+    
+    unpauseCore2ForFlash(was_paused);
+    
+    return true;
+}
+
+bool safeFileExists(const char* path, uint32_t timeout_ms) {
+    if (!path) return false;
+    
+    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        return false;
+    }
+    
+    bool exists = FatFS.exists(path);
+    
+    fs_mutex_release();
+    
+    return exists;
+}
+
+int32_t safeFileSize(const char* path, uint32_t timeout_ms) {
+    if (!path) return -1;
+    
+    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        return -1;
+    }
+    
+    File file = FatFS.open(path, "r");
+    if (!file) {
+        fs_mutex_release();
+        return -1;
+    }
+    
+    int32_t size = file.size();
+    file.close();
+    
+    fs_mutex_release();
+    
+    return size;
+}
+
+bool safeMkdir(const char* path, uint32_t timeout_ms) {
+    if (!path) return false;
+    
+    // Pause Core2 for directory creation (flash write)
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        unpauseCore2ForFlash(was_paused);
+        return false;
+    }
+    
+    // Check if already exists
+    if (FatFS.exists(path)) {
+        fs_mutex_release();
+        unpauseCore2ForFlash(was_paused);
+        return true;  // Already exists is success
+    }
+    
+    bool success = FatFS.mkdir(path);
+    
+    fs_mutex_release();
+    unpauseCore2ForFlash(was_paused);
+    
+    return success;
+}
+
+bool safeFileDelete(const char* path, uint32_t timeout_ms) {
+    if (!path) return false;
+    
+    // Pause Core2 for file deletion (flash write)
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+        unpauseCore2ForFlash(was_paused);
+        return false;
+    }
+    
+    bool success = FatFS.remove(path);
+    
+    fs_mutex_release();
+    unpauseCore2ForFlash(was_paused);
+    
+    return success;
+}
+
 //==============================================================================
 // Output Area Management Functions
 //==============================================================================
@@ -3260,24 +3560,6 @@ bool FileManager::isInputBlocked( ) {
     return elapsed < INPUT_BLOCK_TIME;
 }
 
-// Inline editing mode - provides enhanced multiline editing without screen clearing
-String launchInlineEkilo( const String& initial_content ) {
-    // Flush any pending serial data before launching editor
-    Serial.flush( );
-    while ( Serial.available( ) > 0 ) {
-        Serial.read( );
-    }
-
-    // Launch inline editor
-    String result = ekilo_inline_edit( initial_content );
-
-    // Restore interactive mode if using Serial
-    Serial.write( 0x0E ); // turn on interactive mode
-    termInInteractiveMode = 1;
-    Serial.flush( );
-
-    return result;
-}
 
 //==============================================================================
 // Persistent Filesystem Message Management Functions

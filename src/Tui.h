@@ -271,14 +271,26 @@ inline bool readCPR(uint16_t& row, uint16_t& col, uint32_t timeout_ms=800) {
 }
 
 inline bool probeTerminalSize(uint16_t& rows, uint16_t& cols) {
+  // Clear any pending input
+  delay(5);
   while (TUIserial->available()) TUIserial->read();
+  
   TUIserial->print("\x1b[s");
   TUIserial->print("\x1b[9999;9999H");
   TUIserial->print("\x1b[6n");
   TUIserial->flush();
+  
+  // Wait a bit for response to arrive
+  delay(20);
+  
   bool ok = readCPR(rows, cols, 400);
   TUIserial->print("\x1b[u");
   TUIserial->flush();
+  
+  // Clear any remaining garbage (late responses, echoes)
+  delay(10);
+  while (TUIserial->available()) TUIserial->read();
+  
   return ok;
 }
 

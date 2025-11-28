@@ -12,7 +12,8 @@
 #include "LEDs.h"
 #include "SyntaxHighlighting.h"
 #include "CommandBuffer.h"  // For UART response capture
-
+#include "JumperlOS.h"
+#include "externVars.h"  // For pauseCore2 synchronization
 extern "C" {
 #include "py/gc.h"
 #include "py/runtime.h"
@@ -22,6 +23,10 @@ extern "C" {
 #include "py/mpthread.h"
 #include <micropython_embed.h>
 }
+
+// Forward declaration for JFS file cleanup - must be called after script execution
+// to close any files opened by MicroPython that weren't explicitly closed
+extern "C" void jl_close_all_jfs_files(void);
 
 // Global state for proper MicroPython integration
 static char mp_heap[MICROPY_HEAP_SIZE]; //heap for MicroPython (reduced to free memory for editor)
@@ -100,13 +105,47 @@ unsigned int arduino_millis(void);
 extern void *global_mp_stream_ptr;
 }
 
+/**
+ * Safe garbage collection with Core 2 synchronization
+ * 
+ * CRITICAL: GC finalisers run during gc_collect() and may call filesystem
+ * operations (like file flush/close). Core 2 must be paused during this
+ * to prevent concurrent filesystem access which can cause crashes.
+ * 
+ * Memory barriers (__dmb) ensure pauseCore2 changes are visible to Core 2
+ * before proceeding with garbage collection.
+ */
+static inline void gc_collect_safe(void) {
+    // Pause Core 2 before GC to prevent concurrent filesystem access
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Run garbage collection (this may call finalisers that access files)
+    gc_collect();
+    
+    // Restore previous pauseCore2 state
+    unpauseCore2ForFlash(was_paused);
+}
+
 // Arduino timing functions for MicroPython
 extern "C" void mp_hal_delay_ms(mp_uint_t ms) { 
-  // Check for interrupt during delays
+  // Check for interrupt during delays and run essential services
+  extern void jl_service_python(void);  // From JumperlessMicroPythonAPI.cpp
+  
   unsigned int start_time = millis();
+  unsigned int last_service_time = start_time;
+  
   while (millis() - start_time < ms) {
     // Check for interrupt every millisecond during delays
     mp_hal_check_interrupt();
+    
+    // Run essential services every 50ms during Python delays
+    // This keeps current sense measurements and marching ants animation running
+    if (millis() - last_service_time >= 50) {
+      //jl_service_python();
+      jOS.serviceCritical();
+      last_service_time = millis();
+    }
+    
     delay(1); // Small delay to prevent overwhelming the system
   }
 }
@@ -176,10 +215,12 @@ void setGlobalStream(Stream *stream) {
 
 // Terminal color control function is now in Graphics.cpp
 
+unsigned long lastInterruptCheckTime = 0;
+unsigned long interruptCheckInterval = 10;
 // MicroPython HAL stdout function with Jumperless-specific functionality
 extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     // Check for interrupt before outputting (this is called frequently)
-    //mp_hal_check_interrupt();
+
     
     // Basic output to global stream (regular MicroPython output)
     if (global_mp_stream) {
@@ -187,10 +228,13 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
             // CRITICAL: Service USB every 32 characters to prevent CDC buffer deadlock
             // Without this, Serial.write() can block if CDC TX buffer is full,
             // and USB never gets serviced, causing a permanent freeze
-            if (i % 32 == 0) {
+            if (i % 12 == 0) {
                 tud_task();  // Service USB to drain CDC TX buffer
                 mp_hal_check_interrupt();
             }
+
+
+            
             
             if (str[i] == '\n') {
                 global_mp_stream->write('\r');
@@ -198,7 +242,12 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
             global_mp_stream->write(str[i]);
         }
         // Service USB after output to ensure data starts transmitting
-        tud_task();
+        global_mp_stream->flush();
+        //if (millis() - lastInterruptCheckTime >= interruptCheckInterval) {
+         
+        //  lastInterruptCheckTime = millis();
+       // }
+        //tud_task();
     }
     
     // UART Response Capture: If this command came from UART, also queue output there
@@ -223,7 +272,7 @@ void mp_hal_check_interrupt(void) {
   
   // Throttle checking to avoid overwhelming the system, but check more frequently than before
   uint32_t current_time = millis();
-  if (current_time - last_check_time < 1) { // Check at most every 1ms instead of every call
+  if (current_time - last_check_time < interruptCheckInterval) { // Check at most every 1ms instead of every call
     return;
   }
   last_check_time = current_time;
@@ -325,24 +374,7 @@ void deinitMicroPythonProper(void) {
   }
 }
 
-bool executePythonCodeProper(const char *code) {
-  if (!mp_initialized) {
-    global_mp_stream->println("[MP] Error: MicroPython not initialized");
-    return false;
-  }
 
-  if (!code || strlen(code) == 0) {
-    return false;
-  }
-
-  // Clear response buffer
-  memset(mp_response_buffer, 0, sizeof(mp_response_buffer));
-
-  // Execute the code with proper error handling
-  // MicroPython handles errors internally and prints them
-  mp_embed_exec_str(code);
-  return true;
-}
 
 void startMicroPythonREPL(void) {
   if (!mp_initialized) {
@@ -379,6 +411,11 @@ void stopMicroPythonREPL(void) {
     
     // Close any open files before exiting REPL
     closeAllOpenFiles();
+    
+    // Give filesystem time to fully sync
+    delay(50);
+    yield();
+    
     s_line_coding_override = false;
     
     mp_repl_active = false;
@@ -402,6 +439,28 @@ void enterMicroPythonREPL(Stream *stream) {
 }
 
 void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
+  // Push PYTHON_REPL context onto the stack for proper navigation
+  ContextEntry ctx(ContextType::PYTHON_REPL);
+  ctx.onExit = [](void*) {
+    // Cleanup callback - close any open files
+    extern void closeAllFiles();
+    closeAllFiles();
+    // Clear transfer path to prevent stale file paths from persisting
+    ContextManager::getInstance().clearTransferPath();
+  };
+  
+  // Check if parent context set a transfer path (e.g., from Ekilo editor)
+  // This allows zero-copy file path passing
+  String fileToLoad = filepath;
+  if (fileToLoad.length() == 0 && ContextManager::getInstance().hasTransferPath()) {
+    fileToLoad = ContextManager::getInstance().getTransferPath();
+    // IMPORTANT: Clear transfer path after consuming it
+    // This prevents the original caller from re-loading the file after nested REPL exits
+    ContextManager::getInstance().clearTransferPath();
+  }
+  
+  ContextManager::getInstance().pushContext(ctx);
+
   // Colorful initialization like original implementation
   changeTerminalColor(replColors[6], true, global_mp_stream);
 
@@ -410,6 +469,7 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
     if (!initMicroPythonProper()) {
       changeTerminalColor(replColors[4], true, global_mp_stream); // error color
       global_mp_stream->println("Failed to initialize MicroPython!");
+      ContextManager::getInstance().popContext();  // Pop on error
       return;
     }
   }
@@ -431,9 +491,9 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
     return;
   }
 
-  // Set initial file if provided
-  if (filepath.length() > 0) {
-    setREPLInitialFile(filepath);
+  // Set initial file if provided (uses transfer path if available)
+  if (fileToLoad.length() > 0) {
+    setREPLInitialFile(fileToLoad);
   }
 
   // Show colorful welcome messages
@@ -472,7 +532,16 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   Serial.write("\x1b[0 q");
 
 
+  extern void jl_service_python(void);
+  unsigned long lastWaitServiceTime = millis();
   while (global_mp_stream->available() == 0) {
+    // Run services while waiting for user input
+    if (millis() - lastWaitServiceTime >= 50) {
+      jl_service_python();
+      
+      
+      lastWaitServiceTime = millis();
+    }
     delayMicroseconds(1);
   }
 
@@ -484,9 +553,18 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   startMicroPythonREPL();
 
   // Blocking loop - stay in REPL until user exits
+  extern void jl_service_python(void);  // From JumperlessMicroPythonAPI.cpp
+  unsigned long lastServiceTime = millis();
+  
   while (mp_repl_active) {
     processMicroPythonInput(global_mp_stream);
-   // mp_hal_check_interrupt();
+    
+    // Run essential services every 50ms to keep measurements and animations running
+    if (millis() - lastServiceTime >= 50) {
+      jl_service_python();
+      lastServiceTime = millis();
+    }
+    
     delayMicroseconds(1); // Small delay to prevent overwhelming
   }
 
@@ -508,6 +586,9 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   }
   global_mp_stream->print("\033[0m");
   // stream->println("Returned to Arduino mode");
+  
+  // Pop PYTHON_REPL context - cleanup callback will be called
+  ContextManager::getInstance().popContext();
 }
 
 void processMicroPythonInput(Stream *stream) {
@@ -534,11 +615,11 @@ void processMicroPythonInput(Stream *stream) {
         history_initialized = true;
       }
 
-      // Load the file content into the editor
-      File file = FatFS.open(repl_initial_filepath.c_str(), "r");
+      // Load the file content into the editor using safe file functions
+      File file = safeFileOpen(repl_initial_filepath.c_str(), "r", 2000);
       if (file) {
         String fileContent = file.readString();
-        file.close();
+        safeFileClose(file, false);  // Read-only, no flush
 
         // Show the loaded content
         editor.loadScriptContent(fileContent, "Script loaded from file: " + repl_initial_filepath);
@@ -583,10 +664,47 @@ void processMicroPythonInput(Stream *stream) {
       global_mp_stream->println("KeyboardInterrupt (ESC)");
       global_mp_stream->println("Exiting REPL...");
       changeTerminalColor(replColors[1], true, global_mp_stream);
+      history.forceFlush();  // Save history before exit
       stopMicroPythonREPL();
       
       editor.reset();
       return;
+    }
+
+    // Periodic history flush check during idle time
+    history.checkPeriodicFlush();
+
+    // Input batching state for responsive arrow key handling
+    static uint32_t last_arrow_time = 0;
+    static int arrow_repeat_count = 0;
+    static int last_arrow_direction = 0;  // 65=up, 66=down, 67=right, 68=left
+    
+    // Aggressive timeout check for stale queued arrow keys (key released)
+    if (last_arrow_direction != 0) {
+      uint32_t gap = millis() - last_arrow_time;
+      if (gap > 35) {  // 25ms gap = key released, be aggressive
+        // Clear ALL pending arrow keys from buffer (any direction)
+        int cleared = 0;
+        while (global_mp_stream->available() >= 3 && cleared < 50) {
+          // Peek for ESC [ arrow pattern
+          int b0 = global_mp_stream->peek();
+          if (b0 != 27) break;  // Not an escape sequence
+          global_mp_stream->read();  // consume ESC
+          if (!global_mp_stream->available()) break;
+          int b1 = global_mp_stream->read();
+          if (b1 != 91) break;  // Not [
+          if (!global_mp_stream->available()) break;
+          int b2 = global_mp_stream->peek();
+          if (b2 >= 65 && b2 <= 68) {
+            global_mp_stream->read();  // Discard ANY arrow key
+            cleared++;
+          } else {
+            break;  // Not an arrow, stop
+          }
+        }
+        last_arrow_direction = 0;
+        arrow_repeat_count = 0;
+      }
     }
 
     // Check for available input
@@ -609,6 +727,19 @@ void processMicroPythonInput(Stream *stream) {
         switch (c) {
         case 65: //TODO: Up arrow - history previous
         {
+          // Track arrow for batching with aggressive timeout
+          uint32_t now = millis();
+          int moves = 1;
+          uint32_t since_last = now - last_arrow_time;
+          if (last_arrow_direction == 65 && since_last < 40) {
+            arrow_repeat_count++;
+            if (arrow_repeat_count > 4 && since_last < 30) moves = 2;  // Conservative acceleration
+          } else {
+            arrow_repeat_count = 1;  // Reset on direction change or timeout
+          }
+          last_arrow_direction = 65;
+          last_arrow_time = now;
+          
           // Only allow history navigation if:
           // 1. Current input is empty (blank prompt), OR
           // 2. We just loaded from history and no other keys were pressed
@@ -622,8 +753,10 @@ void processMicroPythonInput(Stream *stream) {
               global_mp_stream->flush();
             }
           } else if (editor.in_multiline_mode) {
-            // In multiline mode, move cursor up one line
-            editor.moveCursorUp();
+            // In multiline mode, move cursor up (with batched moves)
+            for (int i = 0; i < moves; i++) {
+              editor.moveCursorUp();
+            }
             editor.repositionCursorOnly(global_mp_stream);
           }
           // If neither history nor multiline, do nothing
@@ -632,6 +765,19 @@ void processMicroPythonInput(Stream *stream) {
 
         case 66: // Down arrow - history next
         {
+          // Track arrow for batching with aggressive timeout
+          uint32_t now = millis();
+          int moves = 1;
+          uint32_t since_last = now - last_arrow_time;
+          if (last_arrow_direction == 66 && since_last < 40) {
+            arrow_repeat_count++;
+            if (arrow_repeat_count > 4 && since_last < 30) moves = 2;  // Conservative acceleration
+          } else {
+            arrow_repeat_count = 1;  // Reset on direction change or timeout
+          }
+          last_arrow_direction = 66;
+          last_arrow_time = now;
+          
           // Only allow history navigation if:
           // 1. We're currently in history mode, OR
           // 2. Current input is empty (blank prompt), OR  
@@ -651,8 +797,10 @@ void processMicroPythonInput(Stream *stream) {
               global_mp_stream->flush();
             }
           } else if (editor.in_multiline_mode) {
-            // In multiline mode, move cursor down one line
-            editor.moveCursorDown();
+            // In multiline mode, move cursor down (with batched moves)
+            for (int i = 0; i < moves; i++) {
+              editor.moveCursorDown();
+            }
             editor.repositionCursorOnly(global_mp_stream);
           }
           // If neither history nor multiline, do nothing
@@ -660,31 +808,61 @@ void processMicroPythonInput(Stream *stream) {
           return;
 
         case 67: // Right arrow
+        {
+          // Track arrow for batching with aggressive timeout
+          uint32_t now = millis();
+          int moves = 1;
+          uint32_t since_last = now - last_arrow_time;
+          if (last_arrow_direction == 67 && since_last < 40) {
+            arrow_repeat_count++;
+            if (arrow_repeat_count > 4 && since_last < 30) moves = 2;  // Conservative acceleration
+          } else {
+            arrow_repeat_count = 1;  // Reset on direction change or timeout
+          }
+          last_arrow_direction = 67;
+          last_arrow_time = now;
+          
           // Exit history mode when user starts navigating
           if (editor.in_history_mode) {
             editor.in_history_mode = false;
-            editor.just_loaded_from_history = false; // Clear the flag
+            editor.just_loaded_from_history = false;
             history.resetHistoryNavigation();
           }
           
-          if (editor.cursor_pos < editor.current_input.length()) {
+          for (int i = 0; i < moves && editor.cursor_pos < editor.current_input.length(); i++) {
             editor.moveCursorRight();
-            editor.repositionCursorOnly(global_mp_stream);
           }
+          editor.repositionCursorOnly(global_mp_stream);
+        }
           return;
 
         case 68: // Left arrow
+        {
+          // Track arrow for batching with aggressive timeout
+          uint32_t now = millis();
+          int moves = 1;
+          uint32_t since_last = now - last_arrow_time;
+          if (last_arrow_direction == 68 && since_last < 40) {
+            arrow_repeat_count++;
+            if (arrow_repeat_count > 4 && since_last < 30) moves = 2;  // Conservative acceleration
+          } else {
+            arrow_repeat_count = 1;  // Reset on direction change or timeout
+          }
+          last_arrow_direction = 68;
+          last_arrow_time = now;
+          
           // Exit history mode when user starts navigating
           if (editor.in_history_mode) {
             editor.in_history_mode = false;
-            editor.just_loaded_from_history = false; // Clear the flag
+            editor.just_loaded_from_history = false;
             history.resetHistoryNavigation();
           }
           
-          if (editor.cursor_pos > 0) {
+          for (int i = 0; i < moves && editor.cursor_pos > 0; i++) {
             editor.moveCursorLeft();
-            editor.repositionCursorOnly(global_mp_stream);
           }
+          editor.repositionCursorOnly(global_mp_stream);
+        }
           return;
 
         default:
@@ -713,9 +891,39 @@ void processMicroPythonInput(Stream *stream) {
         global_mp_stream->printf("KeyboardInterrupt (Ctrl+%c)\n\r", char_display);
         global_mp_stream->println("Force quit - exiting REPL...");
         changeTerminalColor(replColors[1], true, global_mp_stream);
+        history.forceFlush();  // Save history before exit
         stopMicroPythonREPL();
         
         editor.reset();
+        return;
+      }
+
+      // Handle Ctrl+S - instant save to history (crash-safe)
+      if (c == 19) { // Ctrl+S = ASCII 19
+        global_mp_stream->print("^S");
+        if (editor.current_input.length() > 0) {
+          // Save current input immediately to disk
+          history.addToHistory(editor.current_input);
+          history.forceFlush();
+          changeTerminalColor(replColors[5], true, global_mp_stream);
+          global_mp_stream->println("\r\n[Saved to history]");
+          changeTerminalColor(replColors[1], true, global_mp_stream);
+        } else {
+          // No input - save last executed command as a script file
+          String last = history.getLastExecutedCommand();
+          if (last.length() > 0) {
+            history.saveScript(last, "");  // Auto-generates filename
+            changeTerminalColor(replColors[5], true, global_mp_stream);
+            global_mp_stream->println("\r\n[Last script saved]");
+            changeTerminalColor(replColors[1], true, global_mp_stream);
+          } else {
+            changeTerminalColor(replColors[4], true, global_mp_stream);
+            global_mp_stream->println("\r\n[No input to save]");
+            changeTerminalColor(replColors[1], true, global_mp_stream);
+          }
+        }
+        editor.drawPrompt(global_mp_stream, 0);
+        global_mp_stream->flush();
         return;
       }
 
@@ -733,6 +941,7 @@ void processMicroPythonInput(Stream *stream) {
         //! Exit commands
         if (trimmed_input == "exit()" || trimmed_input == "quit()" ||
             trimmed_input == "exit" || trimmed_input == "quit") {
+          history.forceFlush();  // Save history before exit
           stopMicroPythonREPL();
           editor.reset();
           return;
@@ -842,26 +1051,24 @@ void processMicroPythonInput(Stream *stream) {
           global_mp_stream->println("Opening eKilo editor...");
           changeTerminalColor(replColors[0], false, global_mp_stream);
           
+          // CRITICAL: Pause Core2 during flash write operations
           // Create python_scripts directory if it doesn't exist
-          if (!FatFS.exists("/python_scripts")) {
-            FatFS.mkdir("/python_scripts");
-          }
+          safeMkdir("/python_scripts", 2000);
           
-          // Save last executed command to temporary file
+          // Save last executed command to temporary file using safe functions
           String tempFile = "/python_scripts/_temp_repl_edit.py";
-          File file = FatFS.open(tempFile, "w");
-          if (file) {
-            String lastCommand = history.getLastExecutedCommand();
-            if (lastCommand.length() > 0) {
-              file.print(lastCommand);
-            } else {
-              // Start with a helpful comment if no history
-              file.println("# Edit your Python script here");
-              file.println("# Press Ctrl+S to save and return to REPL");
-              file.println("# Press Ctrl+P to save and execute immediately");
-            }
-            file.close();
+          String lastCommand = history.getLastExecutedCommand();
+          const char* contentToWrite;
+          size_t contentLen;
+          if (lastCommand.length() > 0) {
+            contentToWrite = lastCommand.c_str();
+            contentLen = lastCommand.length();
+          } else {
+            // Start with a helpful comment if no history
+            contentToWrite = "# Edit your Python script here\n# Press Ctrl+S to save and return to REPL\n# Press Ctrl+P to save and execute immediately\n";
+            contentLen = strlen(contentToWrite);
           }
+          safeFileWriteAll(tempFile.c_str(), contentToWrite, contentLen, 2000);
           
           // Launch main eKilo editor with temporary file
           String savedContent = launchEkiloREPL(tempFile.c_str());
@@ -888,6 +1095,12 @@ void processMicroPythonInput(Stream *stream) {
                 
                 // Execute the script
                 mp_embed_exec_str(contentToExecute.c_str());
+                // Force GC after script to close file handles and free memory
+                // Use safe version with Core 2 synchronization
+                gc_collect_safe();
+                // CRITICAL: Close any files that weren't explicitly closed by the script
+                // This prevents file handle leaks and filesystem conflicts
+                jl_close_all_jfs_files();
               }
             } else {
               // Regular save - load content into REPL editor
@@ -953,25 +1166,22 @@ void processMicroPythonInput(Stream *stream) {
           changeTerminalColor(replColors[0], false, global_mp_stream);
           
           // Create python_scripts directory if it doesn't exist
-          if (!FatFS.exists("/python_scripts")) {
-            FatFS.mkdir("/python_scripts");
-          }
+          safeMkdir("/python_scripts", 2000);
           
-          // Save last executed command to temporary file
+          // Save last executed command to temporary file using safe functions
           String tempFile = "/python_scripts/_temp_repl_edit.py";
-          File file = FatFS.open(tempFile, "w");
-          if (file) {
-            String lastCommand = history.getLastExecutedCommand();
-            if (lastCommand.length() > 0) {
-              file.print(lastCommand);
-            } else {
-              // Start with a helpful comment if no history
-              file.println("# Edit your Python script here");
-              file.println("# Press Ctrl+S to save and return to REPL");
-              file.println("# Press Ctrl+P to save and execute immediately");
-            }
-            file.close();
+          String lastCommand = history.getLastExecutedCommand();
+          const char* editContent;
+          size_t editLen;
+          if (lastCommand.length() > 0) {
+            editContent = lastCommand.c_str();
+            editLen = lastCommand.length();
+          } else {
+            // Start with a helpful comment if no history
+            editContent = "# Edit your Python script here\n# Press Ctrl+S to save and return to REPL\n# Press Ctrl+P to save and execute immediately\n";
+            editLen = strlen(editContent);
           }
+          safeFileWriteAll(tempFile.c_str(), editContent, editLen, 2000);
           
           // Launch main eKilo editor with temporary file
           String savedContent = launchEkiloREPL(tempFile.c_str());
@@ -1155,6 +1365,9 @@ void processMicroPythonInput(Stream *stream) {
           global_mp_stream->println("Opening file manager...");
           changeTerminalColor(replColors[0], false, global_mp_stream);
           
+          // Clear any existing transfer path before launching file manager
+          ContextManager::getInstance().clearTransferPath();
+          
           // Launch file manager in REPL mode
           String savedContent = filesystemAppPythonScriptsREPL();
           
@@ -1165,8 +1378,30 @@ void processMicroPythonInput(Stream *stream) {
             global_mp_stream->flush();
           }
 
-          // If content was saved, load it into the editor
-          if (savedContent.length() > 0) {
+          // ZERO-COPY: Check if a file path was set via transfer mechanism
+          // This is more memory-efficient than passing content as String
+          bool hasContent = savedContent.length() > 0;
+          bool hasTransferPath = ContextManager::getInstance().hasTransferPath();
+          
+          if (hasTransferPath) {
+            // Load from file path (zero-copy approach)
+            const char* filePath = ContextManager::getInstance().getTransferPath();
+            showREPLreference();
+            
+            // Read file content for editor using safe file functions
+            File f = safeFileOpen(filePath, "r", 2000);
+            if (f) {
+              String content = f.readString();
+              safeFileClose(f, false);  // Read-only, no flush
+              editor.loadScriptContent(content, String("Loaded: ") + filePath);
+            } else {
+              global_mp_stream->println("Failed to load file from transfer path");
+              editor.reset();
+            }
+            ContextManager::getInstance().clearTransferPath();
+            return;
+          } else if (hasContent) {
+            // Fallback: use returned content (backward compatibility)
             showREPLreference();
             editor.loadScriptContent(savedContent, "File content loaded into REPL");
             return;
@@ -1217,6 +1452,11 @@ void processMicroPythonInput(Stream *stream) {
 
               // Execute the complete script
               mp_embed_exec_str(script_to_execute.c_str());
+              // Force GC after script to close file handles and free memory
+              // Use safe version with Core 2 synchronization
+              gc_collect_safe();
+              // CRITICAL: Close any files that weren't explicitly closed by the script
+              jl_close_all_jfs_files();
             }
 
             // Reset and show new prompt
@@ -1363,6 +1603,15 @@ void processMicroPythonInput(Stream *stream) {
 
               // Let MicroPython handle the complete statement
               mp_embed_exec_str(clean_input.c_str());
+              
+              // Force garbage collection after script execution to clean up
+              // temporary objects and close orphaned file handles (via finalizers)
+              // Use safe version with Core 2 synchronization to prevent crashes
+              gc_collect_safe();
+              
+              // CRITICAL: Close any files that weren't explicitly closed by the script
+              // This ensures files are available for other operations (eKilo, etc.)
+              jl_close_all_jfs_files();
             }
 
             changeTerminalColor(replColors[1], true, global_mp_stream);
@@ -1437,25 +1686,22 @@ void processMicroPythonInput(Stream *stream) {
         global_mp_stream->println("\n[Opening eKilo editor...]");
         changeTerminalColor(replColors[0], false, global_mp_stream);
         
-        // Create python_scripts directory if it doesn't exist
-        if (!FatFS.exists("/python_scripts")) {
-          FatFS.mkdir("/python_scripts");
-        }
+        // Create python_scripts directory if it doesn't exist (safe function handles Core2 pause)
+        safeMkdir("/python_scripts", 2000);
         
         // Save current input to temporary file
         String tempFile = "/python_scripts/_temp_repl_edit.py";
-        File file = FatFS.open(tempFile, "w");
-        if (file) {
-          if (editor.current_input.length() > 0) {
-            file.print(editor.current_input);
-          } else {
-            // Start with a helpful comment if no input
-            file.println("# Edit your Python script here");
-            file.println("# Press Ctrl+S to save and return to REPL");
-            file.println("# Press Ctrl+P to save and execute immediately");
-          }
-          file.close();
+        const char* contentToWrite;
+        const char* defaultContent = "# Edit your Python script here\n# Press Ctrl+S to save and return to REPL\n# Press Ctrl+P to save and execute immediately\n";
+        
+        if (editor.current_input.length() > 0) {
+          contentToWrite = editor.current_input.c_str();
+        } else {
+          contentToWrite = defaultContent;
         }
+        
+        // Use safe file write (handles Core2 pause and mutex internally)
+        safeFileWriteAll(tempFile.c_str(), contentToWrite, 0, 2000);
         
         // Launch main eKilo editor with temporary file
         String savedContent = launchEkiloREPL(tempFile.c_str());
@@ -1482,6 +1728,11 @@ void processMicroPythonInput(Stream *stream) {
               
               // Execute the script
               mp_embed_exec_str(contentToExecute.c_str());
+              // Force GC after script to close file handles and free memory
+              // Use safe version with Core 2 synchronization
+              gc_collect_safe();
+              // CRITICAL: Close any files that weren't explicitly closed by the script
+              jl_close_all_jfs_files();
             }
           } else {
             // Regular save - load content into REPL editor
@@ -1820,36 +2071,23 @@ except ImportError as e:
 except Exception as e:
     print("☹ Error testing native jumperless module:", str(e))
 )""";
-// Simple execution function for one-off commands
-bool executePythonSimple(const char *code, char *response,
-                         size_t response_size) {
-  if (!mp_initialized) {
-    if (response)
-      strncpy(response, "ERROR: MicroPython not initialized",
-              response_size - 1);
-    return false;
-  }
-
-  // Clear response buffer
-  memset(mp_response_buffer, 0, sizeof(mp_response_buffer));
-
-  // Execute and capture any output
-  bool success = executePythonCodeProper(code);
-
-  // Copy response if buffer provided
-  if (response && response_size > 0) {
-    if (success) {
-      global_mp_stream->println("[MP] Executing native module test...");
-      mp_embed_exec_str(test_code);
-      global_mp_stream->println("[MP] Native module test complete");
-    }
-  }
-
-  return success;
-}
 
 // Status functions
 bool isMicroPythonInitialized(void) { return mp_initialized; }
+
+// Force garbage collection to free memory before launching editor
+// This helps prevent crashes when memory is fragmented from Python operations
+void forceGarbageCollection(void) {
+    if (!mp_initialized) {
+        return;  // Nothing to collect if Python isn't running
+    }
+    
+    // Use safe garbage collection with Core2 synchronization
+    gc_collect_safe();
+    
+    // Also close any orphaned file handles
+    jl_close_all_jfs_files();
+}
 
 void printMicroPythonStatus(void) {
   global_mp_stream->println("\n=== MicroPython Status ===");
@@ -1918,18 +2156,16 @@ void ScriptHistory::initFilesystem() {
   // Note: FatFS should already be initialized by main application
   // Do not call FatFS.begin() here as it can interfere with config loading
   
-  // Create scripts directory if it doesn't exist
-  if (!FatFS.exists(scripts_dir)) {
-    if (!FatFS.mkdir(scripts_dir)) {
-      global_mp_stream->println("Failed to create scripts directory");
-      return;
-    }
+  // Create scripts directory if it doesn't exist using safe function
+  if (!safeMkdir(scripts_dir.c_str(), 2000)) {
+    global_mp_stream->println("Failed to create scripts directory");
+    return;
   }
 
-  // Load existing history from file
+  // Load existing history from file (has its own mutex handling)
   loadHistoryFromFile();
 
-  // Find the next available script number
+  // Find the next available script number (has its own mutex handling)
   findNextScriptNumber();
 }
 
@@ -1937,54 +2173,67 @@ void ScriptHistory::addToHistory(const String &script) {
   if (script.length() == 0)
     return;
 
-  // Check if this command already exists anywhere in history
-  for (int i = 0; i < history_count; i++) {
-    if (history[i] == script) {
-      // Move this command to the end (most recent)
-      String temp = history[i];
-      for (int j = i; j < history_count - 1; j++) {
-        history[j] = history[j + 1];
-      }
-      history[history_count - 1] = temp;
-      current_history_index = -1; // Reset navigation
+  // Check if this command already exists in history (ring buffer search)
+  for (int i = 0; i < count; i++) {
+    int idx = (head - count + i + MAX_HISTORY) % MAX_HISTORY;
+    if (history[idx].content == script) {
+      // Move this command to the head by updating its timestamp
+      history[idx].timestamp = millis();
+      current_history_index = -1;
+      dirty = true;
       return;
     }
   }
 
-  // Shift history if full
-  if (history_count >= MAX_HISTORY) {
-    for (int i = 0; i < MAX_HISTORY - 1; i++) {
-      history[i] = history[i + 1];
-    }
-    history_count = MAX_HISTORY - 1;
+  // Count lines for multiline detection
+  int line_count = countLines(script);
+  bool is_multiline = (line_count > MULTILINE_THRESHOLD);
+  String parent_id = "";
+  
+  // For multiline scripts, compute parent hash and prune old versions
+  if (is_multiline) {
+    parent_id = computeParentHash(script);
+    pruneParentVersions(parent_id, MAX_PARENT_VERSIONS - 1); // Keep space for new one
   }
 
-  history[history_count++] = script;
+  // Ring buffer insert at head position
+  int insert_idx = head % MAX_HISTORY;
+  history[insert_idx].content = script;
+  history[insert_idx].parent_id = parent_id;
+  history[insert_idx].timestamp = millis();
+  history[insert_idx].is_multiline = is_multiline;
+  
+  head++;
+  if (count < MAX_HISTORY) count++;
+  
   current_history_index = -1; // Reset navigation
-  saveHistoryToFile();
+  dirty = true;  // Mark for batched write (don't write immediately)
 }
 
 String ScriptHistory::getPreviousCommand() {
-  if (history_count == 0)
+  if (count == 0)
     return "";
 
   if (current_history_index == -1) {
-    current_history_index = history_count - 1;
+    current_history_index = count - 1;
   } else if (current_history_index > 0) {
     current_history_index--;
   }
   // If already at the oldest command, stay there
 
-  return history[current_history_index];
+  // Convert navigation index to ring buffer index
+  int ring_idx = (head - count + current_history_index + MAX_HISTORY) % MAX_HISTORY;
+  return history[ring_idx].content;
 }
 
 String ScriptHistory::getNextCommand() {
-  if (history_count == 0 || current_history_index == -1)
+  if (count == 0 || current_history_index == -1)
     return "";
 
-  if (current_history_index < history_count - 1) {
+  if (current_history_index < count - 1) {
     current_history_index++;
-    return history[current_history_index];
+    int ring_idx = (head - count + current_history_index + MAX_HISTORY) % MAX_HISTORY;
+    return history[ring_idx].content;
   } else {
     // Moving forward past the newest command returns to original input
     current_history_index = -1;
@@ -1993,8 +2242,9 @@ String ScriptHistory::getNextCommand() {
 }
 
 String ScriptHistory::getCurrentHistoryCommand() {
-  if (current_history_index >= 0 && current_history_index < history_count) {
-    return history[current_history_index];
+  if (current_history_index >= 0 && current_history_index < count) {
+    int ring_idx = (head - count + current_history_index + MAX_HISTORY) % MAX_HISTORY;
+    return history[ring_idx].content;
   }
   return "";
 }
@@ -2004,15 +2254,18 @@ void ScriptHistory::resetHistoryNavigation() {
 }
 
 void ScriptHistory::clearHistory() {
-  history_count = 0;
+  count = 0;
+  head = 0;
   current_history_index = -1;
-  saveHistoryToFile();
+  dirty = true;  // Mark for batched write
 }
 
 String ScriptHistory::getLastExecutedCommand() {
-  if (history_count == 0)
+  if (count == 0)
     return "";
-  return history[history_count - 1]; // Return most recent without affecting navigation
+  // Most recent is at (head - 1) in ring buffer
+  int ring_idx = (head - 1 + MAX_HISTORY) % MAX_HISTORY;
+  return history[ring_idx].content;
 }
 
 String ScriptHistory::getLastSavedScript() { 
@@ -2042,7 +2295,7 @@ bool ScriptHistory::saveScript(const String &script, const String &filename) {
 
     // Make sure this filename doesn't already exist, increment if needed
     String fullPath = scripts_dir + "/" + fname + ".py";
-    while (FatFS.exists(fullPath)) {
+    while (safeFileExists(fullPath.c_str(), 500)) {
       next_script_number++;
       fname = "script_" + String(next_script_number);
       fullPath = scripts_dir + "/" + fname + ".py";
@@ -2054,14 +2307,12 @@ bool ScriptHistory::saveScript(const String &script, const String &filename) {
   }
 
   String fullPath = scripts_dir + "/" + fname;
-  File file = FatFS.open(fullPath, "w");
-  if (!file) {
+  
+  // Use safe file write function (handles Core2 pause, mutex, and flush)
+  if (!safeFileWriteAll(fullPath.c_str(), script.c_str(), script.length(), 2000)) {
     global_mp_stream->println("Failed to create script file: " + fullPath);
     return false;
   }
-
-  file.print(script);
-  file.close();
 
   last_saved_script = fname; // Store for easy reference
 
@@ -2089,19 +2340,21 @@ String ScriptHistory::loadScript(const String &filename) {
     fullPath += ".py";
   }
 
-  if (!FatFS.exists(fullPath)) {
+  // Check if file exists using safe function
+  if (!safeFileExists(fullPath.c_str(), 1000)) {
     global_mp_stream->println("Script not found: " + fullPath);
     return "";
   }
 
-  File file = FatFS.open(fullPath, "r");
+  // Open and read file using safe functions
+  File file = safeFileOpen(fullPath.c_str(), "r", 2000);
   if (!file) {
     global_mp_stream->println("Failed to open script file: " + fullPath);
     return "";
   }
 
   String content = file.readString();
-  file.close();
+  safeFileClose(file, false);  // Read-only, no flush
 
   global_mp_stream->println("Script loaded: " + fullPath);
   return content;
@@ -2122,12 +2375,16 @@ bool ScriptHistory::deleteScript(const String &filename) {
     //fullPath += ".py";
   }
 
-  if (!FatFS.exists(fullPath)) {
+  // Check if file exists using safe function
+  if (!safeFileExists(fullPath.c_str(), 1000)) {
     global_mp_stream->println("Script not found: " + fullPath);
     return false;
   }
 
-  if (FatFS.remove(fullPath)) {
+  // Delete file using safe function
+  bool removed = safeFileDelete(fullPath.c_str(), 2000);
+  
+  if (removed) {
     // Remove from saved scripts tracking
     for (int i = 0; i < saved_scripts_count; i++) {
       String saved_name = saved_scripts[i];
@@ -2163,21 +2420,24 @@ void ScriptHistory::listScripts() {
   // Reset numbered scripts mapping
   numbered_scripts_count = 0;
 
-  // Show recent command history (without numbers)
+  // Show recent command history (without numbers) - last 5 from ring buffer
   changeTerminalColor(replColors[6], false, global_mp_stream);
   global_mp_stream->println("\n\rRecent Commands:");
   changeTerminalColor(replColors[9], false, global_mp_stream);
-  for (int i = history_count - 1; i >= 0 && i >= history_count - 5;
-       i--) { // Show last 5
-    String history_line = history[i].substring(0, 60);
+  
+  int show_count = (count < 5) ? count : 5;
+  for (int i = 0; i < show_count; i++) {
+    // Access from newest to oldest
+    int idx = (head - 1 - i + MAX_HISTORY) % MAX_HISTORY;
+    String history_line = history[idx].content.substring(0, 60);
     history_line.replace("\n", "\n\r");
     if (history_line.length() > 60)
       history_line += "...";
     global_mp_stream->printf("   %s\n\r", history_line.c_str());
-    if (history[i].length() > 60)
+    if (history[idx].content.length() > 60)
       global_mp_stream->println("...");
   }
-  if (history_count == 0) {
+  if (count == 0) {
     global_mp_stream->println("   No commands in history");
   }
 
@@ -2185,7 +2445,7 @@ void ScriptHistory::listScripts() {
   changeTerminalColor(replColors[6], false, global_mp_stream);
   global_mp_stream->println("\n\rSaved Scripts:");
   changeTerminalColor(replColors[8], false, global_mp_stream);
-  if (!FatFS.exists(scripts_dir)) {
+  if (!safeFileExists(scripts_dir.c_str(), 500)) {
     global_mp_stream->println("   No scripts directory");
     return;
   }
@@ -2199,22 +2459,19 @@ void ScriptHistory::listScripts() {
       fullPath += ".py";
     }
 
-    if (FatFS.exists(fullPath)) {
-      File file = FatFS.open(fullPath, "r");
-      if (file) {
-        if (numbered_scripts_count < 20) {
-          numbered_scripts[numbered_scripts_count] = saved_scripts[i];
-          String display_name = saved_scripts[i];
-          if (!display_name.endsWith(".py")) {
-            display_name += ".py";
-          }
-          global_mp_stream->printf("   %d. %s (%d bytes) [recent]\n\r",
-                                   numbered_scripts_count + 1,
-                                   display_name.c_str(), file.size());
-          numbered_scripts_count++;
-          script_count++;
+    int32_t fileSize = safeFileSize(fullPath.c_str(), 500);
+    if (fileSize >= 0) {
+      if (numbered_scripts_count < 20) {
+        numbered_scripts[numbered_scripts_count] = saved_scripts[i];
+        String display_name = saved_scripts[i];
+        if (!display_name.endsWith(".py")) {
+          display_name += ".py";
         }
-        file.close();
+        global_mp_stream->printf("   %d. %s (%d bytes) [recent]\n\r",
+                                 numbered_scripts_count + 1,
+                                 display_name.c_str(), fileSize);
+        numbered_scripts_count++;
+        script_count++;
       }
     }
   }
@@ -2224,7 +2481,8 @@ void ScriptHistory::listScripts() {
     String script_name = "script_" + String(i);
     String test_script = scripts_dir + "/" + script_name + ".py";
 
-    if (FatFS.exists(test_script)) {
+    int32_t testFileSize = safeFileSize(test_script.c_str(), 500);
+    if (testFileSize >= 0) {
       // Check if we already listed this one
       bool already_listed = false;
       for (int j = 0; j < saved_scripts_count; j++) {
@@ -2236,16 +2494,12 @@ void ScriptHistory::listScripts() {
       }
 
       if (!already_listed && numbered_scripts_count < 20) {
-        File file = FatFS.open(test_script, "r");
-        if (file) {
-          numbered_scripts[numbered_scripts_count] = script_name;
-          global_mp_stream->printf("   %d. %s.py (%d bytes)\n\r",
-                                   numbered_scripts_count + 1,
-                                   script_name.c_str(), file.size());
-          numbered_scripts_count++;
-          script_count++;
-          file.close();
-        }
+        numbered_scripts[numbered_scripts_count] = script_name;
+        global_mp_stream->printf("   %d. %s.py (%d bytes)\n\r",
+                                 numbered_scripts_count + 1,
+                                 script_name.c_str(), testFileSize);
+        numbered_scripts_count++;
+        script_count++;
       }
     }
   }
@@ -2257,7 +2511,8 @@ void ScriptHistory::listScripts() {
 
   for (int i = 0; i < num_common; i++) {
     String test_script = scripts_dir + "/" + common_names[i] + ".py";
-    if (FatFS.exists(test_script)) {
+    int32_t commonFileSize = safeFileSize(test_script.c_str(), 500);
+    if (commonFileSize >= 0) {
       // Check if we already listed this one
       bool already_listed = false;
       for (int j = 0; j < saved_scripts_count; j++) {
@@ -2269,16 +2524,12 @@ void ScriptHistory::listScripts() {
       }
 
       if (!already_listed && numbered_scripts_count < 20) {
-        File file = FatFS.open(test_script, "r");
-        if (file) {
-          numbered_scripts[numbered_scripts_count] = common_names[i];
-          global_mp_stream->printf("   %d. %s.py (%d bytes)\n\r",
-                                   numbered_scripts_count + 1,
-                                   common_names[i].c_str(), file.size());
-          numbered_scripts_count++;
-          script_count++;
-          file.close();
-        }
+        numbered_scripts[numbered_scripts_count] = common_names[i];
+        global_mp_stream->printf("   %d. %s.py (%d bytes)\n\r",
+                                 numbered_scripts_count + 1,
+                                 common_names[i].c_str(), commonFileSize);
+        numbered_scripts_count++;
+        script_count++;
       }
     }
   }
@@ -2300,7 +2551,7 @@ void ScriptHistory::findNextScriptNumber() {
   next_script_number = 1;
   for (int i = 1; i <= 100; i++) { // Check up to script_100.py
     String test_script = scripts_dir + "/script_" + String(i) + ".py";
-    if (FatFS.exists(test_script)) {
+    if (safeFileExists(test_script.c_str(), 300)) {
       next_script_number = i + 1; // Set to next available number
     } else {
       break; // Found first gap, use it
@@ -2308,59 +2559,263 @@ void ScriptHistory::findNextScriptNumber() {
   }
 }
 
+// Thread-safe atomic write to history file
 void ScriptHistory::saveHistoryToFile() {
-  String historyPath = scripts_dir + "/history.txt";
-  File file = FatFS.open(historyPath, "w");
-  if (!file) {
-    return; // Fail silently to avoid spam
-  }
+  // This is now a wrapper that calls flushToDisk
+  flushToDisk();
+}
 
-  for (int i = 0; i < history_count; i++) {
-    file.println("===SCRIPT_START===");
-    file.print(history[i]);
-    file.println("\n===SCRIPT_END===");
+// Core flush implementation with thread safety and atomic write
+void ScriptHistory::flushToDisk() {
+  if (!dirty || flush_in_progress) return;
+  flush_in_progress = true;
+  
+  // Capture current state before file operations
+  int save_count = count;
+  int save_head = head;
+  
+  // Atomic write: write to temp file first, then rename
+  String tempPath = scripts_dir + "/history.tmp";
+  String finalPath = scripts_dir + "/history.txt";
+  
+  // CRITICAL: Pause Core2 during flash write operations
+  bool was_paused_flush = pauseCore2ForFlash(100);
+  
+  // Use safe file functions for all operations
+  File file = safeFileOpen(tempPath.c_str(), "w", 500);
+  if (file) {
+    // Write entries in chronological order (oldest first)
+    for (int i = 0; i < save_count; i++) {
+      int idx = (save_head - save_count + i + MAX_HISTORY) % MAX_HISTORY;
+      
+      // Skip empty entries (from pruning)
+      if (history[idx].content.length() == 0) continue;
+      
+      // New format with metadata: ===ENTRY:timestamp:parent_id===
+      String header = "===ENTRY:" + String(history[idx].timestamp) + ":" + history[idx].parent_id + "===\n";
+      file.write((const uint8_t*)header.c_str(), header.length());
+      file.write((const uint8_t*)history[idx].content.c_str(), history[idx].content.length());
+      file.write((const uint8_t*)"\n===END===\n", 11);
+    }
+    file.flush();
+    safeFileClose(file, true);  // Write mode, needs flush
+    
+    // Atomic rename: remove old file, rename temp to final
+    // Note: These need manual mutex since there's no safeRename yet
+    fs_mutex_acquire();
+    if (FatFS.exists(finalPath)) {
+      FatFS.remove(finalPath);
+    }
+    FatFS.rename(tempPath, finalPath);
+    fs_mutex_release();
+    
+    dirty = false;
+    last_flush_time = millis();
   }
-  file.close();
+  
+  unpauseCore2ForFlash(was_paused_flush);
+  flush_in_progress = false;
 }
 
 void ScriptHistory::loadHistoryFromFile() {
   String historyPath = scripts_dir + "/history.txt";
-  if (!FatFS.exists(historyPath)) {
+  
+  // Check if history file exists
+  if (!safeFileExists(historyPath.c_str(), 500)) {
     return; // No history file exists yet
   }
 
-  File file = FatFS.open(historyPath, "r");
+  // Open and read file using safe functions
+  File file = safeFileOpen(historyPath.c_str(), "r", 1000);
   if (!file) {
     return; // Fail silently
   }
 
   String content = file.readString();
-  file.close();
+  safeFileClose(file, false);  // Read-only, no flush
 
-  // Parse saved history
+  // Parse saved history - supports both old and new formats
   int start = 0;
-  while (start < content.length()) {
-    int script_start = content.indexOf("===SCRIPT_START===", start);
-    if (script_start == -1)
-      break;
+  while (start < (int)content.length() && count < MAX_HISTORY) {
+    // Try new format first: ===ENTRY:timestamp:parent_id===
+    int entry_start = content.indexOf("===ENTRY:", start);
+    int old_start = content.indexOf("===SCRIPT_START===", start);
+    
+    if (entry_start != -1 && (old_start == -1 || entry_start < old_start)) {
+      // New format
+      int meta_end = content.indexOf("===", entry_start + 9);
+      if (meta_end == -1) break;
+      
+      // Parse metadata
+      String meta = content.substring(entry_start + 9, meta_end);
+      int colon_pos = meta.indexOf(':');
+      uint32_t timestamp = 0;
+      String parent_id = "";
+      if (colon_pos != -1) {
+        timestamp = meta.substring(0, colon_pos).toInt();
+        parent_id = meta.substring(colon_pos + 1);
+      }
+      
+      int content_start = meta_end + 3;
+      if (content.charAt(content_start) == '\n') content_start++;
+      
+      int content_end = content.indexOf("===END===", content_start);
+      if (content_end == -1) break;
+      
+      String script = content.substring(content_start, content_end);
+      script.trim();
+      
+      if (script.length() > 0) {
+        int idx = head % MAX_HISTORY;
+        history[idx].content = script;
+        history[idx].parent_id = parent_id;
+        history[idx].timestamp = timestamp;
+        history[idx].is_multiline = (countLines(script) > MULTILINE_THRESHOLD);
+        head++;
+        count++;
+      }
+      
+      start = content_end + 9;
+    } else if (old_start != -1) {
+      // Old format (backward compatibility)
+      int script_end = content.indexOf("===SCRIPT_END===", old_start);
+      if (script_end == -1) break;
 
-    int script_end = content.indexOf("===SCRIPT_END===", script_start);
-    if (script_end == -1)
-      break;
+      int script_start = old_start + 18;
+      if (content.charAt(script_start) == '\n') script_start++;
 
-    script_start += 18; // Length of "===SCRIPT_START==="
-    if (content.charAt(script_start) == '\n')
-      script_start++;
+      String script = content.substring(script_start, script_end);
+      script.trim();
 
-    String script = content.substring(script_start, script_end);
-    script.trim();
+      if (script.length() > 0) {
+        int idx = head % MAX_HISTORY;
+        history[idx].content = script;
+        history[idx].parent_id = "";
+        history[idx].timestamp = millis();  // Assign current time
+        history[idx].is_multiline = (countLines(script) > MULTILINE_THRESHOLD);
+        head++;
+        count++;
+      }
 
-    if (script.length() > 0 && history_count < MAX_HISTORY) {
-      history[history_count++] = script;
+      start = script_end + 16;
+    } else {
+      break;  // No more entries
     }
-
-    start = script_end + 16; // Length of "===SCRIPT_END==="
   }
+  
+  dirty = false;  // Just loaded, so in sync with disk
+}
+
+// Periodic flush check - call from REPL idle loop
+void ScriptHistory::checkPeriodicFlush() {
+  if (!dirty) return;
+  if (flush_in_progress) return;
+  if (millis() - last_flush_time < FLUSH_INTERVAL_MS) return;
+  
+  flushToDisk();
+}
+
+// Force immediate flush (Ctrl+S or REPL exit)
+void ScriptHistory::forceFlush() {
+  if (!dirty) return;
+  flushToDisk();
+}
+
+// Emergency append for crash safety - uses separate file
+void ScriptHistory::appendEmergencyLog(const String &script) {
+  if (script.length() == 0) return;
+  
+  // Use safe file functions - they handle mutex internally
+  String emergencyPath = scripts_dir + "/emergency.log";
+  File f = safeFileOpen(emergencyPath.c_str(), "a", 200);
+  if (f) {
+    String header = "===" + String(millis()) + "===\n";
+    f.write((const uint8_t*)header.c_str(), header.length());
+    f.write((const uint8_t*)script.c_str(), script.length());
+    f.write((const uint8_t*)"\n===END===\n", 11);
+    f.flush();
+    safeFileClose(f, true);  // Write mode, needs flush
+  }
+}
+
+// Helper: count newlines in script
+int ScriptHistory::countLines(const String &script) {
+  int count = 1;  // At least one line
+  for (unsigned int i = 0; i < script.length(); i++) {
+    if (script.charAt(i) == '\n') count++;
+  }
+  return count;
+}
+
+// Helper: compute simple hash of first 3 lines as parent identifier
+String ScriptHistory::computeParentHash(const String &script) {
+  // Use first 3 lines (or whole script if shorter) to create identifier
+  String hash_input = "";
+  int line_count = 0;
+  int start = 0;
+  
+  for (unsigned int i = 0; i <= script.length() && line_count < 3; i++) {
+    if (i == script.length() || script.charAt(i) == '\n') {
+      hash_input += script.substring(start, i);
+      start = i + 1;
+      line_count++;
+    }
+  }
+  
+  // Simple hash: sum of character codes modulo a prime
+  uint32_t hash = 0;
+  for (unsigned int i = 0; i < hash_input.length(); i++) {
+    hash = (hash * 31 + hash_input.charAt(i)) % 999983;
+  }
+  
+  return "p" + String(hash);
+}
+
+// Helper: prune old versions of a parent, keeping only 'keep_count' newest
+void ScriptHistory::pruneParentVersions(const String &parent_id, int keep_count) {
+  if (parent_id.length() == 0) return;
+  
+  // Find all entries with this parent, sorted by timestamp
+  int matching_indices[MAX_HISTORY];
+  uint32_t matching_times[MAX_HISTORY];
+  int match_count = 0;
+  
+  for (int i = 0; i < count; i++) {
+    int idx = (head - count + i + MAX_HISTORY) % MAX_HISTORY;
+    if (history[idx].parent_id == parent_id) {
+      matching_indices[match_count] = idx;
+      matching_times[match_count] = history[idx].timestamp;
+      match_count++;
+    }
+  }
+  
+  // If we have more than keep_count, remove oldest
+  while (match_count > keep_count) {
+    // Find oldest
+    int oldest_i = 0;
+    for (int i = 1; i < match_count; i++) {
+      if (matching_times[i] < matching_times[oldest_i]) {
+        oldest_i = i;
+      }
+    }
+    
+    // Clear this entry (mark as empty)
+    int remove_idx = matching_indices[oldest_i];
+    history[remove_idx].content = "";
+    history[remove_idx].parent_id = "";
+    
+    // Compact: shift entries in ring buffer (expensive but rare)
+    // For simplicity, just mark as removed - they'll be skipped on save
+    
+    // Remove from matching arrays
+    for (int i = oldest_i; i < match_count - 1; i++) {
+      matching_indices[i] = matching_indices[i + 1];
+      matching_times[i] = matching_times[i + 1];
+    }
+    match_count--;
+  }
+  
+  dirty = true;
 }
 
 // REPLEditor method implementations
@@ -2397,17 +2852,17 @@ void REPLEditor::moveCursorToColumn(Stream *stream, int column) {
   stream->print("\033[");
   stream->print(column + 1); // Terminal columns are 1-based
   stream->print("G");
-  stream->flush();
+  // Removed flush - let caller batch multiple operations and flush at end
 }
 
 void REPLEditor::clearToEndOfLine(Stream *stream) {
   stream->print("\033[K"); // CSI K - Erase to Right
-  stream->flush();
+  // Removed flush - let caller batch multiple operations and flush at end
 }
 
 void REPLEditor::clearBelow(Stream *stream) {
   stream->print("\033[J"); // CSI J - Erase Below
-  stream->flush();
+  // Removed flush - let caller batch multiple operations and flush at end
 }
 
 void REPLEditor::backspaceOverNewline(Stream *stream) {
@@ -2429,7 +2884,8 @@ void REPLEditor::backspaceOverNewline(Stream *stream) {
 void REPLEditor::drawPrompt(Stream *stream, int level) {
   // Use history prompt color when in history mode, normal prompt color otherwise
   int prompt_color = in_history_mode ? replColors[14] : replColors[1];
-  changeTerminalColor(prompt_color, true, stream);
+  // Don't flush here - let the caller handle flushing after all drawing is complete
+  changeTerminalColor(prompt_color, false, stream);
   if (level == 0) {
    stream->print(">>> ");
   } else if (level == 1) {
@@ -2437,7 +2893,7 @@ void REPLEditor::drawPrompt(Stream *stream, int level) {
   } else if (level == 2) {
    stream->print("└─>     ");
   }
-  stream->flush();
+  // Removed redundant flush - caller should batch operations and flush once at the end
 }
 
 
@@ -2553,7 +3009,8 @@ void REPLEditor::drawFromCurrentLine(Stream *stream) {
         String chunk = line.substring(offset, offset + this_len);
 
         // Prompt: first chunk uses level 0/1, subsequent chunks use continuation prompt (level 2)
-        changeTerminalColor(replColors[1], true, stream);
+        // Don't flush here - we flush once at the end of the function for better performance
+        changeTerminalColor(replColors[1], false, stream);
         if (chunk_index == 0) {
           drawPrompt(stream, (current_line_num == 0) ? 0 : 1);
         } else {
@@ -3547,6 +4004,8 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
   // Without this, repeated commands can fragment/exhaust the MicroPython heap
   mp_embed_exec_str("import gc; gc.collect()");
   
+  // Close any files that weren't explicitly closed by the command
+  jl_close_all_jfs_files();
 
   
   if (result_buffer && buffer_size > 0) {
@@ -3593,6 +4052,9 @@ bool executeSinglePythonCommandFormatted(const char* command, char* result_buffe
   // Simply execute the command - formatting is now handled by the native C module
   mp_embed_exec_str(parsed_command.c_str());
   
+  // Close any files that weren't explicitly closed by the command
+  jl_close_all_jfs_files();
+  
   // if (result_buffer && buffer_size > 0) {
   //   strncpy(result_buffer, "Formatted by native module", buffer_size - 1);
   //   result_buffer[buffer_size - 1] = '\0';
@@ -3628,6 +4090,9 @@ bool executeSinglePythonCommandFloat(const char* command, float* result) {
   // For now, just execute the command directly
   // TODO: Implement proper result capture to get the actual return value
   mp_embed_exec_str(parsed_command.c_str());
+  
+  // Close any files that weren't explicitly closed by the command
+  jl_close_all_jfs_files();
   
   return success;
 }
@@ -3860,30 +4325,31 @@ void setupFilesystemAndPaths(void) {
 /**
  * Comprehensive file cleanup function
  * Closes all potentially open files across the entire system
+ * 
+ * CRITICAL: Must pause Core 2 during file operations to prevent concurrent
+ * filesystem access which can cause crashes. Files are flushed before closing
+ * to ensure all buffered data is written to disk.
  */
 void closeAllOpenFiles(void) {
-  // if (global_mp_stream) {
-  //   global_mp_stream->println("[FS] Closing all open files...");
-  // }
+  // Ensure Core 2 is paused during file operations
+  bool was_paused = pauseCore2ForFlash(100);
   
   // 1. Close global file handles from FileParsing.cpp
   closeAllFiles();
   
-  // 2. File manager cleanup is handled automatically when it goes out of scope
-  // if (global_mp_stream) {
-  //   global_mp_stream->println("[FS] File manager cleanup handled automatically...");
-  // }
+  // 2. Close all JFS file handles opened from MicroPython
+  // This is CRITICAL to prevent file conflicts with eKilo and other parts of the system
+  // jl_close_all_jfs_files() now flushes files before closing
+  jl_close_all_jfs_files();
   
-  // 3. JFS files are automatically cleaned up by Python garbage collection
-  // Skip MicroPython execution during cleanup to avoid crashes during shutdown
-  // if (global_mp_stream) {
-  //   // global_mp_stream->println("[FS] JFS files will be cleaned up by garbage collection");
-  // }
+  // 3. File manager cleanup is handled automatically when it goes out of scope
   
-  // 4. Light filesystem sync - just flush without restarting the filesystem
-  // if (global_mp_stream) {
-  //   // global_mp_stream->println("[FS] File cleanup complete");
-  // }
+  // 4. Additional delay to ensure filesystem operations complete
+  delay(10);
+  yield();
+  
+  // Restore previous pauseCore2 state
+  unpauseCore2ForFlash(was_paused);
 }
 
 

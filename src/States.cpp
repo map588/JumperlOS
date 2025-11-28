@@ -12,6 +12,8 @@
 #include <string.h>
 #include <FatFS.h>
 #include <hardware/gpio.h>
+#include "externVars.h"  // For fs_mutex filesystem synchronization
+#include "FilesystemStuff.h"  // For safe file operations
 
 // ============================================================================
 // CRITICAL MEMORY SAFETY NOTES
@@ -2147,6 +2149,9 @@ bool SlotManager::ensureSlotExists(int slotNum) {
 
 // File I/O helpers
 bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
+    // THREAD SAFETY: Acquire filesystem mutex first
+    fs_mutex_acquire();
+    
     String filename = getSlotFilename(slotNum);
     
     extern bool mscModeEnabled;
@@ -2170,6 +2175,7 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         while (core2busy) {
             if (millis() > timeout) {
                 errorMsg = "Timeout waiting for core2 (possible deadlock)";
+                fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
                 return false;
             }
             delay(1);
@@ -2180,6 +2186,7 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         while (core1busy) {
             if (millis() > timeout) {
                 errorMsg = "Timeout waiting for core1 (possible deadlock)";
+                fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
                 return false;
             }
             delay(1);
@@ -2212,6 +2219,7 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         } else {
             core2busy = false;
         }
+        fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
         return false;
     }
     
@@ -2259,72 +2267,32 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         core2busy = false;
     }
     
+    fs_mutex_release();  // THREAD SAFETY: Release mutex
     return true;
 }
 
 bool SlotManager::writeSlotFile(int slotNum, const String& content, String& errorMsg) {
-    // Ensure slots directory exists
-    if (!FatFS.exists("/slots")) {
-        if (!FatFS.mkdir("/slots")) {
-            errorMsg = "Failed to create /slots directory";
-            return false;
-        }
+    // Ensure slots directory exists using safe function
+    if (!safeMkdir("/slots", 2000)) {
+        errorMsg = "Failed to create /slots directory";
+        return false;
     }
     
     String filename = getSlotFilename(slotNum);
     
-    // Detect which core we're running on and synchronize appropriately
-    uint coreNum = get_core_num();
-    
-    // Add timeout to prevent deadlock during boot or race conditions
-    unsigned long timeout = millis() + 5000;  // 5 second timeout
-    
-    if (coreNum == 0) {
-        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
-        while (core2busy) {
-            if (millis() > timeout) {
-                errorMsg = "Timeout waiting for core2 (possible deadlock)";
-                return false;
-            }
-            delay(1);
-        }
-        core1busy = true;
-    } else {
-        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
-        while (core1busy) {
-            if (millis() > timeout) {
-                errorMsg = "Timeout waiting for core1 (possible deadlock)";
-                return false;
-            }
-            delay(1);
-        }
-        core2busy = true;
-    }
-    
-    File file = FatFS.open(filename.c_str(), "w");
-    if (!file) {
-        errorMsg = "Failed to open slot file for writing: " + filename;
-        if (coreNum == 0) {
-            core1busy = false;
-        } else {
-            core2busy = false;
-        }
+    // Use safe file write which handles Core2 pause and mutex internally
+    if (!safeFileWriteAll(filename.c_str(), content.c_str(), content.length(), 2000)) {
+        errorMsg = "Failed to write slot file: " + filename;
         return false;
-    }
-    
-    file.write((const uint8_t*)content.c_str(), content.length());
-    file.close();
-    
-    if (coreNum == 0) {
-        core1busy = false;
-    } else {
-        core2busy = false;
     }
     
     return true;
 }
 
 bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
+    // THREAD SAFETY: Acquire filesystem mutex first
+    fs_mutex_acquire();
+    
     String legacyFilename = getLegacySlotFilename(slotNum);
     
     // Detect which core we're running on and synchronize appropriately
@@ -2352,6 +2320,7 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
         } else {
             core2busy = false;
         }
+        fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
         return false;
     }
     
@@ -2360,6 +2329,7 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
         content += (char)file.read();
     }
     file.close();
+    fs_mutex_release();  // THREAD SAFETY: Release mutex after file operations
     
     if (coreNum == 0) {
         core1busy = false;
@@ -2753,6 +2723,7 @@ void printStateBackupInfo(void) {
  */
 ServiceStatus SlotManager::service() {
     // return ServiceStatus::IDLE; //< this isn't the problem, not running slot manager service still freezes
+    //return ServiceStatus::IDLE;
     lastStatus = ServiceStatus::IDLE;
     unsigned long serviceStart = micros();
     
@@ -3050,14 +3021,15 @@ ServiceStatus SlotManager::service() {
                         
                         // Only attempt sync if we haven't had too many recent failures
                         if (consecutiveSyncFailures < MAX_SYNC_FAILURES) {
+                            // CRITICAL: Pause Core2 during disk_ioctl(CTRL_SYNC)
+                            bool was_paused_sync = pauseCore2ForFlash(100);
+                            
                             // Attempt sync with basic error detection
                             // Note: disk_ioctl may crash instead of returning error, but we try
                             fatfs::DRESULT sync_result = fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
                             
-                            // CRITICAL FIX: Service USB after sync
-                            #ifdef USE_TINYUSB
-                            tud_task();
-                            #endif
+                            // Restore Core2 state
+                            unpauseCore2ForFlash(was_paused_sync);
                             
                             if (sync_result == fatfs::RES_OK) {
                                 __sync_synchronize();  // Memory barrier

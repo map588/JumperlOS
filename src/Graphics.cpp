@@ -1600,6 +1600,8 @@ static void renderCurrentSenseOverlay() {
     currentSenseOverlayState.plusRow = -1;
     currentSenseOverlayState.minusRow = -1;
     currentSenseOverlayState.lastUpdateMs = 0;
+    // Serial.println("renderCurrentSenseOverlay: no plus or minus connected");
+    // Serial.flush();
     return;
   }
 
@@ -3390,19 +3392,63 @@ void showArray(uint8_t *array, int size) {
 }
 
 int getCursorPositionX() {
+  // Clear buffer first
+  delay(5);
+  while (Jerial.available()) Jerial.read();
+  
   Jerial.printf("\033[6n");
   Jerial.flush();
-  String response = Jerial.readStringUntil(';');
-  response.remove(0, 2);
-  return response.toInt();
+  delay(20);  // Wait for response
+  
+  // Read full response: ESC [ row ; col R
+  String response = "";
+  uint32_t start = millis();
+  while (millis() - start < 200) {
+    if (Jerial.available()) {
+      char c = Jerial.read();
+      response += c;
+      if (c == 'R') break;
+    }
+  }
+  
+  // Parse: find the column after the semicolon
+  int semi = response.indexOf(';');
+  if (semi > 0) {
+    String col_part = response.substring(semi + 1);
+    col_part.replace("R", "");
+    return col_part.toInt();
+  }
+  return 0;
 }
 
 int getCursorPositionY() {
+  // Clear buffer first
+  delay(5);
+  while (Jerial.available()) Jerial.read();
+  
   Jerial.printf("\033[6n");
   Jerial.flush();
-  String response = Jerial.readStringUntil(';');
-  response.remove(0, 2);
-  return response.toInt();
+  delay(20);  // Wait for response
+  
+  // Read full response: ESC [ row ; col R  
+  String response = "";
+  uint32_t start = millis();
+  while (millis() - start < 200) {
+    if (Jerial.available()) {
+      char c = Jerial.read();
+      response += c;
+      if (c == 'R') break;
+    }
+  }
+  
+  // Parse: find the row between [ and ;
+  int bracket = response.indexOf('[');
+  int semi = response.indexOf(';');
+  if (bracket >= 0 && semi > bracket) {
+    String row_part = response.substring(bracket + 1, semi);
+    return row_part.toInt();
+  }
+  return 0;
 }
 int cursorSaved = 0;
 

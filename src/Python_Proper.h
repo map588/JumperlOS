@@ -24,19 +24,40 @@ extern "C" int jl_has_unsaved_changes(void);
 extern "C" void jl_toggle_connection_context(void);  // Toggle between global and isolated mode
 extern "C" const char* jl_get_connection_context_name(void);  // Get human-readable context name
 
-// Command history and filesystem support
+// Command history and filesystem support with ring buffer and write batching
 class ScriptHistory {
 private:
-  static const int MAX_HISTORY = 50;
-  String history[MAX_HISTORY];
-  int history_count = 0;
+  // Ring buffer configuration
+  static const int MAX_HISTORY = 20;          // Reduced from 50 for efficiency
+  static const int MAX_PARENT_VERSIONS = 5;   // Keep 5 versions per parent script
+  static const int MULTILINE_THRESHOLD = 15;  // Lines to trigger parent tracking
+  
+  // History entry with metadata
+  struct HistoryEntry {
+    String content;
+    String parent_id;       // Hash for multiline scripts (empty for simple commands)
+    uint32_t timestamp;     // millis() when added
+    bool is_multiline;      // Flag for scripts with >15 lines
+  };
+  
+  HistoryEntry history[MAX_HISTORY];
+  int head = 0;              // Ring buffer head (next write position)
+  int count = 0;             // Number of valid entries (max MAX_HISTORY)
   int current_history_index = -1;
+  
+  // Write batching state
+  bool dirty = false;                           // RAM differs from disk
+  uint32_t last_flush_time = 0;                 // For periodic flush
+  static const uint32_t FLUSH_INTERVAL_MS = 30000; // 30 second idle flush
+  volatile bool flush_in_progress = false;      // Prevent concurrent flushes
+  
+  // File paths and saved scripts tracking
   String scripts_dir = "/python_scripts";
-  String last_saved_script = ""; // Track most recent saved script
-  String saved_scripts[10];      // Track up to 10 saved scripts
+  String last_saved_script = "";     // Track most recent saved script
+  String saved_scripts[10];          // Track up to 10 saved scripts
   int saved_scripts_count = 0;
-  int next_script_number = 1;  // For sequential script naming
-  String numbered_scripts[20]; // Map numbers to script names for easy loading
+  int next_script_number = 1;        // For sequential script naming
+  String numbered_scripts[20];       // Map numbers to script names for easy loading
   int numbered_scripts_count = 0;
 
 public:
@@ -56,11 +77,22 @@ public:
   bool deleteScript(const String &filename);
   void listScripts();
   void clearHistory();
+  
+  // Thread-safe write batching methods
+  void checkPeriodicFlush();          // Called from REPL idle loop
+  void forceFlush();                  // Immediate flush (Ctrl+S, exit)
+  void appendEmergencyLog(const String &script);  // Crash-safe append
 
 private:
   void findNextScriptNumber();
-  void saveHistoryToFile();
+  void saveHistoryToFile();           // Now uses atomic write pattern
   void loadHistoryFromFile();
+  void flushToDisk();                 // Thread-safe flush with mutex
+  
+  // Parent tracking helpers
+  int countLines(const String &script);
+  String computeParentHash(const String &script);
+  void pruneParentVersions(const String &parent_id, int keep_count);
 };
 
 // Text editor helper functions for REPL
@@ -127,9 +159,7 @@ void setGlobalStream(Stream *stream);
 bool initMicroPythonProper(Stream *stream = global_mp_stream);
 void deinitMicroPythonProper(void);
 
-// Code execution
-bool executePythonCodeProper(const char* code);
-bool executePythonSimple(const char* code, char* response, size_t response_size);
+
 
 // Single command execution for main.cpp
 void getMicroPythonCommandFromStream(Stream *stream = &Serial);
@@ -171,6 +201,9 @@ void showREPLreference(int verbose = 0);
 // Status functions
 bool isMicroPythonInitialized(void);
 void printMicroPythonStatus(void);
+
+// Memory management - run garbage collection to free memory before editor
+void forceGarbageCollection(void);
 
 // Interrupt handling
 extern bool mp_interrupt_requested; // Global interrupt flag for Ctrl+Q

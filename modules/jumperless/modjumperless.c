@@ -126,6 +126,7 @@ char* jl_fs_get_current_dir(void);
 // Extended file operations
 void* jl_fs_open_file(const char* path, const char* mode);
 void jl_fs_close_file(void* file_handle);
+void jl_close_all_jfs_files(void);  // Close all open JFS files (for cleanup)
 int jl_fs_read_bytes(void* file_handle, char* buffer, int size);
 int jl_fs_write_bytes(void* file_handle, const char* data, int size);
 int jl_fs_seek(void* file_handle, int position, int mode);
@@ -133,6 +134,7 @@ int jl_fs_position(void* file_handle);
 int jl_fs_size(void* file_handle);
 int jl_fs_available(void* file_handle);
 char* jl_fs_name(void* file_handle);
+void jl_fs_flush(void* file_handle);
 
 // Directory operations
 int jl_fs_mkdir(const char* path);
@@ -2733,26 +2735,40 @@ static mp_obj_t jfs_file_read(size_t n_args, const mp_obj_t *args) {
         mp_raise_ValueError("I/O operation on closed file");
     }
     
-    size_t size = 1024; // Default read size
+    // Determine how many bytes to read
+    size_t size;
     if (n_args > 1) {
+        // User specified size
         size = mp_obj_get_int(args[1]);
+    } else {
+        // Read remaining bytes in file (from current position to end)
+        size = jl_fs_available(self->file_handle);
+        if (size == 0) {
+            // Nothing to read
+            return mp_obj_new_str("", 0);
+        }
     }
     
-    char* buffer = malloc(size + 1);
-    if (!buffer) {
-        mp_raise_OSError(12); // ENOMEM
+    // Cap at reasonable size to prevent huge allocations
+    if (size > 8192) {
+        size = 8192;
     }
     
-    int bytes_read = jl_fs_read_bytes(self->file_handle, buffer, size);
+    // Use MicroPython's memory allocator for better GC integration
+    vstr_t vstr;
+    vstr_init_len(&vstr, size);
+    
+    int bytes_read = jl_fs_read_bytes(self->file_handle, vstr.buf, size);
     if (bytes_read < 0) {
-        free(buffer);
+        vstr_clear(&vstr);
         mp_raise_OSError(5); // EIO
     }
     
-    buffer[bytes_read] = '\0';
-    mp_obj_t result = mp_obj_new_str(buffer, bytes_read);
-    free(buffer);
-    return result;
+    // Adjust length to actual bytes read
+    vstr.len = bytes_read;
+    
+    // Convert to string (takes ownership of vstr buffer)
+    return mp_obj_new_str_from_vstr(&vstr);
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(jfs_file_read_obj, 1, 2, jfs_file_read);
 
@@ -2770,15 +2786,70 @@ static mp_obj_t jfs_file_write(mp_obj_t self_in, mp_obj_t data_obj) {
         mp_raise_OSError(5); // EIO
     }
     
+    // NOTE: No auto-flush - too slow on embedded FatFS (~2 sec per flush!)
+    // Data is flushed automatically on seek() or close(), or call flush() manually
+    
     return mp_obj_new_int(bytes_written);
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(jfs_file_write_obj, jfs_file_write);
+
+// print() method - works like Python's print() with automatic newline
+// Usage: file.print(arg1, arg2, ...) - prints args separated by spaces, adds newline
+// NOTE: No auto-flush - call flush() manually or data is flushed on seek()/close()
+// OPTIMIZATION: Build the complete string first, then write once to minimize Core2 pauses
+static mp_obj_t jfs_file_print(size_t n_args, const mp_obj_t *args) {
+    mp_obj_jfs_file_t *self = MP_OBJ_TO_PTR(args[0]);
+    if (!self->is_open || !self->file_handle) {
+        mp_raise_ValueError("I/O operation on closed file");
+    }
+    
+    // Build complete output string first to minimize flash write operations
+    // Each write pauses Core2, so batching is critical for stability
+    vstr_t output;
+    vstr_init(&output, 64);  // Start with reasonable size
+    
+    // Print each argument, separated by spaces
+    for (size_t i = 1; i < n_args; i++) {
+        // Convert argument to string
+        mp_print_t print;
+        vstr_t vstr;
+        vstr_init_print(&vstr, 16, &print);
+        mp_obj_print_helper(&print, args[i], PRINT_STR);
+        
+        // Append to output buffer
+        vstr_add_strn(&output, vstr.buf, vstr.len);
+        vstr_clear(&vstr);
+        
+        // Add space separator between arguments (not after last one)
+        if (i < n_args - 1) {
+            vstr_add_char(&output, ' ');
+        }
+    }
+    
+    // Add newline at end
+    vstr_add_char(&output, '\n');
+    
+    // Single write for the entire output - only one Core2 pause!
+    int written = jl_fs_write_bytes(self->file_handle, output.buf, output.len);
+    vstr_clear(&output);
+    
+    if (written < 0) {
+        mp_raise_OSError(5); // EIO
+    }
+    
+    return mp_obj_new_int(written);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR(jfs_file_print_obj, 1, jfs_file_print);
 
 static mp_obj_t jfs_file_seek(size_t n_args, const mp_obj_t *args) {
     mp_obj_jfs_file_t *self = MP_OBJ_TO_PTR(args[0]);
     if (!self->is_open || !self->file_handle) {
         mp_raise_ValueError("I/O operation on closed file");
     }
+    
+    // CRITICAL: Flush before seeking to ensure all written data is on disk
+    // This prevents read-after-write issues where buffered writes aren't visible
+    jl_fs_flush(self->file_handle);
     
     int position = mp_obj_get_int(args[1]);
     int whence = 0; // Default to SEEK_SET
@@ -2873,10 +2944,26 @@ static mp_obj_t jfs_file_exit(size_t n_args, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(jfs_file_exit_obj, 4, 4, jfs_file_exit);
 
+// Flush buffered data to disk - CRITICAL for read-after-write operations
+static mp_obj_t jfs_file_flush(mp_obj_t self_in) {
+    mp_obj_jfs_file_t *self = MP_OBJ_TO_PTR(self_in);
+    if (!self->is_open || !self->file_handle) {
+        mp_raise_ValueError("I/O operation on closed file");
+    }
+    jl_fs_flush(self->file_handle);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jfs_file_flush_obj, jfs_file_flush);
+
+// Forward declaration for finalizer
+static mp_obj_t jfs_file_del(mp_obj_t self_in);
+static MP_DEFINE_CONST_FUN_OBJ_1(jfs_file_del_obj, jfs_file_del);
+
 // File object locals dict
 static const mp_rom_map_elem_t jfs_file_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&jfs_file_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&jfs_file_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_print), MP_ROM_PTR(&jfs_file_print_obj) },  // Like print() but to file, auto-flush
     { MP_ROM_QSTR(MP_QSTR_seek), MP_ROM_PTR(&jfs_file_seek_obj) },
     { MP_ROM_QSTR(MP_QSTR_tell), MP_ROM_PTR(&jfs_file_tell_obj) },
     { MP_ROM_QSTR(MP_QSTR_position), MP_ROM_PTR(&jfs_file_tell_obj) }, // Alias
@@ -2884,18 +2971,40 @@ static const mp_rom_map_elem_t jfs_file_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_available), MP_ROM_PTR(&jfs_file_available_obj) },
     { MP_ROM_QSTR(MP_QSTR_name), MP_ROM_PTR(&jfs_file_name_obj) },
     { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&jfs_file_close_obj) },
+    { MP_ROM_QSTR(MP_QSTR_flush), MP_ROM_PTR(&jfs_file_flush_obj) },
     
     // Context manager methods for 'with' statement support
     { MP_ROM_QSTR(MP_QSTR___enter__), MP_ROM_PTR(&jfs_file_enter_obj) },
     { MP_ROM_QSTR(MP_QSTR___exit__), MP_ROM_PTR(&jfs_file_exit_obj) },
+    
+    // Destructor for cleanup when garbage collected
+    { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&jfs_file_del_obj) },
 };
 static MP_DEFINE_CONST_DICT(jfs_file_locals_dict, jfs_file_locals_dict_table);
 
-// File type definition
+// Finalizer implementation for JFS file objects - called by GC to clean up C++ File handle
+// This is CRITICAL to prevent memory leaks when file objects are garbage collected
+// without being explicitly closed (e.g., when scripts crash or variables go out of scope)
+// NOTE: This runs during gc_sweep_run_finalisers() while the scheduler is locked.
+// WARNING: Do NOT call jl_fs_flush() separately here - jl_fs_close_file() already flushes,
+// and calling both would cause a mutex DEADLOCK since pico SDK mutexes are not recursive!
+static mp_obj_t jfs_file_del(mp_obj_t self_in) {
+    mp_obj_jfs_file_t *self = MP_OBJ_TO_PTR(self_in);
+    if (self->is_open && self->file_handle) {
+        // jl_fs_close_file() includes flush before close - do NOT call jl_fs_flush separately!
+        jl_fs_close_file(self->file_handle);
+        self->file_handle = NULL;
+        self->is_open = false;
+    }
+    return mp_const_none;
+}
+
+// File type definition with finalizer
+// The MP_TYPE_FLAG_HAS_SPECIAL_ACCESSORS flag enables the __del__ method to be called during GC
 MP_DEFINE_CONST_OBJ_TYPE(
     mp_type_jfs_file,
     MP_QSTR_JFSFile,
-    MP_TYPE_FLAG_NONE,
+    MP_TYPE_FLAG_HAS_SPECIAL_ACCESSORS,
     locals_dict, &jfs_file_locals_dict
 );
 
@@ -2912,8 +3021,11 @@ static mp_obj_t jfs_open(size_t n_args, const mp_obj_t *args) {
         mp_raise_OSError(2); // ENOENT
     }
     
-    mp_obj_jfs_file_t *file_obj = m_new_obj(mp_obj_jfs_file_t);
-    file_obj->base.type = &mp_type_jfs_file;
+    // CRITICAL: Use mp_obj_malloc_with_finaliser() to register for GC finalizer callback
+    // This ensures __del__ is called when the object is garbage collected,
+    // which closes the underlying C++ File handle and prevents memory leaks
+    // Note: mp_obj_malloc_with_finaliser sets the type for us
+    mp_obj_jfs_file_t *file_obj = mp_obj_malloc_with_finaliser(mp_obj_jfs_file_t, &mp_type_jfs_file);
     file_obj->file_handle = file_handle;
     file_obj->is_open = true;
     

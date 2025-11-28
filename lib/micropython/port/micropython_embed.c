@@ -15,6 +15,7 @@
 #include "py/nlr.h"
 #include "py/builtin.h"
 #include "py/mphal.h"
+#include "shared/runtime/gchelper.h"
 #include "JumperlessDefines.h"
 
 #ifdef __cplusplus
@@ -107,10 +108,15 @@ void mp_embed_repl(void) {
 // Import stat function - removed because VFS provides inline implementation
 
 // Garbage collection function
+// CRITICAL: Must properly scan CPU registers AND the entire call stack
+// to find all live Python objects. The previous implementation only scanned
+// mp_state_ctx which caused live objects to be freed, resulting in crashes
+// after running scripts multiple times.
 void gc_collect(void) {
-    // Simple GC implementation
     gc_collect_start();
-    gc_collect_root((void**)&mp_state_ctx, sizeof(mp_state_ctx) / sizeof(void*));
+    // gc_helper_collect_regs_and_stack() captures callee-saved registers
+    // and scans from current stack position to stack_top for GC roots
+    gc_helper_collect_regs_and_stack();
     gc_collect_end();
 }
 
@@ -121,9 +127,9 @@ void nlr_jump_fail(void *val) {
     mp_hal_stdout_tx_strn_cooked("FATAL: uncaught exception\n", 26);
     // CRITICAL: This function is marked NORETURN - must not return!
     // Without this infinite loop, stack corruption WILL occur
-    while(1) {
-        // Infinite loop - this should never be reached in normal operation
-    }
+    // while(1) {
+    //     // Infinite loop - this should never be reached in normal operation
+    // }
 }
 
 #ifdef __cplusplus

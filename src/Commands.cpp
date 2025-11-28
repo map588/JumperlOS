@@ -225,7 +225,7 @@ int handleLockedConnections() {
   
   // OLED Lock Connection (I2C)
   // Check both jumperlessConfig.top_oled.lock_connection and globalState.config.oledLockConnection
-  if (jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) {
+  if ((jumperlessConfig.top_oled.lock_connection == 1 || globalState.config.oledLockConnection == 1) && oledUsingHardwiredPins == false) {
     int sda_gpio = jumperlessConfig.top_oled.gpio_sda;
     int sda_row = jumperlessConfig.top_oled.sda_row;
     int scl_gpio = jumperlessConfig.top_oled.gpio_scl;
@@ -363,8 +363,8 @@ void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
   // Core 2 reads from globalState.connections.nets[] in assignNetColors()
   // while we're about to modify it in getNodesToConnect()
   unsigned long waitTime = waitCore2();
-  if (waitTime > 10000) {  // More than 10ms wait is suspicious
-    Serial.printf("⚠️  WARNING: waitCore2() took %lu us\n", waitTime);
+  if (waitTime > 15000) {  // More than 15ms wait is suspicious
+    Serial.printf("WARNING: waitCore2() took %lu us\n", waitTime);
     Serial.flush();
   }
   //pauseCore2 = true;
@@ -462,10 +462,11 @@ unsigned long start2 = millis();
   // Serial.println(" ms");
   
   // If another refresh was requested while we were busy, do it now
-  // if (refreshLocalPending) {
-  //   refreshLocalPending = false;
-  //   refreshLocalConnections(ledShowOption, fillUnused, clean);
-  // }
+  // This is critical for MicroPython scripts that make multiple connections quickly
+  if (refreshLocalPending) {
+    refreshLocalPending = false;
+   // refreshLocalConnections(ledShowOption, fillUnused, clean);
+  }
 
   // Serial.print("Free heap = ");
   // Serial.println(rp2040.getFreeHeap());

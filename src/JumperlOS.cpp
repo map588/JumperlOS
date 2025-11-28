@@ -341,6 +341,31 @@ void jOSmanager::serviceCritical() {
 }
 
 /**
+ * @brief Execute services needed during MicroPython REPL execution
+ * 
+ * This runs a minimal set of services to keep the system responsive
+ * while the main loop is blocked by MicroPython script execution.
+ * 
+ * Runs:
+ * - Peripherals service (for current sense measurements -> marching ants animation)
+ * - TinyUSB task (to keep USB communication alive)
+ * 
+ * This is lighter weight than serviceAll() and doesn't run the full
+ * priority-based scheduling - just the essentials to keep measurements
+ * and visualization working during Python script execution.
+ */
+void jOSmanager::servicePython() {
+    // Keep USB alive during MicroPython execution
+#ifdef USE_TINYUSB
+    tud_task();
+#endif
+    
+    // Run peripherals service for current sense measurements
+    // This updates currentSenseState.filteredCurrent_mA which drives marching ants
+    Peripherals::getInstance().service();
+}
+
+/**
  * @brief Sort services by priority using bubble sort
  * Simple algorithm since we have a small number of services
  */
@@ -619,5 +644,383 @@ ServiceStatus OLEDService::service() {
     }
     
     return lastStatus;
+}
+
+// ============================================================================
+// CONTEXT MANAGER IMPLEMENTATION
+// ============================================================================
+
+#include "externVars.h"  // For fs_mutex, core_sync_acquire/release
+#include "FileParsing.h"  // For closeAllFiles()
+
+// Static instance pointer
+ContextManager* ContextManager::instance = nullptr;
+
+// Global reference for convenient access
+ContextManager& contextManager = ContextManager::getInstance();
+
+/**
+ * @brief Get human-readable name for context type
+ */
+const char* getContextTypeName(ContextType type) {
+    switch (type) {
+        case ContextType::NONE:           return "NONE";
+        case ContextType::MAIN_MENU:      return "MAIN_MENU";
+        case ContextType::FILE_MANAGER:   return "FILE_MANAGER";
+        case ContextType::EKILO_EDITOR:   return "EKILO_EDITOR";
+        case ContextType::PYTHON_REPL:    return "PYTHON_REPL";
+        case ContextType::HELP_DOCS:      return "HELP_DOCS";
+        case ContextType::DEBUG_MENU:     return "DEBUG_MENU";
+        case ContextType::PROBING:        return "PROBING";
+        case ContextType::CLICKWHEEL_MENU: return "CLICKWHEEL_MENU";
+        case ContextType::APP_GENERIC:    return "APP_GENERIC";
+        default:                          return "UNKNOWN";
+    }
+}
+
+/**
+ * @brief Private constructor - initializes all state
+ */
+ContextManager::ContextManager()
+    : stackTop(-1)
+    , fileCount(0)
+    , transferDataLen(0)
+{
+    // Initialize arrays
+    for (int i = 0; i < MAX_STACK_DEPTH; i++) {
+        stack[i] = ContextEntry();
+    }
+    for (int i = 0; i < MAX_TRACKED_FILES; i++) {
+        openFiles[i] = nullptr;
+    }
+    transferPath[0] = '\0';
+}
+
+/**
+ * @brief Get the singleton instance
+ */
+ContextManager& ContextManager::getInstance() {
+    if (instance == nullptr) {
+        instance = new ContextManager();
+    }
+    return *instance;
+}
+
+/**
+ * @brief Push a new context onto the stack
+ * 
+ * If the same context type already exists on the stack, this will:
+ * 1. Pop all contexts above it (closing them properly)
+ * 2. Return to the existing context instead of creating a duplicate
+ * 
+ * This prevents stack buildup and crashes from re-entering contexts.
+ */
+bool ContextManager::pushContext(const ContextEntry& ctx, bool /*unused*/) {
+    // Check if this context type already exists on the stack
+    // If so, pop back to it instead of creating a duplicate
+    int existingIndex = -1;
+    for (int i = 0; i <= stackTop; i++) {
+        if (stack[i].type == ctx.type) {
+            existingIndex = i;
+            break;
+        }
+    }
+    
+    if (existingIndex >= 0) {
+        // Context already exists - pop everything above it
+        Serial.print("Context type ");
+        Serial.print((int)ctx.type);
+        Serial.println(" already on stack - popping back to it");
+        
+        // Pop contexts until we're back at the existing one
+        while (stackTop > existingIndex) {
+            popContext();
+        }
+        
+        // Call onResume on the existing context if it has one
+        if (stackTop >= 0 && stack[stackTop].onResume != nullptr) {
+            stack[stackTop].onResume(stack[stackTop].userData);
+        }
+        
+        return true;  // Successfully navigated to existing context
+    }
+    
+    // Thread safety: acquire mutex during stack modification
+    core_sync_acquire();
+    
+    // Check if stack is full
+    if (stackTop >= MAX_STACK_DEPTH - 1) {
+        core_sync_release();
+        Serial.println("ERROR: Context stack full!");
+        printStack();
+        return false;
+    }
+    
+    // If there's a current context, call its onSuspend callback
+    if (stackTop >= 0 && stack[stackTop].onSuspend != nullptr) {
+        stack[stackTop].onSuspend(stack[stackTop].userData);
+    }
+    
+    // Push the new context
+    stackTop++;
+    stack[stackTop] = ctx;
+    
+    core_sync_release();
+    
+    // Call onEnter callback (outside mutex to allow nested operations)
+    if (ctx.onEnter != nullptr) {
+        ctx.onEnter(ctx.userData);
+    }
+    
+    return true;
+}
+
+/**
+ * @brief Pop the current context and return to parent
+ */
+bool ContextManager::popContext() {
+    // Thread safety
+    core_sync_acquire();
+    
+    // Check if stack is empty
+    if (stackTop < 0) {
+        core_sync_release();
+        Serial.println("WARNING: Attempted to pop empty context stack");
+        return false;
+    }
+    
+    // Get current context info before modifying stack
+    ContextEntry current = stack[stackTop];
+    
+    // Close all tracked files for this context BEFORE calling exit callback
+    // This ensures files are closed even if exit callback doesn't do it
+    closeAllTrackedFiles();
+    
+    // Pop the context
+    stack[stackTop] = ContextEntry();  // Clear entry
+    stackTop--;
+    
+    core_sync_release();
+    
+    // Call onExit callback for the popped context (outside mutex)
+    if (current.onExit != nullptr) {
+        current.onExit(current.userData);
+    }
+    
+    // If there's a parent context, call its onResume callback
+    if (stackTop >= 0 && stack[stackTop].onResume != nullptr) {
+        stack[stackTop].onResume(stack[stackTop].userData);
+    }
+    
+    // NOTE: Transfer path is NOT cleared here - it's meant to be read by the
+    // parent context after the child exits. The parent should clear it after reading.
+    // This allows zero-copy file path passing between contexts.
+    // Only clear transfer DATA (not path) as it's typically consumed immediately.
+    clearTransferData();
+    
+    return true;
+}
+
+/**
+ * @brief Get the current context type
+ */
+ContextType ContextManager::currentContext() const {
+    if (stackTop < 0) {
+        return ContextType::NONE;
+    }
+    return stack[stackTop].type;
+}
+
+/**
+ * @brief Get the current context entry
+ */
+const ContextEntry* ContextManager::currentContextEntry() const {
+    if (stackTop < 0) {
+        return nullptr;
+    }
+    return &stack[stackTop];
+}
+
+/**
+ * @brief Check if a context type is anywhere in the stack
+ */
+bool ContextManager::isContextActive(ContextType type) const {
+    for (int i = 0; i <= stackTop; i++) {
+        if (stack[i].type == type) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
+// File Handle Tracking
+// ============================================================================
+
+/**
+ * @brief Register an open file for tracking
+ */
+bool ContextManager::registerOpenFile(void* file) {
+    if (file == nullptr) {
+        return false;
+    }
+    
+    // Check if already registered
+    for (int i = 0; i < fileCount; i++) {
+        if (openFiles[i] == file) {
+            return true;  // Already tracked
+        }
+    }
+    
+    // Check if tracking array is full
+    if (fileCount >= MAX_TRACKED_FILES) {
+        Serial.println("WARNING: File tracking array full");
+        return false;
+    }
+    
+    // Register the file
+    openFiles[fileCount++] = file;
+    return true;
+}
+
+/**
+ * @brief Unregister a file handle
+ */
+void ContextManager::unregisterFile(void* file) {
+    if (file == nullptr) {
+        return;
+    }
+    
+    // Find and remove
+    for (int i = 0; i < fileCount; i++) {
+        if (openFiles[i] == file) {
+            // Shift remaining entries down
+            for (int j = i; j < fileCount - 1; j++) {
+                openFiles[j] = openFiles[j + 1];
+            }
+            openFiles[fileCount - 1] = nullptr;
+            fileCount--;
+            return;
+        }
+    }
+}
+
+/**
+ * @brief Close all tracked files
+ * 
+ * This is called automatically by popContext() to ensure files are closed
+ * even if the context's exit callback forgets to do so.
+ */
+void ContextManager::closeAllTrackedFiles() {
+    // Use the existing closeAllFiles() function from FilesystemStuff
+    // which properly handles FatFS file closure
+    extern void closeAllFiles();
+    closeAllFiles();
+    
+    // Clear our tracking array
+    for (int i = 0; i < MAX_TRACKED_FILES; i++) {
+        openFiles[i] = nullptr;
+    }
+    fileCount = 0;
+}
+
+// ============================================================================
+// Zero-Copy Data Transfer
+// ============================================================================
+
+/**
+ * @brief Set a file path for transfer between contexts
+ */
+bool ContextManager::setTransferPath(const char* path) {
+    if (path == nullptr) {
+        transferPath[0] = '\0';
+        return true;
+    }
+    
+    size_t len = strlen(path);
+    if (len >= sizeof(transferPath)) {
+        Serial.println("WARNING: Transfer path too long, truncating");
+        len = sizeof(transferPath) - 1;
+    }
+    
+    memcpy(transferPath, path, len);
+    transferPath[len] = '\0';
+    return true;
+}
+
+/**
+ * @brief Set small data for transfer
+ */
+bool ContextManager::setTransferData(const void* data, size_t len) {
+    if (data == nullptr || len == 0) {
+        transferDataLen = 0;
+        return true;
+    }
+    
+    if (len > sizeof(transferBuffer)) {
+        Serial.println("WARNING: Transfer data too large");
+        return false;
+    }
+    
+    memcpy(transferBuffer, data, len);
+    transferDataLen = len;
+    return true;
+}
+
+/**
+ * @brief Get transfer data
+ */
+const void* ContextManager::getTransferData(size_t* outLen) const {
+    if (outLen != nullptr) {
+        *outLen = transferDataLen;
+    }
+    
+    if (transferDataLen == 0) {
+        return nullptr;
+    }
+    
+    return transferBuffer;
+}
+
+// ============================================================================
+// Debugging
+// ============================================================================
+
+/**
+ * @brief Print the current context stack
+ */
+void ContextManager::printStack() const {
+    Serial.println("\n=== Context Stack ===");
+    if (stackTop < 0) {
+        Serial.println("  (empty)");
+    } else {
+        for (int i = stackTop; i >= 0; i--) {
+            Serial.print("  [");
+            Serial.print(i);
+            Serial.print("] ");
+            Serial.print(getContextTypeName(stack[i].type));
+            if (i == stackTop) {
+                Serial.print(" <- current");
+            }
+            if (stack[i].isBackground) {
+                Serial.print(" (background)");
+            }
+            Serial.println();
+        }
+    }
+    
+    Serial.print("Tracked files: ");
+    Serial.println(fileCount);
+    
+    if (hasTransferPath()) {
+        Serial.print("Transfer path: ");
+        Serial.println(transferPath);
+    }
+    if (transferDataLen > 0) {
+        Serial.print("Transfer data: ");
+        Serial.print(transferDataLen);
+        Serial.println(" bytes");
+    }
+    Serial.println("=====================\n");
 }
 

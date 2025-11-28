@@ -14,6 +14,7 @@
 #include "ArduinoStuff.h"
 #include "Apps.h"
 #include "Jerial.h" // TermControl is now part of Jerial
+#include "externVars.h"  // For fs_mutex filesystem synchronization
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -233,7 +234,69 @@ int parseDumpFormat(const char* str) {
     return parseFromTable(dumpFormatTable, dumpFormatTableSize, str);
 }
 
+int parseConnectionType(const char* str) {
+    return parseFromTable(connectionTypeTable, connectionTypeTableSize, str);
+}
 
+// Get connection type string from value
+const char* getConnectionTypeString(int connectionType) {
+    switch (connectionType) {
+        case 0: return "gpio_7_8";
+        case 1: return "rp6_rp7";
+        case 2: return "internal_i2c0";
+        case 3: return "custom";
+        default: return "gpio_7_8";
+    }
+}
+
+// Update OLED pins based on connection_type
+// Type 0 = GPIO 7/8 (via crossbar, uses GPIO 26/27 -> rows D2/D3)
+// Type 1 = RP6/RP7 (hardwired, GPIO 6/7 - no row needed)
+// Type 2 = internal I2C0 (hardwired, GPIO 4/5 - no row needed)
+// Type 3 = custom (via crossbar, use existing sda_pin/scl_pin)
+void updateOledPinsForConnectionType(int connectionType) {
+    switch (connectionType) {
+        case 0: // GPIO 7/8 (via crossbar using GPIO 26/27)
+            jumperlessConfig.top_oled.sda_pin = 26;
+            jumperlessConfig.top_oled.scl_pin = 27;
+            jumperlessConfig.top_oled.gpio_sda = RP_GPIO_26;
+            jumperlessConfig.top_oled.gpio_scl = RP_GPIO_27;
+            jumperlessConfig.top_oled.sda_row = NANO_D2;
+            jumperlessConfig.top_oled.scl_row = NANO_D3;
+            break;
+        case 1: // RP6/RP7 (hardwired GPIO 6/7)
+            jumperlessConfig.top_oled.sda_pin = 6;
+            jumperlessConfig.top_oled.scl_pin = 7;
+            jumperlessConfig.top_oled.gpio_sda = RP_GPIO_6;
+            jumperlessConfig.top_oled.gpio_scl = RP_GPIO_7;
+            // No row needed for hardwired connection
+            jumperlessConfig.top_oled.sda_row = -1;
+            jumperlessConfig.top_oled.scl_row = -1;
+            break;
+        case 2: // Internal I2C0 (hardwired GPIO 4/5)
+            jumperlessConfig.top_oled.sda_pin = 4;
+            jumperlessConfig.top_oled.scl_pin = 5;
+            jumperlessConfig.top_oled.gpio_sda = RP_GPIO_4;
+            jumperlessConfig.top_oled.gpio_scl = RP_GPIO_5;
+            // No row needed for hardwired connection
+            jumperlessConfig.top_oled.sda_row = -1;
+            jumperlessConfig.top_oled.scl_row = -1;
+            break;
+        case 3: // Custom - don't change pins, user sets them manually
+            // Keep existing values
+            break;
+        default:
+            // Fall back to GPIO 7/8
+            jumperlessConfig.top_oled.sda_pin = 26;
+            jumperlessConfig.top_oled.scl_pin = 27;
+            jumperlessConfig.top_oled.gpio_sda = RP_GPIO_26;
+            jumperlessConfig.top_oled.gpio_scl = RP_GPIO_27;
+            jumperlessConfig.top_oled.sda_row = NANO_D2;
+            jumperlessConfig.top_oled.scl_row = NANO_D3;
+            break;
+    }
+    jumperlessConfig.top_oled.connection_type = connectionType;
+}
 
 void printArbitraryFunctionTable(void) {
     for (int i = 0; i < arbitraryFunctionTableSize; i++) {
@@ -352,14 +415,15 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
 }
 
 void updateConfigFromFile(const char* filename) {
-
-    if (!FatFS.exists(filename)) {
+    // Check if file exists using safe function
+    if (!safeFileExists(filename, 1000)) {
         firstStart = 1;
         resetConfigToDefaults();
         return;
     }
 
-    File file = FatFS.open(filename, "r");
+    // Open config file using safe function
+    File file = safeFileOpen(filename, "r", 2000);
     if (!file) {
         Serial.println("Failed to open config file");
         return;
@@ -519,10 +583,16 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "width") == 0) jumperlessConfig.top_oled.width = parseInt(value);
             else if (strcmp(key, "height") == 0) jumperlessConfig.top_oled.height = parseInt(value);
             else if (strcmp(key, "rotation") == 0) jumperlessConfig.top_oled.rotation = parseInt(value);
+            else if (strcmp(key, "connection_type") == 0) {
+                int connType = parseConnectionType(value);
+                updateOledPinsForConnectionType(connType);
+            }
             else if (strcmp(key, "sda_pin") == 0) jumperlessConfig.top_oled.sda_pin = parseInt(value);
             else if (strcmp(key, "scl_pin") == 0) jumperlessConfig.top_oled.scl_pin = parseInt(value);
             else if (strcmp(key, "gpio_sda") == 0) jumperlessConfig.top_oled.gpio_sda = parseInt(value);
             else if (strcmp(key, "gpio_scl") == 0) jumperlessConfig.top_oled.gpio_scl = parseInt(value);
+            else if (strcmp(key, "sda_row") == 0) jumperlessConfig.top_oled.sda_row = parseInt(value);
+            else if (strcmp(key, "scl_row") == 0) jumperlessConfig.top_oled.scl_row = parseInt(value);
             else if (strcmp(key, "connect_on_boot") == 0) jumperlessConfig.top_oled.connect_on_boot = parseBool(value);
             else if (strcmp(key, "lock_connection") == 0) jumperlessConfig.top_oled.lock_connection = parseBool(value);
             else if (strcmp(key, "show_in_terminal") == 0) jumperlessConfig.top_oled.show_in_terminal = parseSerialPort(value);
@@ -556,7 +626,7 @@ void updateConfigFromFile(const char* filename) {
             }
         }
     }
-    file.close();
+    safeFileClose(file, false);  // Read-only, no flush
 
     // Check if config needs to be reset due to version differences
     if (!foundConfigVersion) {
@@ -690,14 +760,19 @@ void updateConfigFromFile(const char* filename) {
 }
 
 void saveConfigToFile(const char* filename) {
-    //core1busy = true;
-    if (FatFS.exists(filename)) {
-        FatFS.remove(filename);
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Delete existing file if it exists
+    if (safeFileExists(filename, 500)) {
+        safeFileDelete(filename, 1000);
     }
     
-    File file = FatFS.open(filename, "w");
+    // Open file for writing using safe function
+    File file = safeFileOpen(filename, "w", 2000);
     if (!file) {
         Serial.println("Failed to create config file");
+        unpauseCore2ForFlash(was_paused);
         return;
     }
  //! this is a place to add new config options
@@ -823,6 +898,7 @@ void saveConfigToFile(const char* filename) {
     file.print("i2c_address = "); file.print(jumperlessConfig.top_oled.i2c_address); file.println(";");
     file.print("width = "); file.print(jumperlessConfig.top_oled.width); file.println(";");
     file.print("height = "); file.print(jumperlessConfig.top_oled.height); file.println(";");
+    file.print("connection_type = "); file.print(getConnectionTypeString(jumperlessConfig.top_oled.connection_type)); file.println(";");
     file.print("sda_pin = "); file.print(jumperlessConfig.top_oled.sda_pin); file.println(";");
     file.print("scl_pin = "); file.print(jumperlessConfig.top_oled.scl_pin); file.println(";");
     file.print("gpio_sda = "); file.print(jumperlessConfig.top_oled.gpio_sda); file.println(";");
@@ -834,8 +910,9 @@ void saveConfigToFile(const char* filename) {
     file.print("show_in_terminal = "); file.print(jumperlessConfig.top_oled.show_in_terminal ? 1:0); file.println(";");
     file.print("font = "); file.print(jumperlessConfig.top_oled.font); file.println(";");
     file.print("startup_message = "); file.print(jumperlessConfig.top_oled.startup_message); file.println("");
-    file.close();
-    //core1busy = false;
+    file.flush();
+    safeFileClose(file, true);  // Write mode, needs flush
+    unpauseCore2ForFlash(was_paused);
 }
 
 void saveConfig(void) {
@@ -870,16 +947,20 @@ void saveConfig(void) {
  * Returns true on success, false on failure
  */
 bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsigned int dataLen) {
-    // Check if file already exists
-    if (FatFS.exists(filename)) {
+    // Check if file already exists using safe function
+    if (safeFileExists(filename, 500)) {
         return true; // Already provisioned
     }
     
-    // Write file
-    File file = FatFS.open(filename, "w");
+    // CRITICAL: Pause Core2 during flash write operations
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Write file using safe function
+    File file = safeFileOpen(filename, "w", 2000);
     if (!file) {
         Serial.print("Failed to create file: ");
         Serial.println(filename);
+        unpauseCore2ForFlash(was_paused);
         return false;
     }
     
@@ -893,13 +974,16 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
         if (written != chunkSize) {
             Serial.print("Write error for: ");
             Serial.println(filename);
-            file.close();
+            safeFileClose(file, true);
+            unpauseCore2ForFlash(was_paused);
             return false;
         }
         bytesWritten += written;
     }
     
-    file.close();
+    file.flush();
+    safeFileClose(file, true);  // Write mode, needs flush
+    unpauseCore2ForFlash(was_paused);
     Serial.print("Provisioned: ");
     Serial.println(filename);
     return true;
@@ -1273,6 +1357,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("width = "); Serial.print(jumperlessConfig.top_oled.width); Serial.println(";");
         if (pasteable == true) Serial.print("`[top_oled] ");
         Serial.print("height = "); Serial.print(jumperlessConfig.top_oled.height); Serial.println(";");
+        if (pasteable == true) Serial.print("`[top_oled] ");
+        Serial.print("connection_type = "); Serial.print(getConnectionTypeString(jumperlessConfig.top_oled.connection_type)); Serial.println(";");
         if (pasteable == true) Serial.print("`[top_oled] ");
         Serial.print("sda_pin = ");
         if (showNames) Serial.print(definesToChar(jumperlessConfig.top_oled.sda_pin, 0));

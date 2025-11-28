@@ -3,6 +3,7 @@
 #include "TuiPopup.h"
 #include "Tui.h"
 #include <cstring>
+#include "FilesystemStuff.h"  // For safe file operations
 
 namespace TUI {
 
@@ -450,7 +451,7 @@ void PopupFileManager::quickView() {
   const Entry& e = s_list[s_sel];
   if (e.dir) { status("Cannot view a directory"); return; }
 
-  File f = FatFS.open(e.fullPath.c_str(), "r");
+  File f = safeFileOpen(e.fullPath.c_str(), "r", 1000);
   if (!f) { status("Open failed: " + e.fullPath); return; }
 
   Popup& P = Popup::instance();
@@ -467,7 +468,7 @@ void PopupFileManager::quickView() {
     if (dispWidthAscii(line) > cols) line = ellipsizeToAscii(line, cols-1);
     P.println(line);
   }
-  f.close();
+  safeFileClose(f, false);
   P.println("");
   P.println("[Any key to return]");
   P.drawIfDirty();
@@ -493,10 +494,8 @@ void PopupFileManager::makeFile() {
   String name = promptSync("New file", "Filename:");
   if (name.length()==0) { status("Cancelled"); return; }
   String fp = joinPath(s_path, name);
-  if (FatFS.exists(fp.c_str())) { status("Exists: " + name); return; }
-  File f = FatFS.open(fp.c_str(), "w");
-  if (!f) { status("Create failed"); return; }
-  f.close();
+  if (safeFileExists(fp.c_str(), 500)) { status("Exists: " + name); return; }
+  if (!safeFileWriteAll(fp.c_str(), "", 0, 1000)) { status("Create failed"); return; }
   status("Created: " + name);
   refresh();
 }
@@ -505,8 +504,8 @@ void PopupFileManager::makeDir() {
   String name = promptSync("New directory", "Directory name:");
   if (name.length()==0) { status("Cancelled"); return; }
   String fp = joinPath(s_path, name);
-  if (FatFS.exists(fp.c_str())) { status("Exists: " + name); return; }
-  if (!FatFS.mkdir(fp.c_str())) { status("mkdir failed"); return; }
+  if (safeFileExists(fp.c_str(), 500)) { status("Exists: " + name); return; }
+  if (!safeMkdir(fp.c_str(), 1000)) { status("mkdir failed"); return; }
   status("Created dir: " + name);
   refresh();
 }

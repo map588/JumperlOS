@@ -222,7 +222,7 @@ void eKiloApp();
 String launchEkilo(const char* filename, bool replMode); // Unified eKilo launcher
 void launchEkiloStandalone(const char* filename = nullptr); // Legacy wrapper for standalone mode
 String launchEkiloREPL(const char* filename = nullptr); // Legacy wrapper for REPL mode
-String launchInlineEkilo(const String& initial_content = ""); // Inline editing mode - no screen clearing, no file operations
+
 String generateNextScriptName(); // Helper to generate next available script name
 
 // Utility functions
@@ -250,5 +250,104 @@ int getConfiguredEditorLines();
 
 // Filesystem utility functions
 bool deleteDirectoryContents(const String& path);
+
+// =============================================================================
+// SAFE FILE OPERATIONS
+// =============================================================================
+// Centralized file I/O functions with proper multicore synchronization.
+// ALL file operations in the codebase should go through these functions
+// to ensure thread safety and prevent Core2 crashes during flash writes.
+
+/**
+ * Safely open a file with proper mutex protection
+ * @param path File path
+ * @param mode File mode ("r", "w", "a", "r+", "w+", "a+")
+ * @param timeout_ms Mutex timeout (0 = blocking, default 2000ms)
+ * @return File handle or empty File if failed
+ * @note Caller MUST call safeFileClose() when done
+ * @note For write modes, Core2 is NOT paused until actual write/flush
+ */
+File safeFileOpen(const char* path, const char* mode, uint32_t timeout_ms = 2000);
+
+/**
+ * Safely close a file, flushing if it was opened for writing
+ * @param file Reference to file handle (will be invalidated)
+ * @param was_write_mode true if file was opened with write capabilities
+ * @note Automatically handles Core2 pause for write mode flush
+ */
+void safeFileClose(File& file, bool was_write_mode = false);
+
+/**
+ * Safely read entire file contents into a buffer
+ * @param path File path
+ * @param buffer Output buffer (caller allocated)
+ * @param buffer_size Size of buffer
+ * @param bytes_read Output: actual bytes read
+ * @param timeout_ms Mutex timeout (default 2000ms)
+ * @return true on success, false on error
+ */
+bool safeFileReadAll(const char* path, char* buffer, size_t buffer_size, 
+                     size_t* bytes_read, uint32_t timeout_ms = 2000);
+
+/**
+ * Safely write entire contents to a file (overwrites existing)
+ * @param path File path
+ * @param content Data to write
+ * @param content_len Length of content (or 0 to use strlen)
+ * @param timeout_ms Mutex timeout (default 2000ms)
+ * @return true on success, false on error
+ * @note Automatically pauses Core2, writes, flushes, and unpauses
+ */
+bool safeFileWriteAll(const char* path, const char* content, size_t content_len = 0,
+                      uint32_t timeout_ms = 2000);
+
+/**
+ * Safely write to an open file handle
+ * @param file File handle (must be open for writing)
+ * @param data Data to write
+ * @param len Length of data
+ * @return Bytes written, or -1 on error
+ * @note Caller should call safeFileFlush() or safeFileClose() after writes
+ */
+int safeFileWrite(File& file, const uint8_t* data, size_t len);
+
+/**
+ * Safely flush a file with Core2 pause protection
+ * @param file File handle (must be open for writing)
+ * @return true on success
+ */
+bool safeFileFlush(File& file);
+
+/**
+ * Check if a file exists (thread-safe)
+ * @param path File path
+ * @param timeout_ms Mutex timeout (default 1000ms)
+ * @return true if file exists
+ */
+bool safeFileExists(const char* path, uint32_t timeout_ms = 1000);
+
+/**
+ * Get file size (thread-safe)
+ * @param path File path
+ * @param timeout_ms Mutex timeout (default 1000ms)
+ * @return File size in bytes, or -1 on error
+ */
+int32_t safeFileSize(const char* path, uint32_t timeout_ms = 1000);
+
+/**
+ * Safely create a directory (thread-safe with Core2 pause)
+ * @param path Directory path
+ * @param timeout_ms Mutex timeout (default 2000ms)
+ * @return true on success or if directory already exists
+ */
+bool safeMkdir(const char* path, uint32_t timeout_ms = 2000);
+
+/**
+ * Safely delete a file (thread-safe with Core2 pause)
+ * @param path File path
+ * @param timeout_ms Mutex timeout (default 2000ms)
+ * @return true on success
+ */
+bool safeFileDelete(const char* path, uint32_t timeout_ms = 2000);
 
 #endif // FILESYSTEMSTUFF_H 

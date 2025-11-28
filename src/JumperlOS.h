@@ -8,11 +8,76 @@
 // Forward declarations
 class Service;
 class jOSmanager;
+class ContextManager;
 class Probing;
 class Highlighting;
 class Menus;
 class Peripherals;
 class SlotManager;
+
+// =============================================================================
+// CONTEXT MANAGEMENT SYSTEM
+// =============================================================================
+// Stack-based context navigation for UI states (Menu -> FileManager -> Ekilo -> Python)
+// Provides:
+// - Proper cleanup when exiting contexts
+// - Zero-copy data passing between contexts via file paths
+// - Centralized file handle tracking to prevent leaks
+// - Thread-safe operations using existing mutex infrastructure
+
+/**
+ * @brief Context types - each represents a distinct UI/execution mode
+ */
+enum class ContextType : uint8_t {
+    NONE = 0,           // No context (stack empty or error state)
+    MAIN_MENU,          // Main serial menu (SingleCharCommands)
+    FILE_MANAGER,       // File browser UI
+    EKILO_EDITOR,       // Text editor
+    PYTHON_REPL,        // MicroPython REPL
+    HELP_DOCS,          // Help documentation viewer
+    DEBUG_MENU,         // Debug flags menu
+    PROBING,            // Probe mode
+    CLICKWHEEL_MENU,    // Rotary encoder menu
+    APP_GENERIC,        // Generic app context
+    CONTEXT_TYPE_COUNT  // Must be last - used for array sizing
+};
+
+/**
+ * @brief Get a human-readable name for a context type
+ */
+const char* getContextTypeName(ContextType type);
+
+/**
+ * @brief Callback function type for context lifecycle events
+ * @param userData Context-specific data passed during push
+ */
+typedef void (*ContextCallback)(void* userData);
+
+/**
+ * @brief Context entry in the navigation stack
+ * 
+ * Each entry represents a UI/execution state with lifecycle callbacks.
+ * Callbacks are optional (can be nullptr).
+ */
+struct ContextEntry {
+    ContextType type;                   // What kind of context this is
+    ContextCallback onEnter;            // Called when context becomes active (pushed)
+    ContextCallback onExit;             // Called when context is exited (popped) - cleanup here
+    ContextCallback onSuspend;          // Called when a child context is pushed on top
+    ContextCallback onResume;           // Called when returning from a child context
+    void* userData;                     // Context-specific data (e.g., filename pointer)
+    bool isBackground;                  // For future: concurrent background execution
+    
+    // Default constructor - all null/zero
+    ContextEntry() : type(ContextType::NONE), onEnter(nullptr), onExit(nullptr),
+                     onSuspend(nullptr), onResume(nullptr), userData(nullptr), 
+                     isBackground(false) {}
+    
+    // Convenience constructor for simple contexts
+    ContextEntry(ContextType t, ContextCallback exitCb = nullptr, void* data = nullptr)
+        : type(t), onEnter(nullptr), onExit(exitCb), onSuspend(nullptr), 
+          onResume(nullptr), userData(data), isBackground(false) {}
+};
 
 /**
  * @brief Status of a service after its service() method executes
@@ -125,6 +190,19 @@ public:
      * to keep critical services like button checking running in their inner loops
      */
     void serviceCritical();
+    
+    /**
+     * @brief Execute services needed during MicroPython REPL execution
+     * 
+     * This runs a minimal set of services to keep the system responsive
+     * while the main loop is blocked by MicroPython script execution.
+     * Specifically runs:
+     * - Peripherals service (for current sense measurements and marching ants)
+     * - TinyUSB task (to keep USB alive)
+     * 
+     * Should be called periodically during MicroPython execution (e.g., in time.sleep)
+     */
+    void servicePython();
     
     /**
      * @brief Get the currently blocking service (if any)
@@ -319,6 +397,209 @@ private:
     static OLEDService* instance;
     class oled* oledDisplay;
 };
+
+// =============================================================================
+// CONTEXT MANAGER
+// =============================================================================
+
+/**
+ * @brief Manages the navigation stack and resource tracking for UI contexts
+ * 
+ * This singleton provides:
+ * - Stack-based navigation (push to enter context, pop to exit)
+ * - Lifecycle callbacks for proper cleanup
+ * - Centralized file handle tracking to prevent leaks
+ * - Zero-copy data passing between contexts via file paths
+ * - Thread-safe operations using existing mutex infrastructure
+ * 
+ * Usage:
+ *   ContextManager& ctx = ContextManager::getInstance();
+ *   ctx.pushContext(ContextEntry(ContextType::FILE_MANAGER, cleanupFunc));
+ *   // ... run file manager ...
+ *   ctx.popContext();  // Automatically calls cleanupFunc
+ */
+class ContextManager {
+public:
+    static ContextManager& getInstance();
+    
+    // Delete copy/move operations (singleton)
+    ContextManager(const ContextManager&) = delete;
+    ContextManager& operator=(const ContextManager&) = delete;
+    
+    // =========================================================================
+    // Stack Operations
+    // =========================================================================
+    
+    /**
+     * @brief Push a new context onto the stack
+     * 
+     * Calls onSuspend on current context (if any), then onEnter on new context.
+     * 
+     * @param ctx Context entry to push
+     * @param allowDuplicate If true, allows pushing same context type again (for nested REPL etc)
+     * @return true if pushed successfully, false if stack full or duplicate (when not allowed)
+     */
+    bool pushContext(const ContextEntry& ctx, bool allowDuplicate = false);
+    
+    /**
+     * @brief Pop the current context and return to parent
+     * 
+     * Calls onExit on current context, closes all tracked files,
+     * then calls onResume on parent context (if any).
+     * 
+     * @return true if popped successfully, false if stack empty
+     */
+    bool popContext();
+    
+    /**
+     * @brief Get the current (topmost) context type
+     */
+    ContextType currentContext() const;
+    
+    /**
+     * @brief Get the current context entry (read-only)
+     * @return Pointer to current context, or nullptr if stack empty
+     */
+    const ContextEntry* currentContextEntry() const;
+    
+    /**
+     * @brief Get the current stack depth
+     * @return Number of contexts on stack (0 = empty)
+     */
+    int stackDepth() const { return stackTop + 1; }
+    
+    /**
+     * @brief Check if a specific context type is anywhere in the stack
+     */
+    bool isContextActive(ContextType type) const;
+    
+    // =========================================================================
+    // File Handle Tracking
+    // =========================================================================
+    // Centralized tracking of open files to prevent leaks when exiting contexts
+    
+    /**
+     * @brief Register an open file handle for tracking
+     * 
+     * Files registered here will be automatically closed when popContext() is called.
+     * 
+     * @param file Pointer to open File object
+     * @return true if registered, false if tracking array full
+     */
+    bool registerOpenFile(void* file);
+    
+    /**
+     * @brief Unregister a file handle (call when you close it yourself)
+     */
+    void unregisterFile(void* file);
+    
+    /**
+     * @brief Close and unregister all tracked files
+     * 
+     * Called automatically by popContext(), but can be called manually.
+     */
+    void closeAllTrackedFiles();
+    
+    /**
+     * @brief Get count of currently tracked files
+     */
+    int trackedFileCount() const { return fileCount; }
+    
+    // =========================================================================
+    // Zero-Copy Data Transfer
+    // =========================================================================
+    // Pass data between contexts without copying large buffers.
+    // Prefer passing file paths over file contents.
+    
+    /**
+     * @brief Set a file path for transfer to child/parent context
+     * 
+     * Use this instead of passing file contents as String.
+     * The receiving context can open the file directly.
+     * 
+     * @param path File path (will be copied into internal buffer, max 127 chars)
+     * @return true if set successfully
+     */
+    bool setTransferPath(const char* path);
+    
+    /**
+     * @brief Get the transfer path set by another context
+     * @return Path string, or empty string if none set
+     */
+    const char* getTransferPath() const { return transferPath; }
+    
+    /**
+     * @brief Check if a transfer path is set
+     */
+    bool hasTransferPath() const { return transferPath[0] != '\0'; }
+    
+    /**
+     * @brief Clear the transfer path
+     */
+    void clearTransferPath() { transferPath[0] = '\0'; }
+    
+    /**
+     * @brief Set small data for transfer (copies into internal buffer)
+     * 
+     * For small essential data like cursor positions, flags, etc.
+     * Max 256 bytes.
+     * 
+     * @param data Pointer to data
+     * @param len Length in bytes (max 256)
+     * @return true if copied successfully
+     */
+    bool setTransferData(const void* data, size_t len);
+    
+    /**
+     * @brief Get transfer data set by another context
+     * @param outLen Will be set to data length
+     * @return Pointer to data, or nullptr if none set
+     */
+    const void* getTransferData(size_t* outLen) const;
+    
+    /**
+     * @brief Clear transfer data
+     */
+    void clearTransferData() { transferDataLen = 0; }
+    
+    /**
+     * @brief Clear all transfer state (path and data)
+     */
+    void clearAllTransfers() { clearTransferPath(); clearTransferData(); }
+    
+    // =========================================================================
+    // Debugging
+    // =========================================================================
+    
+    /**
+     * @brief Print the current context stack to Serial
+     */
+    void printStack() const;
+    
+private:
+    ContextManager();
+    ~ContextManager() = default;
+    
+    static ContextManager* instance;
+    
+    // Context stack
+    static const int MAX_STACK_DEPTH = 8;
+    ContextEntry stack[MAX_STACK_DEPTH];
+    int stackTop;  // -1 = empty, 0 = one item, etc.
+    
+    // File handle tracking
+    static const int MAX_TRACKED_FILES = 8;
+    void* openFiles[MAX_TRACKED_FILES];
+    int fileCount;
+    
+    // Transfer buffers (for zero-copy data passing)
+    char transferPath[128];          // File path for file-based transfer
+    uint8_t transferBuffer[256];     // Small buffer for essential data
+    size_t transferDataLen;
+};
+
+// Global reference for convenient access
+extern ContextManager& contextManager;
 
 // Global references to services for clean syntax (no need for getInstance())
 // These are defined in JumperlOS.cpp (or their respective .cpp files)

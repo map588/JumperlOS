@@ -7,6 +7,7 @@
 #include "FilesystemStuff.h"
 #include "Graphics.h"
 #include "JumperlessDefines.h"
+#include "JumperlOS.h"  // For ContextManager
 #include "LEDs.h"
 #include "MatrixState.h"
 #include "Menus.h"
@@ -139,8 +140,30 @@ void runApp( int index, char* name ) {
     Serial.println( "Running app: " + normalizeSpaces( name ) );
     Serial.println( "Index: " + String( index ) );
 
+    // Determine context type based on app name
+    // Some apps (File Manager, MicroPython REPL) push their own specific context,
+    // so we use APP_GENERIC for others to avoid double-pushing
+    String appName = normalizeSpaces( name );
+    bool appPushesOwnContext = appName.equalsIgnoreCase("file manager") ||
+                               appName.equalsIgnoreCase("micropython repl");
+    
+    if (!appPushesOwnContext) {
+        // Push generic app context for cleanup tracking
+        ContextEntry ctx(ContextType::APP_GENERIC);
+        ctx.onExit = [](void*) {
+            // Generic cleanup - close any open files
+            closeAllFiles();
+        };
+        ContextManager::getInstance().pushContext(ctx);
+    }
+
     // Direct dispatch (no giant switch)
     apps[ index ].action( );
+    
+    // Pop context if we pushed one
+    if (!appPushesOwnContext) {
+        ContextManager::getInstance().popContext();
+    }
 }
 
 void microPythonREPLapp( void ) {

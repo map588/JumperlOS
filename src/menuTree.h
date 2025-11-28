@@ -145,6 +145,8 @@ String menuLines[] = {
 
 
       "OLED",
+      "-$Pins$",
+      "--*GPIO7/8**RP6/7**Intrnal*",
       "-Font",
       "--Eurostl^",
       "--Jokermn^",
@@ -175,8 +177,7 @@ String menuLines[] = {
       "--*On**Off*",
 
       "-Connect",
-      "-$Pins$",
-      "--*GPIO7/8**RP6/7**Intrnal*",
+
       //  "-Demo",
 
 

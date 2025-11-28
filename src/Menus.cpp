@@ -9,6 +9,7 @@
 #include "Commands.h"
 #include "FatFS.h"
 #include "FileParsing.h"
+#include "FilesystemStuff.h"  // For safe file operations
 #include "Graphics.h"
 #include "ImagesApp.h"
 #include "JumperlessDefines.h"
@@ -137,12 +138,12 @@ void readMenuFile( int flashOrLocal ) {
         //   // Serial.println("waiting for core2 to finish");
         //   }
         core1busy = true;
-        File menuFile = FatFS.open( "/MenuTree.txt", "r" );
+        File menuFile = safeFileOpen( "/MenuTree.txt", "r", 1000 );
         if ( !menuFile ) {
             delay( 1000 );
             Serial.println( "Failed to open menu file" );
-            return;
             core1busy = false;
+            return;
         }
         menuLength = 0;
 
@@ -154,7 +155,7 @@ void readMenuFile( int flashOrLocal ) {
 
         menuRead = 1;
 
-        menuFile.close( );
+        safeFileClose( menuFile, false );
         core1busy = false;
     } else {
 
@@ -4258,6 +4259,40 @@ int doMenuAction( int menuPosition, int selection ) {
                 jumperlessConfig.top_oled.show_in_terminal = 1;
             }
             configChanged = true;
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Pins" ) != -1 ) {
+            // Handle OLED connection type selection:
+            // 0 = GPIO 7/8 (via crossbar using GPIO 26/27)
+            // 1 = RP6/RP7 (hardwired GPIO 6/7)
+            // 2 = Internal I2C0 (hardwired GPIO 4/5)
+            int newConnectionType = currentAction.from[ 0 ];
+            
+            // Disconnect current OLED before changing pins
+            oled.disconnect( );
+            
+            // Update all pins for the new connection type
+            updateOledPinsForConnectionType( newConnectionType );
+            configChanged = true;
+            
+            // Display feedback
+            oled.clear( );
+            oled.setTextSize( 1 );
+            oled.clearPrintShow( "OLED Pins:", 1, true, false, false, 0, 0 );
+            oled.setTextSize( 2 );
+            if ( newConnectionType == 0 ) {
+                oled.print( "GPIO 7/8" );
+                Serial.println("\n\rOLED pins set to GPIO 7/8 (crossbar, pins 26/27)");
+            } else if ( newConnectionType == 1 ) {
+                oled.print( "RP6/7" );
+                Serial.println("\n\rOLED pins set to RP6/RP7 (hardwired, pins 6/7)");
+            } else if ( newConnectionType == 2 ) {
+                oled.print( "Internal" );
+                Serial.println("\n\rOLED pins set to Internal I2C0 (hardwired, pins 4/5)");
+            }
+            oled.show( );
+            oled.setTextSize( 1 );
+            
+            // Reconnect with new pins
+            oled.init( );
         }
 
     } else if ( currentCategory == NOCATEGORY ) {
