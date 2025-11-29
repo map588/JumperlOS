@@ -13,6 +13,7 @@
 #include "Jerial.h" // TermControl is now part of Jerial
 #include "externVars.h"  // For fs_mutex filesystem synchronization
 #include "JumperlOS.h"  // For ContextManager
+#include "SharedBuffer.h"  // For zero-copy transfer debugging
 
 // External references
 extern class oled oled;
@@ -2129,6 +2130,10 @@ void filesystemApp( bool waitForEnter ) {
     bool showOledInTerminal = jumperlessConfig.top_oled.show_in_terminal;
     jumperlessConfig.top_oled.show_in_terminal = false;
 
+    // Clear screen at startup for clean display
+    // Serial.print("\x1b[2J\x1b[H");
+    // Serial.flush();
+
     changeTerminalColor( FileColors::HEADER, true );
     Serial.println( "\n  Starting Jumperless File Manager..." );
     Serial.println( "   Navigate files and directories with colorful interface" );
@@ -2262,8 +2267,8 @@ String launchEkilo( const char* filename, bool replMode ) {
     ctx.onExit = [](void*) {
         // Cleanup callback - close any open files
         closeAllFiles();
-        // Clear transfer path to prevent stale file paths from being loaded by Python
-        ContextManager::getInstance().clearTransferPath();
+        // NOTE: Do NOT clear transfer path here - the caller (Python REPL) needs to read it
+        // The caller is responsible for clearing the transfer path after reading
     };
     // Store filename in transfer path for child contexts (Python REPL)
     if (finalFilename.length() > 0) {
@@ -2321,20 +2326,33 @@ String launchEkilo( const char* filename, bool replMode ) {
     
     // ========== UNIFIED EDITOR CALL ==========
     // Use ekilo_run() - the single entry point for all editor operations
-    EkiloMode mode = replMode ? EKILO_MODE_REPL : EKILO_MODE_NORMAL;
     const char* fileToOpen = finalFilename.length() > 0 ? finalFilename.c_str() : nullptr;
     
-    bool success = ekilo_run(fileToOpen, mode);
+    bool success = ekilo_run(fileToOpen);
     
     // Get result from ContextManager (zero-copy)
     const EkiloResult* result = ekilo_get_result();
-    bool shouldLaunchREPL = result && result->launch_repl;
     bool fileSaved = result && result->saved;
     
     // Store saved path for later use
     String savedFilePath = "";
     if (result && result->saved_path[0] != '\0') {
         savedFilePath = String(result->saved_path);
+    }
+    
+    // Only launch REPL if Ctrl+P was pressed AND file is a .py file
+    bool shouldLaunchREPL = false;
+    if (result && result->launch_repl) {
+        // Check if file is a Python file
+        bool isPythonFile = savedFilePath.endsWith(".py") || savedFilePath.endsWith(".PY");
+        if (isPythonFile) {
+            shouldLaunchREPL = true;
+        } else {
+            // Not a Python file - warn user and don't launch REPL
+            Serial.println("\n\r[!] Ctrl+P only launches Python REPL for .py files");
+            Serial.println("[!] Saved file, returning to previous screen...");
+            delay(1500);  // Give user time to read message
+        }
     }
 
     // Screen restoration based on mode
@@ -2362,14 +2380,13 @@ String launchEkilo( const char* filename, bool replMode ) {
         ContextManager::getInstance().popContext();
         ekilo_clear_result();  // Clean up result data
         
+        // Clear screen before returning - Python REPL left garbage on screen
+        Serial.print( "\x1b[2J\x1b[H" );
+        Serial.flush();
+        
         // Return marker to signal that REPL was already launched
         // This prevents the caller from trying to load the file again
-        if ( calledFromFileManager ) {
-            return "[REPL_LAUNCHED]";
-        } else {
-            Serial.print( "\x1b[2J\x1b[H" );
-            return "[REPL_LAUNCHED]";
-        }
+        return "[REPL_LAUNCHED]";
     }
 
     // Editor has exited normally - clean up and prepare for return
@@ -2495,12 +2512,14 @@ String filesystemAppPythonScriptsREPL( ) {
     ctx.onExit = [](void*) {
         // Cleanup callback - close any open files
         closeAllFiles();
-        // Clear transfer path to prevent stale file paths from being loaded by Python
-        ContextManager::getInstance().clearTransferPath();
+        // NOTE: Do NOT clear transfer path or SharedBuffer here
+        // The caller (Python REPL) needs to read them after we return
     };
     ContextManager::getInstance().pushContext(ctx);
     
     // Clear screen for file manager interface
+    Serial.print("\x1b[2J\x1b[H");
+    Serial.flush();
     saveScreenState( );
 
     FileManager manager;

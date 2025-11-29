@@ -710,39 +710,22 @@ ContextManager& ContextManager::getInstance() {
  * @brief Push a new context onto the stack
  * 
  * If the same context type already exists on the stack, this will:
- * 1. Pop all contexts above it (closing them properly)
- * 2. Return to the existing context instead of creating a duplicate
+ * - Reject the push and return false (no stack modification)
+ * - Caller should use popContext() explicitly to navigate back
  * 
- * This prevents stack buildup and crashes from re-entering contexts.
+ * This ensures stack order is always preserved and prevents unexpected navigation.
  */
 bool ContextManager::pushContext(const ContextEntry& ctx, bool /*unused*/) {
     // Check if this context type already exists on the stack
-    // If so, pop back to it instead of creating a duplicate
-    int existingIndex = -1;
+    // If so, reject the push - caller should use popContext() to navigate back
     for (int i = 0; i <= stackTop; i++) {
         if (stack[i].type == ctx.type) {
-            existingIndex = i;
-            break;
+            Serial.print("WARNING: Context type ");
+            Serial.print(getContextTypeName(ctx.type));
+            Serial.println(" already on stack - push rejected. Use popContext() to navigate back.");
+            printStack();
+            return false;  // Reject duplicate - don't modify stack
         }
-    }
-    
-    if (existingIndex >= 0) {
-        // Context already exists - pop everything above it
-        Serial.print("Context type ");
-        Serial.print((int)ctx.type);
-        Serial.println(" already on stack - popping back to it");
-        
-        // Pop contexts until we're back at the existing one
-        while (stackTop > existingIndex) {
-            popContext();
-        }
-        
-        // Call onResume on the existing context if it has one
-        if (stackTop >= 0 && stack[stackTop].onResume != nullptr) {
-            stack[stackTop].onResume(stack[stackTop].userData);
-        }
-        
-        return true;  // Successfully navigated to existing context
     }
     
     // Thread safety: acquire mutex during stack modification

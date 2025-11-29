@@ -18,7 +18,7 @@ struct EditorRow;
 struct SyntaxDefinition;
 
 // Editor configuration - make screen size configurable
-#define DEFAULT_EDITOR_ROWS 35  // Increased from smaller default to 25 rows
+#define DEFAULT_EDITOR_ROWS 45  // Increased from smaller default to 25 rows
 #define DEFAULT_EDITOR_COLS 80
 
 // Editor configuration structure
@@ -72,14 +72,6 @@ struct EditorConfig {
     bool in_menu_mode;
     int menu_selection; // 0 = save, 1 = exit
     
-    // REPL mode and positioning
-    bool repl_mode;
-    int original_cursor_row;
-    int original_cursor_col;
-    int start_row;
-    int lines_used;
-    String saved_file_content; // Content of saved file for REPL return
-    
     // Ctrl+P functionality - save and launch MicroPython REPL
     bool should_launch_repl;
     
@@ -88,17 +80,6 @@ struct EditorConfig {
     
     // Screen refresh optimization
     bool screen_dirty;     // Flag to track when screen needs refresh
-    
-    // Chunked file loading for large files (>8KB)
-    bool is_chunked;                    // True if using chunked loading
-    size_t total_file_lines;            // Total lines in the file
-    size_t chunk_start;                 // First loaded line number
-    size_t chunk_loaded_lines;          // Number of lines currently loaded
-    static const size_t CHUNK_SIZE = 150;     // Lines loaded at once (~5 pages)
-    static const size_t CHUNK_BUFFER = 75;    // Buffer lines above/below viewport (~2 pages)
-    static const size_t CHUNK_THRESHOLD = 4096; // File size threshold for chunking (4KB - more aggressive)
-    String chunked_filename;            // Filename for chunk reloading
-    bool chunk_dirty;                   // True if chunk has been edited
     
     // Status message history for scrolling display
     static const int STATUS_HISTORY_SIZE = 5;
@@ -150,10 +131,7 @@ struct EkiloResult {
 /**
  * @brief Editor mode flags
  */
-enum EkiloMode : uint8_t {
-    EKILO_MODE_NORMAL = 0,      // Normal full-screen editor mode
-    EKILO_MODE_REPL = 1,        // REPL mode - uses alternate screen, auto-quits on save
-};
+// EkiloMode enum removed - editor always runs in normal mode
 
 // ============================================================================
 // Unified Editor Entry Point
@@ -164,12 +142,12 @@ enum EkiloMode : uint8_t {
  * 
  * This is the single entry point for all eKilo operations.
  * Results are stored in ContextManager transfer data.
+ * After save, content is available in SharedBuffer for Python REPL.
  * 
  * @param filename File to open (nullptr for new file)
- * @param mode EKILO_MODE_NORMAL or EKILO_MODE_REPL
  * @return true if editor ran successfully, false on error
  */
-bool ekilo_run(const char* filename, EkiloMode mode = EKILO_MODE_NORMAL);
+bool ekilo_run(const char* filename);
 
 /**
  * @brief Get the result of the last ekilo_run() call
@@ -191,18 +169,11 @@ void ekilo_clear_result();
 // Main editor functions
 void ekilo_init();
 int ekilo_main(const char* filename); // DEPRECATED: Use ekilo_run() instead
-String ekilo_main_repl(const char* filename); // DEPRECATED: Use ekilo_run(filename, EKILO_MODE_REPL)
 int ekilo_open(const char* filename);
 int ekilo_save();
 void ekilo_refresh_screen();
 void ekilo_process_keypress();
 void ekilo_set_status_message(const char* fmt, ...);
-
-// REPL mode functions
-void ekilo_init_repl_mode();
-void ekilo_store_cursor_position();
-void ekilo_restore_cursor_position();
-void ekilo_cleanup_repl_mode();
 
 // Text manipulation functions
 void ekilo_insert_char(int c);
@@ -250,11 +221,12 @@ String ekilo_get_current_buffer_content();       // Get current editor buffer as
 bool ekilo_probe_terminal_size(uint16_t& rows, uint16_t& cols);
 void ekilo_resize_to_terminal();
 
-// Chunked file loading for large files
-bool ekilo_open_chunked(const char* filename);
-bool ekilo_load_chunk(size_t center_line);
-bool ekilo_needs_chunk_reload();
-void ekilo_save_chunk_to_temp();
+// File size limit - files must fit in SharedBuffer
+constexpr size_t EKILO_MAX_FILE_SIZE = 24 * 1024;  // 24KB max file size
+
+// Shared buffer operations for zero-copy transfer (used with Python REPL)
+int ekilo_save_to_shared_buffer();      // Save content to SharedBuffer (fast, no flash)
+int ekilo_load_from_shared_buffer();    // Load content from SharedBuffer
 
 // ============================================================================
 // Input Handler - Batches repeated keys and provides acceleration

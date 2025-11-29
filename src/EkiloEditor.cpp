@@ -6,6 +6,7 @@
 
 #include "EkiloEditor.h"
 #include "Graphics.h"
+#include "Jerial.h"
 #include "oled.h"
 #include "RotaryEncoder.h"
 #include "JumperlessDefines.h"
@@ -13,6 +14,7 @@
 #include "externVars.h"  // For fs_mutex filesystem synchronization
 #include "FilesystemStuff.h"  // For safe file operations
 #include "JumperlOS.h"  // For ContextManager
+#include "SharedBuffer.h"  // For zero-copy transfer to Python REPL
 #include <time.h>
 
 // External references
@@ -157,10 +159,11 @@ typedef struct EditorRow {
     int idx;
     int size;
     int rsize;
-    char* chars;
-    char* render;
-    unsigned char* hl;
+    char* chars;           // Line content - may point into SharedBuffer or be heap-allocated
+    char* render;          // Rendered version (with tabs expanded)
+    unsigned char* hl;     // Syntax highlighting
     int hl_oc;
+    bool owns_chars;       // True if chars was malloc'd, false if pointing into SharedBuffer
 } EditorRow;
 
 EditorConfig::EditorConfig() {
@@ -202,27 +205,11 @@ EditorConfig::EditorConfig() {
     in_menu_mode = false;
     menu_selection = 0;
     
-    // Initialize REPL mode
-    repl_mode = false;
-    original_cursor_row = 0;
-    original_cursor_col = 0;
-    start_row = 0;
-    lines_used = 0;
-    saved_file_content = "";
-    
     // Initialize Ctrl+P functionality
     should_launch_repl = false;
     
     // Initialize screen refresh optimization
     screen_dirty = true; // Start with dirty screen to force initial draw
-    
-    // Initialize chunked file loading
-    is_chunked = false;
-    total_file_lines = 0;
-    chunk_start = 0;
-    chunk_loaded_lines = 0;
-    chunked_filename = "";
-    chunk_dirty = false;
     
     // Initialize status message history
     status_history_head = 0;
@@ -253,6 +240,7 @@ void ekilo_init() {
     E.filename = nullptr;
     E.syntax = nullptr;
     E.should_quit = 0;
+    E.should_launch_repl = false;  // CRITICAL: Reset between sessions to prevent stale Ctrl+P state
     strcpy(E.statusmsg, "");
     E.statusmsg_time = 0;
     Jerial.write(0x0E);
@@ -260,11 +248,11 @@ void ekilo_init() {
     
     // Clear any pending input that might be CPR garbage from TUI or other sources
     // Do this FIRST before anything else
-    delay(50);  // Wait for any in-flight CPR responses to arrive
-    while (Jerial.available()) {
-        Jerial.read();
-    }
-    delay(10);  // Brief extra wait
+   // delay(50);  // Wait for any in-flight CPR responses to arrive
+    // while (Jerial.available()) {
+    //     Jerial.read();
+    // }
+   // delay(10);  // Brief extra wait
     while (Jerial.available()) {
         Jerial.read();
     }
@@ -953,17 +941,85 @@ void ekilo_insert_row(int at, const char* s, size_t len) {
     E.row[at].render = nullptr;
     E.row[at].hl = nullptr;
     E.row[at].hl_oc = 0;
+    E.row[at].owns_chars = true;  // We malloc'd this memory
     ekilo_update_row(&E.row[at]);
     
     E.numrows++;
     E.dirty++;
 }
 
+// Insert a row that references SharedBuffer (zero-copy)
+// chars points directly into SharedBuffer and should NOT be freed
+void ekilo_insert_row_ref(int at, const char* chars, size_t len) {
+    if (at < 0 || at > E.numrows) return;
+    
+    // Grow row array if needed (same as ekilo_insert_row)
+    if (E.numrows >= E.row_capacity) {
+        int new_capacity = (E.row_capacity == 0) ? 32 : E.row_capacity * 2;
+        if (new_capacity > 10000) new_capacity = E.numrows + 100;
+        
+        EditorRow* new_rows = (EditorRow*)realloc(E.row, sizeof(EditorRow) * new_capacity);
+        if (!new_rows) {
+            new_capacity = E.numrows + 16;
+            new_rows = (EditorRow*)realloc(E.row, sizeof(EditorRow) * new_capacity);
+            if (!new_rows) return;
+        }
+        E.row = new_rows;
+        E.row_capacity = new_capacity;
+    }
+    
+    memmove(&E.row[at + 1], &E.row[at], sizeof(EditorRow) * (E.numrows - at));
+    for (int j = at + 1; j <= E.numrows; j++) E.row[j].idx++;
+    
+    E.row[at].idx = at;
+    E.row[at].size = len;
+    E.row[at].chars = (char*)chars;  // Point directly into SharedBuffer
+    E.row[at].rsize = len;           // Set render size (used when render is null)
+    E.row[at].render = nullptr;
+    E.row[at].hl = nullptr;
+    E.row[at].hl_oc = 0;
+    E.row[at].owns_chars = false;  // DO NOT free - points into SharedBuffer
+    
+    E.numrows++;
+    // Don't increment dirty - file just loaded
+    
+    // NOTE: We skip ekilo_update_row() here to avoid allocating render buffers
+    // for all rows at once (causes memory fragmentation on reopen).
+    // Render buffers will be created lazily when rows are displayed.
+}
+
+// Make a row mutable by copying its content to heap (copy-on-write)
+void ekilo_row_make_mutable(EditorRow* row) {
+    if (!row || row->owns_chars) return;  // Already mutable
+    
+    // Copy from SharedBuffer to heap
+    char* new_chars = (char*)malloc(row->size + 1);
+    if (!new_chars) {
+        // Memory allocation failed - can't make mutable
+        return;
+    }
+    
+    if (row->chars && row->size > 0) {
+        memcpy(new_chars, row->chars, row->size);
+    }
+    new_chars[row->size] = '\0';
+    
+    row->chars = new_chars;
+    row->owns_chars = true;
+}
+
 // Free a row's memory
 void ekilo_free_row(EditorRow* row) {
     free(row->render);
-    free(row->chars);
+    // Only free chars if the row owns the memory (not pointing into SharedBuffer)
+    if (row->owns_chars) {
+        free(row->chars);
+    }
     free(row->hl);
+    row->chars = nullptr;
+    row->render = nullptr;
+    row->hl = nullptr;
+    row->owns_chars = false;
 }
 
 // Delete a row
@@ -982,6 +1038,13 @@ void ekilo_row_insert_char(EditorRow* row, int at, int c) {
     if (!row || at < 0 || at > row->size) {
         if (row && (at < 0 || at > row->size)) at = row->size;
         else return;
+    }
+    
+    // Copy-on-write: if row points into SharedBuffer, copy to heap first
+    ekilo_row_make_mutable(row);
+    if (!row->owns_chars) {
+        ekilo_set_status_message("ERROR: Cannot edit row (memory full)");
+        return;
     }
     
     char* new_chars = (char*)realloc(row->chars, row->size + 2);
@@ -1005,7 +1068,14 @@ void ekilo_row_insert_char(EditorRow* row, int at, int c) {
 
 // Delete character from a row
 void ekilo_row_del_char(EditorRow* row, int at) {
-    if (at < 0 || at >= row->size) return;
+    if (!row || at < 0 || at >= row->size) return;
+    
+    // Copy-on-write: if row points into SharedBuffer, copy to heap first
+    ekilo_row_make_mutable(row);
+    if (!row->owns_chars) {
+        ekilo_set_status_message("ERROR: Cannot edit row (memory full)");
+        return;
+    }
     
     memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
     row->size--;
@@ -1016,6 +1086,13 @@ void ekilo_row_del_char(EditorRow* row, int at) {
 // Append string to a row
 void ekilo_row_append_string(EditorRow* row, char* s, size_t len) {
     if (!row || !s || len == 0) return;
+    
+    // Copy-on-write: if row points into SharedBuffer, copy to heap first
+    ekilo_row_make_mutable(row);
+    if (!row->owns_chars) {
+        ekilo_set_status_message("ERROR: Cannot edit row (memory full)");
+        return;
+    }
     
     char* new_chars = (char*)realloc(row->chars, row->size + len + 1);
     if (!new_chars) {
@@ -1182,7 +1259,7 @@ void ekilo_move_cursor(int key) {
                 E.oled_horizontal_offset = 0;
                 
                 // Auto-scroll if cursor moves below visible area
-                int available_rows = E.repl_mode ? E.screenrows - 3 : E.screenrows - 4;
+                int available_rows = E.screenrows - 4; // -4 for header+status+message+help
                 if (E.cy >= E.rowoff + available_rows) {
                     E.rowoff = E.cy - available_rows + 1;
                 }
@@ -1204,19 +1281,24 @@ void ekilo_move_cursor(int key) {
     E.screen_dirty = true;
 }
 
-// Open file
+// Open file - loads entire file into SharedBuffer, then parses into EditorRows
+// Rows initially point into SharedBuffer (zero-copy), converted to heap on edit
 int ekilo_open(const char* filename) {
     if (!filename) return -1;
 
+    Serial.printf("[ekilo_open] Opening: %s\n", filename);
+    Serial.printf("[ekilo_open] Free heap: %d\n", rp2040.getFreeHeap());
+
     // Brief delay to ensure any recent file operations have completed
-    // This helps when opening files just created by MicroPython
     delay(2);
     yield();
     
-    // Get file size first using safe function (handles mutex internally)
+    // Get file size first
     int32_t file_size = safeFileSize(filename, 2000);
+    Serial.printf("[ekilo_open] safeFileSize returned: %d\n", file_size);
+    
     if (file_size < 0) {
-        // Retry after a brief delay (file might still be syncing)
+        // Retry after a brief delay
         delay(50);
         file_size = safeFileSize(filename, 2000);
         if (file_size < 0) {
@@ -1225,45 +1307,13 @@ int ekilo_open(const char* filename) {
         }
     }
     
-    // Validate file size to catch corruption
-    if (file_size > 100000) {  // 100KB sanity limit
-        ekilo_set_status_message("ERROR: File too large (%d KB)", file_size / 1024);
+    // Hard limit: file must fit in SharedBuffer with room for edits
+    if ((size_t)file_size >= SHARED_BUFFER_SIZE - 256) {
+        ekilo_set_status_message("ERROR: File too large (max %dKB)", (SHARED_BUFFER_SIZE - 256) / 1024);
         return -1;
     }
     
-    // For large files, use chunked loading
-    if ((size_t)file_size > EditorConfig::CHUNK_THRESHOLD) {
-        return ekilo_open_chunked(filename) ? 0 : -1;
-    }
-    
-    // Check if we have enough memory - if not, fall back to chunked loading
-    size_t freeHeap = rp2040.getFreeHeap();
-    
-    // More aggressive memory threshold - need file size + 4KB overhead for screen buffer
-    // Also require at least 8KB total free to avoid fragmentation issues
-    if (freeHeap < (size_t)file_size + 4096 || freeHeap < 8192) {
-        ekilo_set_status_message("Low memory, using chunked mode...");
-        return ekilo_open_chunked(filename) ? 0 : -1;
-    }
-    
-    // Test for heap fragmentation - try to allocate what we'll need
-    size_t estimated_need = file_size + 4096;  // File + screen buffer
-    void* frag_test = malloc(estimated_need);
-    if (frag_test) {
-        free(frag_test);
-    } else {
-        // Heap is fragmented, use chunked loading
-        ekilo_set_status_message("Fragmented heap, using chunked mode...");
-        return ekilo_open_chunked(filename) ? 0 : -1;
-    }
-    
-    // Mark as non-chunked file
-    E.is_chunked = false;
-    E.chunk_dirty = false;
-    
     // Check if this file should be read-only
-    // history.txt and other system files are read-only by default
-    // Use C string operations instead of String to avoid heap allocation
     const char* ext = strrchr(filename, '.');
     const char* lastSlash = strrchr(filename, '/');
     const char* basename = lastSlash ? lastSlash + 1 : filename;
@@ -1272,31 +1322,26 @@ int ekilo_open(const char* filename) {
                   (strcmp(basename, "history.txt") == 0) ||
                   (strstr(filename, "/python_scripts/history") != nullptr);
     
-    // Enter low memory mode if memory is tight or already set (saves RAM by skipping syntax highlighting)
-    if (!E.low_memory_mode) {
-        E.low_memory_mode = (freeHeap < (size_t)file_size * 3);  // Less than 3x file size available
-    }
-    
     // Free existing filename and allocate new one
     free(E.filename);
     E.filename = strdup(filename);
     if (!E.filename) {
-        ekilo_set_status_message("ERROR: Memory allocation failed for filename");
+        ekilo_set_status_message("ERROR: Memory allocation failed");
         return -1;
     }
     
-    // Update global tracking for external monitoring
+    // Update global tracking
     free(g_currently_editing_file);
     g_currently_editing_file = strdup(filename);
     
-    // Skip syntax highlighting in low memory mode to save RAM
-    if (!E.low_memory_mode) {
-        ekilo_select_syntax_highlight(filename);
-    } else {
-        E.syntax = nullptr;  // No syntax highlighting
-    }
+    // Set up syntax highlighting
+    ekilo_select_syntax_highlight(filename);
     
-    // Open file for reading using safe function (holds mutex until close)
+    // ========== LOAD FILE INTO SHARED BUFFER ==========
+    SharedBuffer& buf = SharedBuffer::getInstance();
+    buf.clear();
+    buf.setFilename(filename);
+    
     File file = safeFileOpen(filename, "r", 2000);
     if (!file) {
         ekilo_set_status_message("ERROR: Cannot open file for reading");
@@ -1305,173 +1350,271 @@ int ekilo_open(const char* filename) {
         return -1;
     }
     
-    // Track memory usage while loading
-    size_t total_loaded = 0;
+    // Read entire file into SharedBuffer
+    size_t bytes_read = file.read((uint8_t*)buf.rawBuffer(), file_size);
+    safeFileClose(file, false);
+    
+    buf.setLength(bytes_read);
+    Serial.printf("[ekilo_open] Read %d bytes into SharedBuffer\n", (int)bytes_read);
+    
+    // ========== PARSE SHAREDBUFFER INTO EDITORROWS ==========
+    // Rows point directly into SharedBuffer (zero-copy)
+    // They will be copied to heap on first edit (copy-on-write)
+    
+    char* data = buf.rawBuffer();
+    size_t pos = 0;
     size_t line_count = 0;
-    const size_t MAX_LINE_LENGTH = 512; // Reduced line length limit for safety
-    const size_t MAX_LINES = 2000;      // Safety limit on lines
     
-    // Use stack buffer instead of String to avoid heap fragmentation
-    // String allocations in a loop cause severe fragmentation on RP2040
-    char line_buf[MAX_LINE_LENGTH + 1];
-    
-    while (file.available() && total_loaded < (size_t)file_size && line_count < MAX_LINES) {
-        // Check memory before each line read
-        size_t currentFree = rp2040.getFreeHeap();
-        if (currentFree < 1024) {
-            safeFileClose(file, false);  // Read-only, no flush needed
-            ekilo_set_status_message("Loaded %d lines (stopped: low memory)", line_count);
-            E.dirty = 0;  // Not dirty since we're stopping early
-            return 0;     // Return success with partial load
+    while (pos < bytes_read) {
+        size_t line_start = pos;
+        
+        // Find end of line
+        while (pos < bytes_read && data[pos] != '\n' && data[pos] != '\r') {
+            pos++;
         }
         
-        // Read line character-by-character into stack buffer
-        // This avoids heap fragmentation from String allocations
-        size_t len = 0;
-        while (file.available() && len < MAX_LINE_LENGTH) {
-            char c = file.read();
-            if (c == '\n') break;
-            if (c != '\r') {  // Skip carriage returns
-                line_buf[len++] = c;
-            }
-        }
-        line_buf[len] = '\0';
+        size_t line_len = pos - line_start;
         
-        ekilo_insert_row(E.numrows, line_buf, len);
-        total_loaded += len + 1; // +1 for newline
+        // Create row pointing into SharedBuffer
+        ekilo_insert_row_ref(E.numrows, &data[line_start], line_len);
         line_count++;
         
-        // Yield more frequently to prevent watchdog issues
-        if (line_count % 25 == 0) {
+        // Skip newline characters
+        if (pos < bytes_read && data[pos] == '\r') pos++;
+        if (pos < bytes_read && data[pos] == '\n') pos++;
+        
+        // Yield periodically
+        if (line_count % 50 == 0) {
             yield();
-        }
-        
-        // Check memory every 10 lines and show progress for large files
-        if (line_count % 10 == 0) {
-            if (!check_memory_available(1024)) { // Keep 1KB free
-                safeFileClose(file, false);  // Read-only, no flush needed
-                size_t freeHeap = rp2040.getFreeHeap();
-                ekilo_set_status_message("ERROR: Out of memory at line %d (%dKB free)", line_count, freeHeap / 1024);
-                return -1;
-            }
-            
-            // Show loading progress for files with many lines
-            if (line_count > 100 && line_count % 50 == 0) {
-                ekilo_set_status_message("Loading... %d lines (%d bytes)", line_count, total_loaded);
-                // Force a quick screen update to show progress
-                if (E.screen_dirty) {
-                    ekilo_refresh_screen();
-                    E.screen_dirty = false;
-                }
-            }
-        }
-        
-        // Prevent infinite loops on corrupted files
-        if (line_count > 10000) { // Reasonable file size limit in lines
-            safeFileClose(file, false);  // Read-only, no flush needed
-            ekilo_set_status_message("ERROR: File too many lines (max 10000)");
-            return -1;
         }
     }
     
-    safeFileClose(file, false);  // Read-only, no flush needed
     E.dirty = 0;
-    
-    // Mark screen as dirty for refresh after file load
     E.screen_dirty = true;
     
-    ekilo_set_status_message("Loaded %d lines (%d bytes)", line_count, total_loaded);
+    Serial.printf("[ekilo_open] SUCCESS: Parsed %d lines from %d bytes\n", (int)line_count, (int)bytes_read);
+    ekilo_set_status_message("Loaded %d lines (%d bytes)", line_count, bytes_read);
     return 0;
 }
 
-// Save file
+// Save file - serialize rows to SharedBuffer, then write to flash
+// In REPL mode, skip flash write and just leave content in SharedBuffer
 int ekilo_save() {
     if (E.filename == nullptr) {
-        // TODO: Implement save-as functionality
-        ekilo_set_status_message("Save aborted");
+        ekilo_set_status_message("Save aborted - no filename");
         return 0;
     }
     
-    int len = 0;
-    for (int j = 0; j < E.numrows; j++)
-        len += E.row[j].size + 1;
+    SharedBuffer& buf = SharedBuffer::getInstance();
     
-    // Try buffered save first, fall back to streaming if low memory
-    char* buf = (char*)malloc(len);
+    // ========== OPTIMIZATION: CHECK IF WE CAN SKIP SERIALIZATION ==========
+    // If NO rows have been edited (all still point into SharedBuffer), 
+    // then SharedBuffer already has the correct content - just mark it ready!
+    bool any_rows_edited = false;
+    for (int j = 0; j < E.numrows; j++) {
+        if (E.row[j].owns_chars) {
+            any_rows_edited = true;
+            break;
+        }
+    }
     
-    // CRITICAL: Pause Core2 during flash write operations
-    // On RP2040, flash writes disable XIP cache and Core2 will crash
-    // if it tries to execute code from flash during the write.
-    // Keep Core2 paused for entire save operation for safety
+    if (!any_rows_edited && buf.hasContent()) {
+        // Fast path: SharedBuffer already has the file content, no copy needed
+        buf.setFilename(E.filename);
+        buf.setContentType(SharedBufferContentType::PYTHON_SCRIPT);
+        buf.setSourceContext((uint8_t)ContextType::EKILO_EDITOR);
+        buf.setReady(true);
+        size_t len = buf.length();
+        
+        Serial.printf("[ekilo_save] FAST PATH: No edits, SharedBuffer already has %d bytes\n", (int)len);
+        
+        // Write to flash
+        bool was_paused = pauseCore2ForFlash(100);
+        File file = safeFileOpen(E.filename, "w", 2000);
+        if (file) {
+            file.write((uint8_t*)buf.data(), len);
+            file.flush();
+            safeFileClose(file, true);
+        }
+        unpauseCore2ForFlash(was_paused);
+        
+        ContextManager::getInstance().setTransferPath(E.filename);
+        E.dirty = 0;
+        E.screen_dirty = true;
+        ekilo_set_status_message("%d bytes written to flash", len);
+        return len;
+    }
+    
+    // ========== SLOW PATH: FILE WAS EDITED, NEED TO REBUILD SHAREDBUFFER ==========
+    Serial.printf("[ekilo_save] SLOW PATH: File was edited, rebuilding SharedBuffer\n");
+    
+    // Copy any rows still pointing to SharedBuffer before we clear it
+    int rows_copied = 0;
+    for (int j = 0; j < E.numrows; j++) {
+        if (!E.row[j].owns_chars && E.row[j].chars != nullptr) {
+            ekilo_row_make_mutable(&E.row[j]);
+            if (!E.row[j].owns_chars) {
+                ekilo_set_status_message("ERROR: Out of memory at line %d", j);
+                return 0;
+            }
+            rows_copied++;
+        }
+    }
+    
+    // Now clear and rebuild SharedBuffer
+    buf.clear();
+    buf.setFilename(E.filename);
+    buf.setContentType(SharedBufferContentType::PYTHON_SCRIPT);
+    buf.setSourceContext((uint8_t)ContextType::EKILO_EDITOR);
+    
+    // Calculate total size needed
+    size_t totalLen = 0;
+    for (int j = 0; j < E.numrows; j++) {
+        totalLen += E.row[j].size + 1;
+    }
+    
+    if (totalLen >= SHARED_BUFFER_SIZE) {
+        ekilo_set_status_message("ERROR: Content too large (%dKB)", totalLen / 1024);
+        return 0;
+    }
+    
+    // Write each row to SharedBuffer
+    for (int j = 0; j < E.numrows; j++) {
+        if (E.row[j].chars && E.row[j].size > 0) {
+            if (!buf.appendLine(E.row[j].chars, E.row[j].size)) {
+                ekilo_set_status_message("ERROR: Buffer overflow at line %d", j);
+                buf.clear();
+                return 0;
+            }
+        } else {
+            if (!buf.appendLine("", 0)) {
+                ekilo_set_status_message("ERROR: Buffer overflow at line %d", j);
+                buf.clear();
+                return 0;
+            }
+        }
+    }
+    
+    buf.setReady(true);
+    size_t len = buf.length();
+    
+    // ========== WRITE SHAREDBUFFER TO FLASH ==========
+    // Pause Core2 during flash write
     bool was_paused = pauseCore2ForFlash(100);
     
-    // Open file for writing (safeFileOpen handles mutex, we handle Core2 pause)
     File file = safeFileOpen(E.filename, "w", 2000);
     if (!file) {
         unpauseCore2ForFlash(was_paused);
-        if (buf) free(buf);
         ekilo_set_status_message("ERROR: Could not open file for writing");
         return 0;
     }
     
-    if (buf) {
-        // Buffered write (faster)
-        char* p = buf;
-        for (int j = 0; j < E.numrows; j++) {
-            if (E.row[j].chars && E.row[j].size > 0) {
-                memcpy(p, E.row[j].chars, E.row[j].size);
-                p += E.row[j].size;
-            }
-            *p = '\n';
-            p++;
-        }
-        file.write((uint8_t*)buf, len);
-    } else {
-        // Streaming write (low memory fallback)
-        ekilo_set_status_message("Saving... (streaming mode)");
-        for (int j = 0; j < E.numrows; j++) {
-            if (E.row[j].chars && E.row[j].size > 0) {
-                file.write((uint8_t*)E.row[j].chars, E.row[j].size);
-            }
-            file.write('\n');
-        }
-    }
-    
-    // safeFileClose handles flush and mutex release
-    // Pass true for write mode to ensure proper flush
-    file.flush();  // Explicit flush while Core2 still paused
+    // Write SharedBuffer content to file
+    file.write((uint8_t*)buf.data(), len);
+    file.flush();
     safeFileClose(file, true);
     
-    // Restore Core2 state
     unpauseCore2ForFlash(was_paused);
     
-    // Set transfer path for zero-copy communication with parent context
-    // The parent (e.g., Python REPL) can read directly from this file path
-    // instead of passing content through String objects
+    // Set transfer path for zero-copy communication
     ContextManager::getInstance().setTransferPath(E.filename);
     
-    // If in REPL mode, handle save behavior
-    if (E.repl_mode) {
-        // ZERO-COPY: Instead of storing content in E.saved_file_content,
-        // we set the transfer path and the parent context reads from file
-        // Still store content for backward compatibility, but callers should
-        // prefer using ContextManager::getTransferPath() for efficiency
-        if (buf && len < 8192) {
-            E.saved_file_content = String(buf, len);
-        } else {
-            E.saved_file_content = "";  // Clear - use file path instead
-        }
-        E.should_quit = 1;
-        ekilo_set_status_message("File saved: %s (%d bytes)", E.filename, len);
+    E.dirty = 0;
+    E.screen_dirty = true;
+    ekilo_set_status_message("%d bytes written to flash", len);
+    return len;
+}
+
+// ============================================================================
+// SHARED BUFFER SAVE - Zero-copy transfer to Python REPL
+// ============================================================================
+
+/**
+ * @brief Save editor content to SharedBuffer only (no flash write)
+ * 
+ * This is a wrapper that sets REPL mode temporarily to avoid flash writes.
+ * Used for fast transfer to Python REPL without flash wear.
+ * 
+ * @return Number of bytes written, 0 on error
+ */
+int ekilo_save_to_shared_buffer() {
+    // ekilo_save() now always saves to both flash AND SharedBuffer
+    return ekilo_save();
+}
+
+/**
+ * @brief Load content from SharedBuffer into editor
+ * 
+ * Counterpart to ekilo_save_to_shared_buffer() - loads content
+ * that was placed in the buffer by another context.
+ * 
+ * @return Number of lines loaded, -1 on error
+ */
+int ekilo_load_from_shared_buffer() {
+    SharedBuffer& buf = SharedBuffer::getInstance();
+    
+    if (!buf.isReady() || !buf.hasContent()) {
+        ekilo_set_status_message("No content in shared buffer");
+        return -1;
     }
     
-    E.dirty = 0;
-    if (!E.repl_mode) {
-        ekilo_set_status_message("%d bytes written to flash", len);
+    // Get the content
+    const char* content = buf.data();
+    size_t contentLen = buf.length();
+    
+    // Set filename if available
+    if (buf.hasFilename()) {
+        free(E.filename);
+        E.filename = strdup(buf.getFilename());
+        
+        // Update global tracking
+        free(g_currently_editing_file);
+        g_currently_editing_file = strdup(buf.getFilename());
+        
+        // Select syntax highlighting based on filename
+        ekilo_select_syntax_highlight(E.filename);
     }
+    
+    // Parse content line by line
+    const char* lineStart = content;
+    const char* end = content + contentLen;
+    int lineCount = 0;
+    
+    while (lineStart < end) {
+        // Find end of line
+        const char* lineEnd = lineStart;
+        while (lineEnd < end && *lineEnd != '\n') {
+            lineEnd++;
+        }
+        
+        size_t lineLen = lineEnd - lineStart;
+        
+        // Skip carriage returns at end of line
+        while (lineLen > 0 && lineStart[lineLen - 1] == '\r') {
+            lineLen--;
+        }
+        
+        // Insert the row
+        ekilo_insert_row(E.numrows, lineStart, lineLen);
+        lineCount++;
+        
+        // Move to next line
+        lineStart = lineEnd + 1;  // Skip the newline
+        
+        // Yield periodically
+        if (lineCount % 50 == 0) {
+            yield();
+        }
+    }
+    
+    // Clear the shared buffer after consuming
+    buf.clear();
+    
+    E.dirty = 0;
     E.screen_dirty = true;
-    if (buf) free(buf);
-    return len;
+    
+    ekilo_set_status_message("Loaded %d lines from buffer", lineCount);
+    return lineCount;
 }
 
 // Write buffer in chunks for Windows compatibility
@@ -1515,11 +1658,8 @@ void ekilo_write_buffer_chunked(Buffer* ab) {
 // Quick cursor position update without full redraw
 static void ekilo_update_cursor_only() {
     char buf[32];
-    if (E.repl_mode) {
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
-    } else {
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2, (E.cx - E.coloff) + 1);
-    }
+    // +2 for header row offset
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2, (E.cx - E.coloff) + 1);
     Jerial.print(buf);
     Jerial.flush();
 }
@@ -1536,19 +1676,6 @@ void ekilo_refresh_screen() {
     if (E.cy < 0) E.cy = 0;
     if (E.cx < 0) E.cx = 0;
     if (E.numrows > 0 && E.cy >= E.numrows) E.cy = E.numrows - 1;
-    
-    // For chunked files, check if we need to load a new chunk
-    if (E.is_chunked && ekilo_needs_chunk_reload()) {
-        // Calculate file-relative cursor position
-        size_t file_row = E.chunk_start + E.cy;
-        // Load new chunk centered on current position
-        if (ekilo_load_chunk(file_row)) {
-            // Adjust cursor position for new chunk
-            E.cy = file_row - E.chunk_start;
-            if (E.cy < 0) E.cy = 0;
-            if (E.cy >= E.numrows) E.cy = E.numrows - 1;
-        }
-    }
     
     // Track if scroll changed (requires full redraw)
     bool scroll_changed = false;
@@ -1584,35 +1711,51 @@ void ekilo_refresh_screen() {
         return;
     }
     
-    Buffer ab = {nullptr, 0, 0};  // {buffer, length, capacity} - will grow exponentially
+    // Free render buffers for rows that scrolled out of view to reclaim memory
+    // Keep a small buffer around visible area to avoid constant reallocation
+    int visible_start = E.rowoff;
+    int visible_end = E.rowoff + E.screenrows + 5;  // +5 buffer
+    if (visible_end > E.numrows) visible_end = E.numrows;
+    int visible_start_buffered = visible_start > 5 ? visible_start - 5 : 0;
     
-    // Clear screen and position cursor - use absolute positioning for both modes
-    if (E.repl_mode) {
-        // In REPL mode, clear and position at top-left
-        // No header in REPL mode for cleaner interface
-        buffer_append(&ab, "\x1b[2J\x1b[H", 7);
-    } else {
-        buffer_append(&ab, "\x1b[2J\x1b[H", 7);
-        
-        // Add persistent help header that stays visible (only in non-REPL mode)
-        buffer_append(&ab, "\x1b[48;5;199m\x1b[38;5;236m", 27); // Blue background, white text
-        char help_header[128];
-        snprintf(help_header, sizeof(help_header), 
-                     "                    Jumperless Kilo Text Editor                      ");
-        int help_len = strlen(help_header);
-        if (help_len > E.screencols) help_len = E.screencols;
-        buffer_append(&ab, help_header, help_len);
-        
-        // Pad help header to full width
-        while (help_len < E.screencols) {
-            buffer_append(&ab, " ", 1);
-            help_len++;
+    for (int i = 0; i < E.numrows; i++) {
+        if (i < visible_start_buffered || i >= visible_end) {
+            // This row is outside visible range - free its render buffer
+            if (E.row[i].render != nullptr) {
+                free(E.row[i].render);
+                E.row[i].render = nullptr;
+                E.row[i].rsize = E.row[i].size;  // Reset to use chars size
+            }
+            if (E.row[i].hl != nullptr) {
+                free(E.row[i].hl);
+                E.row[i].hl = nullptr;
+            }
         }
-        buffer_append(&ab, "\x1b[0m\r\n", 6); // Reset formatting and newline
     }
     
+    Buffer ab = {nullptr, 0, 0};  // {buffer, length, capacity} - will grow exponentially
+    
+    // Clear screen and position cursor
+    buffer_append(&ab, "\x1b[2J\x1b[H", 7);
+    
+    // Add persistent help header
+    buffer_append(&ab, "\x1b[48;5;199m\x1b[38;5;236m", 27); // Pink background, dark text
+    char help_header[128];
+    snprintf(help_header, sizeof(help_header), 
+                 "                    Jumperless Kilo Text Editor                      ");
+    int help_len = strlen(help_header);
+    if (help_len > E.screencols) help_len = E.screencols;
+    buffer_append(&ab, help_header, help_len);
+    
+    // Pad help header to full width
+    while (help_len < E.screencols) {
+        buffer_append(&ab, " ", 1);
+        help_len++;
+    }
+    buffer_append(&ab, "\x1b[0m\r\n", 6); // Reset formatting and newline
+    
     // Draw rows (adjust available rows for header and help lines)
-    int available_rows = E.repl_mode ? E.screenrows - 3 : E.screenrows - 4; // -3 for status+message+help, -4 for header+status+message+help
+    int available_rows = E.screenrows - 4; // -4 for header+status+message+help
     for (int y = 0; y < available_rows; y++) {
         int filerow = E.rowoff + y;
         
@@ -1633,6 +1776,12 @@ void ekilo_refresh_screen() {
                 buffer_append(&ab, "~", 1);
             }
         } else {
+            // Lazy render buffer creation: only allocate for visible rows
+            // This prevents memory fragmentation from allocating render buffers for entire file at load time
+            if (!E.low_memory_mode && E.row[filerow].render == nullptr && E.row[filerow].chars != nullptr) {
+                ekilo_update_row(&E.row[filerow]);
+            }
+            
             // In low memory mode, render may be null - use chars directly
             char* display_str = E.row[filerow].render ? E.row[filerow].render : E.row[filerow].chars;
             int display_size = E.row[filerow].render ? E.row[filerow].rsize : E.row[filerow].size;
@@ -1789,22 +1938,11 @@ void ekilo_refresh_screen() {
     }
     buffer_append(&ab, "\x1b[0m", 4); // Reset color
     
-    // Position cursor - use absolute positioning for both modes
+    // Position cursor
     char buf[32];
-    if (E.repl_mode) {
-        // In REPL mode with XTerm alternate screen, use absolute positioning
-        // No header offset since we skip the header in REPL mode
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, // +1 for content area (no header)
-                                                    (E.cx - E.coloff) + 1);
-        buffer_append(&ab, buf, strlen(buf));
-        
-        // Track total lines for XTerm cleanup (though XTerm handles this automatically)
-        E.lines_used = E.screenrows; // Use full screen in XTerm alternate buffer
-    } else {
-        snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2, // +2 for help header
-                                                    (E.cx - E.coloff) + 1);
-        buffer_append(&ab, buf, strlen(buf));
-    }
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 2, // +2 for header
+                                                (E.cx - E.coloff) + 1);
+    buffer_append(&ab, buf, strlen(buf));
     
     // Write buffer in chunks for Windows compatibility
     ekilo_write_buffer_chunked(&ab);
@@ -1904,8 +2042,8 @@ void ekilo_process_keypress() {
                     if (E.row[i].hl) usedByEditor += E.row[i].rsize;
                 }
                 
-                ekilo_set_status_message("Memory: %dKB free, Editor:%dKB, MP:64KB, LA:~24KB, Need:%dKB reserve", 
-                                       freeHeap / 1024, usedByEditor / 1024, MIN_FREE_HEAP / 1024);
+                ekilo_set_status_message("Memory: %dKB free, Editor:%dKB, MP:%dKB, Need:%dKB reserve", 
+                                       freeHeap / 1024, usedByEditor / 1024, MICROPY_HEAP_SIZE / 1024, MIN_FREE_HEAP / 1024);
             }
             E.screen_dirty = true;
             break;
@@ -2533,46 +2671,7 @@ void ekilo_process_encoder_input() {
     E.last_button_state = current_button_state;
 }
 
-// REPL mode functions
-void ekilo_init_repl_mode() {
-    E.repl_mode = true;
-    // No need to store cursor position - XTerm alternate screen handles this
-    E.screenrows = DEFAULT_EDITOR_ROWS; // Use configurable screen size in alternate buffer
-    Jerial.write(0x0E);
-    Jerial.flush();    
-    // Clear the alternate screen and position at top-left
-    Jerial.print("\x1b[2J\x1b[H");
-
-    
-    // Print a simple header once when entering REPL mode
-    Jerial.println("eKilo Editor | Ctrl-S/Ctrl-P=save & load | Ctrl-Q=quit | Wheel=navigate");
-    Jerial.flush();
-}
-
-void ekilo_store_cursor_position() {
-    // Save current cursor position using terminal escape sequence
-    Jerial.print("\033[s"); // Save cursor position
-    Jerial.flush();
-    E.lines_used = 0;
-}
-
-void ekilo_restore_cursor_position() {
-    if (E.repl_mode) {
-        // Restore saved cursor position
-        Jerial.print("\033[u"); // Restore cursor position
-        Jerial.flush();
-    }
-}
-
-void ekilo_cleanup_repl_mode() {
-    if (!E.repl_mode) return;
-    
-    // XTerm alternate screen buffer handles all cleanup automatically
-    // when we call restoreScreenState() in the calling function
-    // No manual cleanup needed here
-    
-    E.repl_mode = false;
-}
+// REMOVED: REPL mode functions - editor now always runs in normal mode
 
 // ============================================================================
 // UNIFIED EDITOR ENTRY POINT
@@ -2610,40 +2709,45 @@ void ekilo_clear_result() {
  * 4. Stores result in ContextManager for caller
  * 5. Cleans up resources
  */
-bool ekilo_run(const char* filename, EkiloMode mode) {
+bool ekilo_run(const char* filename) {
+    Serial.println("\n=== ekilo_run() ENTRY ===");
+    Serial.printf("[ekilo_run] filename=%s\n\r", filename ? filename : "(null)");
+    
     // Initialize result
     g_ekilo_result = EkiloResult();
     
     // Safety check: ensure we have minimum heap before starting
     size_t freeHeap = rp2040.getFreeHeap();
+    Serial.printf("[ekilo_run] Free heap: %d bytes\n\r", (int)freeHeap);
     if (freeHeap < 4096) {
         Jerial.println("ERROR: Not enough memory to start editor");
         return false;
     }
     
-    // Fragmentation detection: try to allocate a 4KB contiguous block
-    // If this fails, the heap is fragmented and we should use low-memory mode
+    // Fragmentation detection: try to allocate a 2KB contiguous block
+    // With lazy render allocation, we only need small allocations per visible row
+    // So 2KB is sufficient - this avoids false positives from normal heap usage
     bool heap_fragmented = false;
-    void* test_alloc = malloc(4096);
+    void* test_alloc = malloc(2048);
     if (test_alloc) {
         free(test_alloc);
+       // Serial.println("[ekilo_run] Fragmentation test passed (2KB alloc OK)");
     } else {
         // Heap is fragmented - we have free memory but not contiguous
         heap_fragmented = true;
-        Jerial.println("NOTE: Heap fragmented, using low-memory mode");
+        Serial.println("[ekilo_run] Fragmentation test FAILED - using low-memory mode");
     }
     
     // Initialize editor
     ekilo_init();
     
+    // Clear screen at startup for clean display
+    Jerial.print("\x1b[2J\x1b[H");
+    Jerial.flush();
+    
     // Force low-memory mode if heap is fragmented
     if (heap_fragmented) {
         E.low_memory_mode = true;
-    }
-    
-    // REPL mode setup
-    if (mode == EKILO_MODE_REPL) {
-        ekilo_init_repl_mode();
     }
     
     // Extra safety: verify init succeeded
@@ -2654,16 +2758,15 @@ bool ekilo_run(const char* filename, EkiloMode mode) {
     
     // Open file or set up for new file
     if (filename != nullptr) {
+        Serial.printf("[ekilo_run] Calling ekilo_open for: %s\n\r", filename);
         int open_result = ekilo_open(filename);
+        Serial.printf("[ekilo_run] ekilo_open returned: %d, numrows=%d\n\r", open_result, E.numrows);
         if (open_result != 0) {
             // File doesn't exist or error - set up for new file
             free(E.filename);
             E.filename = strdup(filename);
             if (!E.filename) {
                 ekilo_set_status_message("ERROR: Memory allocation failed for filename");
-                if (mode == EKILO_MODE_REPL) {
-                    ekilo_cleanup_repl_mode();
-                }
                 return false;
             }
             
@@ -2695,16 +2798,8 @@ bool ekilo_run(const char* filename, EkiloMode mode) {
         }
     }
     
-    // Set appropriate status message
-    if (mode == EKILO_MODE_REPL) {
-        if (E.filename) {
-            ekilo_set_status_message("Editing: %s | Ctrl-S: Save & Load | Ctrl-P: Save & REPL | Ctrl-Q: Exit", E.filename);
-        } else {
-            ekilo_set_status_message("REPL Mode | Ctrl-S: Save & Load | Ctrl-P: Save & REPL | Ctrl-Q: Exit");
-        }
-    } else {
-        ekilo_set_status_message("HELP: Ctrl-S = save | Ctrl-P = save & REPL | Ctrl-Q = quit | Clickwheel = move/type");
-    }
+    // Set status message
+    ekilo_set_status_message("HELP: Ctrl-S = save | Ctrl-P = save & REPL | Ctrl-Q = quit | Clickwheel = move/type");
     
     // Initialize encoder position tracking
     E.last_encoder_position = encoderPosition;
@@ -2795,10 +2890,6 @@ bool ekilo_run(const char* filename, EkiloMode mode) {
     free(g_currently_editing_file);
     g_currently_editing_file = nullptr;
     
-    if (mode == EKILO_MODE_REPL) {
-        ekilo_cleanup_repl_mode();
-    }
-    
     return true;
 }
 
@@ -2808,7 +2899,7 @@ bool ekilo_run(const char* filename, EkiloMode mode) {
 
 // Legacy ekilo_main - wraps ekilo_run
 int ekilo_main(const char* filename) {
-    if (!ekilo_run(filename, EKILO_MODE_NORMAL)) {
+    if (!ekilo_run(filename)) {
         return -1;
     }
     
@@ -2817,37 +2908,6 @@ int ekilo_main(const char* filename) {
         return 2;  // Signal to launch REPL
     }
     return 0;  // Normal exit
-}
-
-// Legacy ekilo_main_repl - wraps ekilo_run
-String ekilo_main_repl(const char* filename) {
-    if (!ekilo_run(filename, EKILO_MODE_REPL)) {
-        return "";
-    }
-    
-    const EkiloResult* result = ekilo_get_result();
-    if (!result) {
-        return "";
-    }
-    
-    // Build return string for backward compatibility
-    // NOTE: This creates a copy - new code should use ekilo_get_result() instead
-    String savedContent = "";
-    if (result->saved && result->saved_path[0] != '\0') {
-        // Read content from saved file for backward compatibility using safe function
-        File f = safeFileOpen(result->saved_path, "r", 2000);
-        if (f) {
-            savedContent = f.readString();
-            safeFileClose(f, false);  // Read-only, no flush
-        }
-    }
-    
-    // Add REPL launch prefix if needed
-    if (result->launch_repl && savedContent.length() > 0) {
-        savedContent = "[LAUNCH_REPL]" + savedContent;
-    }
-    
-    return savedContent;
 }
 
 // ============================================================================
@@ -2934,345 +2994,6 @@ void ekilo_resize_to_terminal() {
 }
 
 // ============================================================================
-// Chunked File Loading for Large Files
-// ============================================================================
-
-// Open a large file using chunked loading
-bool ekilo_open_chunked(const char* filename) {
-    if (!filename) return false;
-    
-    // First pass: count total lines in file using safe file functions
-    File file = safeFileOpen(filename, "r", 2000);
-    if (!file) {
-        ekilo_set_status_message("ERROR: Cannot open file '%s'", filename);
-        return false;
-    }
-    
-    // Count lines WITHOUT allocating String objects - just count newlines
-    // This avoids heap fragmentation from repeated String allocations
-    size_t total_lines = 0;
-    while (file.available()) {
-        char c = file.read();
-        if (c == '\n') {
-            total_lines++;
-        }
-        // Safety limit
-        if (total_lines > 50000) {
-            safeFileClose(file, false);  // Read-only, no flush
-            ekilo_set_status_message("ERROR: File too large (>50000 lines)");
-            return false;
-        }
-        // Yield every 1000 chars to prevent watchdog timeout
-        if ((total_lines & 0x3FF) == 0) {
-            yield();
-        }
-    }
-    // Account for last line if file doesn't end with newline
-    if (file.position() > 0) {
-        total_lines++;  // Count the line we're on even without trailing newline
-    }
-    safeFileClose(file, false);  // Read-only, no flush
-    
-    // Setup chunked state
-    E.is_chunked = true;
-    E.total_file_lines = total_lines;
-    E.chunk_start = 0;
-    E.chunk_loaded_lines = 0;
-    E.chunked_filename = String(filename);
-    E.chunk_dirty = false;
-    E.low_memory_mode = true;  // Chunked files always use low memory mode
-    
-    // Check if this file should be read-only
-    String fname = String(filename);
-    E.read_only = fname.endsWith("history.txt") || 
-                  fname.endsWith(".log") ||
-                  fname.startsWith("/python_scripts/history");
-    
-    // Free existing filename and allocate new one
-    free(E.filename);
-    E.filename = strdup(filename);
-    
-    // Update global tracking
-    free(g_currently_editing_file);
-    g_currently_editing_file = strdup(filename);
-    
-    // Skip syntax highlighting in chunked mode to save memory
-    E.syntax = nullptr;
-    
-    // Load initial chunk around line 0
-    if (!ekilo_load_chunk(0)) {
-        E.is_chunked = false;
-        return false;
-    }
-    
-    E.dirty = 0;
-    E.screen_dirty = true;
-    
-    ekilo_set_status_message("Chunked load: %d lines total, showing %d-%d", 
-                            total_lines, E.chunk_start, E.chunk_start + E.chunk_loaded_lines);
-    return true;
-}
-
-// Load a chunk of lines centered around center_line
-bool ekilo_load_chunk(size_t center_line) {
-    if (!E.is_chunked) return true;  // Not chunked, nothing to do
-    
-    // Calculate chunk bounds FIRST (before any allocations)
-    size_t half_chunk = EditorConfig::CHUNK_SIZE / 2;
-    size_t start = (center_line > half_chunk) ? center_line - half_chunk : 0;
-    size_t end = start + EditorConfig::CHUNK_SIZE;
-    if (end > E.total_file_lines) {
-        end = E.total_file_lines;
-        if (end > EditorConfig::CHUNK_SIZE) {
-            start = end - EditorConfig::CHUNK_SIZE;
-        } else {
-            start = 0;
-        }
-    }
-    
-    // If chunk hasn't moved much, don't reload
-    if (E.chunk_loaded_lines > 0 && 
-        start >= E.chunk_start && 
-        end <= E.chunk_start + E.chunk_loaded_lines) {
-        return true;  // Already have this chunk loaded
-    }
-    
-    // Pre-allocate new row array BEFORE freeing old one to check memory
-    size_t needed_rows = end - start;
-    EditorRow* new_rows = (EditorRow*)malloc(sizeof(EditorRow) * needed_rows);
-    if (!new_rows) {
-        ekilo_set_status_message("ERROR: Cannot allocate chunk (%d rows)", needed_rows);
-        return false;
-    }
-    memset(new_rows, 0, sizeof(EditorRow) * needed_rows);
-    
-    // Save dirty chunk if needed (before any file operations)
-    if (E.chunk_dirty) {
-        ekilo_save_chunk_to_temp();
-    }
-    
-    // NOW free existing rows (after we know we have memory for new ones)
-    for (int i = 0; i < E.numrows; i++) {
-        ekilo_free_row(&E.row[i]);
-    }
-    free(E.row);
-    E.row = new_rows;
-    E.numrows = 0;
-    E.row_capacity = needed_rows;  // Pre-allocated for chunk size
-    
-    // Open file and seek to start line using safe file function
-    File file = safeFileOpen(E.chunked_filename.c_str(), "r", 2000);
-    if (!file) {
-        ekilo_set_status_message("ERROR: Cannot reopen chunked file");
-        return false;
-    }
-    
-    // Skip to start line - use a char buffer instead of String to save memory
-    size_t current_line = 0;
-    while (current_line < start && file.available()) {
-        while (file.available()) {
-            char c = file.read();
-            if (c == '\n') break;
-        }
-        current_line++;
-    }
-    
-    // Load chunk - read directly into pre-allocated rows
-    E.chunk_start = start;
-    char line_buf[256];  // Stack buffer for reading lines
-    
-    while (current_line < end && file.available() && E.numrows < (int)needed_rows) {
-        // Read line into stack buffer
-        int len = 0;
-        while (file.available() && len < 255) {
-            char c = file.read();
-            if (c == '\n') break;
-            if (c != '\r') {
-                line_buf[len++] = c;
-            }
-        }
-        line_buf[len] = '\0';
-        
-        // Allocate and copy into row
-        int row_idx = E.numrows;
-        E.row[row_idx].idx = row_idx;
-        E.row[row_idx].size = len;
-        E.row[row_idx].chars = (char*)malloc(len + 1);
-        if (E.row[row_idx].chars) {
-            memcpy(E.row[row_idx].chars, line_buf, len + 1);
-        } else {
-            E.row[row_idx].size = 0;
-        }
-        
-        // In low memory/chunked mode, skip render and highlight buffers
-        E.row[row_idx].render = nullptr;
-        E.row[row_idx].rsize = len;
-        E.row[row_idx].hl = nullptr;
-        E.row[row_idx].hl_oc = 0;
-        
-        E.numrows++;
-        current_line++;
-    }
-    E.chunk_loaded_lines = E.numrows;
-    
-    safeFileClose(file, false);  // Read-only, no flush needed
-    
-    E.chunk_dirty = false;
-    E.screen_dirty = true;
-    E.low_memory_mode = true;  // Chunked files always use low memory mode
-    
-    return true;
-}
-
-// Check if scroll position requires loading a new chunk
-bool ekilo_needs_chunk_reload() {
-    if (!E.is_chunked) return false;
-    
-    // Current cursor position in file coordinates
-    size_t file_row = E.chunk_start + E.cy;
-    
-    // Check if we're getting close to chunk boundaries
-    size_t buffer = EditorConfig::CHUNK_BUFFER;
-    
-    // Need reload if cursor is within buffer of chunk edges
-    if (E.cy < (int)buffer && E.chunk_start > 0) {
-        return true;  // Near top of chunk, need to load earlier lines
-    }
-    if (E.cy >= (int)(E.chunk_loaded_lines - buffer) && 
-        E.chunk_start + E.chunk_loaded_lines < E.total_file_lines) {
-        return true;  // Near bottom of chunk, need to load later lines
-    }
-    
-    return false;
-}
-
-// Save current chunk edits back to the original file
-// Uses atomic write pattern: write to temp, then rename
-void ekilo_save_chunk_to_temp() {
-    if (!E.is_chunked || !E.chunk_dirty) return;
-    if (E.chunked_filename.length() == 0) return;
-    
-    // Mark as dirty in case we fail
-    E.dirty = 1;
-    
-    // Create temp file path
-    String tempPath = E.chunked_filename + ".tmp";
-    
-    // CRITICAL: Pause Core2 during flash write operations
-    bool was_paused = pauseCore2ForFlash(100);
-    
-    // Open original file for reading
-    File origFile = safeFileOpen(E.chunked_filename.c_str(), "r", 2000);
-    if (!origFile) {
-        unpauseCore2ForFlash(was_paused);
-        ekilo_set_status_message("ERROR: Cannot open original file");
-        return;
-    }
-    
-    // Open temp file for writing
-    File tempFile = safeFileOpen(tempPath.c_str(), "w", 2000);
-    if (!tempFile) {
-        safeFileClose(origFile, false);
-        unpauseCore2ForFlash(was_paused);
-        ekilo_set_status_message("ERROR: Cannot create temp file");
-        return;
-    }
-    
-    // Phase 1: Copy lines BEFORE the chunk from original file
-    size_t line_num = 0;
-    char line_buf[512];
-    while (line_num < E.chunk_start && origFile.available()) {
-        // Read line from original
-        int len = 0;
-        while (origFile.available() && len < 510) {
-            char c = origFile.read();
-            if (c == '\n') {
-                line_buf[len++] = '\n';
-                break;
-            }
-            if (c != '\r') {
-                line_buf[len++] = c;
-            }
-        }
-        // Write to temp file
-        if (len > 0) {
-            tempFile.write((uint8_t*)line_buf, len);
-        }
-        line_num++;
-    }
-    
-    // Phase 2: Write edited chunk from memory
-    for (int i = 0; i < E.numrows; i++) {
-        if (E.row[i].chars && E.row[i].size > 0) {
-            tempFile.write((uint8_t*)E.row[i].chars, E.row[i].size);
-        }
-        tempFile.write('\n');
-    }
-    
-    // Phase 3: Skip original chunk lines, then copy rest
-    // Skip the lines that were in the chunk
-    size_t chunk_end = E.chunk_start + E.chunk_loaded_lines;
-    while (line_num < chunk_end && origFile.available()) {
-        // Just skip these lines
-        while (origFile.available()) {
-            char c = origFile.read();
-            if (c == '\n') break;
-        }
-        line_num++;
-    }
-    
-    // Copy remaining lines from original
-    while (origFile.available()) {
-        int len = 0;
-        while (origFile.available() && len < 510) {
-            char c = origFile.read();
-            if (c == '\n') {
-                line_buf[len++] = '\n';
-                break;
-            }
-            if (c != '\r') {
-                line_buf[len++] = c;
-            }
-        }
-        if (len > 0) {
-            tempFile.write((uint8_t*)line_buf, len);
-        }
-    }
-    
-    // Flush and close files
-    tempFile.flush();
-    safeFileClose(tempFile, true);
-    safeFileClose(origFile, false);
-    
-    // Atomic rename: remove original, rename temp to original
-    fs_mutex_acquire();
-    if (FatFS.exists(E.chunked_filename.c_str())) {
-        FatFS.remove(E.chunked_filename.c_str());
-    }
-    bool renamed = FatFS.rename(tempPath.c_str(), E.chunked_filename.c_str());
-    fs_mutex_release();
-    
-    unpauseCore2ForFlash(was_paused);
-    
-    if (renamed) {
-        E.chunk_dirty = false;
-        E.dirty = 0;
-        
-        // Recalculate total lines (chunk size may have changed)
-        // We need to count lines in the new file
-        size_t new_total = 0;
-        File countFile = safeFileOpen(E.chunked_filename.c_str(), "r", 1000);
-        if (countFile) {
-            while (countFile.available()) {
-                char c = countFile.read();
-                if (c == '\n') new_total++;
-            }
-            safeFileClose(countFile, false);
-            E.total_file_lines = new_total > 0 ? new_total : 1;
-        }
-        
-        ekilo_set_status_message("Chunk saved: %d lines merged", E.numrows);
-    } else {
-        ekilo_set_status_message("ERROR: Failed to save chunk");
-    }
-} 
+// [REMOVED] Chunked File Loading - Now using SharedBuffer for all files
+// Files > SHARED_BUFFER_SIZE (24KB) are rejected with clear error message
+// ============================================================================ 

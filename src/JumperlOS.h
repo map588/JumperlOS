@@ -21,9 +21,15 @@ class SlotManager;
 // Stack-based context navigation for UI states (Menu -> FileManager -> Ekilo -> Python)
 // Provides:
 // - Proper cleanup when exiting contexts
-// - Zero-copy data passing between contexts via file paths
+// - Zero-copy data passing between contexts via file paths OR SharedBuffer
+// - Pre-allocated 24KB SharedBuffer for fast transfers without flash I/O
 // - Centralized file handle tracking to prevent leaks
 // - Thread-safe operations using existing mutex infrastructure
+//
+// Data Transfer Priority:
+// 1. SharedBuffer (fastest - already in RAM, no file I/O)
+// 2. Transfer path (file path - consumer loads from file)
+// 3. Transfer data (small inline data buffer, max 256 bytes)
 
 /**
  * @brief Context types - each represents a distinct UI/execution mode
@@ -564,6 +570,10 @@ public:
     
     /**
      * @brief Clear all transfer state (path and data)
+     * 
+     * NOTE: This does NOT clear SharedBuffer - use SharedBuffer::getInstance().clear()
+     * if you need to clear that too. SharedBuffer is intentionally separate as it
+     * may be consumed by a different context than the one calling clearAllTransfers().
      */
     void clearAllTransfers() { clearTransferPath(); clearTransferData(); }
     

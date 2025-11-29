@@ -59,10 +59,13 @@ private:
   int next_script_number = 1;        // For sequential script naming
   String numbered_scripts[20];       // Map numbers to script names for easy loading
   int numbered_scripts_count = 0;
+  
+  // Helper to resolve [FILE:...] references in history entries
+  String resolveHistoryContent(const String& content);
 
 public:
   void initFilesystem();
-  void addToHistory(const String &script);
+  void addToHistory(const String &script, const String &sourceFile = "");
   String getPreviousCommand();
   String getNextCommand();
   String getCurrentHistoryCommand();
@@ -104,6 +107,7 @@ struct REPLEditor {
   int escape_state = 0;       // 0=normal, 1=ESC, 2=ESC[
   String original_input = ""; // Store original input before history navigation
   bool in_history_mode = false;
+  String source_filename = ""; // Filename if content was loaded from a file (for history)
   bool multiline_override = false;   // Manual multiline mode override
   bool multiline_forced_on = false;  // Force multiline mode on
   bool multiline_forced_off = false; // Force multiline mode off

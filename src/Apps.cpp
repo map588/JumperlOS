@@ -137,8 +137,8 @@ void runApp( int index, char* name ) {
     if ( !name )
         name = apps[ index ].name;
 
-    Serial.println( "Running app: " + normalizeSpaces( name ) );
-    Serial.println( "Index: " + String( index ) );
+     Serial.println( "Running app: " + normalizeSpaces( name ) );
+    // Serial.println( "Index: " + String( index ) );
 
     // Determine context type based on app name
     // Some apps (File Manager, MicroPython REPL) push their own specific context,

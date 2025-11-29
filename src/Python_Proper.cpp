@@ -13,6 +13,7 @@
 #include "SyntaxHighlighting.h"
 #include "CommandBuffer.h"  // For UART response capture
 #include "JumperlOS.h"
+#include "SharedBuffer.h"  // For zero-copy transfer from Ekilo editor
 #include "externVars.h"  // For pauseCore2 synchronization
 extern "C" {
 #include "py/gc.h"
@@ -447,16 +448,70 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
     closeAllFiles();
     // Clear transfer path to prevent stale file paths from persisting
     ContextManager::getInstance().clearTransferPath();
+    // Clear shared buffer if it wasn't consumed
+    SharedBuffer::getInstance().clear();
   };
   
-  // Check if parent context set a transfer path (e.g., from Ekilo editor)
-  // This allows zero-copy file path passing
+  // PRIORITY 1: Check SharedBuffer first (fastest - no file I/O needed)
+  // This is the preferred path from Ekilo editor for instant transfers
+  SharedBuffer& sharedBuf = SharedBuffer::getInstance();
+  
   String fileToLoad = filepath;
-  if (fileToLoad.length() == 0 && ContextManager::getInstance().hasTransferPath()) {
-    fileToLoad = ContextManager::getInstance().getTransferPath();
-    // IMPORTANT: Clear transfer path after consuming it
+  bool contentFromSharedBuffer = false;
+  
+  // Helper lambda to check if file is a Python file
+  auto isPythonFile = [](const String& path) -> bool {
+    return path.endsWith(".py") || path.endsWith(".PY");
+  };
+  
+  if (sharedBuf.isReady() && sharedBuf.hasContent()) {
+    // Content is already in memory from Ekilo - we'll load it in processMicroPythonInput
+    // Just get the filename if available
+    if (sharedBuf.hasFilename()) {
+      String bufferFilename = sharedBuf.getFilename();
+      // Only use if it's a Python file
+      if (isPythonFile(bufferFilename)) {
+        fileToLoad = bufferFilename;
+        contentFromSharedBuffer = true;
+      } else {
+        // Not a Python file - clear the shared buffer and ignore
+        sharedBuf.clear();
+        changeTerminalColor(replColors[5], true, global_mp_stream);
+        global_mp_stream->print("[!] Ignoring non-.py file: ");
+        global_mp_stream->println(bufferFilename);
+        changeTerminalColor(replColors[0], false, global_mp_stream);
+      }
+    } else {
+      // No filename but has content - assume it's Python code
+      contentFromSharedBuffer = true;
+    }
+    // DON'T clear shared buffer here if valid - it will be consumed in processMicroPythonInput
+  }
+  // PRIORITY 2: Check transfer path (file path was set, need to load from file)
+  else if (fileToLoad.length() == 0 && ContextManager::getInstance().hasTransferPath()) {
+    String transferPath = ContextManager::getInstance().getTransferPath();
+    // IMPORTANT: Clear transfer path after consuming it (whether valid or not)
     // This prevents the original caller from re-loading the file after nested REPL exits
     ContextManager::getInstance().clearTransferPath();
+    
+    // Only use if it's a Python file
+    if (isPythonFile(transferPath)) {
+      fileToLoad = transferPath;
+    } else {
+      changeTerminalColor(replColors[5], true, global_mp_stream);
+      global_mp_stream->print("[!] Ignoring non-.py file: ");
+      global_mp_stream->println(transferPath);
+      changeTerminalColor(replColors[0], false, global_mp_stream);
+    }
+  }
+  
+  // Final check on fileToLoad from filepath parameter
+  if (fileToLoad.length() > 0 && !isPythonFile(fileToLoad) && !contentFromSharedBuffer) {
+    changeTerminalColor(replColors[5], true, global_mp_stream);
+    global_mp_stream->print("[!] Ignoring non-.py file: ");
+    global_mp_stream->println(fileToLoad);
+    changeTerminalColor(replColors[0], false, global_mp_stream);
+    fileToLoad = "";  // Clear it - not a valid Python file
   }
   
   ContextManager::getInstance().pushContext(ctx);
@@ -587,6 +642,10 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   global_mp_stream->print("\033[0m");
   // stream->println("Returned to Arduino mode");
   
+  // Clear screen before returning to parent context (file manager, etc.)
+  global_mp_stream->print("\x1b[2J\x1b[H");
+  global_mp_stream->flush();
+  
   // Pop PYTHON_REPL context - cleanup callback will be called
   ContextManager::getInstance().popContext();
 }
@@ -604,7 +663,50 @@ void processMicroPythonInput(Stream *stream) {
     static ScriptHistory history;  // Each REPL instance gets its own history
     static bool history_initialized = false;
 
-    // Check for pending initial file to load (do this BEFORE first_run check)
+    // PRIORITY 1: Check SharedBuffer first (zero-copy from Ekilo editor)
+    // This is the fastest path - content is already in memory, no file I/O needed
+    SharedBuffer& sharedBuf = SharedBuffer::getInstance();
+    
+    // Only print debug when there's actually content to avoid spam
+    if (sharedBuf.isReady() && sharedBuf.hasContent()) {
+      // Reset the editor to ensure we can load the content
+      editor.reset();
+      
+      // Initialize history if needed
+      if (!history_initialized) {
+        history.initFilesystem();
+        history_initialized = true;
+      }
+      
+      // Get buffer info
+      size_t bufLen = sharedBuf.length();
+      const char* bufData = sharedBuf.data();
+      String filename = sharedBuf.hasFilename() ? sharedBuf.getFilename() : "buffer";
+      
+      // Create String from SharedBuffer - must copy before clearing!
+      String fileContent;
+      if (bufLen > 0 && bufData) {
+        fileContent.concat(bufData, bufLen);
+      }
+      
+      // Store the source filename for history tracking
+      editor.source_filename = filename;
+      
+      // Clear the buffer now that we've fully copied content
+      sharedBuf.clear();
+      
+      // Show the loaded content using existing method
+      editor.loadScriptContent(fileContent, "Script loaded from buffer: " + filename);
+      
+      // Clear any pending file (shared buffer takes priority)
+      repl_initial_filepath = "";
+      repl_has_initial_file = false;
+      editor.first_run = false;
+      
+      return;
+    }
+    
+    // PRIORITY 2: Check for pending initial file to load from filesystem
     if (repl_has_initial_file && repl_initial_filepath.length() > 0) {
       // Reset the editor to ensure we can load the file
       editor.reset();
@@ -1365,8 +1467,9 @@ void processMicroPythonInput(Stream *stream) {
           global_mp_stream->println("Opening file manager...");
           changeTerminalColor(replColors[0], false, global_mp_stream);
           
-          // Clear any existing transfer path before launching file manager
+          // Clear any existing transfer path and shared buffer before launching file manager
           ContextManager::getInstance().clearTransferPath();
+          SharedBuffer::getInstance().clear();
           
           // Launch file manager in REPL mode
           String savedContent = filesystemAppPythonScriptsREPL();
@@ -1378,13 +1481,23 @@ void processMicroPythonInput(Stream *stream) {
             global_mp_stream->flush();
           }
 
-          // ZERO-COPY: Check if a file path was set via transfer mechanism
-          // This is more memory-efficient than passing content as String
+          // PRIORITY 1: Check SharedBuffer first (fastest - already in memory)
+          SharedBuffer& fileBuf = SharedBuffer::getInstance();
+          if (fileBuf.isReady() && fileBuf.hasContent()) {
+            showREPLreference();
+            String content(fileBuf.data(), fileBuf.length());
+            String filename = fileBuf.hasFilename() ? fileBuf.getFilename() : "buffer";
+            fileBuf.clear();
+            editor.loadScriptContent(content, String("Loaded from buffer: ") + filename);
+            return;
+          }
+          
+          // PRIORITY 2: Check if a file path was set via transfer mechanism
           bool hasContent = savedContent.length() > 0;
           bool hasTransferPath = ContextManager::getInstance().hasTransferPath();
           
           if (hasTransferPath) {
-            // Load from file path (zero-copy approach)
+            // Load from file path
             const char* filePath = ContextManager::getInstance().getTransferPath();
             showREPLreference();
             
@@ -1393,6 +1506,8 @@ void processMicroPythonInput(Stream *stream) {
             if (f) {
               String content = f.readString();
               safeFileClose(f, false);  // Read-only, no flush
+              // Store source filename for history tracking
+              editor.source_filename = String(filePath);
               editor.loadScriptContent(content, String("Loaded: ") + filePath);
             } else {
               global_mp_stream->println("Failed to load file from transfer path");
@@ -1511,9 +1626,9 @@ void processMicroPythonInput(Stream *stream) {
             needs_more_input = false;
           } else if (no_content_after_cursor) {
             // If there's no content after cursor, use automatic detection
-            String input_for_check = editor.current_input;
+            // Use reference - no need to copy just for .c_str()
             needs_more_input =
-                mp_repl_continue_with_input(input_for_check.c_str());
+                mp_repl_continue_with_input(editor.current_input.c_str());
           } else {
             // If there IS content after cursor, always continue (insert newline)
             needs_more_input = true;
@@ -1531,7 +1646,8 @@ void processMicroPythonInput(Stream *stream) {
 
           // Smart auto-indent: maintain or increase indentation level
           // Get the line we just finished (before the newline we just added)
-          String lines = editor.current_input;
+          // Use reference to avoid copying large strings
+          const String& lines = editor.current_input;
           int last_newline = lines.lastIndexOf(
               '\n',
               editor.cursor_pos - 2); // -2 to skip the newline we just added
@@ -1586,23 +1702,37 @@ void processMicroPythonInput(Stream *stream) {
             changeTerminalColor(replColors[2], true, global_mp_stream);
 
             // Clean up the input (remove trailing newlines)
-            String clean_input = editor.current_input;
-            while (clean_input.endsWith("\n")) {
-              clean_input = clean_input.substring(0, clean_input.length() - 1);
+            // Find where trailing newlines start
+            const String& input_ref = editor.current_input;
+            int clean_end = input_ref.length();
+            while (clean_end > 0 && input_ref.charAt(clean_end - 1) == '\n') {
+              clean_end--;
             }
 
-            if (clean_input.length() > 0) {
+            if (clean_end > 0) {
               // Execute the user's current input (edited or original)
               // No longer override with history command - user edits should be respected
+              
+              // For execution, we need to pass a null-terminated string
+              // Temporarily modify the buffer in place to avoid large string copies
+              char* input_buffer = const_cast<char*>(input_ref.c_str());
+              char saved_char = input_buffer[clean_end];
+              input_buffer[clean_end] = '\0';  // Temporarily null-terminate
 
-              // Add to history before execution
-              history.addToHistory(clean_input);
+              // Add to history before execution (pass source filename for large scripts)
+              history.addToHistory(input_buffer, editor.source_filename);
 
               // Reset history navigation now that we're executing
               history.resetHistoryNavigation();
 
               // Let MicroPython handle the complete statement
-              mp_embed_exec_str(clean_input.c_str());
+              mp_embed_exec_str(input_buffer);
+              
+              // Restore the original character
+              input_buffer[clean_end] = saved_char;
+              
+              // Clear source filename after execution
+              editor.source_filename = "";
               
               // Force garbage collection after script execution to clean up
               // temporary objects and close orphaned file handles (via finalizers)
@@ -2169,14 +2299,35 @@ void ScriptHistory::initFilesystem() {
   findNextScriptNumber();
 }
 
-void ScriptHistory::addToHistory(const String &script) {
+void ScriptHistory::addToHistory(const String &script, const String &sourceFile) {
   if (script.length() == 0)
     return;
+    
+  // For large scripts, store just a reference marker with the filename if available
+  // This prevents copying 6KB+ scripts into RAM history
+  static const size_t MAX_INLINE_SIZE = 1024;  // Store content inline only if < 1KB
+  
+  String content_to_store;
+  if (script.length() > MAX_INLINE_SIZE) {
+    // Check if we have a source filename to reference
+    if (sourceFile.length() > 0) {
+      // Store a reference marker instead of content
+      content_to_store = "[FILE:" + sourceFile + "]";
+      Serial.printf("[History] Storing file reference '%s' instead of %d byte script\n", 
+                    sourceFile.c_str(), script.length());
+    } else {
+      // No filename available, skip storing this large script
+      Serial.printf("[History] Script too large (%d bytes) and no file reference, skipping\n", script.length());
+      return;
+    }
+  } else {
+    content_to_store = script;
+  }
 
   // Check if this command already exists in history (ring buffer search)
   for (int i = 0; i < count; i++) {
     int idx = (head - count + i + MAX_HISTORY) % MAX_HISTORY;
-    if (history[idx].content == script) {
+    if (history[idx].content == content_to_store) {
       // Move this command to the head by updating its timestamp
       history[idx].timestamp = millis();
       current_history_index = -1;
@@ -2185,7 +2336,7 @@ void ScriptHistory::addToHistory(const String &script) {
     }
   }
 
-  // Count lines for multiline detection
+  // Count lines for multiline detection (use original script for accurate count)
   int line_count = countLines(script);
   bool is_multiline = (line_count > MULTILINE_THRESHOLD);
   String parent_id = "";
@@ -2198,7 +2349,7 @@ void ScriptHistory::addToHistory(const String &script) {
 
   // Ring buffer insert at head position
   int insert_idx = head % MAX_HISTORY;
-  history[insert_idx].content = script;
+  history[insert_idx].content = content_to_store;  // Store reference or small content
   history[insert_idx].parent_id = parent_id;
   history[insert_idx].timestamp = millis();
   history[insert_idx].is_multiline = is_multiline;
@@ -2208,6 +2359,24 @@ void ScriptHistory::addToHistory(const String &script) {
   
   current_history_index = -1; // Reset navigation
   dirty = true;  // Mark for batched write (don't write immediately)
+}
+
+// Helper to resolve file references in history entries
+String ScriptHistory::resolveHistoryContent(const String& content) {
+  // Check if this is a file reference marker
+  if (content.startsWith("[FILE:") && content.endsWith("]")) {
+    String filename = content.substring(6, content.length() - 1);
+    // Load file content
+    File file = safeFileOpen(filename.c_str(), "r", 2000);
+    if (file) {
+      String fileContent = file.readString();
+      safeFileClose(file, false);
+      return fileContent;
+    }
+    // File not found, return the reference marker
+    return content;
+  }
+  return content;
 }
 
 String ScriptHistory::getPreviousCommand() {
@@ -2223,7 +2392,7 @@ String ScriptHistory::getPreviousCommand() {
 
   // Convert navigation index to ring buffer index
   int ring_idx = (head - count + current_history_index + MAX_HISTORY) % MAX_HISTORY;
-  return history[ring_idx].content;
+  return resolveHistoryContent(history[ring_idx].content);
 }
 
 String ScriptHistory::getNextCommand() {
@@ -2233,7 +2402,7 @@ String ScriptHistory::getNextCommand() {
   if (current_history_index < count - 1) {
     current_history_index++;
     int ring_idx = (head - count + current_history_index + MAX_HISTORY) % MAX_HISTORY;
-    return history[ring_idx].content;
+    return resolveHistoryContent(history[ring_idx].content);
   } else {
     // Moving forward past the newest command returns to original input
     current_history_index = -1;
@@ -2244,7 +2413,7 @@ String ScriptHistory::getNextCommand() {
 String ScriptHistory::getCurrentHistoryCommand() {
   if (current_history_index >= 0 && current_history_index < count) {
     int ring_idx = (head - count + current_history_index + MAX_HISTORY) % MAX_HISTORY;
-    return history[ring_idx].content;
+    return resolveHistoryContent(history[ring_idx].content);
   }
   return "";
 }
@@ -2981,7 +3150,8 @@ void REPLEditor::drawFromCurrentLine(Stream *stream) {
   }
 
   // Split input into lines and display each one with soft-wrapping
-  String lines = current_input;
+  // Use reference to avoid copying large strings (Arduino String copy can silently fail!)
+  const String& lines = current_input;
   int line_start = 0;
   int current_line_num = 0;
   int lines_displayed = 0;
@@ -3230,16 +3400,21 @@ void REPLEditor::moveCursorToEnd() {
 void REPLEditor::loadScriptContent(const String &script, const String &message) {
   // Load the script content into the editor
   current_input = script;
-  in_multiline_mode = (script.indexOf('\n') >= 0);
+  
+  // Don't auto-set multiline mode - let MicroPython's continuation detection
+  // decide if more input is needed when the user presses Enter.
+  // This allows loaded scripts to execute immediately on Enter.
+  in_multiline_mode = false;
+  
+  // Move cursor to end BEFORE redraw so positioning is correct
+  moveCursorToEnd();
   
   // Display success message
   changeTerminalColor(replColors[5], true, global_mp_stream);
   global_mp_stream->println(message);
   
-  // Redraw the content and position cursor at the end
+  // Redraw the content - cursor will be positioned at the end
   redrawAndPosition(global_mp_stream);
-  moveCursorToEnd();
-  repositionCursorOnly(global_mp_stream);
 }
 
 // Redraw content and position cursor - fixed positioning approach
@@ -3254,7 +3429,8 @@ void REPLEditor::redrawAndPosition(Stream *stream) {
   int total_display_lines = 0; // number of display rows across all logical lines
   int target_display_row_index = 0; // the display row where the cursor should be
   if (current_input.length() > 0) {
-    String lines_for_count = current_input;
+    // Use reference to avoid copying large strings (Arduino String copy can silently fail!)
+    const String& lines_for_count = current_input;
     int line_start_idx = 0;
     int count_line_num = 0;
     for (int idx = 0; idx <= lines_for_count.length(); idx++) {
@@ -3307,7 +3483,8 @@ void REPLEditor::redrawAndPosition(Stream *stream) {
   }
 
   // Step 4: Display all lines with soft-wrapping
-  String lines = current_input;
+  // IMPORTANT: Use reference to avoid copying large strings (Arduino String copy can silently fail!)
+  const String& lines = current_input;
   int line_start = 0;
   int current_line_num = 0;
   int lines_with_newlines = 0;
@@ -3379,22 +3556,20 @@ void REPLEditor::redrawAndPosition(Stream *stream) {
   REPL_prev_target_display_row_index = target_display_row_index;
 
   // Step 6: Position cursor at the target location
-  // We're currently at the end of the last line
-  // Move to beginning of last line, then up to first line, then down to target
+  // We're currently at the end of the last line (after displaying all content)
+  // Need to move cursor to the correct row based on cursor_position
   stream->print("\r");
   
-  if (lines_with_newlines > 0) {
-    stream->print("\033[");
-    stream->print(lines_with_newlines);
-    stream->print("A"); // Move up to first line
-  }
+  // Calculate how many rows from end of content to target cursor position
+  int rows_from_end = total_display_lines - 1 - target_display_row_index;
   
-  // Move down to target display row
-  if (target_display_row_index > 0) {
-    for (int i = 0; i < target_display_row_index; i++) {
-      stream->println();
-    }
+  if (rows_from_end > 0) {
+    // Move up from end of content to target row
+    stream->print("\033[");
+    stream->print(rows_from_end);
+    stream->print("A");
   }
+  // If rows_from_end == 0, cursor is already at the right row (end of content)
   
   // Position horizontally
   stream->print("\r");
@@ -3484,6 +3659,7 @@ void REPLEditor::reset() {
   original_input = "";
   in_history_mode = false;
   just_loaded_from_history = false; // Clear the flag on reset
+  source_filename = ""; // Clear source filename on reset
   // Don't reset multiline mode settings - preserve user's choice
   // multiline_override, multiline_forced_on, multiline_forced_off should persist
   last_displayed_lines = 0;
