@@ -6,6 +6,87 @@
  */
 
 #include "MCP4728.h"
+#include "JumperlessDefines.h"  // For LDAC pin definition
+#include "hardware/i2c.h"       // For low-level I2C control
+
+// ============================================================================
+// Minimal Software I2C for MCP4728 address programming
+// This is needed because address change requires toggling LDAC between bytes,
+// which hardware I2C cannot do precisely.
+// ============================================================================
+#define SOFT_SDA_PIN 4
+#define SOFT_SCL_PIN 5
+
+static inline void softI2C_delay() { delayMicroseconds(3); }  // ~166kHz
+
+static inline void softI2C_sdaHigh() { 
+  pinMode(SOFT_SDA_PIN, INPUT_PULLUP); 
+}
+static inline void softI2C_sdaLow() { 
+  pinMode(SOFT_SDA_PIN, OUTPUT); 
+  digitalWrite(SOFT_SDA_PIN, LOW); 
+}
+static inline void softI2C_sclHigh() { 
+  pinMode(SOFT_SCL_PIN, INPUT_PULLUP);
+  while(digitalRead(SOFT_SCL_PIN) == LOW); // Clock stretching
+}
+static inline void softI2C_sclLow() { 
+  pinMode(SOFT_SCL_PIN, OUTPUT); 
+  digitalWrite(SOFT_SCL_PIN, LOW); 
+}
+static inline bool softI2C_sdaRead() { 
+  pinMode(SOFT_SDA_PIN, INPUT_PULLUP);
+  return digitalRead(SOFT_SDA_PIN); 
+}
+
+static void softI2C_start() {
+  softI2C_sdaHigh(); softI2C_sclHigh(); softI2C_delay();
+  softI2C_sdaLow(); softI2C_delay();
+  softI2C_sclLow(); softI2C_delay();
+}
+
+static void softI2C_stop() {
+  softI2C_sdaLow(); softI2C_delay();
+  softI2C_sclHigh(); softI2C_delay();
+  softI2C_sdaHigh(); softI2C_delay();
+}
+
+static bool softI2C_writeByte(uint8_t data) {
+  for (int i = 7; i >= 0; i--) {
+    if (data & (1 << i)) softI2C_sdaHigh(); else softI2C_sdaLow();
+    softI2C_delay();
+    softI2C_sclHigh(); softI2C_delay();
+    softI2C_sclLow(); softI2C_delay();
+  }
+  // Read ACK
+  softI2C_sdaHigh(); softI2C_delay();
+  softI2C_sclHigh(); softI2C_delay();
+  bool ack = !softI2C_sdaRead();  // ACK = SDA low
+  softI2C_sclLow(); softI2C_delay();
+  return ack;
+}
+
+// Write byte with LDAC toggle during the 8th clock's negative pulse
+// Per datasheet: LDAC must go LOW during the negative pulse of the 8th clock
+static bool softI2C_writeByteWithLDAC(uint8_t data, uint8_t ldacPin) {
+  for (int i = 7; i >= 0; i--) {
+    if (data & (1 << i)) softI2C_sdaHigh(); else softI2C_sdaLow();
+    softI2C_delay();
+    softI2C_sclHigh(); softI2C_delay();
+    softI2C_sclLow();
+    // Toggle LDAC LOW during the 8th clock's negative pulse (i == 0 is the 8th bit)
+    if (i == 0) {
+      digitalWrite(ldacPin, LOW);
+    }
+    softI2C_delay();
+  }
+  // Read ACK (LDAC is now LOW)
+  softI2C_sdaHigh(); softI2C_delay();
+  softI2C_sclHigh(); softI2C_delay();
+  bool ack = !softI2C_sdaRead();
+  softI2C_sclLow(); softI2C_delay();
+  return ack;
+}
 
 /*!
  *    @brief  Instantiates a new MCP4728 class
@@ -32,7 +113,7 @@ bool MCP4728::begin(uint8_t i2c_address, TwoWire *wire) {
     return false;
   }
   _wire->setClock(1700000); //I have no clue why this shaves off ~8us of the transfer time, but it does
-  _clock_hz = 1700000;//the rp2350 has a max of 1000000 for i2c
+  _clock_hz = 1000000;//the rp2350 has a max of 1000000 for i2c
   
   // Test communication with a simple read
   _wire->beginTransmission(_i2c_address);
@@ -70,6 +151,106 @@ bool MCP4728::sendI2Cend(bool sendStop) {
 
 bool MCP4728::sendI2Cdata(uint8_t *data, size_t length) {
   return _wire->write(data, length) == length;
+}
+
+/*!
+ *    @brief  Write new I2C address bits to the MCP4728 EEPROM
+ *    @param  newAddressBits The new address bits (0-7, only lower 3 bits used)
+ *    @return True if the write was successful
+ *    
+ *    Based on: changeDeviceID.pde from neurostar's MCP4728 library
+ *    Uses software I2C for precise LDAC timing control.
+ *    
+ *    Wire format (from datasheet Figure 5-11):
+ *      i2c.start(0xC0 | (oldAddress << 1))        // 1100 0000 | old addr shifted
+ *      i2c.ldacwrite(0x61 | (oldAddress << 2))    // Write + toggle LDAC
+ *      i2c.write(0x62 | (newAddress << 2))
+ *      i2c.write(0x63 | (newAddress << 2))
+ *      i2c.stop()
+ */
+bool MCP4728::setMCPAddressBits(uint8_t newAddressBits, bool debug) {
+  if (debug) { Serial.println("MCP4728::setMCPAddressBits() called"); Serial.flush(); }
+  
+  if (!_initialized || !_wire) {
+    if (debug) { Serial.println("Not initialized, returning false"); }
+    return false;
+  }
+  
+  // Extract current address bits (0-7)
+  uint8_t currentAddressBits = (_i2c_address - MCP4728_I2CADDR_DEFAULT) & 0x07;
+  newAddressBits &= 0x07;
+  
+  // Build bytes per changeDeviceID.pde / datasheet Figure 5-11
+  uint8_t addrByte = 0xC0 | (currentAddressBits << 1);  // 1100 0000 | old << 1 | W
+  uint8_t byte1 = 0x61 | (currentAddressBits << 2);     // 0110 0001 | old << 2
+  uint8_t byte2 = 0x62 | (newAddressBits << 2);         // 0110 0010 | new << 2
+  uint8_t byte3 = 0x63 | (newAddressBits << 2);         // 0110 0011 | new << 2
+  
+  if (debug) {
+    Serial.printf("Old bits: %d, New bits: %d, Bytes: 0x%02X 0x%02X 0x%02X 0x%02X\n", 
+                  currentAddressBits, newAddressBits, addrByte, byte1, byte2, byte3);
+  }
+  
+  // Stop hardware I2C so we can use software I2C
+  _wire->end();
+  
+  // Set LDAC HIGH before starting
+  pinMode(LDAC, OUTPUT);
+  digitalWrite(LDAC, HIGH);
+  delayMicroseconds(10);
+  
+  bool success = true;
+  
+  // Software I2C sequence (matches changeDeviceID.pde writeAddress())
+  softI2C_start();
+  
+  // Address byte
+  if (!softI2C_writeByte(addrByte)) {
+    if (debug) { Serial.println("NACK on address"); }
+    success = false;
+  }
+  
+  // Byte1 with LDAC toggle during 8th clock
+  if (success && !softI2C_writeByteWithLDAC(byte1, LDAC)) {
+    if (debug) { Serial.println("NACK on byte1"); }
+    success = false;
+  }
+  
+  // Byte2
+  if (success && !softI2C_writeByte(byte2)) {
+    if (debug) { Serial.println("NACK on byte2"); }
+    success = false;
+  }
+  
+  // Byte3
+  if (success && !softI2C_writeByte(byte3)) {
+    if (debug) { Serial.println("NACK on byte3"); }
+    success = false;
+  }
+  
+  softI2C_stop();
+  
+  // Wait for EEPROM write (25-50ms per datasheet)
+  delay(100);
+  
+  // Restore LDAC HIGH
+  digitalWrite(LDAC, HIGH);
+  
+  // Restore hardware I2C
+  _wire->setSDA(SOFT_SDA_PIN);
+  _wire->setSCL(SOFT_SCL_PIN);
+  _wire->setClock(_clock_hz);
+  _wire->begin();
+  
+  if (success) {
+    _i2c_address = MCP4728_I2CADDR_DEFAULT | newAddressBits;
+    _mcp_address_bits = newAddressBits;
+    if (debug) { Serial.printf("Success! New address: 0x%02X\n", _i2c_address); }
+  } else {
+    if (debug) { Serial.println("Failed to set address"); }
+  }
+  
+  return success;
 }
 
 /*!

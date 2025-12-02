@@ -37,7 +37,10 @@ bool oledUsingHardwiredPins = false; // Global flag: true if using RP6/RP7 (GPIO
 // Enable per-line font scaling to fit horizontally (prevents wrapping)
 #define OLED_SCALE_LINES_INDEPENDENTLY 1
 
-Adafruit_SSD1306 display( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &Wire1, OLED_RESET );
+#define OLED_WIRE Wire
+
+Adafruit_SSD1306 display( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &OLED_WIRE, OLED_RESET );
+
 
 int oledAddress = -1;
 int numFonts = 35; // Updated for granular font sizes
@@ -420,6 +423,16 @@ int oled::init( ) {
     if ( jumperlessConfig.top_oled.enabled == 0 ) {
         jumperlessConfig.top_oled.enabled = 1;
     }
+
+
+    if ( jumperlessConfig.top_oled.connection_type == 2 ) {
+        //display.~Adafruit_SSD1306( );
+       // display = Adafruit_SSD1306( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &Wire, OLED_RESET );
+    } else {
+      //  Adafruit_SSD1306 display( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &Wire1, OLED_RESET );
+    }
+
+
     /// delay(1000);
     int success = 0;
     address = jumperlessConfig.top_oled.i2c_address;
@@ -535,7 +548,9 @@ int oled::init( ) {
         display.display( );
     }
     setCursor( 0, 0 );
+    if ( jumperlessConfig.top_oled.connection_type != 2 ) {
     Wire1.setTimeout( 15 );
+    }
     charPos = 0;
     refreshConnections( -1 );
 
@@ -552,8 +567,8 @@ bool oled::checkConnection( void ) {
     //     return false;
     // }
     if ( millis( ) - lastConnectionCheck > 1000 ) {
-        Wire1.beginTransmission( address );
-        if ( Wire1.endTransmission( ) != 0 ) {
+        OLED_WIRE.beginTransmission( address );
+        if ( OLED_WIRE.endTransmission( ) != 0 ) {
             lastConnectionCheck = millis( );
             oledConnected = false;
             return false;
@@ -2181,7 +2196,7 @@ void oled::dumpFrameBuffer( ) {
         return;
     }
 
-    Jerial.printf( "OLED Framebuffer Dump (%dx%d):", displayWidth, displayHeight );
+    Jerial.printf( "OLED Framebuffer Dump (%dx%d):\n\r", displayWidth, displayHeight );
     Jerial.println( "┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐" );
 
     // The SSD1306 framebuffer is organized as:
@@ -2217,9 +2232,9 @@ void oled::dumpFrameBuffer( ) {
     }
 
     Jerial.println( "└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘" );
-    Jerial.print( "Buffer size: " );
-    Jerial.print( displayWidth * displayHeight / 8 );
-    Serial.println( " bytes" );
+    // Jerial.print( "Buffer size: " );
+    // Jerial.print( displayWidth * displayHeight / 8 );
+    // Serial.println( " bytes" );
 }
 
 // SMALL FONT FUNCTIONS

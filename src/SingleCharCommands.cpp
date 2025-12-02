@@ -1220,32 +1220,26 @@ CommandResult cmd_pythonCommand(char c, const String& line) {
     String trimmedLine = line;
     trimmedLine.trim();
     
-    if (trimmedLine.length() > 0 && trimmedLine[0] == '>') {
-        // Line has content starting with '>' - use it directly
+    if (trimmedLine.length() > 1 && trimmedLine[0] == '>') {
+        // Line has ACTUAL content after '>' - use it directly (line buffering or CommandBuffer path)
         pythonCommand = trimmedLine.substring(1);
         pythonCommand.trim();
-    } else if (trimmedLine.length() > 0) {
+    } else if (trimmedLine.length() > 1) {
         // Line has content but no '>' prefix - use as-is
         pythonCommand = trimmedLine;
-    } else if (jumperlessConfig.display.terminal_line_buffering == 1) {
-        // Fallback: line buffering mode but line was empty (shouldn't happen)
-        pythonCommand = line;
-        pythonCommand.trim();
-        if (pythonCommand.length() > 0 && pythonCommand[0] == '>') {
-            pythonCommand = pythonCommand.substring(1);
-            pythonCommand.trim();
-        }
     } else {
-        // Fallback: Read from Jerial (character-by-character mode, no line buffering)
+        // Line is empty OR just the trigger character '>'
+        // This happens when terminal_line_buffering == 0 (char-by-char mode)
+        // Read the rest of the command from Jerial
         // CRITICAL FIX: Only read until the FIRST newline to process one command at a time
         // This prevents long Python execution from blocking DTR checks
         while (Jerial.available() > 0) {
-            char c = Jerial.read();
-            if (c == '\n') {
+            char ch = Jerial.read();
+            if (ch == '\n') {
                 break;  // Stop at first newline - process one command at a time
             }
-            if (c != '\r') {  // Skip carriage returns
-                pythonCommand += c;
+            if (ch != '\r') {  // Skip carriage returns
+                pythonCommand += ch;
             }
         }
     }

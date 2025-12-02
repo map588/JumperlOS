@@ -267,6 +267,7 @@ int calib[ 3 ] = { 0, 0, 0 };
 
 MCP4728 mcp;
 
+
 // MCP4725_PICO dac0_5V(5.0);
 // MCP4725_PICO dac1_8V(railSpread);
 
@@ -380,18 +381,34 @@ void initDAC( void ) {
 
     Wire.setSDA( 4 );
     Wire.setSCL( 5 );
-    Wire.setClock( 1000000 );
+    Wire.setClock( 1700000 );
     Wire.begin( );
 
     delayMicroseconds( 100 );
+    pinMode( LDAC, OUTPUT );
+   
+    int mcpAddress = 0x60;
+    mcp.setAddress(mcpAddress);
+    // Try to initialize!
+    while ( !mcp.begin(mcpAddress) ) {
+        delay(  1 );
+       // Serial.println( "Failed to find MCP4728 chip at 0x" + String(mcpAddress, HEX) );
+        mcpAddress++;
+        mcp.setAddress(mcpAddress);
+        if ( mcpAddress > 0x67 ) {
+            Serial.println( "Failed to find MCP4728 chip" );
+            return;
+        }
+    }
+
+    if (mcpAddress != 0x60) {
+        mcp.setMCPAddressBits(0);
+    }
+
+    Serial.println( "Found MCP4728 chip at 0x" + String(mcpAddress, HEX) );
+
 
     
-    // Try to initialize!
-    if ( !mcp.begin( ) ) {
-        delay( 3000 );
-        Serial.println( "Failed to find MCP4728 chip" );
-    }
-    pinMode( LDAC, OUTPUT );
 
     digitalWrite( LDAC, HIGH );
 

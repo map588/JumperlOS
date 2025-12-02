@@ -1104,10 +1104,10 @@ t[i] = 0;
     // OPTIMIZATION: Only service wavegen when it's actually running
     // wavegen.service() contains a blocking while() loop for I2C streaming!
     t[2] = micros( );
-    // if ( wavegen.isRunning( ) ) {
-    //     //Serial.println("CORE2: wavegen.service() is being called");
-    //     wavegen.service( );
-    // }
+    if ( wavegen.isRunning( ) ) {
+        //Serial.println("CORE2: wavegen.service() is being called");
+        wavegen.service( );
+    }
     if ( debugWaitLoopTimingCore2 ) {
         t[3] = micros( );
         // if ( ( t[3] - t[2] ) > 1000 ) {

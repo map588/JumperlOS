@@ -103,6 +103,8 @@ public:
   // Get status
   bool isInitialized() const { return _initialized; }
   uint8_t getAddress() const { return _i2c_address; }
+  void setAddress(uint8_t i2c_address) { _i2c_address = i2c_address; }  
+  bool setMCPAddressBits(uint8_t newAddressBits, bool debug = false);
   TwoWire* getWire() const { return _wire; }
   uint32_t getClockHz() const { return _clock_hz; }
 volatile bool started;
@@ -111,6 +113,7 @@ volatile bool ended;
 private:
   bool _initialized;
   uint8_t _i2c_address;
+  uint8_t _mcp_address_bits;
   TwoWire *_wire;
   uint32_t _clock_hz = 1000000; // track configured I2C clock
   
