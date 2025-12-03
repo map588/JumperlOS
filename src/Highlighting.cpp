@@ -1233,15 +1233,25 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                 if ( netHighlighted > 0 ) {
                     int length = 0;
                     if ( print == 1 ) {
-                        Serial.print( "Net " );
-                        Serial.print( netHighlighted );
+                        // Check for custom net name
+                        const char* customName = globalState.display.getNetName( netHighlighted );
+                        if ( customName != nullptr ) {
+                            Serial.print( customName );
+                        } else {
+                            Serial.print( "Net " );
+                            Serial.print( netHighlighted );
+                        }
                         Serial.print( "\t " );
                         Serial.print( "row " );
                         length = printNodeOrName( brightenedNode );
                         Serial.flush( );
 
                         char oledString[ 30 ];
-                        sprintf( oledString, "Net %d       \n  row %s", netHighlighted, definesToChar( brightenedNode, 0 ) );
+                        if ( customName != nullptr ) {
+                            sprintf( oledString, "%s\n  row %s", customName, definesToChar( brightenedNode, 0 ) );
+                        } else {
+                            sprintf( oledString, "Net %d       \n  row %s", netHighlighted, definesToChar( brightenedNode, 0 ) );
+                        }
                         //oled.clear( );
                         oled.clearPrintShow( oledString, 2, true, true, true );
                         //oled.show( );

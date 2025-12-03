@@ -236,7 +236,7 @@ void showCommandHelp(char command) {
             Jerial.println("  - High precision 12-bit output");
             Jerial.println("  - Multiple DAC channels available");
             Jerial.println("  - Range: -8V to +8V");
-            Jerial.println("  - Also available via Python: jumperless.set_dac(0, 3.3)");
+            Jerial.println("  - Also available via Python: dac_set(0, 3.3)");
             changeTerminalColor(HELP_NOTE_COLOR, true);
             // Jerial.println("Perfect for testing circuits with precise known voltages!");
             break;
@@ -256,7 +256,7 @@ void showCommandHelp(char command) {
             Jerial.println("Features:");
             Jerial.println("  - High resolution 12-bit ADC readings");
             Jerial.println("  - Real-time monitoring capabilities");
-            Jerial.println("  - Python access: jumperless.get_adc(0)");
+            Jerial.println("  - Python access: adc_get(0)");
             changeTerminalColor(HELP_NOTE_COLOR, true);
             // Jerial.println("Perfect for precision circuit debugging and monitoring!");
             break;
@@ -304,12 +304,12 @@ void showCommandHelp(char command) {
             Jerial.println("  - Multi-line input with smart indentation");
             Jerial.println("  - Script save/load functionality");
             Jerial.println("  - File management and eKilo editor integration");
-            Jerial.println("\nHardware control functions:");
-            Jerial.println("  - jumperless.connect(1, 5)   - Make connections");
-            Jerial.println("  - jumperless.remove(1, 5)    - Remove connections");
-            Jerial.println("  - jumperless.set_gpio(2, 1)  - Digital I/O");
-            Jerial.println("  - jumperless.get_adc(0)      - Read voltages");
-            Jerial.println("  - jumperless.run_app('i2c')  - Run built-in apps");
+            Jerial.println("\nHardware control (no prefix needed):");
+            Jerial.println("  - connect(1, 5)       - Make connections");
+            Jerial.println("  - disconnect(1, 5)    - Remove connections");
+            Jerial.println("  - gpio_set(2, True)   - Digital I/O");
+            Jerial.println("  - adc_get(0)          - Read voltages");
+            Jerial.println("  - run_app('i2c')      - Run built-in apps");
             changeTerminalColor(HELP_NOTE_COLOR, true);
             Jerial.println("This is where the real magic happens - full Python control!");
             break;
@@ -321,29 +321,29 @@ void showCommandHelp(char command) {
             Jerial.println("Usage: >");
             changeTerminalColor(HELP_DESC_COLOR, true);
             Jerial.println("Then type a Python command like:");
-            Jerial.println("  jumperless.connect(1, 5)");
-            Jerial.println("  jumperless.set_gpio(2, 1)");
-            Jerial.println("  jumperless.run_app('i2c')");
-            Jerial.println("  print(jumperless.get_adc(0))");
+            Jerial.println("  connect(1, 5)");
+            Jerial.println("  gpio_set(2, True)");
+            Jerial.println("  run_app('i2c')");
+            Jerial.println("  print(adc_get(0))");
             changeTerminalColor(HELP_NOTE_COLOR, true);
             Jerial.println("Quick way to run commands without entering full REPL.");
             break;
             
-        case 'P':
-            changeTerminalColor(HELP_DESC_COLOR, true);
-            Jerial.println("Show all connectable nodes and Python capabilities");
-            changeTerminalColor(HELP_USAGE_COLOR, true);
-            Jerial.println("Usage: P");
-            changeTerminalColor(HELP_DESC_COLOR, true);
-            Jerial.println("Displays node reference including:");
-            Jerial.println("  - All breadboard holes (1-60)");
-            Jerial.println("  - Arduino pins (D0-D13, A0-A5)");
-            Jerial.println("  - Power rails (GND, +5V, +3.3V)");
-            Jerial.println("  - GPIO pins and special functions");
-            Jerial.println("  - Available jumperless Python commands");
-            changeTerminalColor(HELP_NOTE_COLOR, true);
-            Jerial.println("Essential reference for Python scripting and connections!");
-            break;
+        // case 'P':
+        //     changeTerminalColor(HELP_DESC_COLOR, true);
+        //     Jerial.println("Show all connectable nodes and Python capabilities");
+        //     changeTerminalColor(HELP_USAGE_COLOR, true);
+        //     Jerial.println("Usage: P");
+        //     changeTerminalColor(HELP_DESC_COLOR, true);
+        //     Jerial.println("Displays node reference including:");
+        //     Jerial.println("  - All breadboard holes (1-60)");
+        //     Jerial.println("  - Arduino pins (D0-D13, A0-A5)");
+        //     Jerial.println("  - Power rails (GND, +5V, +3.3V)");
+        //     Jerial.println("  - GPIO pins and special functions");
+        //     Jerial.println("  - Available jumperless Python commands");
+        //     changeTerminalColor(HELP_NOTE_COLOR, true);
+        //     Jerial.println("Essential reference for Python scripting and connections!");
+        //     break;
             
         case '.':
             changeTerminalColor(HELP_DESC_COLOR, true);
@@ -475,7 +475,7 @@ void showCommandHelp(char command) {
             Jerial.println("  - Flexible pin assignment");
             Jerial.println("  - Auto-discovery mode for unknown wiring");
             Jerial.println("  - Detailed device information with addresses");
-            Jerial.println("  - Also available as app: jumperless.run_app('i2c')");
+            Jerial.println("  - Also available via Python: run_app('i2c')");
             changeTerminalColor(HELP_NOTE_COLOR, true);
             //Jerial.println("Perfect for finding I2C devices when you're not sure of the wiring!");
             break;
@@ -1006,11 +1006,11 @@ Jerial.println(probe_art);
         changeTerminalColor(HELP_USAGE_COLOR, true);
         Jerial.println("\n PWM Signal Generation (Python):");
         changeTerminalColor(HELP_DESC_COLOR, true);
-        Jerial.println("  jumperless.pwm(1, 1000, 0.5)           - 1kHz PWM on GPIO_1, 50% duty");
-        Jerial.println("  jumperless.pwm(2, 0.1, 0.25)           - 0.1Hz slow PWM on GPIO_2, 25% duty");
-        Jerial.println("  jumperless.pwm_set_frequency(1, 500)   - Change frequency to 500Hz");
-        Jerial.println("  jumperless.pwm_set_duty_cycle(1, 0.75) - Change duty cycle to 75%");
-        Jerial.println("  jumperless.pwm_stop(GPIO_1)            - Stop PWM on GPIO_1");
+        Jerial.println("  pwm(1, 1000, 0.5)           - 1kHz PWM on GPIO_1, 50% duty");
+        Jerial.println("  pwm(2, 0.1, 0.25)           - 0.1Hz slow PWM on GPIO_2, 25% duty");
+        Jerial.println("  pwm_set_frequency(1, 500)   - Change frequency to 500Hz");
+        Jerial.println("  pwm_set_duty_cycle(1, 0.75) - Change duty cycle to 75%");
+        Jerial.println("  pwm_stop(GPIO_1)            - Stop PWM on GPIO_1");
         
         changeTerminalColor(HELP_NOTE_COLOR, true);
         Jerial.println("\n PWM Frequency Ranges:");
@@ -1104,19 +1104,36 @@ Jerial.println(probe_art);
         Jerial.println("- Python command mode / show all nodes");
         
         changeTerminalColor(HELP_USAGE_COLOR, true);
-        Jerial.println("\n Hardware Control:");
+        Jerial.println("\n Hardware Control (no 'jumperless.' prefix needed):");
         changeTerminalColor(HELP_DESC_COLOR, true);
-        Jerial.println("  jumperless.connect(1, 5)    - Make connections");
-        Jerial.println("  jumperless.remove(1, 5)     - Remove connections");
-        Jerial.println("  jumperless.netlist()        - Show connections");
-        Jerial.println("  jumperless.clear_all()      - Clear all connections");
-        Jerial.println("  jumperless.set_gpio(2, 1)   - Digital output");
-        Jerial.println("  jumperless.get_adc(0)       - Read voltage");
-        Jerial.println("  jumperless.set_dac(0, 3.3)  - Set voltage");
-        Jerial.println("  jumperless.pwm(1, 1000, 0.5) - PWM output (1kHz, 50% duty)");
-        Jerial.println("  jumperless.run_app('i2c')   - Run built-in apps");
-        Jerial.println("  jumperless.pause_core2()    - Pause core2 processing");
-        Jerial.println("  jumperless.send_raw(data)   - Send raw data to core2");
+        Jerial.println("  connect(1, 5)              - Make connections");
+        Jerial.println("  disconnect(1, 5)           - Remove connections");
+        Jerial.println("  is_connected(1, 5)         - Check if connected");
+        Jerial.println("  nodes_clear()              - Clear all connections");
+        Jerial.println("  gpio_set(2, True)          - Digital output");
+        Jerial.println("  gpio_get(2)                - Read digital input");
+        Jerial.println("  adc_get(0)                 - Read voltage");
+        Jerial.println("  dac_set(0, 3.3)            - Set voltage");
+        Jerial.println("  pwm(1, 1000, 0.5)          - PWM output (1kHz, 50% duty)");
+        Jerial.println("  run_app('i2c')             - Run built-in apps");
+        
+        changeTerminalColor(HELP_USAGE_COLOR, true);
+        Jerial.println("\n Slot & Net Management:");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  nodes_save()               - Save connections to current slot");
+        Jerial.println("  nodes_save(3)              - Save to specific slot");
+        Jerial.println("  switch_slot(2)             - Switch to different slot");
+        Jerial.println("  nodes_discard()            - Discard unsaved changes");
+        Jerial.println("  nodes_has_changes()        - Check for unsaved changes");
+        
+        changeTerminalColor(HELP_USAGE_COLOR, true);
+        Jerial.println("\n Net Information API:");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  get_net_name(0)            - Get name of net 0");
+        Jerial.println("  set_net_name(0, 'VCC')     - Set custom net name");
+        Jerial.println("  set_net_color(0, 'red')    - Set net color by name");
+        Jerial.println("  get_net_info(0)            - Get full net info as dict");
+        Jerial.println("  get_num_nets()             - Get number of active nets");
         
         changeTerminalColor(HELP_NOTE_COLOR, true);
         Jerial.println("\n REPL Features:");
@@ -1197,7 +1214,7 @@ Jerial.println(probe_art);
         changeTerminalColor(HELP_COMMAND_COLOR, false);
         Jerial.print("  - Or run from Python: ");
         changeTerminalColor(HELP_DESC_COLOR, false);
-        Jerial.println("jumperless.run_app('appname')");
+        Jerial.println("run_app('appname')");
         
         changeTerminalColor(HELP_COMMAND_COLOR, true);
         Jerial.println("\n Available Apps:");
@@ -1378,15 +1395,25 @@ Jerial.println(probe_art);
         Jerial.println("\n Slot System:");
         changeTerminalColor(HELP_DESC_COLOR, true);
         Jerial.println("  - 8 slots by default (0-7)");
-        Jerial.println("  - Each slot saves connections");
-        Jerial.println("  - Custom colors saved per slot");
+        Jerial.println("  - Each slot saves connections and colors");
         Jerial.println("  - Switch projects instantly");
+        Jerial.println("  - Slot files stored in /slots/slot[0-7].yaml");
+        
+        changeTerminalColor(HELP_USAGE_COLOR, true);
+        Jerial.println("\n Python Slot Functions:");
+        changeTerminalColor(HELP_DESC_COLOR, true);
+        Jerial.println("  nodes_save()           - Save to current slot");
+        Jerial.println("  nodes_save(3)          - Save to slot 3");
+        Jerial.println("  switch_slot(2)         - Switch to slot 2");
+        Jerial.println("  nodes_discard()        - Discard unsaved changes");
+        Jerial.println("  nodes_has_changes()    - Check for unsaved changes");
+        Jerial.println("  CURRENT_SLOT           - Get current slot number");
         
         changeTerminalColor(HELP_NOTE_COLOR, true);
         Jerial.println("\n Pro Tips:");
         changeTerminalColor(HELP_DESC_COLOR, true);
         Jerial.println("  - Use different slots for different projects");
-        Jerial.println("  - Slot files are just text (copy/paste friendly)");
+        Jerial.println("  - Slot files are YAML (human-readable and editable)");
         Jerial.println("  - Colors and settings persist across reboots");
         
     } else if (strcmp(category, "debug") == 0) {
@@ -1513,9 +1540,12 @@ Jerial.println(probe_art);
         changeTerminalColor(HELP_USAGE_COLOR, true);
         Jerial.println("\n Advanced Python Functions:");
         changeTerminalColor(HELP_DESC_COLOR, true);
-        Jerial.println("  jumperless.pause_core2()    - Pause core2 processing");
-        Jerial.println("  jumperless.send_raw(data)   - Send raw data to core2");
-        Jerial.println("  jumperless.pwm(1, 0.001, 0.5) - Ultra-slow PWM (0.001Hz)");
+        Jerial.println("  pause_core2(True)           - Pause core2 processing");
+        Jerial.println("  pause_core2(False)          - Resume core2 processing");
+        Jerial.println("  send_raw('A', 1, 2, 1)      - Raw crossbar control (chip, x, y, set)");
+        Jerial.println("  pwm(1, 0.001, 0.5)          - Ultra-slow PWM (0.001Hz)");
+        Jerial.println("  context_toggle()            - Toggle global/python context");
+        Jerial.println("  context_get()               - Get current context name");
         
         changeTerminalColor(HELP_NOTE_COLOR, true);
         Jerial.println("\n Advanced Features:");

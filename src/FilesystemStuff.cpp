@@ -3252,9 +3252,11 @@ void safeFileClose(File& file, bool was_write_mode) {
     }
     
     if (was_write_mode) {
-        // Pause Core2 before flush (flash write operation)
+        // Pause Core2 before close (which internally syncs)
         bool was_paused = pauseCore2ForFlash(100);
-        file.flush();
+        // Skip explicit flush() - it does BOTH f_sync AND _fs->sync (full FS sync)
+        // FatFS f_close() internally calls f_sync() which is sufficient for file data
+        // The _fs->sync() in flush() syncs the entire filesystem which is overkill
         file.close();
         unpauseCore2ForFlash(was_paused);
     } else {

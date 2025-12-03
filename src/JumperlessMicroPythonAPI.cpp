@@ -470,6 +470,191 @@ void jl_gpio_set_pull(int pin, int pull) {
     }
 }
 
+} // temporarily close extern "C" for C++ declarations
+
+// Note: setCustomNetName() and hasCustomNetName() are declared in States.h with C++ linkage
+
+// Forward declarations for color parsing (C++ functions that return String)
+uint32_t parseColorValue(const String& colorStr, bool& success);
+String colorValueToName(uint32_t color);
+
+// Helper to get color name into a C buffer (wraps C++ function)
+static void getColorNameIntoBuffer(uint32_t color, char* buffer, size_t bufSize) {
+    String name = colorValueToName(color);
+    strncpy(buffer, name.c_str(), bufSize - 1);
+    buffer[bufSize - 1] = '\0';
+}
+
+extern "C" { // reopen extern "C"
+
+// ============================================================================
+// Net Information API
+// ============================================================================
+
+// Get the name of a specific net
+// Returns the net name string, or nullptr if net doesn't exist
+const char* jl_get_net_name(int netNum) {
+    if (netNum < 0 || netNum >= MAX_NETS) return nullptr;
+    
+    // Check DisplayState for custom name first
+    const char* customName = globalState.display.getNetName(netNum);
+    if (customName != nullptr) {
+        return customName;
+    }
+    
+    // Fall back to default name from net struct
+    return globalState.connections.nets[netNum].name;
+}
+
+// Set a custom name for a net
+// Pass empty string or nullptr to reset to default name
+void jl_set_net_name(int netNum, const char* name) {
+    if (netNum < 0 || netNum >= MAX_NETS) return;
+    
+    setCustomNetName(netNum, name);
+    globalState.markDirty();
+}
+
+// Get the color of a net as a 32-bit RGB value (0xRRGGBB)
+uint32_t jl_get_net_color(int netNum) {
+    if (netNum < 0 || netNum >= MAX_NETS) return 0;
+    
+    // Check for custom color first
+    rgbColor color;
+    uint32_t rawColor;
+    char colorName[32];
+    
+    if (globalState.display.getNetColor(netNum, color, rawColor, colorName)) {
+        return rawColor;
+    }
+    
+    // Return the computed color from the net struct
+    rgbColor netColor = globalState.connections.nets[netNum].color;
+    return (netColor.r << 16) | (netColor.g << 8) | netColor.b;
+}
+
+// Get the color name of a net (returns static buffer)
+const char* jl_get_net_color_name(int netNum) {
+    static char colorNameBuffer[32];
+    
+    if (netNum < 0 || netNum >= MAX_NETS) {
+        strcpy(colorNameBuffer, "unknown");
+        return colorNameBuffer;
+    }
+    
+    // Check for custom color first
+    rgbColor color;
+    uint32_t rawColor;
+    
+    if (globalState.display.getNetColor(netNum, color, rawColor, colorNameBuffer)) {
+        return colorNameBuffer;
+    }
+    
+    // Generate color name from computed color
+    rgbColor netColor = globalState.connections.nets[netNum].color;
+    uint32_t packed = (netColor.r << 16) | (netColor.g << 8) | netColor.b;
+    getColorNameIntoBuffer(packed, colorNameBuffer, sizeof(colorNameBuffer));
+    return colorNameBuffer;
+}
+
+// Set the color of a net by name (e.g., "red", "blue", "pink") or hex string (e.g., "#FF0000")
+int jl_set_net_color(int netNum, const char* colorStr) {
+    if (netNum < 0 || netNum >= MAX_NETS || !colorStr) return 0;
+    
+    String colorString(colorStr);
+    bool parseSuccess;
+    uint32_t rawColor = parseColorValue(colorString, parseSuccess);
+    
+    if (!parseSuccess) {
+        return 0;  // Invalid color
+    }
+    
+    rgbColor color;
+    color.r = (rawColor >> 16) & 0xFF;
+    color.g = (rawColor >> 8) & 0xFF;
+    color.b = rawColor & 0xFF;
+    
+    // Store as custom color
+    globalState.display.setNetColor(netNum, color, rawColor, colorStr);
+    globalState.markDirty();
+    
+    return 1;  // Success
+}
+
+// Set the color of a net by RGB values
+int jl_set_net_color_rgb(int netNum, int r, int g, int b) {
+    if (netNum < 0 || netNum >= MAX_NETS) return 0;
+    
+    rgbColor color;
+    color.r = r & 0xFF;
+    color.g = g & 0xFF;
+    color.b = b & 0xFF;
+    
+    uint32_t rawColor = (color.r << 16) | (color.g << 8) | color.b;
+    char colorNameBuf[32];
+    getColorNameIntoBuffer(rawColor, colorNameBuf, sizeof(colorNameBuf));
+    
+    globalState.display.setNetColor(netNum, color, rawColor, colorNameBuf);
+    globalState.markDirty();
+    
+    return 1;
+}
+
+// Get the number of active nets
+int jl_get_num_nets(void) {
+    return numberOfNets;
+}
+
+// Get the number of bridges
+int jl_get_num_bridges(void) {
+    return globalState.connections.numBridges;
+}
+
+// Get nodes in a net as a comma-separated string (returns static buffer)
+const char* jl_get_net_nodes(int netNum) {
+    static char nodesBuffer[256];
+    nodesBuffer[0] = '\0';
+    
+    if (netNum < 0 || netNum >= MAX_NETS) return nodesBuffer;
+    
+    int pos = 0;
+    bool first = true;
+    
+    for (int j = 0; j < MAX_NODES && globalState.connections.nets[netNum].nodes[j] != 0; j++) {
+        if (!first && pos < 250) {
+            nodesBuffer[pos++] = ',';
+        }
+        first = false;
+        
+        // Get short name for node
+        const char* nodeName = definesToChar(globalState.connections.nets[netNum].nodes[j], 0);
+        if (nodeName && strlen(nodeName) > 0 && pos < 250) {
+            int len = strlen(nodeName);
+            if (pos + len < 255) {
+                strcpy(&nodesBuffer[pos], nodeName);
+                pos += len;
+            }
+        }
+    }
+    nodesBuffer[pos] = '\0';
+    
+    return nodesBuffer;
+}
+
+// Get bridge info: node1, node2, duplicates for a specific bridge index
+int jl_get_bridge(int bridgeIdx, int* node1, int* node2, int* duplicates) {
+    if (bridgeIdx < 0 || bridgeIdx >= globalState.connections.numBridges) return 0;
+    
+    if (node1) *node1 = globalState.connections.bridges[bridgeIdx][0];
+    if (node2) *node2 = globalState.connections.bridges[bridgeIdx][1];
+    if (duplicates) *duplicates = globalState.connections.bridges[bridgeIdx][2];
+    
+    return 1;
+}
+
+
+
+
 // Node Functions
 int jl_nodes_connect(int node1, int node2, int save) {
     
@@ -486,6 +671,7 @@ int jl_nodes_connect(int node1, int node2, int save) {
 int jl_nodes_disconnect(int node1, int node2) {
     // Remove from RAM state
     removeBridgeFromState(node1, node2, true);
+
     
     // Update shown readings to detect current sense disconnections
     chooseShownReadings();

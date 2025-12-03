@@ -3699,7 +3699,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   logoLedAccess = true;
 
 // Build screen line by line - much simpler approach
-#define MAX_LINES 30
+#define MAX_LINES 50
 #define LINE_WIDTH 700 // Much wider to accommodate ANSI escape sequences
   static char screenLines[MAX_LINES][LINE_WIDTH];
   int currentLine = 0;

@@ -931,7 +931,7 @@ __attribute__((used)) void __wrap_tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor
     static bool first_inquiry = true;
     if (first_inquiry) {
         first_inquiry = false;
-        Serial.println("USB Mass Storage successfully enumerated by host!");
+        //Serial.println("USB Mass Storage successfully enumerated by host!");
     }
     
     // Provide device identification

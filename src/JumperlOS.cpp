@@ -11,6 +11,7 @@
 #include "USBfs.h"
 #include "AsyncPassthrough.h"
 #include "SingleCharCommands.h"
+#include "configManager.h"  // For ConfigSaveService
 
 #ifdef USE_TINYUSB
 #include "tusb.h"
@@ -37,6 +38,7 @@ AsyncPassthroughService& asyncPassthroughService = AsyncPassthroughService::getI
 TinyUSBService& tinyUSBService = TinyUSBService::getInstance();
 USBPeriodicService& usbPeriodicService = USBPeriodicService::getInstance();
 OLEDService& oledService = OLEDService::getInstance();
+ConfigSaveService& configSaveService = ConfigSaveService::getInstance();
 
 /**
  * @brief Construct a jOSmanager for a specific core
@@ -634,14 +636,19 @@ OLEDService& OLEDService::getInstance() {
  */
 ServiceStatus OLEDService::service() {
     lastStatus = ServiceStatus::IDLE;
-    
+
     if (oledDisplay != nullptr) {
-        //Serial.println("OLEDService::oledPeriodic");
         oledDisplay->oledPeriodic();
         lastStatus = ServiceStatus::BUSY;
-    } else {
-        //Serial.println("OLEDService::oledPeriodic oledDisplay is nullptr");
     }
+    
+    // if (oledDisplay != nullptr) {
+    //     //Serial.println("OLEDService::oledPeriodic");
+    //     oledDisplay->oledPeriodic();
+    //     lastStatus = ServiceStatus::BUSY;
+    // } else {
+    //     //Serial.println("OLEDService::oledPeriodic oledDisplay is nullptr");
+    // }
     
     return lastStatus;
 }

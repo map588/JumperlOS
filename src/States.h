@@ -123,15 +123,27 @@ struct PowerState {
  */
 struct DisplayState {
     // Net colors - only stored if manually changed from default
+    // Tracks firstNode so we can reconcile after net rebuilds
     struct NetColorEntry {
         int netNumber;
+        int firstNode;   // First node of net when color was set - for reconciliation
         rgbColor color;
         uint32_t rawColor;
         char colorName[32];
     };
     
+    // Custom net names - tracked with firstNode so names follow nets during rebuilds
+    struct NetNameEntry {
+        int netNumber;
+        int firstNode;   // First node of net when name was set - for reconciliation
+        char name[32];
+    };
+    
     NetColorEntry customColors[MAX_NETS];
     int numCustomColors;
+    
+    NetNameEntry customNames[MAX_NETS];
+    int numCustomNames;
     
     DisplayState();
     void clear();
@@ -139,6 +151,14 @@ struct DisplayState {
     void setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name);
     bool getNetColor(int netNum, rgbColor& color, uint32_t& raw, char* name) const;
     void removeNetColor(int netNum);
+    
+    // Custom net name functions
+    void setNetName(int netNum, const char* name);
+    const char* getNetName(int netNum) const;  // Returns nullptr if not set
+    void removeNetName(int netNum);
+    
+    // Reconcile entries after nets are rebuilt - uses firstNode to find correct net numbers
+    void reconcileAfterRebuild();
 };
 
 /**
@@ -418,6 +438,16 @@ namespace StateHelpers {
     inline bool saveSlot(int slot) { String err; return SlotManager::getInstance().saveSlot(slot, err); }
     inline bool loadSlot(int slot) { String err; return SlotManager::getInstance().loadSlot(slot, err); }
 }
+
+// ============================================================================
+// Custom Net Name Functions  
+// ============================================================================
+// Custom names are stored in DisplayState by NET NUMBER (not array index)
+// This means names persist correctly when nets are added/deleted/reordered
+
+void setCustomNetName(int netNum, const char* name);  // Set custom name (nullptr/empty to clear)
+bool hasCustomNetName(int netNum);                     // Check if net has custom name
+void clearAllCustomNetNames(void);                     // Reset all names to defaults
 
 // ============================================================================
 // Hardware Application Function

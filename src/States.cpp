@@ -61,6 +61,32 @@ String booleanToString(bool value);
 // Global singleton - THE single source of truth for all Jumperless state
 JumperlessState globalState;
 
+// Set custom net name - stored by NET NUMBER in DisplayState
+// Pass empty string or nullptr to clear
+// Tracking by net number means names follow nets when they shift!
+void setCustomNetName(int netNum, const char* name) {
+    if (netNum < 0 || netNum >= MAX_NETS) return;
+    
+    if (name == nullptr || name[0] == '\0') {
+        // Clear custom name
+        globalState.display.removeNetName(netNum);
+    } else {
+        // Store custom name (tracked by net number)
+        globalState.display.setNetName(netNum, name);
+    }
+}
+
+// Check if net has custom name
+bool hasCustomNetName(int netNum) {
+    if (netNum < 0 || netNum >= MAX_NETS) return false;
+    return (globalState.display.getNetName(netNum) != nullptr);
+}
+
+// Clear all custom net names
+void clearAllCustomNetNames() {
+    globalState.display.numCustomNames = 0;
+}
+
 // ============================================================================
 // ConnectionState Implementation
 // ============================================================================
@@ -204,14 +230,23 @@ DisplayState::DisplayState() {
 void DisplayState::clear() {
     memset(customColors, 0, sizeof(customColors));
     numCustomColors = 0;
+    memset(customNames, 0, sizeof(customNames));
+    numCustomNames = 0;
 }
 
 void DisplayState::setNetColor(int netNum, rgbColor color, uint32_t raw, const char* name) {
+    // Get the first node of this net for reconciliation after rebuilds
+    int firstNode = 0;
+    if (netNum >= 0 && netNum < MAX_NETS && globalState.connections.nets[netNum].nodes[0] != 0) {
+        firstNode = globalState.connections.nets[netNum].nodes[0];
+    }
+    
     // Check if already exists
     for (int i = 0; i < numCustomColors; i++) {
         if (customColors[i].netNumber == netNum) {
             customColors[i].color = color;
             customColors[i].rawColor = raw;
+            customColors[i].firstNode = firstNode;
             strncpy(customColors[i].colorName, name, 31);
             customColors[i].colorName[31] = '\0';
             return;
@@ -221,6 +256,7 @@ void DisplayState::setNetColor(int netNum, rgbColor color, uint32_t raw, const c
     // Add new if space available
     if (numCustomColors < MAX_NETS) {
         customColors[numCustomColors].netNumber = netNum;
+        customColors[numCustomColors].firstNode = firstNode;
         customColors[numCustomColors].color = color;
         customColors[numCustomColors].rawColor = raw;
         strncpy(customColors[numCustomColors].colorName, name, 31);
@@ -254,6 +290,177 @@ void DisplayState::removeNetColor(int netNum) {
             return;
         }
     }
+}
+
+void DisplayState::setNetName(int netNum, const char* name) {
+    // Get the first node of this net for reconciliation after rebuilds
+    int firstNode = 0;
+    if (netNum >= 0 && netNum < MAX_NETS && globalState.connections.nets[netNum].nodes[0] != 0) {
+        firstNode = globalState.connections.nets[netNum].nodes[0];
+    }
+    
+    // Check if already exists - update it
+    for (int i = 0; i < numCustomNames; i++) {
+        if (customNames[i].netNumber == netNum) {
+            strncpy(customNames[i].name, name, 31);
+            customNames[i].name[31] = '\0';
+            customNames[i].firstNode = firstNode;
+            return;
+        }
+    }
+    
+    // Add new entry if space available
+    if (numCustomNames < MAX_NETS) {
+        customNames[numCustomNames].netNumber = netNum;
+        customNames[numCustomNames].firstNode = firstNode;
+        strncpy(customNames[numCustomNames].name, name, 31);
+        customNames[numCustomNames].name[31] = '\0';
+        numCustomNames++;
+    }
+}
+
+const char* DisplayState::getNetName(int netNum) const {
+    for (int i = 0; i < numCustomNames; i++) {
+        if (customNames[i].netNumber == netNum) {
+            return customNames[i].name;
+        }
+    }
+    return nullptr;  // Not found
+}
+
+void DisplayState::removeNetName(int netNum) {
+    for (int i = 0; i < numCustomNames; i++) {
+        if (customNames[i].netNumber == netNum) {
+            // Shift remaining entries down
+            for (int j = i; j < numCustomNames - 1; j++) {
+                customNames[j] = customNames[j + 1];
+            }
+            numCustomNames--;
+            return;
+        }
+    }
+}
+
+// Debug flag for DisplayState reconciliation
+static bool debugReconcile = false;
+
+void DisplayState::reconcileAfterRebuild() {
+    // After nets are rebuilt from bridges, net numbers may have changed.
+    // Use firstNode to find where each custom entry's net ended up.
+    extern int findNodeInNet(int node);
+    
+    if (debugReconcile) Serial.printf("reconcileAfterRebuild: %d names, %d colors\n", numCustomNames, numCustomColors);
+    
+    // Reconcile custom names
+    for (int i = numCustomNames - 1; i >= 0; i--) {
+        if (debugReconcile) Serial.printf("  Name[%d]: net=%d, firstNode=%d, name=%s\n", 
+            i, customNames[i].netNumber, customNames[i].firstNode, customNames[i].name);
+        
+        if (customNames[i].firstNode <= 0) {
+            // Entry has no firstNode (loaded from YAML before nets were built)
+            // Check if the net still exists at this number - if so, fix the firstNode
+            int netNum = customNames[i].netNumber;
+            if (netNum >= 0 && netNum < MAX_NETS && 
+                globalState.connections.nets[netNum].number > 0 &&
+                globalState.connections.nets[netNum].nodes[0] != 0) {
+                // Net exists - fix the firstNode
+                customNames[i].firstNode = globalState.connections.nets[netNum].nodes[0];
+                if (debugReconcile) Serial.printf("    -> FIX firstNode to %d (net exists)\n", customNames[i].firstNode);
+            } else {
+                if (debugReconcile) Serial.println("    -> SKIP (no firstNode, net doesn't exist)");
+            }
+            continue;
+        }
+        
+        int newNetNum = findNodeInNet(customNames[i].firstNode);
+        if (debugReconcile) Serial.printf("    -> findNodeInNet(%d) = %d\n", customNames[i].firstNode, newNetNum);
+        
+        if (newNetNum <= 0) {
+            if (debugReconcile) Serial.println("    -> REMOVE (node not in any net)");
+            for (int j = i; j < numCustomNames - 1; j++) {
+                customNames[j] = customNames[j + 1];
+            }
+            numCustomNames--;
+        } else if (newNetNum != customNames[i].netNumber) {
+            if (debugReconcile) Serial.printf("    -> UPDATE netNumber %d -> %d\n", customNames[i].netNumber, newNetNum);
+            customNames[i].netNumber = newNetNum;
+        } else {
+            if (debugReconcile) Serial.println("    -> KEEP (unchanged)");
+        }
+    }
+    
+    // Reconcile custom colors
+    for (int i = numCustomColors - 1; i >= 0; i--) {
+        if (debugReconcile) Serial.printf("  Color[%d]: net=%d, firstNode=%d, color=%s\n", 
+            i, customColors[i].netNumber, customColors[i].firstNode, customColors[i].colorName);
+        
+        if (customColors[i].firstNode <= 0) {
+            // Entry has no firstNode (loaded from YAML before nets were built)
+            // Check if the net still exists at this number - if so, fix the firstNode
+            int netNum = customColors[i].netNumber;
+            if (netNum >= 0 && netNum < MAX_NETS && 
+                globalState.connections.nets[netNum].number > 0 &&
+                globalState.connections.nets[netNum].nodes[0] != 0) {
+                // Net exists - fix the firstNode
+                customColors[i].firstNode = globalState.connections.nets[netNum].nodes[0];
+                if (debugReconcile) Serial.printf("    -> FIX firstNode to %d (net exists)\n", customColors[i].firstNode);
+            } else {
+                if (debugReconcile) Serial.println("    -> SKIP (no firstNode, net doesn't exist)");
+            }
+            continue;
+        }
+        
+        int newNetNum = findNodeInNet(customColors[i].firstNode);
+        if (debugReconcile) Serial.printf("    -> findNodeInNet(%d) = %d\n", customColors[i].firstNode, newNetNum);
+        
+        if (newNetNum <= 0) {
+            if (debugReconcile) Serial.println("    -> REMOVE (node not in any net)");
+            for (int j = i; j < numCustomColors - 1; j++) {
+                customColors[j] = customColors[j + 1];
+            }
+            numCustomColors--;
+        } else if (newNetNum != customColors[i].netNumber) {
+            if (debugReconcile) Serial.printf("    -> UPDATE netNumber %d -> %d\n", customColors[i].netNumber, newNetNum);
+            customColors[i].netNumber = newNetNum;
+        } else {
+            if (debugReconcile) Serial.println("    -> KEEP (unchanged)");
+        }
+    }
+    
+    // Clean up stale entries: remove entries with firstNode=0 if a proper entry exists for same net
+    for (int i = numCustomNames - 1; i >= 0; i--) {
+        if (customNames[i].firstNode != 0) continue;  // Skip proper entries
+        // Check if there's a better entry for this netNumber
+        for (int j = 0; j < numCustomNames; j++) {
+            if (j != i && customNames[j].netNumber == customNames[i].netNumber && customNames[j].firstNode > 0) {
+                // Remove the stale entry
+                if (debugReconcile) Serial.printf("  Removing stale name entry for net %d (has no firstNode)\n", customNames[i].netNumber);
+                for (int k = i; k < numCustomNames - 1; k++) {
+                    customNames[k] = customNames[k + 1];
+                }
+                numCustomNames--;
+                break;
+            }
+        }
+    }
+    
+    for (int i = numCustomColors - 1; i >= 0; i--) {
+        if (customColors[i].firstNode != 0) continue;  // Skip proper entries
+        // Check if there's a better entry for this netNumber
+        for (int j = 0; j < numCustomColors; j++) {
+            if (j != i && customColors[j].netNumber == customColors[i].netNumber && customColors[j].firstNode > 0) {
+                // Remove the stale entry
+                if (debugReconcile) Serial.printf("  Removing stale color entry for net %d (has no firstNode)\n", customColors[i].netNumber);
+                for (int k = i; k < numCustomColors - 1; k++) {
+                    customColors[k] = customColors[k + 1];
+                }
+                numCustomColors--;
+                break;
+            }
+        }
+    }
+    
+    if (debugReconcile) Serial.printf("reconcileAfterRebuild DONE: %d names, %d colors\n", numCustomNames, numCustomColors);
 }
 
 // ============================================================================
@@ -311,6 +518,7 @@ void JumperlessState::clear() {
     power.setDefaults();
     display.clear();
     config.setDefaults();
+    clearAllCustomNetNames();  // Reset all custom net names to defaults
     dirty = false;
     lastModifiedTime = 0;
 }
@@ -1111,17 +1319,19 @@ void JumperlessState::serializeNets(String& output) const {
         
         // Optional fields at the end (only if not default)
         
-        // Check if name is auto-generated "Net X" format
-        String netName = String(state.connections.nets[i].name);
-        netName.trim();
-        bool isAutoGeneratedName = false;
-        if (netName.startsWith("Net ") && netName.length() < 10) {
-            // Likely auto-generated like "Net 6", "Net 12", etc.
-            isAutoGeneratedName = true;
+        // Check DisplayState for custom name first
+        String netName = "";
+        bool hasCustomName = false;
+        for (int j = 0; j < display.numCustomNames; j++) {
+            if (display.customNames[j].netNumber == state.connections.nets[i].number) {
+                netName = String(display.customNames[j].name);
+                hasCustomName = true;
+                break;
+            }
         }
         
-        // Only print name if it's not auto-generated
-        if (!isAutoGeneratedName && netName.length() > 0 && state.connections.nets[i].name[0] != '\0') {
+        // Only print name if it's a custom name from DisplayState
+        if (hasCustomName && netName.length() > 0) {
             output += ", name: \"" + netName + "\"";
         }
         
@@ -1205,6 +1415,12 @@ bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg)
         }
     }
     
+    // Store the custom net name if provided
+    // This allows user-defined names like "Power", "Signal", etc.
+    if (netNum >= 0 && netName.length() > 0) {
+        setCustomNetName(netNum, netName.c_str());
+    }
+    
     // Only store color if it was user-assigned
     // Auto-generated colors will be recomputed
     if (netNum >= 0 && userAssigned && colorStr.length() > 0) {
@@ -1217,12 +1433,8 @@ bool JumperlessState::deserializeNets(const char* yamlContent, String& errorMsg)
             color.g = (rawColor >> 8) & 0xFF;
             color.b = rawColor & 0xFF;
             
-            // Use color name if available, otherwise use parsed name
+            // Use color name for the display system
             String colorName = colorValueToName(rawColor);
-            if (netName.length() > 0) {
-                colorName = netName;
-            }
-            
             display.setNetColor(netNum, color, rawColor, colorName.c_str());
         }
     }

@@ -2183,7 +2183,19 @@ void assignNetColors(int preview) {
         continue;
       }
 
-      // THIRD: User-defined colors
+      // THIRD: Check DisplayState for user-set custom colors (from Python API / YAML)
+      {
+        rgbColor customColor;
+        uint32_t customRaw;
+        char customName[32];
+        if (globalState.display.getNetColor(i, customColor, customRaw, customName)) {
+          globalState.connections.nets[i].color = customColor;
+          netColors[i] = customColor;
+          continue;
+        }
+      }
+
+      // FOURTH: Legacy changedNetColors array (older system)
       if (changedNetColors[i].net == i) {
         globalState.connections.nets[i].color = unpackRgb(changedNetColors[i].color);
         netColors[i] = globalState.connections.nets[i].color;

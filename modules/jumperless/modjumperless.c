@@ -85,7 +85,17 @@ int jl_switch_slot(int slot);
 void jl_restore_micropython_entry_state(void);
 int jl_has_unsaved_changes(void);
 
-
+// Net Information API Functions
+const char* jl_get_net_name(int netNum);
+void jl_set_net_name(int netNum, const char* name);
+uint32_t jl_get_net_color(int netNum);
+const char* jl_get_net_color_name(int netNum);
+int jl_set_net_color(int netNum, const char* colorStr);
+int jl_set_net_color_rgb(int netNum, int r, int g, int b);
+int jl_get_num_nets(void);
+int jl_get_num_bridges(void);
+const char* jl_get_net_nodes(int netNum);
+int jl_get_bridge(int bridgeIdx, int* node1, int* node2, int* duplicates);
 
 // Logic Analyzer Functions
 void jl_logic_analyzer_set_analog(int channel, float value);
@@ -1645,6 +1655,175 @@ static mp_obj_t jl_nodes_has_changes_func(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(jl_nodes_has_changes_obj, jl_nodes_has_changes_func);
 
+// =============================================================================
+// Net Information API - Get/Set net names, colors, and info
+// =============================================================================
+
+// get_net_name(net_num) - Returns the name of a net
+static mp_obj_t jl_get_net_name_func(mp_obj_t net_num_obj) {
+    int net_num = mp_obj_get_int(net_num_obj);
+    const char* name = jl_get_net_name(net_num);
+    
+    if (name == NULL) {
+        return mp_const_none;
+    }
+    return mp_obj_new_str(name, strlen(name));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_get_net_name_obj, jl_get_net_name_func);
+
+// set_net_name(net_num, name) - Sets a custom name for a net
+static mp_obj_t jl_set_net_name_func(mp_obj_t net_num_obj, mp_obj_t name_obj) {
+    int net_num = mp_obj_get_int(net_num_obj);
+    
+    if (name_obj == mp_const_none) {
+        jl_set_net_name(net_num, NULL);  // Clear custom name
+    } else {
+        const char* name = mp_obj_str_get_str(name_obj);
+        jl_set_net_name(net_num, name);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(jl_set_net_name_obj, jl_set_net_name_func);
+
+// get_net_color(net_num) - Returns the color as hex integer (0xRRGGBB)
+static mp_obj_t jl_get_net_color_func(mp_obj_t net_num_obj) {
+    int net_num = mp_obj_get_int(net_num_obj);
+    uint32_t color = jl_get_net_color(net_num);
+    return mp_obj_new_int(color);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_get_net_color_obj, jl_get_net_color_func);
+
+// get_net_color_name(net_num) - Returns the color name as a string
+static mp_obj_t jl_get_net_color_name_func(mp_obj_t net_num_obj) {
+    int net_num = mp_obj_get_int(net_num_obj);
+    const char* name = jl_get_net_color_name(net_num);
+    return mp_obj_new_str(name, strlen(name));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_get_net_color_name_obj, jl_get_net_color_name_func);
+
+// set_net_color(net_num, color) - Sets color by name ("red") or hex string ("#FF0000")
+// Can also accept RGB tuple or integer
+static mp_obj_t jl_set_net_color_func(size_t n_args, const mp_obj_t *args) {
+    int net_num = mp_obj_get_int(args[0]);
+    
+    if (n_args == 2) {
+        // Single argument: string color name or hex, or integer
+        if (mp_obj_is_str(args[1])) {
+            const char* color_str = mp_obj_str_get_str(args[1]);
+            int result = jl_set_net_color(net_num, color_str);
+            return mp_obj_new_bool(result);
+        } else if (mp_obj_is_int(args[1])) {
+            // Integer RGB value
+            uint32_t color = mp_obj_get_int(args[1]);
+            int r = (color >> 16) & 0xFF;
+            int g = (color >> 8) & 0xFF;
+            int b = color & 0xFF;
+            int result = jl_set_net_color_rgb(net_num, r, g, b);
+            return mp_obj_new_bool(result);
+        } else if (mp_obj_is_type(args[1], &mp_type_tuple) || mp_obj_is_type(args[1], &mp_type_list)) {
+            // RGB tuple/list
+            mp_obj_t *items;
+            size_t len;
+            mp_obj_get_array(args[1], &len, &items);
+            if (len >= 3) {
+                int r = mp_obj_get_int(items[0]);
+                int g = mp_obj_get_int(items[1]);
+                int b = mp_obj_get_int(items[2]);
+                int result = jl_set_net_color_rgb(net_num, r, g, b);
+                return mp_obj_new_bool(result);
+            }
+        }
+        mp_raise_ValueError(MP_ERROR_TEXT("Color must be string name, hex integer, or (r,g,b) tuple"));
+    } else if (n_args == 4) {
+        // Three RGB arguments: set_net_color(net, r, g, b)
+        int r = mp_obj_get_int(args[1]);
+        int g = mp_obj_get_int(args[2]);
+        int b = mp_obj_get_int(args[3]);
+        int result = jl_set_net_color_rgb(net_num, r, g, b);
+        return mp_obj_new_bool(result);
+    }
+    
+    mp_raise_ValueError(MP_ERROR_TEXT("Invalid arguments for set_net_color"));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(jl_set_net_color_obj, 2, 4, jl_set_net_color_func);
+
+// get_num_nets() - Returns the number of active nets
+static mp_obj_t jl_get_num_nets_func(void) {
+    return mp_obj_new_int(jl_get_num_nets());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_get_num_nets_obj, jl_get_num_nets_func);
+
+// get_num_bridges() - Returns the number of bridges
+static mp_obj_t jl_get_num_bridges_func(void) {
+    return mp_obj_new_int(jl_get_num_bridges());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_get_num_bridges_obj, jl_get_num_bridges_func);
+
+// get_net_nodes(net_num) - Returns nodes in a net as a comma-separated string
+static mp_obj_t jl_get_net_nodes_func(mp_obj_t net_num_obj) {
+    int net_num = mp_obj_get_int(net_num_obj);
+    const char* nodes = jl_get_net_nodes(net_num);
+    return mp_obj_new_str(nodes, strlen(nodes));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_get_net_nodes_obj, jl_get_net_nodes_func);
+
+// get_bridge(index) - Returns bridge info as tuple (node1, node2, duplicates)
+static mp_obj_t jl_get_bridge_func(mp_obj_t idx_obj) {
+    int idx = mp_obj_get_int(idx_obj);
+    int node1, node2, duplicates;
+    
+    if (!jl_get_bridge(idx, &node1, &node2, &duplicates)) {
+        return mp_const_none;
+    }
+    
+    mp_obj_t items[3] = {
+        mp_obj_new_int(node1),
+        mp_obj_new_int(node2),
+        mp_obj_new_int(duplicates)
+    };
+    return mp_obj_new_tuple(3, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_get_bridge_obj, jl_get_bridge_func);
+
+// get_net_info(net_num) - Returns dict with all net info
+static mp_obj_t jl_get_net_info_func(mp_obj_t net_num_obj) {
+    int net_num = mp_obj_get_int(net_num_obj);
+    
+    const char* name = jl_get_net_name(net_num);
+    if (name == NULL) {
+        return mp_const_none;
+    }
+    
+    mp_obj_t dict = mp_obj_new_dict(5);
+    
+    // Add name
+    mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_name), 
+                      mp_obj_new_str(name, strlen(name)));
+    
+    // Add number
+    mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_number), 
+                      mp_obj_new_int(net_num));
+    
+    // Add color (hex)
+    uint32_t color = jl_get_net_color(net_num);
+    mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_color), 
+                      mp_obj_new_int(color));
+    
+    // Add color_name
+    const char* color_name = jl_get_net_color_name(net_num);
+    mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_color_name), 
+                      mp_obj_new_str(color_name, strlen(color_name)));
+    
+    // Add nodes
+    const char* nodes = jl_get_net_nodes(net_num);
+    mp_obj_dict_store(dict, MP_OBJ_NEW_QSTR(MP_QSTR_nodes), 
+                      mp_obj_new_str(nodes, strlen(nodes)));
+    
+    return dict;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_get_net_info_obj, jl_get_net_info_func);
+
 // OLED Functions
 static mp_obj_t jl_oled_print_func(size_t n_args, const mp_obj_t *args) {
     const char* text;
@@ -2395,21 +2574,24 @@ static mp_obj_t jl_help_func(size_t n_args, const mp_obj_t *args) {
         jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"PWM\")              - PWM functions\n");
         jl_cycle_term_color(false, 100.0, 1); 
+        mp_printf(&mp_plat_print, "  help(\"WAVEGEN\")          - Waveform generator\n");
+        jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"INA\")              - INA current/power monitor\n");
         jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"NODES\")            - Node connections\n");
         jl_cycle_term_color(false, 100.0, 1); 
+        mp_printf(&mp_plat_print, "  help(\"NETS\")             - Net info (names, colors)\n");
+        jl_cycle_term_color(false, 100.0, 1); 
+        mp_printf(&mp_plat_print, "  help(\"SLOTS\")            - Slot management\n");
+        jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"OLED\")             - OLED display\n");
         jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"PROBE\")            - Probe and button functions\n");
-        // jl_cycle_term_color(false, 100.0, 1); 
-        // mp_printf(&mp_plat_print, "  help(\"CLICKWHEEL\")       - Clickwheel functions\n");
         jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"STATUS\")           - Status and debug functions\n");
         jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"FILESYSTEM\")       - Filesystem functions\n");
         jl_cycle_term_color(false, 100.0, 1); 
-        // mp_printf(&mp_plat_print, "  help(\"CORE2\")            - Core2 control functions\n");
         mp_printf(&mp_plat_print, "  help(\"MISC\")             - Miscellaneous functions\n");
         jl_cycle_term_color(false, 100.0, 1); 
         mp_printf(&mp_plat_print, "  help(\"EXAMPLES\")         - Usage examples\n\n");
@@ -2419,11 +2601,13 @@ static mp_obj_t jl_help_func(size_t n_args, const mp_obj_t *args) {
         jl_help_section("ADC");
         jl_help_section("GPIO");
         jl_help_section("PWM");
+        jl_help_section("WAVEGEN");
         jl_help_section("INA");
         jl_help_section("NODES");
+        jl_help_section("NETS");
+        jl_help_section("SLOTS");
         jl_help_section("OLED");
         jl_help_section("PROBE");
-        // jl_help_section("CLICKWHEEL");
         jl_help_section("STATUS");
         jl_help_section("FILESYSTEM");
         jl_help_section("MISC");
@@ -2499,12 +2683,24 @@ void jl_help_section(const char* section) {
         mp_printf(&mp_plat_print, "   pwm_set_duty_cycle(pin, duty)    - Set PWM duty cycle\n");
         mp_printf(&mp_plat_print, "   pwm_set_frequency(pin, freq)     - Set PWM frequency\n");
         mp_printf(&mp_plat_print, "   pwm_stop(pin)                    - Stop PWM on pin\n\n");
-        // mp_printf(&mp_plat_print, "  Pin: 1-8 (numeric) or GPIO_1-GPIO_8 (constants)\n");
-        // mp_printf(&mp_plat_print, "  Frequency: 10Hz to 62.5MHz, Duty: 0.0 to 1.0\n");
         mp_printf(&mp_plat_print, "  Aliases: set_pwm, set_pwm_duty_cycle, set_pwm_frequency, stop_pwm\n\n");
         mp_printf(&mp_plat_print, "             pin: 1-8       GPIO pins only\n");
         mp_printf(&mp_plat_print, "       frequency: 0.001Hz-62.5MHz default 1000Hz\n");
         mp_printf(&mp_plat_print, "      duty_cycle: 0.0-1.0   default 0.5 (50%%)\n\n");
+    }
+    jl_cycle_term_color(false, 100.0, 1);
+    if (strcmp(section_upper, "WAVEGEN") == 0 || strcmp(section_upper, "ALL") == 0) {
+        mp_printf(&mp_plat_print, "WaveGen (Waveform Generator):\n\n");
+        mp_printf(&mp_plat_print, "   wavegen_set_output(channel)      - Set output: DAC0, DAC1, TOP_RAIL, BOTTOM_RAIL\n");
+        mp_printf(&mp_plat_print, "   wavegen_set_freq(hz)             - Set frequency (0.0001-10000 Hz)\n");
+        mp_printf(&mp_plat_print, "   wavegen_set_wave(shape)          - Set waveform shape\n");
+        mp_printf(&mp_plat_print, "   wavegen_set_amplitude(vpp)       - Set amplitude (0-16 Vpp)\n");
+        mp_printf(&mp_plat_print, "   wavegen_set_offset(v)            - Set DC offset (-8 to +8 V)\n");
+        mp_printf(&mp_plat_print, "   wavegen_start()                  - Start waveform generation\n");
+        mp_printf(&mp_plat_print, "   wavegen_stop()                   - Stop waveform generation\n\n");
+        mp_printf(&mp_plat_print, "  Getters: wavegen_get_output(), wavegen_get_freq(), wavegen_get_wave(),\n");
+        mp_printf(&mp_plat_print, "           wavegen_get_amplitude(), wavegen_get_offset(), wavegen_is_running()\n\n");
+        mp_printf(&mp_plat_print, "  Waveform constants: SINE, TRIANGLE, SAWTOOTH (RAMP), SQUARE\n\n");
     }
     jl_cycle_term_color(false, 100.0, 1);
     if (strcmp(section_upper, "INA") == 0 || strcmp(section_upper, "ALL") == 0) {
@@ -2525,7 +2721,33 @@ void jl_help_section(const char* section) {
         mp_printf(&mp_plat_print, "   nodes_clear()                    - Clear all connections\n\n");
         mp_printf(&mp_plat_print, "         set node2 to -1 to disconnect everything connected to node1\n\n");
     }
-    // cycleTermColor(false, 100.0, 1);
+    jl_cycle_term_color(false, 100.0, 1);
+    if (strcmp(section_upper, "NETS") == 0 || strcmp(section_upper, "ALL") == 0) {
+        mp_printf(&mp_plat_print, "Net Information:\n\n");
+        mp_printf(&mp_plat_print, "   get_net_name(netNum)             - Get net name\n");
+        mp_printf(&mp_plat_print, "   set_net_name(netNum, name)       - Set custom net name\n");
+        mp_printf(&mp_plat_print, "   get_net_color(netNum)            - Get net color as 0xRRGGBB\n");
+        mp_printf(&mp_plat_print, "   get_net_color_name(netNum)       - Get net color name\n");
+        mp_printf(&mp_plat_print, "   set_net_color(netNum, color)     - Set net color by name or hex\n");
+        mp_printf(&mp_plat_print, "   get_num_nets()                   - Get number of active nets\n");
+        mp_printf(&mp_plat_print, "   get_num_bridges()                - Get number of bridges\n");
+        mp_printf(&mp_plat_print, "   get_net_nodes(netNum)            - Get comma-separated node list\n");
+        mp_printf(&mp_plat_print, "   get_bridge(bridgeIdx)            - Get bridge info tuple\n");
+        mp_printf(&mp_plat_print, "   get_net_info(netNum)             - Get full net info as dict\n\n");
+        mp_printf(&mp_plat_print, "  Colors: red, orange, yellow, green, cyan, blue, purple, pink, etc.\n\n");
+    }
+    jl_cycle_term_color(false, 100.0, 1);
+    if (strcmp(section_upper, "SLOTS") == 0 || strcmp(section_upper, "ALL") == 0) {
+        mp_printf(&mp_plat_print, "Slot Management:\n\n");
+        mp_printf(&mp_plat_print, "   nodes_save([slot])               - Save connections to slot\n");
+        mp_printf(&mp_plat_print, "   nodes_discard()                  - Discard unsaved changes\n");
+        mp_printf(&mp_plat_print, "   nodes_has_changes()              - Check for unsaved changes\n");
+        mp_printf(&mp_plat_print, "   switch_slot(slot)                - Switch to different slot (0-7)\n");
+        mp_printf(&mp_plat_print, "   CURRENT_SLOT                     - Get current slot number\n\n");
+        mp_printf(&mp_plat_print, "  Context (controls persistence):\n");
+        mp_printf(&mp_plat_print, "   context_toggle()                 - Toggle global/python mode\n");
+        mp_printf(&mp_plat_print, "   context_get()                    - Get current mode name\n\n");
+    }
     jl_cycle_term_color(false, 100.0, 1);
     if (strcmp(section_upper, "OLED") == 0 || strcmp(section_upper, "ALL") == 0) {
         mp_printf(&mp_plat_print, "OLED Display:\n\n");
@@ -2587,56 +2809,38 @@ void jl_help_section(const char* section) {
     if (strcmp(section_upper, "MISC") == 0 || strcmp(section_upper, "ALL") == 0) {
         mp_printf(&mp_plat_print, "Misc:\n\n");
         mp_printf(&mp_plat_print, "   arduino_reset()                  - Reset Arduino\n");
-        mp_printf(&mp_plat_print, "   pause_core2(bool/int/str)        - Pause/unpause Core2\n");
-        mp_printf(&mp_plat_print, "   probe_tap(node)                  - Tap probe on node (unimplemented)\n");
-        mp_printf(&mp_plat_print, "   run_app(appName)                 - Run app\n");
-        mp_printf(&mp_plat_print, "   format_output(True/False)        - Enable/disable formatted output\n\n");
+        mp_printf(&mp_plat_print, "   run_app(appName)                 - Run built-in app\n");
+        mp_printf(&mp_plat_print, "   pause_core2(pause)               - Pause/unpause Core2 (True/False)\n");
+        mp_printf(&mp_plat_print, "   send_raw(chip, x, y, set)        - Send raw data to crossbar chip\n\n");
     }
     jl_cycle_term_color(false, 100.0, 1);
     if (strcmp(section_upper, "EXAMPLES") == 0 || strcmp(section_upper, "ALL") == 0) {
          mp_printf(&mp_plat_print, "Examples (all functions available globally):\n\n");
-        // mp_printf(&mp_plat_print, "  dac_set(TOP_RAIL, 3.3)                     # Set Top Rail to 3.3V using node\n");
-        // mp_printf(&mp_plat_print, "  set_dac(3, 3.3)                            # Same as above using alias\n");
         mp_printf(&mp_plat_print, "  dac_set(DAC0, 5.0)                         # Set DAC0 using node constant\n");
         mp_printf(&mp_plat_print, "  voltage = get_adc(1)                       # Read ADC1 using alias\n");
         mp_printf(&mp_plat_print, "  connect(TOP_RAIL, D13)                     # Connect using constants\n");
-        // mp_printf(&mp_plat_print, "  connect(\"TOP_RAIL\", 5)                      # Connect using strings\n");
         mp_printf(&mp_plat_print, "  connect(4, 20)                             # Connect using numbers\n");
         mp_printf(&mp_plat_print, "  top_rail = node(\"TOP_RAIL\")                # Create node object\n");
-        mp_printf(&mp_plat_print, "  connect(top_rail, D13)                     # Mix objects and constants\n");
-        mp_printf(&mp_plat_print, "  oled_print(\"Fuck you!\")                    # Display text\n");
+        mp_printf(&mp_plat_print, "  oled_print(\"Hello!\")                       # Display text on OLED\n");
         mp_printf(&mp_plat_print, "  current = get_current(0)                   # Read current using alias\n");
-        mp_printf(&mp_plat_print, "  set_gpio(1, True)                          # Set GPIO pin high using alias\n");
-        mp_printf(&mp_plat_print, "  pwm(1, 1000, 0.5)                          # 1kHz PWM, 50%% duty cycle on pin 1\n");
-        mp_printf(&mp_plat_print, "  pwm(GPIO_2, 0.5, 0.25)                     # 0.5Hz PWM, 25%% duty (LED blink)\n");
-        mp_printf(&mp_plat_print, "  pwm_set_duty_cycle(GPIO_1, 0.75)           # Change to 75%% duty cycle\n");
-        // mp_printf(&mp_plat_print, "  pwm_set_frequency(2, 0.1)                 # Very slow 0.1Hz frequency\n");
-        mp_printf(&mp_plat_print, "  pwm_stop(GPIO_1)                           # Stop PWM on GPIO_1\n");
+        mp_printf(&mp_plat_print, "  set_gpio(1, True)                          # Set GPIO pin high\n");
+        mp_printf(&mp_plat_print, "  pwm(1, 1000, 0.5)                          # 1kHz PWM, 50%% duty\n");
+        mp_printf(&mp_plat_print, "  wavegen_set_wave(SINE); wavegen_start()    # Start sine wave\n");
+        mp_printf(&mp_plat_print, "  set_net_color(0, \"red\")                    # Color net 0 red\n");
+        mp_printf(&mp_plat_print, "  nodes_save()                               # Save current connections\n");
         mp_printf(&mp_plat_print, "  pad = probe_read()                         # Wait for probe touch\n");
-        mp_printf(&mp_plat_print, "  if pad == 25: print('Touched pad 25!')     # Check specific pad\n");
-        // mp_printf(&mp_plat_print, "  if pad == D13_PAD: connect(D13, TOP_RAIL)  # Auto-connect Arduino pin\n");
-        // mp_printf(&mp_plat_print, "  if pad == TOP_RAIL_PAD: show_voltage()     # Show rail voltage\n");
-        mp_printf(&mp_plat_print, "  if pad == LOGO_PAD_TOP: print('Logo!')     # Check logo pad\n");
-        mp_printf(&mp_plat_print, "  button = get_button()                      # Wait for button press (blocking)\n");
-        mp_printf(&mp_plat_print, "  if button == CONNECT_BUTTON: ...           # Front button pressed\n");
-        mp_printf(&mp_plat_print, "  if button == REMOVE_BUTTON: ...            # Rear button pressed\n");
-        mp_printf(&mp_plat_print, "  button = check_button()                    # Check buttons immediately\n");
-        mp_printf(&mp_plat_print, "  if button == BUTTON_NONE: print('None')    # No button pressed\n");
-        // mp_printf(&mp_plat_print, "  pad = wait_touch()                        # Wait for touch\n");
-        // mp_printf(&mp_plat_print, "  btn = check_button()                      # Check button immediately\n");
-        // mp_printf(&mp_plat_print, "  if pad == D13_PAD and btn == CONNECT_BUTTON: connect(D13, TOP_RAIL)\n\n");
-        // mp_printf(&mp_plat_print, "Note: All functions and constants are available globally!\n");
-        // mp_printf(&mp_plat_print, "No need for ' ' prefix in REPL or single commands.\n\n");
+        mp_printf(&mp_plat_print, "  button = get_button()                      # Wait for button press\n\n");
     }
     jl_cycle_term_color(false, 100.0, 1);
     if (strcmp(section_upper, "ALL") != 0 && 
         strcmp(section_upper, "DAC") != 0 && strcmp(section_upper, "ADC") != 0 && 
         strcmp(section_upper, "GPIO") != 0 && strcmp(section_upper, "PWM") != 0 && 
-        strcmp(section_upper, "INA") != 0 && strcmp(section_upper, "NODES") != 0 && 
-        strcmp(section_upper, "OLED") != 0 && strcmp(section_upper, "PROBE") != 0 && 
-        strcmp(section_upper, "CLICKWHEEL") != 0 && strcmp(section_upper, "STATUS") != 0 && 
-        strcmp(section_upper, "FILESYSTEM") != 0 && strcmp(section_upper, "CORE2") != 0 && 
-        strcmp(section_upper, "MISC") != 0 && strcmp(section_upper, "EXAMPLES") != 0) {
+        strcmp(section_upper, "WAVEGEN") != 0 && strcmp(section_upper, "INA") != 0 && 
+        strcmp(section_upper, "NODES") != 0 && strcmp(section_upper, "NETS") != 0 && 
+        strcmp(section_upper, "SLOTS") != 0 && strcmp(section_upper, "OLED") != 0 && 
+        strcmp(section_upper, "PROBE") != 0 && strcmp(section_upper, "STATUS") != 0 && 
+        strcmp(section_upper, "FILESYSTEM") != 0 && strcmp(section_upper, "MISC") != 0 && 
+        strcmp(section_upper, "EXAMPLES") != 0) {
         mp_printf(&mp_plat_print, "Unknown help section: %s\n", section);
         mp_printf(&mp_plat_print, "Use help() to see available sections.\n\n");
     }
@@ -3794,6 +3998,22 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_nodes_clear), MP_ROM_PTR(&jl_nodes_clear_obj) },
     { MP_ROM_QSTR(MP_QSTR_is_connected), MP_ROM_PTR(&jl_nodes_is_connected_obj) },
     { MP_ROM_QSTR(MP_QSTR_nodes_save), MP_ROM_PTR(&jl_nodes_save_obj) },
+    
+    // Net Information API - Get/set net names, colors, and info
+    { MP_ROM_QSTR(MP_QSTR_get_net_name), MP_ROM_PTR(&jl_get_net_name_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_net_name), MP_ROM_PTR(&jl_set_net_name_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_net_color), MP_ROM_PTR(&jl_get_net_color_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_net_color_name), MP_ROM_PTR(&jl_get_net_color_name_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_net_color), MP_ROM_PTR(&jl_set_net_color_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_num_nets), MP_ROM_PTR(&jl_get_num_nets_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_num_bridges), MP_ROM_PTR(&jl_get_num_bridges_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_net_nodes), MP_ROM_PTR(&jl_get_net_nodes_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_bridge), MP_ROM_PTR(&jl_get_bridge_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_net_info), MP_ROM_PTR(&jl_get_net_info_obj) },
+    // Aliases for net API
+    { MP_ROM_QSTR(MP_QSTR_net_name), MP_ROM_PTR(&jl_get_net_name_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_color), MP_ROM_PTR(&jl_get_net_color_obj) },
+    { MP_ROM_QSTR(MP_QSTR_net_info), MP_ROM_PTR(&jl_get_net_info_obj) },
     
     // Raw hardware functions
     { MP_ROM_QSTR(MP_QSTR_send_raw), MP_ROM_PTR(&jl_send_raw_obj) },

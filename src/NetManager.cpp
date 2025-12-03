@@ -19,6 +19,52 @@
 #include "Highlighting.h"
 
 ///#define Serial SerialWrap
+
+// Helper: Get effective display color for a net (checks DisplayState custom colors first)
+static rgbColor getEffectiveNetColor(int netNum) {
+    rgbColor color;
+    uint32_t rawColor;
+    char colorName[32];
+    
+    // Check for custom color in DisplayState first
+    if (globalState.display.getNetColor(netNum, color, rawColor, colorName)) {
+        return color;
+    }
+    
+    // Fall back to computed netColors
+    extern rgbColor netColors[];
+    return netColors[netNum];
+}
+
+// Helper: Get effective color name for a net (padded to 10 chars)
+static const char* getEffectiveNetColorName(int netNum) {
+    static char colorNameBuf[32];
+    rgbColor color;
+    uint32_t rawColor;
+    
+    const char* name = nullptr;
+    
+    // Check for custom color in DisplayState first
+    if (globalState.display.getNetColor(netNum, color, rawColor, colorNameBuf)) {
+        name = colorNameBuf;
+    } else {
+        // Fall back to computed netColors
+        extern rgbColor netColors[];
+        name = colorToName(netColors[netNum], 10);  // colorToName already pads to 10
+        return name;  // Already padded
+    }
+    
+    // Pad custom color name to 10 chars
+    static char paddedBuf[16];
+    int len = strlen(colorNameBuf);
+    strncpy(paddedBuf, colorNameBuf, 10);
+    for (int i = len; i < 10; i++) {
+        paddedBuf[i] = ' ';
+    }
+    paddedBuf[10] = '\0';
+    return paddedBuf;
+}
+
 // Define a struct that holds both the long and short strings as well as the defined value
 // struct DefineInfo {
 //     const char* shortName;
@@ -502,6 +548,9 @@ int shiftNets(
   if (debugNM)
     Serial.println(deletedNet);
 
+  // DisplayState custom names/colors are reconciled via reconcileAfterRebuild()
+  // after nets are rebuilt from bridges in refreshConnections()
+
   for (int i = deletedNet; i < lastNet; i++) {
     globalState.connections.nets[i] = globalState.connections.nets[i + 1];
     globalState.connections.nets[i].name = netNameConstants[i];
@@ -509,7 +558,7 @@ int shiftNets(
     }
 
   globalState.connections.nets[lastNet].number = 0;
-  globalState.connections.nets[lastNet].name = "       "; // netNameConstants[lastNet];
+  globalState.connections.nets[lastNet].name = netNameConstants[lastNet];
   globalState.connections.nets[lastNet].visible = 0;
   globalState.connections.nets[lastNet].specialFunction = -1;
 
@@ -582,8 +631,8 @@ void createNewNet() // add those nodes to a new net
   int newNetNumber = findFirstUnusedNetIndex();
   globalState.connections.nets[newNetNumber].number = newNetNumber;
 
-  globalState.connections.nets[newNetNumber].name =
-    netNameConstants[newNetNumber]; // dont need a function for this anymore
+  // Always use default name - custom names are looked up from DisplayState by net number
+  globalState.connections.nets[newNetNumber].name = netNameConstants[newNetNumber];
 
   globalState.connections.nets[newNetNumber].specialFunction = -1;
 
@@ -1197,7 +1246,9 @@ void listNets(int liveUpdate)
        // Serial.print("\n\r ");
           Serial.print(i);
           Serial.print("\t ");
-          int netNameLength = Serial.print(globalState.connections.nets[i].name);
+          // Check for custom name in DisplayState first (tracked by net number)
+          const char* customName = globalState.display.getNetName(i);
+          int netNameLength = Serial.print(customName ? customName : globalState.connections.nets[i].name);
           if (netNameLength < 8) {
             Serial.print("\t");
             }
@@ -1292,11 +1343,15 @@ void listNets(int liveUpdate)
 
 
                 } else {
-                Serial.printf("\033[38;5;%dm%s", colorToVT100(packRgb(netColors[i])), colorToName(netColors[i], 10));
+                // Use effective color (checks DisplayState for custom colors)
+                rgbColor effectiveColor = getEffectiveNetColor(i);
+                Serial.printf("\033[38;5;%dm%s", colorToVT100(packRgb(effectiveColor)), getEffectiveNetColorName(i));
                 }
               } else if (TERM_SUPPORTS_RGB == 1 && TERM_SUPPORTS_ANSI_COLORS == 1)
                 {
-                hsvColor color = RgbToHsv(netColors[i]);
+                // Use effective color (checks DisplayState for custom colors)
+                rgbColor effectiveColor = getEffectiveNetColor(i);
+                hsvColor color = RgbToHsv(effectiveColor);
                 color.v = 255;
 
                 rgbColor rgb = HsvToRgb(color);
@@ -1309,16 +1364,10 @@ void listNets(int liveUpdate)
                 itoa(rgb.r, colorR, 10);
                 itoa(rgb.g, colorG, 10);
                 itoa(rgb.b, colorB, 10);
-                // Serial.print(colorR);
-                // Serial.print(",");
-                // Serial.print(colorG);
-                // Serial.print(",");
-                // Serial.print(colorB);
-                // Serial.print(" ");
 
-                Serial.printf("\033[38;2;%s;%s;%sm%s", colorR, colorG, colorB, colorToName(netColors[i], 10));
+                Serial.printf("\033[38;2;%s;%s;%sm%s", colorR, colorG, colorB, getEffectiveNetColorName(i));
                 } else {
-                Serial.print(colorToName(netColors[i], 10));
+                Serial.print(getEffectiveNetColorName(i));
                 }
 
               // Serial.print(colorToVT100(packRgb(netColors[i])));

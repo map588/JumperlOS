@@ -402,10 +402,10 @@ void initDAC( void ) {
     }
 
     if (mcpAddress != 0x60) {
-        mcp.setMCPAddressBits(0);
-    }
+        mcp.setMCPAddressBits(0x0);
+    } 
 
-    Serial.println( "Found MCP4728 chip at 0x" + String(mcpAddress, HEX) );
+   // Serial.println( "Found MCP4728 chip at 0x" + String(mcpAddress, HEX) );
 
 
     
@@ -478,14 +478,14 @@ int initI2C( int sdaPin, int sclPin, int speed ) {
     // maybe bitbang I2C0?
     int sdaFound = 0;
     int sclFound = 0;
+    int portFound = -1;  // Will be determined from mapping
 
-    int portFound = 1; // right now only I2C1 is available
     for ( int i = 0; i < 15; i++ ) {
-        if ( gpioI2Cmap[ i ][ 0 ] == sdaPin ) { // && gpioI2Cmap[i][2] == 1) {
+        if ( gpioI2Cmap[ i ][ 0 ] == sdaPin ) {
             sdaFound = i;
+            portFound = gpioI2Cmap[ i ][ 2 ];  // Get I2C port from mapping (0 or 1)
         }
-        if ( gpioI2Cmap[ i ][ 0 ] == sclPin ) { // && gpioI2Cmap[i][2] == 1) {
-
+        if ( gpioI2Cmap[ i ][ 0 ] == sclPin ) {
             sclFound = i;
         }
         if ( sdaFound != 0 && sclFound != 0 ) {
@@ -493,16 +493,19 @@ int initI2C( int sdaPin, int sclPin, int speed ) {
         }
     }
 
-
-    if ( sdaFound == 0 || sclFound == 0 ) {
+    if ( sdaFound == 0 || sclFound == 0 || portFound == -1 ) {
         // Serial.println("Failed to find I2C pins");
         return -1;
     } else if ( portFound == 0 ) {
+        // I2C0 (Wire) - used for GPIO 4/5, 0/1, 20/21, 24/25
+        gpio_set_pulls( sdaPin, true, false ); // Enable pull-up on SDA
+        gpio_set_pulls( sclPin, true, false ); // Enable pull-up on SCL
 
         Wire.setSDA( sdaPin );
         Wire.setSCL( sclPin );
         Wire.setClock( speed );
         Wire.begin( );
+        
         if ( i2c0Pins[ 0 ] == sdaPin && i2c0Pins[ 1 ] == sclPin &&
              i2c0Pins[ 2 ] == speed ) {
             return gpioI2Cmap[ sdaFound ][ 2 ] +
@@ -515,11 +518,16 @@ int initI2C( int sdaPin, int sclPin, int speed ) {
 
         return gpioI2Cmap[ sdaFound ][ 2 ];
     } else if ( portFound == 1 ) {
-
-        gpioState[ gpioDef[ sdaPin - 20 ][ 2 ] ] = 6;
-        gpioState[ gpioDef[ sclPin - 20 ][ 2 ] ] = 6;
-        gpio_function_map[ gpioDef[ sdaPin - 20 ][ 2 ] ] = GPIO_FUNC_I2C;
-        gpio_function_map[ gpioDef[ sclPin - 20 ][ 2 ] ] = GPIO_FUNC_I2C;
+        // I2C1 (Wire1) - used for GPIO 6/7, 26/27, 22/23
+        // Only update gpioState for GPIO pins 20-29 (valid gpioDef indices)
+        if ( sdaPin >= 20 && sdaPin <= 29 ) {
+            gpioState[ gpioDef[ sdaPin - 20 ][ 2 ] ] = 6;
+            gpio_function_map[ gpioDef[ sdaPin - 20 ][ 2 ] ] = GPIO_FUNC_I2C;
+        }
+        if ( sclPin >= 20 && sclPin <= 29 ) {
+            gpioState[ gpioDef[ sclPin - 20 ][ 2 ] ] = 6;
+            gpio_function_map[ gpioDef[ sclPin - 20 ][ 2 ] ] = GPIO_FUNC_I2C;
+        }
 
         gpio_set_pulls( sdaPin, true, false ); // Enable pull-up on SDA
         gpio_set_pulls( sclPin, true, false ); // Enable pull-up on SCL
@@ -1093,6 +1101,9 @@ float getDacVoltage( int dac ) {
     return 0;
 }
 
+
+
+int failedToSetDac0 = 0;
 void setDac0voltage( float voltage, int save, int saveEEPROM,
                      bool checkProbePower ) {
     // int dacValue = (voltage * 4095 / 19.8) + 1641;
@@ -1119,8 +1130,14 @@ void setDac0voltage( float voltage, int save, int saveEEPROM,
     // delay(10);
     if ( mcp.setChannelValue( MCP4728_CHANNEL_A, dacValue ) == false ) {
         // delay(3000);
-        Serial.println( "Failed to set DAC0 value" );
+        //Serial.println( "Failed to set DAC0 value" );
+        failedToSetDac0++;
+        if ( failedToSetDac0 > 10 ) {
+            Serial.println( "Failed to set DAC0 value" );
+            failedToSetDac0 = 0;
+        }
     }
+    failedToSetDac0 = 0;
     // delay(10);
     digitalWrite( LDAC, LOW );
     

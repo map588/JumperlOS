@@ -133,6 +133,10 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   getNodesToConnect();
   t[ti++] = millis(); // t[2] = after getNodesToConnect
   
+  // Reconcile DisplayState custom names/colors after nets are rebuilt
+  // Uses firstNode to find where nets moved to
+  globalState.display.reconcileAfterRebuild();
+  
   rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
   t[ti++] = millis(); // t[3] = after rebuildChangedNetColorsFromBridges
 
@@ -380,6 +384,10 @@ unsigned long start2 = millis();
   Serial.print("refreshLocalConnections getNodesToConnect = ");
   Serial.println(millis() - start2);
 #endif
+  
+  // Reconcile DisplayState custom names/colors after nets are rebuilt
+  globalState.display.reconcileAfterRebuild();
+  
   rebuildChangedNetColorsFromBridges();  // Recompute net colors from bridges after net regeneration
 #ifdef DEBUG_REFRESH
   Serial.print("refreshLocalConnections rebuildChangedNetColorsFromBridges = ");

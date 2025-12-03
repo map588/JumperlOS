@@ -46,20 +46,42 @@ static const char* python_builtins[] = {
 };
 
 static const char* jumperless_functions[] = {
+    // DAC/ADC
     "dac_set", "dac_get", "set_dac", "get_dac", "adc_get", "get_adc",
+    // INA current sensing
     "ina_get_current", "ina_get_voltage", "ina_get_bus_voltage", "ina_get_power",
     "get_current", "get_voltage", "get_bus_voltage", "get_power",
+    "get_ina_current", "get_ina_voltage", "get_ina_bus_voltage", "get_ina_power",
+    // GPIO
     "gpio_set", "gpio_get", "gpio_set_dir", "gpio_get_dir", "gpio_set_pull", "gpio_get_pull",
     "set_gpio", "get_gpio", "set_gpio_dir", "get_gpio_dir", "set_gpio_pull", "get_gpio_pull",
+    // Node connections
     "connect", "disconnect", "is_connected", "nodes_clear", "node",
-    "oled_print", "oled_clear", "oled_connect", "oled_disconnect",
+    "nodes_save", "nodes_discard", "nodes_has_changes", "switch_slot",
+    // Net information API
+    "get_net_name", "set_net_name", "get_net_color", "get_net_color_name", "set_net_color",
+    "get_num_nets", "get_num_bridges", "get_net_nodes", "get_bridge", "get_net_info",
+    "net_name", "net_color", "net_info",
+    // Context
+    "context_toggle", "context_get",
+    // OLED
+    "oled_print", "oled_clear", "oled_show", "oled_connect", "oled_disconnect",
+    // Clickwheel
     "clickwheel_up", "clickwheel_down", "clickwheel_press",
+    // Status/debug
     "print_bridges", "print_paths", "print_crossbars", "print_nets", "print_chip_status",
+    // Probe
     "probe_read", "read_probe", "probe_read_blocking", "probe_read_nonblocking",
     "get_button", "probe_button", "probe_button_blocking", "probe_button_nonblocking",
     "probe_wait", "wait_probe", "probe_touch", "wait_touch", "button_read", "read_button",
-    "check_button", "button_check", "arduino_reset", "probe_tap", "run_app", "format_output",
-    "help_nodes", "pause_core2", "send_raw", "pwm", "pwm_set_duty_cycle", "pwm_set_frequency", "pwm_stop", "nodes_save",
+    "check_button", "button_check",
+    // Misc
+    "arduino_reset", "probe_tap", "run_app", "format_output",
+    "help", "nodes_help", "help_nodes", "pause_core2", "send_raw",
+    // PWM
+    "pwm", "pwm_set_duty_cycle", "pwm_set_frequency", "pwm_stop",
+    "set_pwm", "set_pwm_duty_cycle", "set_pwm_frequency", "stop_pwm",
+    // WaveGen setters
     "wavegen_set_output", "set_wavegen_output",
     "wavegen_set_freq", "set_wavegen_freq",
     "wavegen_set_wave", "set_wavegen_wave",
@@ -68,6 +90,7 @@ static const char* jumperless_functions[] = {
     "wavegen_set_offset", "set_wavegen_offset",
     "wavegen_start", "start_wavegen",
     "wavegen_stop", "stop_wavegen",
+    // WaveGen getters
     "wavegen_get_output", "get_wavegen_output",
     "wavegen_get_freq", "get_wavegen_freq",
     "wavegen_get_wave", "get_wavegen_wave",
@@ -78,21 +101,56 @@ static const char* jumperless_functions[] = {
 };
 
 static const char* jumperless_types[] = {
-    "TOP_RAIL", "BOTTOM_RAIL", "GND", "DAC0", "DAC1", "ADC0", "ADC1", "ADC2", "ADC3", "ADC4",
-    "PROBE", "ISENSE_PLUS", "ISENSE_MINUS", "UART_TX", "UART_RX", "BUFFER_IN", "BUFFER_OUT",
+    // GPIO states
+    "HIGH", "LOW", "FLOATING",
+    // GPIO directions
+    "INPUT", "OUTPUT",
+    // GPIO pull modes
+    "PULLUP", "PULLDOWN",
+    // Power rails
+    "TOP_RAIL", "T_RAIL", "BOTTOM_RAIL", "BOT_RAIL", "B_RAIL", "GND",
+    // DAC/ADC
+    "DAC0", "DAC1", "DAC_0", "DAC_1",
+    "ADC0", "ADC1", "ADC2", "ADC3", "ADC4", "ADC7", "PROBE",
+    // Current sense
+    "ISENSE_PLUS", "ISENSE_MINUS", "ISENSE_P", "ISENSE_N", "I_P", "I_N",
+    "CURRENT_SENSE_PLUS", "CURRENT_SENSE_MINUS",
+    // UART/Buffer
+    "UART_TX", "UART_RX", "TX", "RX", "BUFFER_IN", "BUFFER_OUT", "BUF_IN", "BUF_OUT",
+    // GPIO pins
     "GPIO_1", "GPIO_2", "GPIO_3", "GPIO_4", "GPIO_5", "GPIO_6", "GPIO_7", "GPIO_8",
+    "GPIO1", "GPIO2", "GPIO3", "GPIO4", "GPIO5", "GPIO6", "GPIO7", "GPIO8",
+    // Arduino digital pins
     "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13",
+    "NANO_D0", "NANO_D1", "NANO_D2", "NANO_D3", "NANO_D4", "NANO_D5", "NANO_D6", "NANO_D7",
+    "NANO_D8", "NANO_D9", "NANO_D10", "NANO_D11", "NANO_D12", "NANO_D13",
+    // Arduino analog pins
     "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7",
-    "D13_PAD", "TOP_RAIL_PAD", "BOTTOM_RAIL_PAD", "LOGO_PAD_TOP", "LOGO_PAD_BOTTOM",
+    "NANO_A0", "NANO_A1", "NANO_A2", "NANO_A3", "NANO_A4", "NANO_A5", "NANO_A6", "NANO_A7",
+    // Probe pads
+    "D0_PAD", "D1_PAD", "D2_PAD", "D3_PAD", "D4_PAD", "D5_PAD", "D6_PAD", "D7_PAD",
+    "D8_PAD", "D9_PAD", "D10_PAD", "D11_PAD", "D12_PAD", "D13_PAD",
+    "A0_PAD", "A1_PAD", "A2_PAD", "A3_PAD", "A4_PAD", "A5_PAD", "A6_PAD", "A7_PAD",
+    "TOP_RAIL_PAD", "BOTTOM_RAIL_PAD", "BOT_RAIL_PAD",
+    "LOGO_PAD_TOP", "LOGO_PAD_BOTTOM", "RESET_PAD", "AREF_PAD", "NO_PAD",
+    // Probe buttons
     "CONNECT_BUTTON", "REMOVE_BUTTON", "BUTTON_NONE", "CONNECT", "REMOVE", "NONE",
+    // Waveforms
     "SINE", "TRIANGLE", "SAWTOOTH", "SQUARE", "RAMP", "ARBITRARY",
+    // Slot
+    "CURRENT_SLOT",
     nullptr
 };
 
 static const char* jfs_functions[] = {
-    "open", "read", "write", "close", "seek", "tell", "size", "available",
+    // JFS file operations
+    "open", "read", "write", "close", "seek", "tell", "position", "size", "available",
+    "flush", "print", "name",
+    // JFS directory/path operations
     "exists", "listdir", "mkdir", "rmdir", "remove", "rename", "stat", "info",
+    // JFS seek constants
     "SEEK_SET", "SEEK_CUR", "SEEK_END",
+    // Legacy fs_ prefixed functions
     "fs_exists", "fs_listdir", "fs_read", "fs_write", "fs_cwd",
     nullptr
 };

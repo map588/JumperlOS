@@ -56,6 +56,9 @@ class Adafruit_SSD1306;
 extern bool oledConnected;
 extern bool oledUsingHardwiredPins; // Global flag: true if using RP6/RP7 (GPIO 6/7), false if using crossbar
 
+// Get reference to the display object - allows runtime switching between Wire/Wire1
+Adafruit_SSD1306& getDisplay();
+
 
 
 #define OLED_RESET -1
@@ -163,7 +166,7 @@ public:
     bool isConnected() const;
     int connect(void);
     void disconnect(void);
-    bool checkConnection(void);
+    bool checkConnection(bool force = false);
     
     // Font management
     int cycleFont(void);

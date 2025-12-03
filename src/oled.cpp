@@ -19,6 +19,9 @@
 #include "Wire.h"
 #include "config.h"
 #include "configManager.h"
+
+// Debug flag for OLED reconnection diagnostics - set to 1 to enable debug output
+#define OLED_DEBUG 0
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -37,9 +40,59 @@ bool oledUsingHardwiredPins = false; // Global flag: true if using RP6/RP7 (GPIO
 // Enable per-line font scaling to fit horizontally (prevents wrapping)
 #define OLED_SCALE_LINES_INDEPENDENTLY 1
 
-#define OLED_WIRE Wire
+// Dynamic Wire selection - pointer allows switching between Wire (I2C0) and Wire1 (I2C1) at runtime
+// Initialize with Wire1 immediately to prevent nullptr crashes when OLED is disabled
+static Adafruit_SSD1306 _defaultDisplay(128, 32, &Wire1, -1);
+static Adafruit_SSD1306* _displayPtr = &_defaultDisplay;
+static int _currentDisplayWire = 1;  // Track which Wire is currently active (0 = Wire, 1 = Wire1)
+static bool _displayIsDynamic = false;  // Track if _displayPtr was dynamically allocated
 
-Adafruit_SSD1306 display( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &OLED_WIRE, OLED_RESET );
+// Function to get display reference - avoids macro conflicts with display() method name
+// Declared in oled.h for use by other files
+Adafruit_SSD1306& getDisplay() { return *_displayPtr; }
+
+// Initialize or reinitialize display with the correct Wire based on connection_type
+// Returns true if display was (re)created, false if already using correct Wire
+bool initDisplayForConnectionType(int connectionType) {
+    // Determine which Wire to use based on connection_type
+    // Type 0 = GPIO 26/27 -> I2C1 (Wire1)
+    // Type 1 = GPIO 6/7 -> I2C1 (Wire1)
+    // Type 2 = GPIO 4/5 -> I2C0 (Wire)
+    // Type 3 = custom -> check pins
+    int needWire;
+    if (connectionType == 2) {
+        needWire = 0;  // I2C0 (Wire)
+    } else {
+        needWire = 1;  // I2C1 (Wire1) for types 0, 1, 3
+    }
+    
+    // If already using correct Wire, no need to reinitialize
+    if (_displayPtr != nullptr && _currentDisplayWire == needWire) {
+        return false;
+    }
+    
+    // Delete old display ONLY if it was dynamically allocated (not the static default)
+    if (_displayPtr != nullptr && _displayIsDynamic) {
+        delete _displayPtr;
+        _displayPtr = nullptr;
+    }
+    
+    // Create new display with correct Wire
+    int width = jumperlessConfig.top_oled.width;
+    int height = jumperlessConfig.top_oled.height;
+    
+    if (needWire == 0) {
+        _displayPtr = new Adafruit_SSD1306(width, height, &Wire, OLED_RESET);
+      //  Serial.println("OLED display initialized with Wire (I2C0)");
+    } else {
+        _displayPtr = new Adafruit_SSD1306(width, height, &Wire1, OLED_RESET);
+      //  Serial.println("OLED display initialized with Wire1 (I2C1)");
+    }
+    
+    _displayIsDynamic = true;  // Now it's dynamically allocated
+    _currentDisplayWire = needWire;
+    return true;
+}
 
 
 int oledAddress = -1;
@@ -165,11 +218,11 @@ FontFamilyCharacteristics getFontCharacteristics( FontFamily family ) {
 
 // Helper function to get text bounds using a specific font
 // Note: We can't save/restore font in Adafruit_SSD1306, so caller must restore if needed
-static void getTextBoundsWithFont( Adafruit_SSD1306& display, const GFXfont* font, const char* text, int16_t* w, int16_t* h ) {
-    display.setFont( font );
+static void getTextBoundsWithFont( Adafruit_SSD1306& disp, const GFXfont* font, const char* text, int16_t* w, int16_t* h ) {
+    disp.setFont( font );
     int16_t x1, y1;
     uint16_t w16, h16;
-    display.getTextBounds( text, 0, 0, &x1, &y1, &w16, &h16 );
+    disp.getTextBounds( text, 0, 0, &x1, &y1, &w16, &h16 );
     *w = w16;
     *h = h16;
     // Note: Caller should restore font if needed
@@ -237,7 +290,7 @@ uint8_t FontManager::findBestFitPointSize( FontFamily family, const char* text, 
 
         // Check if text fits with this font
         int16_t w, h;
-        getTextBoundsWithFont( display, fontList[ fontIndex ].font, text, &w, &h );
+        getTextBoundsWithFont( getDisplay(), fontList[ fontIndex ].font, text, &w, &h );
 
         if ( w <= maxWidth ) {
             return fontList[ fontIndex ].pointSize; // Found a font that fits!
@@ -420,20 +473,14 @@ bool loadBitmapFromFile( const char* filepath ) {
 
 // Initialization
 int oled::init( ) {
+    #if OLED_DEBUG
+    Serial.printf("[OLED] init() called, connection_type=%d\n", jumperlessConfig.top_oled.connection_type);
+    #endif
+    
     if ( jumperlessConfig.top_oled.enabled == 0 ) {
         jumperlessConfig.top_oled.enabled = 1;
     }
 
-
-    if ( jumperlessConfig.top_oled.connection_type == 2 ) {
-        //display.~Adafruit_SSD1306( );
-       // display = Adafruit_SSD1306( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &Wire, OLED_RESET );
-    } else {
-      //  Adafruit_SSD1306 display( jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, &Wire1, OLED_RESET );
-    }
-
-
-    /// delay(1000);
     int success = 0;
     address = jumperlessConfig.top_oled.i2c_address;
     sda_pin = jumperlessConfig.top_oled.sda_pin;
@@ -442,29 +489,37 @@ int oled::init( ) {
     scl_row = jumperlessConfig.top_oled.scl_row;
 
     // Check if using hardwired pins based on connection_type:
-    // Type 0 = GPIO 7/8 (via crossbar, NOT hardwired)
-    // Type 1 = RP6/RP7 (hardwired, GPIO 6/7)
-    // Type 2 = internal I2C0 (hardwired, GPIO 4/5)
-    // Type 3 = custom (via crossbar, NOT hardwired)
+    // Type 0 = GPIO 7/8 (via crossbar, NOT hardwired) - uses I2C1 (Wire1)
+    // Type 1 = RP6/RP7 (hardwired, GPIO 6/7) - uses I2C1 (Wire1)
+    // Type 2 = internal I2C0 (hardwired, GPIO 4/5) - uses I2C0 (Wire)
+    // Type 3 = custom (via crossbar, NOT hardwired) - uses I2C1 (Wire1)
     int connType = jumperlessConfig.top_oled.connection_type;
     oledUsingHardwiredPins = ( connType == 1 || connType == 2 );
+    
+    #if OLED_DEBUG
+    Serial.printf("[OLED] init(): addr=0x%02X, connType=%d, hardwired=%d\n", address, connType, oledUsingHardwiredPins);
+    #endif
 
     // Read display dimensions from config
     displayWidth = jumperlessConfig.top_oled.width;
     displayHeight = jumperlessConfig.top_oled.height;
 
-    // Note: The global display object is constructed with initial width/height from config
-    // Changing dimensions at runtime requires the display object to be reconstructed with new dimensions
-    // This is a limitation of the static global display object
-    // Workaround: Edit config file and restart to change display dimensions
-    // Serial.println("oled::init");
-    // Serial.println(millis());
+    // Initialize or reinitialize display with correct Wire based on connection_type
+    // This allows runtime switching between Wire (I2C0) and Wire1 (I2C1)
+    initDisplayForConnectionType(connType);
 
+    #if OLED_DEBUG
+    Serial.println("[OLED] init(): calling connect()...");
+    #endif
     success = connect( );
-    // Serial.println("oled::init connect done");
-    // Serial.println(millis());
-    // delay(10);
+    #if OLED_DEBUG
+    Serial.printf("[OLED] init(): connect() returned %d\n", success);
+    #endif
+    
     if ( checkConnection( ) == false ) {
+        #if OLED_DEBUG
+        Serial.println("[OLED] init(): checkConnection() failed after connect()");
+        #endif
         // oledConnected = false;
         // Serial.println("oled::init checkConnection failed");
         // Serial.println(millis());
@@ -508,15 +563,15 @@ int oled::init( ) {
         currentFontFamily = FONT_EUROSTILE;
     }
 
-    display.begin( SSD1306_SWITCHCAPVCC, address, false, false );
+    getDisplay().begin( SSD1306_SWITCHCAPVCC, address, false, false );
 
     // Apply rotation from config (0 = 0°, 1 = 90°, 2 = 180°, 3 = 270°)
-    display.setRotation( jumperlessConfig.top_oled.rotation );
+    getDisplay().setRotation( jumperlessConfig.top_oled.rotation );
 
-    display.setTextColor( SSD1306_WHITE );
-    display.invertDisplay( false );
-    display.setFont( currentFont );
-    display.clearDisplay( );
+    getDisplay().setTextColor( SSD1306_WHITE );
+    getDisplay().invertDisplay( false );
+    getDisplay().setFont( currentFont );
+    getDisplay().clearDisplay( );
 
     // Check if startup_message is set
     if ( strlen( jumperlessConfig.top_oled.startup_message ) > 0 ) {
@@ -526,7 +581,7 @@ int oled::init( ) {
             // if (loadBitmapFromFile(jumperlessConfig.top_oled.startup_message)) {
             //     int x = (displayWidth - customBitmapWidth) / 2;
             //     int y = (displayHeight - customBitmapHeight) / 2 + 1;
-            //     display.drawBitmap(x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE);
+            //     getDisplay().drawBitmap(x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE);
             // } else {
             //     // File not found or invalid, display error message
             //     clearPrintShow("Bitmap\nError", 2, true, true, true);
@@ -541,11 +596,11 @@ int oled::init( ) {
         int x = ( displayWidth - jumperlessConfig.top_oled.width ) / 2;
         int y = ( displayHeight - jumperlessConfig.top_oled.height ) / 2 + 1;
         showJogo32h( );
-        // display.drawBitmap(x, y, jogo32h, jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, SSD1306_WHITE);
+        // getDisplay().drawBitmap(x, y, jogo32h, jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, SSD1306_WHITE);
     }
 
     if ( oledConnected ) {
-        display.display( );
+        getDisplay().display( );
     }
     setCursor( 0, 0 );
     if ( jumperlessConfig.top_oled.connection_type != 2 ) {
@@ -557,18 +612,33 @@ int oled::init( ) {
     // Register this oled instance with OLEDService so it can call oledPeriodic()
     OLEDService::getInstance( ).setOledDisplay( this );
 
+    #if OLED_DEBUG
+    Serial.printf("[OLED] init() complete, returning %d, oledConnected=%d\n", success, oledConnected);
+    #endif
     return success;
 }
 
 // Helper to check I2C communication
-bool oled::checkConnection( void ) {
+bool oled::checkConnection( bool force  ) {
     // if (jumperlessConfig.top_oled.enabled == 0) {
     //     oledConnected = false;
     //     return false;
     // }
-    if ( millis( ) - lastConnectionCheck > 1000 ) {
-        OLED_WIRE.beginTransmission( address );
-        if ( OLED_WIRE.endTransmission( ) != 0 ) {
+    if ( millis( ) - lastConnectionCheck > 1000 || force == true ) {
+        // Use correct Wire based on current display configuration
+        // If display not initialized yet, use connection_type to determine Wire
+        int wireNum = _currentDisplayWire;
+        if (wireNum == -1) {
+            wireNum = (jumperlessConfig.top_oled.connection_type == 2) ? 0 : 1;
+        }
+        TwoWire& wire = (wireNum == 0) ? Wire : Wire1;
+        
+        wire.beginTransmission( address );
+        int error = wire.endTransmission( );
+        if ( error != 0 ) {
+            #if OLED_DEBUG
+            Serial.printf("[OLED] checkConnection: I2C error=%d on Wire%d addr=0x%02X\n", error, wireNum, address);
+            #endif
             lastConnectionCheck = millis( );
             oledConnected = false;
             return false;
@@ -576,7 +646,7 @@ bool oled::checkConnection( void ) {
         lastConnectionCheck = millis( );
         oledConnected = true;
     }
-    return true;
+    return oledConnected;  // Return actual state, not always true
 }
 
 // Font management
@@ -661,7 +731,7 @@ int oled::setFont( String fontName, int justGetIndex ) {
 void oled::setFont( const GFXfont* font ) {
     currentFont = font;
 
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
 
     for ( int i = 0; i < numFonts; i++ ) {
         if ( fontList[ i ].font == currentFont ) {
@@ -676,7 +746,7 @@ int oled::setFont( char* fontName, int justGetIndex ) {
 void oled::setFont( FontFamily fontFamily ) {
     currentFontFamily = fontFamily;
     currentFont = fontList[ fontFamily ].font;
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
 }
 void oled::setFont( int fontIndex ) {
     if ( fontIndex < 0 || fontIndex >= numFonts ) {
@@ -686,7 +756,7 @@ void oled::setFont( int fontIndex ) {
     }
     currentFontFamily = fontList[ fontIndex ].family;
 
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
 }
 
 // Smart font selection based on family and text size (BACKWARDS COMPATIBLE)
@@ -801,7 +871,7 @@ TextBounds oled::getTextBounds( const char* str ) {
     // Use Adafruit GFX's built-in function for accuracy
     int16_t x1, y1;
     uint16_t w, h;
-    display.getTextBounds( str, 0, 0, &x1, &y1, &w, &h );
+    getDisplay().getTextBounds( str, 0, 0, &x1, &y1, &w, &h );
 
     bounds.width = w;
     bounds.height = h;
@@ -844,7 +914,7 @@ void oled::getCenteredPosition( const char* str, int16_t* x, int16_t* y, Positio
     // Use Adafruit GFX's built-in getTextBounds for accurate centering
     int16_t x1, y1;
     uint16_t w, h;
-    display.getTextBounds( str, 0, 0, &x1, &y1, &w, &h );
+    getDisplay().getTextBounds( str, 0, 0, &x1, &y1, &w, &h );
 
     // Center horizontally
     *x = ( displayWidth - w ) / 2;
@@ -895,7 +965,7 @@ void oled::setCursor( int16_t x, int16_t y, PositionMode mode ) {
 
     if ( !currentFont ) {
         // Default font - direct positioning
-        display.setCursor( x, y );
+        getDisplay().setCursor( x, y );
         return;
     }
 
@@ -937,7 +1007,7 @@ void oled::setCursor( int16_t x, int16_t y, PositionMode mode ) {
         finalY = y;
     }
 
-    display.setCursor( x, finalY );
+    getDisplay().setCursor( x, finalY );
 }
 
 // Default cursor setting (auto mode)
@@ -1029,12 +1099,16 @@ void OLEDprintFromTerminal( void ) {
 
 // Main display function with all options
 void oled::clearPrintShow( const char* text, int textSize, bool clear, bool showOled, bool center, int x_pos, int y_pos, int waitToFinish ) {
+    // Early exit if OLED is disabled in config - prevents null pointer crash
+    if ( jumperlessConfig.top_oled.enabled == 0 ) {
+        return;
+    }
     if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false )
         return;
 
     if ( clear ) {
         charPos = 0;
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     // Auto-detect and switch framebuffer mode based on text size
@@ -1163,25 +1237,29 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
         }
 
         setCursor( x, y );
-        display.print( text );
+        getDisplay().print( text );
         charPos += strlen( text );
     }
 
     if ( showOled ) {
         show( waitToFinish );
-        // display.display();
+        // getDisplay().display();
         // dumpFrameBufferQuarterSize(1);
     }
 }
 
 // Main display function with font family selection
 void oled::clearPrintShow( const char* text, int textSize, FontFamily family, bool clear, bool showOled, bool center, int x_pos, int y_pos, int waitToFinish ) {
+    // Early exit if OLED is disabled in config - prevents null pointer crash
+    if ( jumperlessConfig.top_oled.enabled == 0 ) {
+        return;
+    }
     if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false )
         return;
 
     if ( clear ) {
         charPos = 0;
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     // Use smart font selection with specified family
@@ -1217,13 +1295,13 @@ void oled::clearPrintShow( const char* text, int textSize, FontFamily family, bo
         }
 
         setCursor( x, y );
-        display.print( text );
+        getDisplay().print( text );
         charPos += strlen( text );
     }
 
     if ( showOled ) {
         show( waitToFinish );
-        // display.display();
+        // getDisplay().display();
         // dumpFrameBufferQuarterSize(1);
     }
 }
@@ -1331,7 +1409,7 @@ void oled::displayMultiLineText( const char* text, bool center ) {
     uint8_t minScaledPt = originalPt; // Track the smallest font we scale to
     
     // CRITICAL: Disable text wrapping before measuring - this must match the rendering loop
-    display.setTextWrap( false );
+    getDisplay().setTextWrap( false );
     
     // Check ALL lines to see if any need scaling
     for (int i = 0; i < lineCount; i++) {
@@ -1409,7 +1487,7 @@ void oled::displayMultiLineText( const char* text, bool center ) {
         FontFamily originalFamilyForLine = currentFontFamily;
         
         // Disable text wrapping - we want to scale, not wrap
-        display.setTextWrap( false );
+        getDisplay().setTextWrap( false );
         
         // Find largest font size that fits this line horizontally
         uint8_t linePt = originalPtForLine;
@@ -1456,7 +1534,7 @@ void oled::displayMultiLineText( const char* text, bool center ) {
         }
 #else
         // Standard mode: disable wrapping globally for multi-line display
-        display.setTextWrap( false );
+        getDisplay().setTextWrap( false );
 #endif
 
         if ( center ) {
@@ -1467,7 +1545,7 @@ void oled::displayMultiLineText( const char* text, bool center ) {
         }
 
         setCursor( lineX, lineY, POS_BASELINE ); // Use baseline for multi-line
-        display.print( lines[ i ] );
+        getDisplay().print( lines[ i ] );
         charPos += lines[ i ].length( );
 
 #if OLED_SCALE_LINES_INDEPENDENTLY
@@ -1479,7 +1557,7 @@ void oled::displayMultiLineText( const char* text, bool center ) {
     }
     
     // Re-enable text wrapping after multi-line display
-    display.setTextWrap( true );
+    getDisplay().setTextWrap( true );
 }
 
 // Simplified overloads
@@ -1507,9 +1585,9 @@ void oled::print( const char* s ) {
         return;
 
     // Auto-adjust cursor if at top of screen - simplified
-    int16_t currentY = display.getCursorY( );
+    int16_t currentY = getDisplay().getCursorY( );
     if ( currentFont && currentY <= 4 ) {
-        setCursor( display.getCursorX( ), 0, POS_TIGHT );
+        setCursor( getDisplay().getCursorX( ), 0, POS_TIGHT );
     }
 
     if ( currentTextSize > 2 ) {
@@ -1524,7 +1602,7 @@ void oled::print( const char* s ) {
         s = processedStr.c_str( );
     }
 
-    display.print( s );
+    getDisplay().print( s );
     charPos += strlen( s );
 }
 
@@ -1535,21 +1613,21 @@ void oled::print( const String& s ) {
 void oled::print( int i ) {
     if ( !oledConnected && stillWriteToFramebuffer == false )
         return;
-    display.print( i );
+    getDisplay().print( i );
     charPos += String( i ).length( );
 }
 
 void oled::print( float f ) {
     if ( !oledConnected && stillWriteToFramebuffer == false )
         return;
-    display.print( f );
+    getDisplay().print( f );
     charPos += String( f ).length( );
 }
 
 void oled::print( char c ) {
     if ( !oledConnected && stillWriteToFramebuffer == false )
         return;
-    display.print( c );
+    getDisplay().print( c );
     charPos += 1;
 }
 
@@ -1578,12 +1656,16 @@ void oled::println( float f ) {
 // ================
 
 bool oled::clear( int waitToFinish ) {
+    // Early exit if OLED is disabled in config - prevents null pointer crash
+    if ( jumperlessConfig.top_oled.enabled == 0 ) {
+        return false;
+    }
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false ) {
         charPos = 0;
         return false;
     }
     charPos = 0;
-    display.clearDisplay( );
+    getDisplay().clearDisplay( );
     setCursor( 0, 0 ); // Auto-positioning for clear
     // int waited = 0;
     //  if (waitToFinish > 0) {
@@ -1607,7 +1689,9 @@ bool oled::show( int waitToFinish ) {
         // Serial.println( "OLED not connected" );
         return false;
     }
-    display.display( );
+    if (_displayPtr != nullptr) {
+        _displayPtr->display( );
+    }
     // int waited = 0;
     // if (waitToFinish > 0) {
     //     while (Wire1.finishedAsync() == false) {
@@ -1627,7 +1711,7 @@ void oled::moveToNextLine( ) {
         return;
 
     FontMetrics metrics = getFontMetrics( );
-    int16_t currentY = display.getCursorY( );
+    int16_t currentY = getDisplay().getCursorY( );
     int16_t nextY = currentY + metrics.lineHeight;
 
     if ( nextY >= displayHeight ) {
@@ -1645,19 +1729,19 @@ void oled::setTextSize( uint8_t size ) {
         size = 2;
     }
     this->currentTextSize = size;
-    display.setTextSize( size );
+    getDisplay().setTextSize( size );
 }
 
 void oled::setTextColor( uint32_t color ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.setTextColor( color );
+    getDisplay().setTextColor( color );
 }
 
 void oled::invertDisplay( bool inv ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.invertDisplay( inv );
+    getDisplay().invertDisplay( inv );
 }
 
 // Small text functions for file browser and detailed display
@@ -1666,7 +1750,7 @@ void oled::printSmallText( const char* text, int16_t x, int16_t y, bool clear ) 
         return;
 
     if ( clear ) {
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     // Store current font before changing
@@ -1676,16 +1760,16 @@ void oled::printSmallText( const char* text, int16_t x, int16_t y, bool clear ) 
     // Use default small font
     setSmallFont( DEFAULT_SMALL_FONT );
     setCursor( x, y + 8 ); // Adjust Y for 4-5pt font baseline
-    display.print( text );
+    getDisplay().print( text );
 
     // Restore previous font
     currentFont = savedFont;
     currentFontFamily = savedFamily;
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
     usingSmallFont = false;
 
     if ( clear ) {
-        display.display( );
+        getDisplay().display( );
     }
 }
 
@@ -1694,7 +1778,7 @@ void oled::printSmallTextLine( const char* text, int line, bool clear ) {
         return;
 
     if ( clear ) {
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     String textStr;
@@ -1710,16 +1794,16 @@ void oled::printSmallTextLine( const char* text, int line, bool clear ) {
     // Use default small font
     setSmallFont( DEFAULT_SMALL_FONT );
     setCursor( 0, ( line * 8 ) + 8 ); // Adjust Y for 4-5pt font baseline
-    display.print( text );
+    getDisplay().print( text );
 
     // Restore previous font
     currentFont = savedFont;
     currentFontFamily = savedFamily;
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
     usingSmallFont = false;
 
     if ( clear && oledConnected ) {
-        display.display( );
+        getDisplay().display( );
     }
 }
 
@@ -1728,14 +1812,14 @@ void oled::clearLine( int line ) {
         return;
 
     // Clear a specific line by drawing a black rectangle
-    display.fillRect( 0, line * 8, displayWidth, 8, SSD1306_BLACK );
+    getDisplay().fillRect( 0, line * 8, displayWidth, 8, SSD1306_BLACK );
 }
 
 void oled::showFileStatus( const char* currentPath, int fileCount, const char* selectedFile ) {
     if ( !oledConnected )
         return;
 
-    display.clearDisplay( );
+    getDisplay().clearDisplay( );
 
     // Store current font before changing
     const GFXfont* savedFont = currentFont;
@@ -1745,32 +1829,32 @@ void oled::showFileStatus( const char* currentPath, int fileCount, const char* s
     setSmallFont( SMALL_FONT_ANDALE_MONO );
 
     // Path display without truncation
-    display.setTextWrap( false );
+    getDisplay().setTextWrap( false );
     setCursor( 0, 8 );
     String path = String( currentPath );
-    display.print( path.c_str( ) );
-    display.print( "/" );
+    getDisplay().print( path.c_str( ) );
+    getDisplay().print( "/" );
 
     // Selected file (if provided) with cursor indicator
     if ( selectedFile && strlen( selectedFile ) > 0 ) {
         String selected = String( selectedFile );
-        display.print( selected.c_str( ) );
+        getDisplay().print( selected.c_str( ) );
 
         // Add cursor indicator - draw underline under the selected file
         TextBounds bounds = getTextBounds( selected.c_str( ) );
         int16_t pathWidth = getTextBounds( ( path + "/" ).c_str( ) ).width;
 
         // Draw underline to show cursor position
-        display.drawLine( pathWidth, 8 + 2, pathWidth + bounds.width - 1, 8 + 2, SSD1306_WHITE );
+        getDisplay().drawLine( pathWidth, 8 + 2, pathWidth + bounds.width - 1, 8 + 2, SSD1306_WHITE );
     }
 
-    display.setTextWrap( true );
-    display.display( );
+    getDisplay().setTextWrap( true );
+    getDisplay().display( );
 
     // Restore previous font
     currentFont = savedFont;
     currentFontFamily = savedFamily;
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
     usingSmallFont = false;
 }
 
@@ -1787,7 +1871,7 @@ void oled::showFileStatusScrolled( const char* visibleText, int fileCount, int c
 
     // Use Andale Mono font like eKilo for consistent display
     setSmallFont( SMALL_FONT_ANDALE_MONO );
-    display.setTextWrap( false );
+    getDisplay().setTextWrap( false );
 
     String text = String( visibleText );
     int newlinePos = text.indexOf( '\n' );
@@ -1847,7 +1931,7 @@ void oled::showFileStatusScrolled( const char* visibleText, int fileCount, int c
     // Restore previous font
     currentFont = savedFont;
     currentFontFamily = savedFamily;
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
     usingSmallFont = false;
 }
 
@@ -1856,7 +1940,7 @@ void oled::showMultiLineSmallText( const char* text, bool clear ) {
         return;
 
     if ( clear && oledConnected ) {
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     // Store current font before changing
@@ -1865,20 +1949,20 @@ void oled::showMultiLineSmallText( const char* text, bool clear ) {
 
     // Use default small font for better text density
     setSmallFont( DEFAULT_SMALL_FONT );
-    display.setTextWrap( false ); // Disable text wrapping - let text fall off the edge
+    getDisplay().setTextWrap( false ); // Disable text wrapping - let text fall off the edge
 
     // Simply print the text without wrapping
     setCursor( 0, 8 ); // Start at top with proper baseline
-    display.print( text );
+    getDisplay().print( text );
 
     if ( clear && oledConnected ) {
-        display.display( );
+        getDisplay().display( );
     }
 
     // Restore previous font
     currentFont = savedFont;
     currentFontFamily = savedFamily;
-    display.setFont( currentFont );
+    getDisplay().setFont( currentFont );
     usingSmallFont = false;
 }
 
@@ -1891,7 +1975,7 @@ bool oled::isConnected( ) const {
 void oled::showJogo32h( ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.clearDisplay( );
+    getDisplay().clearDisplay( );
 
     // Check if startup_message is set and looks like a file path
     if ( strlen( jumperlessConfig.top_oled.startup_message ) > 0 &&
@@ -1901,8 +1985,8 @@ void oled::showJogo32h( ) {
             // Successfully loaded custom bitmap, display it
             int x = ( displayWidth - customBitmapWidth ) / 2;
             int y = ( displayHeight - customBitmapHeight ) / 2;
-            display.drawBitmap( x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE );
-            display.display( );
+            getDisplay().drawBitmap( x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE );
+            getDisplay().display( );
             return;
         }
         // If loading failed, fall through to default image
@@ -1912,8 +1996,8 @@ void oled::showJogo32h( ) {
     if ( loadBitmapFromFile( "images/bubbleJumpThin.bin" ) ) {
         int x = ( displayWidth - customBitmapWidth ) / 2;
         int y = ( displayHeight - customBitmapHeight ) / 2;
-        display.drawBitmap( x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE );
-        display.display( );
+        getDisplay().drawBitmap( x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE );
+        getDisplay().display( );
         return;
     }
 
@@ -1921,13 +2005,11 @@ void oled::showJogo32h( ) {
     int x = ( displayWidth - jumperlessConfig.top_oled.width ) / 2;
     int y = ( displayHeight - jumperlessConfig.top_oled.height ) / 2;
 
-    display.drawBitmap( x, y, jogo32h, jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, SSD1306_WHITE );
-    display.display( );
+    getDisplay().drawBitmap( x, y, jogo32h, jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, SSD1306_WHITE );
+    getDisplay().display( );
 }
 
 void oled::oledPeriodic( ) {
-
-     //return;
     
     // CRITICAL FIX: Don't attempt OLED operations during command processing
     // OLED connect() calls refreshConnections() which can cause recursive refresh
@@ -1936,47 +2018,174 @@ void oled::oledPeriodic( ) {
     extern volatile bool refreshLocalInProgress;
     extern volatile bool core1busy;
     
-    if (refreshInProgress || refreshLocalInProgress || core1busy) {
+    if (refreshInProgress || refreshLocalInProgress || core1busy || jumperlessConfig.top_oled.enabled == 0) {
         // Skip OLED maintenance while command processing is active
         return;
     }
     
-    // CRITICAL: Add cooldown after command processing to prevent immediate OLED refresh
-    // This gives USB time to stabilize after rapid command execution
-    static unsigned long s_last_oled_periodic = 0;
-    const unsigned long OLED_COOLDOWN_MS = 100;  // Wait 100ms between OLED operations
-    if (millis() - s_last_oled_periodic < OLED_COOLDOWN_MS) {
+    // Adaptive check interval: poll faster when disconnected to catch reconnection quickly
+    // When connected: check every 3 seconds (save resources)
+    // When disconnected but retrying: check every 1 second (responsive reconnection)
+    // When max retries hit: check every 4 seconds (back off, allow retry reset)
+    unsigned long currentCheckInterval;
+    if (oledConnected) {
+        currentCheckInterval = 5000;  // Connected: slower polling
+    } else if (connectionRetries >= maxConnectionRetries) {
+        currentCheckInterval = 4000;  // Max retries: back off to save resources
+    } else {
+        currentCheckInterval = 2000;  // Disconnected: fast polling for quick reconnection
+    }
+    
+    if (millis() - lastConnectionCheck < currentCheckInterval) {
+        return;  // Not time to check yet
+    }
+    lastConnectionCheck = millis();
+
+    // Periodically reset connectionRetries to allow reconnection after hardware is plugged back in
+    // Reset every 4 seconds when max retries hit - this allows catching a re-plugged OLED
+    static unsigned long lastRetryReset = 0;
+    const unsigned long RETRY_RESET_INTERVAL_MS = 4000;  // Reset retry counter every 4 seconds
+    
+    if (connectionRetries >= maxConnectionRetries) {
+        if (millis() - lastRetryReset > RETRY_RESET_INTERVAL_MS) {
+            #if OLED_DEBUG
+            Serial.printf("[OLED] Retry reset: retries %d->0 after %lums backoff\n", connectionRetries, millis() - lastRetryReset);
+            #endif
+            connectionRetries = 0;
+            lastRetryReset = millis();
+        } else {
+            // Still in backoff period, skip this check
+            return;
+        }
+    }
+    
+    // Handle crossbar-connected OLED with lock_connection
+    if (jumperlessConfig.top_oled.lock_connection == 1 && !oledUsingHardwiredPins) {
+        bool hasI2CConnections = 
+            globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) &&
+            globalState.hasConnection(jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl);
+        
+        #if OLED_DEBUG
+        Serial.printf("[OLED] lock_connection=1, hasI2CConnections=%d\n", hasI2CConnections);
+        #endif
+        
+        if (!hasI2CConnections) {
+            // Re-establish crossbar connections
+            #if OLED_DEBUG
+            Serial.println("[OLED] No I2C connections, calling connect()");
+            #endif
+            connect();
+        } else if (!checkConnection(true)) {
+            // Connections exist but OLED not responding - try reconnecting
+            #if OLED_DEBUG
+            Serial.println("[OLED] I2C connections exist but OLED not responding, calling connect()");
+            #endif
+            connect();
+        }
+    }
+    
+    // Check and reconnect OLED - works for both crossbar and hardwired pins
+    bool hasI2CPath = oledUsingHardwiredPins || 
+        (globalState.hasConnection(jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda) &&
+         globalState.hasConnection(jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl));
+    
+    #if OLED_DEBUG
+    Serial.printf("[OLED] Periodic check: hardwired=%d, hasI2CPath=%d, connected=%d, retries=%d/%d\n", 
+        oledUsingHardwiredPins, hasI2CPath, oledConnected, connectionRetries, maxConnectionRetries);
+    #endif
+    
+    if (!hasI2CPath) {
+        // No I2C path available, nothing to do
+        #if OLED_DEBUG
+        Serial.println("[OLED] No I2C path available");
+        #endif
         return;
     }
-    s_last_oled_periodic = millis();
-
-    if ( millis( ) - lastConnectionCheck > connectionCheckInterval ) {
-        if ( jumperlessConfig.top_oled.lock_connection == 1 && !oledUsingHardwiredPins) {
-            if ( globalState.hasConnection( jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda ) == true && globalState.hasConnection( jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl ) == true ) {
-                if ( checkConnection( ) == false ) {
-                    connect( );
-                }
+    
+    // Track previous connection state to detect transitions
+    // This catches both hot-plug reconnection AND manual disable/enable via commands
+    bool wasConnectedBefore = oledConnected;
+    
+    // Force fresh I2C check, don't use cached result
+    bool connected = checkConnection(true);
+    #if OLED_DEBUG
+    Serial.printf("[OLED] checkConnection(force=true) = %d (was %d)\n", connected, wasConnectedBefore);
+    #endif
+    
+    if (connected) {
+        // OLED responding
+        if (connectionRetries > 0) {
+            #if OLED_DEBUG
+            Serial.printf("[OLED] Reconnected during retry! Resetting retries %d->0\n", connectionRetries);
+            #endif
+            connectionRetries = 0;
+        }
+        
+        // If we transitioned from disconnected to connected, reinitialize the display
+        // This handles both hot-plug and manual disable/enable via commands
+        if (!wasConnectedBefore) {
+            #if OLED_DEBUG
+            Serial.println("[OLED] Transition: disconnected -> connected, reinitializing display...");
+            #endif
+            
+            // Reset the I2C bus before reinit - this clears any stuck state from hot-unplug
+            // Wire1 is used for GPIO 6/7 (connection types 0, 1, 3)
+            // Wire is used for GPIO 4/5 (connection type 2)
+            int wireNum = (jumperlessConfig.top_oled.connection_type == 2) ? 0 : 1;
+            if (wireNum == 0) {
+                #if OLED_DEBUG
+                Serial.println("[OLED] Resetting Wire (I2C0) before reinit...");
+                #endif
+                Wire.end();
+                delay(50);
             } else {
-                connect( );
+                #if OLED_DEBUG
+                Serial.println("[OLED] Resetting Wire1 (I2C1) before reinit...");
+                #endif
+                Wire1.end();
+                delay(50);
+            }
+            
+            // Full reinit to get display in a known state
+            int result = init();
+            #if OLED_DEBUG
+            Serial.printf("[OLED] Reconnect init() returned %d\n", result);
+            #endif
+            
+            if (result != 0 && checkConnection(true)) {
+                #if OLED_DEBUG
+                Serial.println("[OLED] Reconnection complete! Refreshing display...");
+                #endif
+                getDisplay().clearDisplay();
+                showJogo32h();
+                getDisplay().display();
+                
+                // Give the display time to stabilize after refresh
+                delay(150);
+                
+                // Reset the check timer so we don't immediately re-check
+                lastConnectionCheck = millis();
             }
         }
-        lastConnectionCheck = millis( );
-        if ( globalState.hasConnection( jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.gpio_sda ) == true || oledUsingHardwiredPins ) {
-            if ( globalState.hasConnection( jumperlessConfig.top_oled.scl_row, jumperlessConfig.top_oled.gpio_scl ) == true || oledUsingHardwiredPins ) {
-                if ( checkConnection( ) == false ) {
-                    oledConnected = false;
-                    if ( connectionRetries < maxConnectionRetries ) {
-                        if ( init( ) != 0 ) {
-                            // Serial.print("\r                                          \r");
-                            // Serial.flush();
-                        }
-                    }
-                } else {
-                    connectionRetries = 0;
-                }
-            }
-        }
+        
+        lastRetryReset = millis();
+        return;
     }
+    
+    // Not connected - attempt reconnection with retry limiting
+    oledConnected = false;
+    
+    if (connectionRetries < maxConnectionRetries) {
+        connectionRetries++;
+        #if OLED_DEBUG
+        Serial.printf("[OLED] Disconnected, retry count: %d/%d (waiting for OLED to return)\n", connectionRetries, maxConnectionRetries);
+        #endif
+        
+        // Don't spam init() while OLED is unplugged - just wait for it to come back
+        // The reconnection logic above will handle reinit when checkConnection() succeeds
+    }
+    // Max retries reached - just waiting for backoff timer to reset
+    // The OLED will be reinitialized when it's detected as connected again
 }
 
 // TEST AND DEBUG FUNCTIONS
@@ -2062,7 +2271,7 @@ void oled::dumpFrameBufferQuarterSize( int clearFirst, int x_pos, int y_pos, int
     //     return;
     // }
 
-    uint8_t* buffer = display.getBuffer( );
+    uint8_t* buffer = getDisplay().getBuffer( );
     if ( !buffer ) {
         Serial.println( "No framebuffer available" );
         return;
@@ -2190,7 +2399,7 @@ void oled::dumpFrameBuffer( ) {
     //     return;
     // }
 
-    uint8_t* buffer = display.getBuffer( );
+    uint8_t* buffer = getDisplay().getBuffer( );
     if ( !buffer ) {
         Serial.println( "No framebuffer available" );
         return;
@@ -2297,12 +2506,12 @@ void oled::useSmallFont( SmallFont smallFont, const char* text, int16_t x, int16
         return;
 
     if ( clear ) {
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     setSmallFont( smallFont );
     setCursor( x, y );
-    display.print( text );
+    getDisplay().print( text );
 }
 
 void oled::useSmallFontAndRestore( SmallFont smallFont, const char* text, int16_t x, int16_t y, bool clear, bool show ) {
@@ -2310,7 +2519,7 @@ void oled::useSmallFontAndRestore( SmallFont smallFont, const char* text, int16_
         return;
 
     if ( clear ) {
-        display.clearDisplay( );
+        getDisplay().clearDisplay( );
     }
 
     setSmallFont( smallFont );
@@ -2322,10 +2531,10 @@ void oled::useSmallFontAndRestore( SmallFont smallFont, const char* text, int16_
     }
 
     setCursor( x, adjustedY );
-    display.print( text );
+    getDisplay().print( text );
 
     if ( show ) {
-        display.display( );
+        getDisplay().display( );
     }
 
     restoreNormalFont( );
@@ -2338,7 +2547,7 @@ void oled::restoreNormalFont( ) {
     if ( usingSmallFont && previousFont ) {
         currentFont = previousFont;
         currentFontFamily = previousFontFamily;
-        display.setFont( currentFont );
+        getDisplay().setFont( currentFont );
         usingSmallFont = false;
         previousFont = nullptr;
     }
@@ -2348,46 +2557,46 @@ void oled::restoreNormalFont( ) {
 void oled::drawLine( int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.drawLine( x0, y0, x1, y1, color );
+    getDisplay().drawLine( x0, y0, x1, y1, color );
 }
 
 void oled::fillRect( int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.fillRect( x, y, w, h, color );
+    getDisplay().fillRect( x, y, w, h, color );
 }
 
 // Simple framebuffer management
 void oled::clearFramebuffer( ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.clearDisplay( );
+    getDisplay().clearDisplay( );
 }
 
 void oled::setPixel( int16_t x, int16_t y, uint16_t color ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.drawPixel( x, y, color );
+    getDisplay().drawPixel( x, y, color );
 }
 
 void oled::drawChar( int16_t x, int16_t y, char c ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    int16_t savedX = display.getCursorX( );
-    int16_t savedY = display.getCursorY( );
-    display.setCursor( x, y );
-    display.print( c );
-    display.setCursor( savedX, savedY );
+    int16_t savedX = getDisplay().getCursorX( );
+    int16_t savedY = getDisplay().getCursorY( );
+    getDisplay().setCursor( x, y );
+    getDisplay().print( c );
+    getDisplay().setCursor( savedX, savedY );
 }
 
 void oled::drawText( int16_t x, int16_t y, const char* text ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    int16_t savedX = display.getCursorX( );
-    int16_t savedY = display.getCursorY( );
-    display.setCursor( x, y );
-    display.print( text );
-    display.setCursor( savedX, savedY );
+    int16_t savedX = getDisplay().getCursorX( );
+    int16_t savedY = getDisplay().getCursorY( );
+    getDisplay().setCursor( x, y );
+    getDisplay().print( text );
+    getDisplay().setCursor( savedX, savedY );
 }
 
 void oled::drawHighlightedChar( int16_t x, int16_t y, char c ) {
@@ -2398,31 +2607,31 @@ void oled::drawHighlightedChar( int16_t x, int16_t y, char c ) {
     int16_t x1, y1;
     uint16_t w, h;
     char charStr[ 2 ] = { c, '\0' };
-    display.getTextBounds( charStr, x, y, &x1, &y1, &w, &h );
+    getDisplay().getTextBounds( charStr, x, y, &x1, &y1, &w, &h );
 
     // Draw larger white background for border effect (1 pixel larger on all sides)
-    display.fillRect( x1 - 1, y1 - 1, w + 2, h + 2, SSD1306_WHITE );
+    getDisplay().fillRect( x1 - 1, y1 - 1, w + 2, h + 2, SSD1306_WHITE );
 
     // Draw character with black text on white background (inverted)
-    int16_t savedX = display.getCursorX( );
-    int16_t savedY = display.getCursorY( );
-    display.setCursor( x, y );
-    display.setTextColor( SSD1306_BLACK, SSD1306_WHITE ); // Black text on white background
-    display.print( c );
+    int16_t savedX = getDisplay().getCursorX( );
+    int16_t savedY = getDisplay().getCursorY( );
+    getDisplay().setCursor( x, y );
+    getDisplay().setTextColor( SSD1306_BLACK, SSD1306_WHITE ); // Black text on white background
+    getDisplay().print( c );
 
     // Restore default colors and cursor
-    display.setTextColor( SSD1306_WHITE, SSD1306_BLACK ); // Default colors
-    display.setCursor( savedX, savedY );
+    getDisplay().setTextColor( SSD1306_WHITE, SSD1306_BLACK ); // Default colors
+    getDisplay().setCursor( savedX, savedY );
 }
 
 void oled::flushFramebuffer( ) {
     if ( !oledConnected )
         return;
-    display.display( );
+    getDisplay().display( );
 }
 
 uint8_t* oled::getFramebuffer( ) {
-    return display.getBuffer( );
+    return getDisplay().getBuffer( );
 }
 
 // ============================================================================
@@ -2441,7 +2650,7 @@ void oled::setMode( OLEDMode mode ) {
     }
 
     // Save current framebuffer contents before switching
-    uint8_t* currentBuffer = display.getBuffer( );
+    uint8_t* currentBuffer = getDisplay().getBuffer( );
     if ( currentBuffer ) {
         if ( currentMode == MODE_LARGE_TEXT && largeTextFramebuffer ) {
             memcpy( largeTextFramebuffer, currentBuffer, framebufferSize );
@@ -2650,14 +2859,14 @@ void oled::clearToEndOfLine( ) {
         return;
     int x = termCursorX * 6;
     int y = termCursorY * 8;
-    display.fillRect( x, y, displayWidth - x, 8, SSD1306_BLACK );
+    getDisplay().fillRect( x, y, displayWidth - x, 8, SSD1306_BLACK );
 }
 
 void oled::clearLine( ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
     int y = termCursorY * 8;
-    display.fillRect( 0, y, displayWidth, 8, SSD1306_BLACK );
+    getDisplay().fillRect( 0, y, displayWidth, 8, SSD1306_BLACK );
 }
 
 void oled::clearToEndOfScreen( ) {
@@ -2667,14 +2876,14 @@ void oled::clearToEndOfScreen( ) {
 
     // Clear all lines below current
     for ( int line = termCursorY + 1; line < displayHeight / 8; line++ ) {
-        display.fillRect( 0, line * 8, displayWidth, 8, SSD1306_BLACK );
+        getDisplay().fillRect( 0, line * 8, displayWidth, 8, SSD1306_BLACK );
     }
 }
 
 void oled::clearScreen( ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
-    display.clearDisplay( );
+    getDisplay().clearDisplay( );
     termCursorX = 0;
     termCursorY = 0;
 }
@@ -2688,6 +2897,12 @@ int oled::connect( void ) {
     // }
     int found = -1;
 
+    #if OLED_DEBUG
+    Serial.printf("[OLED] connect(): hardwired=%d, sda_pin=%d, scl_pin=%d, sda_row=%d, scl_row=%d\n",
+        oledUsingHardwiredPins, jumperlessConfig.top_oled.sda_pin, jumperlessConfig.top_oled.scl_pin,
+        jumperlessConfig.top_oled.sda_row, jumperlessConfig.top_oled.scl_row);
+    #endif
+
     // If using hardwired RP6/RP7 (GPIO 6/7), skip crossbar bridge management
     if ( !oledUsingHardwiredPins ) {
         // Reserve pins on net map so UI shows them as I2C (not generic GPIO)
@@ -2696,20 +2911,35 @@ int oled::connect( void ) {
         // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_sda, -1, netSlot, 0);
         // removeBridgeFromNodeFile(jumperlessConfig.top_oled.gpio_scl, -1, netSlot, 0);
 
+        #if OLED_DEBUG
+        Serial.printf("[OLED] Setting up crossbar: gpio_sda=%d->row%d, gpio_scl=%d->row%d\n",
+            jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row,
+            jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row);
+        #endif
+
         // Use RAM-based state system for crossbar connections
         addBridgeToState( jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, 1 );
         addBridgeToState( jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, 1 );
 
         // Extra refresh to ensure OLED connections are applied
+        #if OLED_DEBUG
+        Serial.println("[OLED] Calling refreshConnections()...");
+        #endif
         refreshConnections( 1, 0, 0 );
-        // Serial.print("waitCore2     ");
-        // Serial.println(millis());
         waitCore2( );
+        #if OLED_DEBUG
+        Serial.println("[OLED] refreshConnections() done");
+        #endif
     }
 
-    // Serial.print("waitCore2Done  ");
-    // Serial.println(millis());
+    #if OLED_DEBUG
+    Serial.printf("[OLED] Calling initI2C(sda=%d, scl=%d, 400000)...\n", 
+        jumperlessConfig.top_oled.sda_pin, jumperlessConfig.top_oled.scl_pin);
+    #endif
     found = initI2C( jumperlessConfig.top_oled.sda_pin, jumperlessConfig.top_oled.scl_pin, 400000 );
+    #if OLED_DEBUG
+    Serial.printf("[OLED] initI2C returned %d\n", found);
+    #endif
 
     // Mark function map so scan/UI reflect I2C role
     if ( jumperlessConfig.top_oled.sda_pin >= 20 ) {
@@ -2720,13 +2950,17 @@ int oled::connect( void ) {
         gpio_function_map[ jumperlessConfig.top_oled.scl_pin - 20 ] = GPIO_FUNC_I2C;
         gpioState[ jumperlessConfig.top_oled.scl_pin - 20 ] = 6;
     }
-    // Serial.print("initI2C      ");
-    // Serial.println(millis());
 
     if ( found == -1 ) {
+        #if OLED_DEBUG
+        Serial.println("[OLED] connect() failed: initI2C returned -1");
+        #endif
         oledConnected = false;
         return 0;
     } else {
+        #if OLED_DEBUG
+        Serial.println("[OLED] connect() success");
+        #endif
         oledConnected = true;
         return found;
     }

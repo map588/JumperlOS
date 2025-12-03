@@ -3,11 +3,18 @@
 #include "config.h"
 #include <FatFS.h>
 #include "oled.h"
+#include "JumperlOS.h"  // For Service base class
 
 extern bool configChanged;
 extern bool autoCalibrationNeeded;
+// Flag to request async config save (set true to trigger background save)
+extern volatile bool configSavePending;
 // Global configuration instance
 extern struct config jumperlessConfig;
+// Shadow copy of last saved config for dirty tracking
+extern struct config lastSavedConfig;
+// Flag indicating if shadow config is valid
+extern bool shadowConfigValid;
 
 
 struct StringIntEntry {
@@ -28,6 +35,40 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
 // File operations
 void updateConfigFromFile(const char* filename);
 void saveConfigToFile(const char* filename);
+void saveConfigIncremental(const char* filename);  // Optimized save - only writes changed values
+bool configHasChanges();  // Returns true if config differs from last saved
+void updateShadowConfig();  // Copy current config to shadow
+
+// Debug timing for config save operations
+extern bool debugConfigSaveTiming;
+void setConfigSaveDebug(bool enable);  // Enable/disable timing debug output
+
+// Request async config save (non-blocking) - use this instead of saveConfig() for UI responsiveness
+void requestConfigSave();
+
+/**
+ * @brief Background config save service
+ * LOW priority - saves config to flash without blocking UI
+ * Set configSavePending = true to trigger a save
+ */
+class ConfigSaveService : public Service {
+public:
+    static ConfigSaveService& getInstance();
+    ConfigSaveService(const ConfigSaveService&) = delete;
+    ConfigSaveService& operator=(const ConfigSaveService&) = delete;
+    
+    ServiceStatus service() override;
+    const char* getName() const override { return "ConfigSave"; }
+    ServicePriority getPriority() const override { return ServicePriority::LOW; }
+    
+private:
+    ConfigSaveService() = default;
+    ~ConfigSaveService() = default;
+    static ConfigSaveService* instance;
+};
+
+// Global service reference (defined in JumperlOS.cpp)
+extern ConfigSaveService& configSaveService;
 
 // Serial operations
 void printConfigSectionToSerial(int section, bool showNames = true, bool pasteable = true);
@@ -117,10 +158,17 @@ const int uartFunctionTableSize = sizeof(uartFunctionTable) / sizeof(uartFunctio
 const StringIntEntry connectionTypeTable[] = {
     {"gpio_7_8", 0},
     {"rp6_rp7", 1},
+    {"i2c0", 2},
     {"internal_i2c0", 2},
+    {"internal", 2},      // Alias for internal_i2c0
+    {"intrnal", 2},
     {"7_8", 0},
     {"6_7", 1},
-    {"i2c0", 2},
+    {"gpio78", 0},
+    {"rp67", 1},
+    {"rp", 1},
+    {"gpio", 0},
+    {"custom", 3},
 };
 const int connectionTypeTableSize = sizeof(connectionTypeTable) / sizeof(connectionTypeTable[0]);
 

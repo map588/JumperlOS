@@ -47,7 +47,7 @@ CHIP_K, CHIP_L };                                           //60
 // {
 
 
-int indexByChip[MAX_BRIDGES] = {0};
+
 int indexByNet[MAX_BRIDGES] = {0};
 
 //#include <pico/rand.h>

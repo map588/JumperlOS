@@ -73,7 +73,7 @@ struct pathStruct{
 
 };
 
-extern int indexByChip[MAX_BRIDGES];
+
 extern int indexByNet[MAX_BRIDGES];
 
 void initNets(void);

@@ -17,8 +17,7 @@
 #include <cstring>
 #include "FilesystemStuff.h"  // For safe file operations
 
-// External objects
-extern Adafruit_SSD1306 display;
+// Display is accessed via getDisplay() from oled.h
 
 // Image viewer state
 static int currentImageIndex = 0;
@@ -171,7 +170,7 @@ bool loadAndDisplayImage(const char* filename) {
     
     // Display on OLED
     // Clear display completely first to prevent garbage
-    display.clearDisplay();
+    getDisplay().clearDisplay();
     
     // Check if bitmap needs padding to match display dimensions
     bool needsPadding = (width != oled.displayWidth || height != oled.displayHeight);
@@ -217,8 +216,8 @@ bool loadAndDisplayImage(const char* filename) {
             }
             
             // Display padded bitmap
-            display.drawBitmap(0, 0, paddedData, oled.displayWidth, oled.displayHeight, SSD1306_WHITE);
-            display.display();
+            getDisplay().drawBitmap(0, 0, paddedData, oled.displayWidth, oled.displayHeight, SSD1306_WHITE);
+            getDisplay().display();
             
             delete[] paddedData;
             delete[] bitmapData;
@@ -237,14 +236,14 @@ bool loadAndDisplayImage(const char* filename) {
             // Fall back to centering without padding
             int x = (oled.displayWidth - width) / 2;
             int y = (oled.displayHeight - height) / 2;
-            display.drawBitmap(x, y, bitmapData, width, height, SSD1306_WHITE);
-            display.display();
+            getDisplay().drawBitmap(x, y, bitmapData, width, height, SSD1306_WHITE);
+            getDisplay().display();
             delete[] bitmapData;
         }
     } else {
         // No padding needed, display as-is
-        display.drawBitmap(0, 0, bitmapData, width, height, SSD1306_WHITE);
-        display.display();
+        getDisplay().drawBitmap(0, 0, bitmapData, width, height, SSD1306_WHITE);
+        getDisplay().display();
         delete[] bitmapData;
     }
     

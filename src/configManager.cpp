@@ -26,8 +26,62 @@
 
 bool configChanged = false;
 bool autoCalibrationNeeded = false;
+// Flag for async config save - set true to request background save
+volatile bool configSavePending = false;
 
 struct config jumperlessConfig;
+// Shadow copy of last saved config for dirty tracking (avoids unnecessary writes)
+struct config lastSavedConfig;
+bool shadowConfigValid = false;
+
+// ============================================================================
+// ConfigSaveService - Background config save service
+// ============================================================================
+ConfigSaveService* ConfigSaveService::instance = nullptr;
+
+ConfigSaveService& ConfigSaveService::getInstance() {
+    if (!instance) {
+        instance = new ConfigSaveService();
+    }
+    return *instance;
+}
+
+// Request async config save (non-blocking)
+void requestConfigSave() {
+    configSavePending = true;
+}
+
+ServiceStatus ConfigSaveService::service() {
+    // Check both explicit request AND configChanged flag
+    // This allows saves from anywhere in the UI, not just main menu
+    if (!configSavePending && !configChanged) {
+        return ServiceStatus::IDLE;
+    }
+    
+    // Don't save during early boot
+    if (millis() < 3000) {
+        return ServiceStatus::IDLE;
+    }
+    
+    // Clear flags first to avoid re-entry
+    configSavePending = false;
+    configChanged = false;
+    
+    if (debugConfigSaveTiming) {
+        Serial.println("[ConfigSaveService] Starting background save...");
+        Serial.flush();
+    }
+    
+    // Do the actual save
+    saveConfig();
+    
+    if (debugConfigSaveTiming) {
+        Serial.println("[ConfigSaveService] Background save complete");
+        Serial.flush();
+    }
+    
+    return ServiceStatus::IDLE;
+}
 
 int showNames = 1;
 int lastShowNames = 1;
@@ -39,17 +93,30 @@ void toLower(char* str) {
     }
 }
 
-// Helper function to trim whitespace
+// Helper function to trim whitespace (in-place)
 void trim(char* str) {
-    char* end;
-    // Trim leading space
-    while(isspace((unsigned char)*str)) str++;
-    if(*str == 0) return;
-    // Trim trailing space
-    end = str + strlen(str) - 1;
-    while(end > str && isspace((unsigned char)*end)) end--;
-    // Write new null terminator
-    *(end+1) = 0;
+    if (str == nullptr || *str == '\0') return;
+    
+    // Find first non-whitespace character
+    char* start = str;
+    while(isspace((unsigned char)*start)) start++;
+    
+    // If all whitespace, make empty string
+    if(*start == '\0') {
+        str[0] = '\0';
+        return;
+    }
+    
+    // Find last non-whitespace character
+    char* end = start + strlen(start) - 1;
+    while(end > start && isspace((unsigned char)*end)) end--;
+    
+    // Calculate new length and move string to beginning if needed
+    size_t newLen = (size_t)(end - start + 1);
+    if (start != str) {
+        memmove(str, start, newLen);
+    }
+    str[newLen] = '\0';
 }
 
 // Parse comma-separated integers into an array
@@ -240,13 +307,12 @@ int parseConnectionType(const char* str) {
 
 // Get connection type string from value
 const char* getConnectionTypeString(int connectionType) {
-    switch (connectionType) {
-        case 0: return "gpio_7_8";
-        case 1: return "rp6_rp7";
-        case 2: return "internal_i2c0";
-        case 3: return "custom";
-        default: return "gpio_7_8";
+    for (int i = 0; i < connectionTypeTableSize; i++) {
+        if (connectionTypeTable[i].value == connectionType) {
+            return connectionTypeTable[i].name;
+        }
     }
+    return "unknown";
 }
 
 // Update OLED pins based on connection_type
@@ -296,6 +362,9 @@ void updateOledPinsForConnectionType(int connectionType) {
             break;
     }
     jumperlessConfig.top_oled.connection_type = connectionType;
+    
+    // Update global hardwired pins flag - types 1 (RP6/RP7) and 2 (internal I2C0) are hardwired
+    oledUsingHardwiredPins = (connectionType == 1 || connectionType == 2);
 }
 
 void printArbitraryFunctionTable(void) {
@@ -374,7 +443,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
 
         if (saved_probe_min == 0 || saved_probe_max == 0) {
         jumperlessConfig.calibration.probe_min = 15;
-        jumperlessConfig.calibration.probe_max = 4060;
+        jumperlessConfig.calibration.probe_max = 4040;
     } 
 
 
@@ -409,18 +478,21 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     jumperlessConfig.calibration.probe_current_zero = saved_probe_current_zero;
     } 
 
-
-
-    saveConfig();
+    // NOTE: Don't call saveConfig() here - callers are responsible for saving
+    // after they've had a chance to restore user settings they want to preserve
 }
 
 void updateConfigFromFile(const char* filename) {
     // Check if file exists using safe function
     if (!safeFileExists(filename, 1000)) {
+        Serial.println("updateConfigFromFile: File NOT FOUND, resetting to defaults!");
         firstStart = 1;
         resetConfigToDefaults();
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] TRIGGER: first boot - creating config file");
+        saveConfig();  // Create config file with defaults
         return;
     }
+    Serial.println("updateConfigFromFile: Found " + String(filename));
 
     // Open config file using safe function
     File file = safeFileOpen(filename, "r", 2000);
@@ -463,6 +535,13 @@ void updateConfigFromFile(const char* filename) {
         strcpy(value, equalsPos + 1);
         trim(key);
         trim(value);
+        
+        // Strip trailing semicolon from value (config file uses semicolons as line terminators)
+        size_t valueLen = strlen(value);
+        if (valueLen > 0 && value[valueLen - 1] == ';') {
+            value[valueLen - 1] = '\0';
+        }
+        
         toLower(key);
 
         // Update config based on section and key
@@ -702,6 +781,7 @@ void updateConfigFromFile(const char* filename) {
             jumperlessConfig.top_oled = savedConfig.top_oled;
             
             // Save the updated config with current firmware version
+            if (debugConfigSaveTiming) Serial.println("[ConfigSave] TRIGGER: firmware version update");
             saveConfig();
             //Serial.println("Config updated with new firmware version.");
             
@@ -751,6 +831,7 @@ void updateConfigFromFile(const char* filename) {
         jumperlessConfig.top_oled = savedConfig.top_oled;
         
         // Save the updated config with preserved user settings + any new defaults
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] TRIGGER: major version diff reset");
         saveConfig();
         return;
     }
@@ -760,6 +841,11 @@ void updateConfigFromFile(const char* filename) {
 }
 
 void saveConfigToFile(const char* filename) {
+    uint32_t startTime = micros();
+    if (debugConfigSaveTiming) {
+        Serial.println("[ConfigSave] FULL SAVE starting...");
+    }
+    
     // CRITICAL: Pause Core2 during flash write operations
     bool was_paused = pauseCore2ForFlash(100);
     
@@ -913,30 +999,840 @@ void saveConfigToFile(const char* filename) {
     file.flush();
     safeFileClose(file, true);  // Write mode, needs flush
     unpauseCore2ForFlash(was_paused);
+    
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave] FULL SAVE complete: ");
+        Serial.print(micros() - startTime);
+        Serial.println(" us");
+    }
+}
+
+// Copy current config to shadow (call after successful save)
+void updateShadowConfig() {
+    memcpy(&lastSavedConfig, &jumperlessConfig, sizeof(struct config));
+    // Note: display_type is a const char* pointer, not a char array
+    // The pointer itself gets copied by memcpy, which is fine since
+    // it points to string literals that don't change
+    shadowConfigValid = true;
+}
+
+// Compare current config with last saved to detect changes
+// Returns true if config has been modified since last save
+bool configHasChanges() {
+    if (!shadowConfigValid) return true;  // No shadow = need to save
+    
+    // Compare each section individually for clarity and debuggability
+    // Note: We compare individual fields rather than memcmp to handle floats properly
+    
+    // Firmware section
+    if (strcmp(jumperlessConfig.firmware.last_version, lastSavedConfig.firmware.last_version) != 0) return true;
+    if (jumperlessConfig.firmware.files_provisioned != lastSavedConfig.firmware.files_provisioned) return true;
+    
+    // Hardware section
+    if (jumperlessConfig.hardware.generation != lastSavedConfig.hardware.generation) return true;
+    if (jumperlessConfig.hardware.revision != lastSavedConfig.hardware.revision) return true;
+    if (jumperlessConfig.hardware.probe_revision != lastSavedConfig.hardware.probe_revision) return true;
+    
+    // DACs section
+    if (jumperlessConfig.dacs.set_dacs_on_boot != lastSavedConfig.dacs.set_dacs_on_boot) return true;
+    if (jumperlessConfig.dacs.set_rails_on_boot != lastSavedConfig.dacs.set_rails_on_boot) return true;
+    if (jumperlessConfig.dacs.probe_power_dac != lastSavedConfig.dacs.probe_power_dac) return true;
+    if (jumperlessConfig.dacs.limit_max != lastSavedConfig.dacs.limit_max) return true;
+    if (jumperlessConfig.dacs.limit_min != lastSavedConfig.dacs.limit_min) return true;
+    
+    // Debug section
+    if (jumperlessConfig.debug.file_parsing != lastSavedConfig.debug.file_parsing) return true;
+    if (jumperlessConfig.debug.net_manager != lastSavedConfig.debug.net_manager) return true;
+    if (jumperlessConfig.debug.nets_to_chips != lastSavedConfig.debug.nets_to_chips) return true;
+    if (jumperlessConfig.debug.nets_to_chips_alt != lastSavedConfig.debug.nets_to_chips_alt) return true;
+    if (jumperlessConfig.debug.leds != lastSavedConfig.debug.leds) return true;
+    if (jumperlessConfig.debug.logic_analyzer != lastSavedConfig.debug.logic_analyzer) return true;
+    if (jumperlessConfig.debug.arduino != lastSavedConfig.debug.arduino) return true;
+    
+    // Routing section
+    if (jumperlessConfig.routing.stack_paths != lastSavedConfig.routing.stack_paths) return true;
+    if (jumperlessConfig.routing.stack_rails != lastSavedConfig.routing.stack_rails) return true;
+    if (jumperlessConfig.routing.stack_dacs != lastSavedConfig.routing.stack_dacs) return true;
+    if (jumperlessConfig.routing.rail_priority != lastSavedConfig.routing.rail_priority) return true;
+    
+    // Calibration section
+    if (jumperlessConfig.calibration.top_rail_zero != lastSavedConfig.calibration.top_rail_zero) return true;
+    if (jumperlessConfig.calibration.top_rail_spread != lastSavedConfig.calibration.top_rail_spread) return true;
+    if (jumperlessConfig.calibration.bottom_rail_zero != lastSavedConfig.calibration.bottom_rail_zero) return true;
+    if (jumperlessConfig.calibration.bottom_rail_spread != lastSavedConfig.calibration.bottom_rail_spread) return true;
+    if (jumperlessConfig.calibration.dac_0_zero != lastSavedConfig.calibration.dac_0_zero) return true;
+    if (jumperlessConfig.calibration.dac_0_spread != lastSavedConfig.calibration.dac_0_spread) return true;
+    if (jumperlessConfig.calibration.dac_1_zero != lastSavedConfig.calibration.dac_1_zero) return true;
+    if (jumperlessConfig.calibration.dac_1_spread != lastSavedConfig.calibration.dac_1_spread) return true;
+    if (jumperlessConfig.calibration.adc_0_zero != lastSavedConfig.calibration.adc_0_zero) return true;
+    if (jumperlessConfig.calibration.adc_0_spread != lastSavedConfig.calibration.adc_0_spread) return true;
+    if (jumperlessConfig.calibration.adc_1_zero != lastSavedConfig.calibration.adc_1_zero) return true;
+    if (jumperlessConfig.calibration.adc_1_spread != lastSavedConfig.calibration.adc_1_spread) return true;
+    if (jumperlessConfig.calibration.adc_2_zero != lastSavedConfig.calibration.adc_2_zero) return true;
+    if (jumperlessConfig.calibration.adc_2_spread != lastSavedConfig.calibration.adc_2_spread) return true;
+    if (jumperlessConfig.calibration.adc_3_zero != lastSavedConfig.calibration.adc_3_zero) return true;
+    if (jumperlessConfig.calibration.adc_3_spread != lastSavedConfig.calibration.adc_3_spread) return true;
+    if (jumperlessConfig.calibration.adc_4_zero != lastSavedConfig.calibration.adc_4_zero) return true;
+    if (jumperlessConfig.calibration.adc_4_spread != lastSavedConfig.calibration.adc_4_spread) return true;
+    if (jumperlessConfig.calibration.adc_7_zero != lastSavedConfig.calibration.adc_7_zero) return true;
+    if (jumperlessConfig.calibration.adc_7_spread != lastSavedConfig.calibration.adc_7_spread) return true;
+    if (jumperlessConfig.calibration.probe_max != lastSavedConfig.calibration.probe_max) return true;
+    if (jumperlessConfig.calibration.probe_min != lastSavedConfig.calibration.probe_min) return true;
+    if (jumperlessConfig.calibration.probe_switch_threshold_high != lastSavedConfig.calibration.probe_switch_threshold_high) return true;
+    if (jumperlessConfig.calibration.probe_switch_threshold_low != lastSavedConfig.calibration.probe_switch_threshold_low) return true;
+    if (jumperlessConfig.calibration.probe_switch_threshold != lastSavedConfig.calibration.probe_switch_threshold) return true;
+    if (jumperlessConfig.calibration.measure_mode_output_voltage != lastSavedConfig.calibration.measure_mode_output_voltage) return true;
+    if (jumperlessConfig.calibration.probe_current_zero != lastSavedConfig.calibration.probe_current_zero) return true;
+    
+    // Logo pads section
+    if (jumperlessConfig.logo_pads.top_guy != lastSavedConfig.logo_pads.top_guy) return true;
+    if (jumperlessConfig.logo_pads.bottom_guy != lastSavedConfig.logo_pads.bottom_guy) return true;
+    if (jumperlessConfig.logo_pads.building_pad_top != lastSavedConfig.logo_pads.building_pad_top) return true;
+    if (jumperlessConfig.logo_pads.building_pad_bottom != lastSavedConfig.logo_pads.building_pad_bottom) return true;
+    
+    // Display section
+    if (jumperlessConfig.display.lines_wires != lastSavedConfig.display.lines_wires) return true;
+    if (jumperlessConfig.display.menu_brightness != lastSavedConfig.display.menu_brightness) return true;
+    if (jumperlessConfig.display.led_brightness != lastSavedConfig.display.led_brightness) return true;
+    if (jumperlessConfig.display.rail_brightness != lastSavedConfig.display.rail_brightness) return true;
+    if (jumperlessConfig.display.special_net_brightness != lastSavedConfig.display.special_net_brightness) return true;
+    if (jumperlessConfig.display.net_color_mode != lastSavedConfig.display.net_color_mode) return true;
+    if (jumperlessConfig.display.dump_leds != lastSavedConfig.display.dump_leds) return true;
+    if (jumperlessConfig.display.dump_format != lastSavedConfig.display.dump_format) return true;
+    if (jumperlessConfig.display.terminal_line_buffering != lastSavedConfig.display.terminal_line_buffering) return true;
+    
+    // Serial 1 section
+    if (jumperlessConfig.serial_1.function != lastSavedConfig.serial_1.function) return true;
+    if (jumperlessConfig.serial_1.baud_rate != lastSavedConfig.serial_1.baud_rate) return true;
+    if (jumperlessConfig.serial_1.print_passthrough != lastSavedConfig.serial_1.print_passthrough) return true;
+    if (jumperlessConfig.serial_1.connect_on_boot != lastSavedConfig.serial_1.connect_on_boot) return true;
+    if (jumperlessConfig.serial_1.lock_connection != lastSavedConfig.serial_1.lock_connection) return true;
+    if (jumperlessConfig.serial_1.autoconnect_flashing != lastSavedConfig.serial_1.autoconnect_flashing) return true;
+    if (jumperlessConfig.serial_1.async_passthrough != lastSavedConfig.serial_1.async_passthrough) return true;
+    
+    // Serial 2 section
+    if (jumperlessConfig.serial_2.function != lastSavedConfig.serial_2.function) return true;
+    if (jumperlessConfig.serial_2.baud_rate != lastSavedConfig.serial_2.baud_rate) return true;
+    if (jumperlessConfig.serial_2.print_passthrough != lastSavedConfig.serial_2.print_passthrough) return true;
+    if (jumperlessConfig.serial_2.connect_on_boot != lastSavedConfig.serial_2.connect_on_boot) return true;
+    if (jumperlessConfig.serial_2.lock_connection != lastSavedConfig.serial_2.lock_connection) return true;
+    if (jumperlessConfig.serial_2.autoconnect_flashing != lastSavedConfig.serial_2.autoconnect_flashing) return true;
+    
+    // Top OLED section
+    if (jumperlessConfig.top_oled.enabled != lastSavedConfig.top_oled.enabled) return true;
+    if (jumperlessConfig.top_oled.i2c_address != lastSavedConfig.top_oled.i2c_address) return true;
+    if (jumperlessConfig.top_oled.width != lastSavedConfig.top_oled.width) return true;
+    if (jumperlessConfig.top_oled.height != lastSavedConfig.top_oled.height) return true;
+    if (jumperlessConfig.top_oled.connection_type != lastSavedConfig.top_oled.connection_type) return true;
+    if (jumperlessConfig.top_oled.sda_pin != lastSavedConfig.top_oled.sda_pin) return true;
+    if (jumperlessConfig.top_oled.scl_pin != lastSavedConfig.top_oled.scl_pin) return true;
+    if (jumperlessConfig.top_oled.gpio_sda != lastSavedConfig.top_oled.gpio_sda) return true;
+    if (jumperlessConfig.top_oled.gpio_scl != lastSavedConfig.top_oled.gpio_scl) return true;
+    if (jumperlessConfig.top_oled.sda_row != lastSavedConfig.top_oled.sda_row) return true;
+    if (jumperlessConfig.top_oled.scl_row != lastSavedConfig.top_oled.scl_row) return true;
+    if (jumperlessConfig.top_oled.connect_on_boot != lastSavedConfig.top_oled.connect_on_boot) return true;
+    if (jumperlessConfig.top_oled.lock_connection != lastSavedConfig.top_oled.lock_connection) return true;
+    if (jumperlessConfig.top_oled.show_in_terminal != lastSavedConfig.top_oled.show_in_terminal) return true;
+    if (jumperlessConfig.top_oled.font != lastSavedConfig.top_oled.font) return true;
+    if (strcmp(jumperlessConfig.top_oled.startup_message, lastSavedConfig.top_oled.startup_message) != 0) return true;
+    
+    return false;  // No changes detected
+}
+
+// Structure to hold a config key-value pair for incremental updates
+struct ConfigKeyValue {
+    char section[32];
+    char key[32];
+    char value[64];
+};
+
+// Helper to format a config value for writing
+static void formatConfigValue(char* buf, size_t bufSize, const char* key, int value) {
+    snprintf(buf, bufSize, "%s = %d;", key, value);
+}
+
+static void formatConfigValueFloat(char* buf, size_t bufSize, const char* key, float value) {
+    snprintf(buf, bufSize, "%s = %.2f;", key, value);
+}
+
+static void formatConfigValueBool(char* buf, size_t bufSize, const char* key, bool value) {
+    snprintf(buf, bufSize, "%s = %d;", key, value ? 1 : 0);
+}
+
+static void formatConfigValueStr(char* buf, size_t bufSize, const char* key, const char* value) {
+    snprintf(buf, bufSize, "%s = %s;", key, value);
+}
+
+// Check if config file has all required sections and keys
+// Returns true if file is complete, false if new options need to be added
+static bool configFileIsComplete(const char* fileContent) {
+    // Check for essential section headers - if any missing, need full rewrite
+    // This list should be updated when new sections are added
+    const char* requiredSections[] = {
+        "[config]", "[firmware]", "[hardware]", "[dacs]", "[debug]",
+        "[routing]", "[calibration]", "[logo_pads]", "[display]",
+        "[serial_1]", "[serial_2]", "[top_oled]"
+    };
+    const int numRequired = sizeof(requiredSections) / sizeof(requiredSections[0]);
+    
+    for (int i = 0; i < numRequired; i++) {
+        if (strstr(fileContent, requiredSections[i]) == NULL) {
+            Serial.print("Config missing section: ");
+            Serial.println(requiredSections[i]);
+            return false;
+        }
+    }
+    
+    // Check for some key fields that might be new in recent firmware
+    // Add new keys here when they're added to config.h
+    const char* requiredKeys[] = {
+        "firmware_version",
+        "probe_switch_threshold_high",
+        "probe_switch_threshold_low",
+        "measure_mode_output_voltage",
+        "probe_current_zero",
+        "async_passthrough"
+    };
+    const int numKeys = sizeof(requiredKeys) / sizeof(requiredKeys[0]);
+    
+    for (int i = 0; i < numKeys; i++) {
+        if (strstr(fileContent, requiredKeys[i]) == NULL) {
+            Serial.print("Config missing key: ");
+            Serial.println(requiredKeys[i]);
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+// Debug flag for config save timing - set to true to see performance metrics
+// Enable with setConfigSaveDebug(true) or via serial command
+bool debugConfigSaveTiming = false;
+
+void setConfigSaveDebug(bool enable) {
+    debugConfigSaveTiming = enable;
+    Serial.print("[ConfigSave] Debug timing ");
+    Serial.println(enable ? "ENABLED" : "DISABLED");
+}
+
+// Optimized incremental save - reads existing file, updates changed values, writes once
+// This minimizes flash writes by only updating when necessary
+void saveConfigIncremental(const char* filename) {
+    uint32_t totalStartTime = micros();
+    uint32_t stepTime;
+    
+    // First check if anything actually changed
+    stepTime = micros();
+    bool hasChanges = configHasChanges();
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave] hasChanges check: ");
+        Serial.print(micros() - stepTime);
+        Serial.print(" us (shadow valid: ");
+        Serial.print(shadowConfigValid ? "yes" : "NO - first save");
+        Serial.println(")");
+    }
+    
+    if (!hasChanges) {
+        if (debugConfigSaveTiming) {
+            Serial.print("[ConfigSave] SKIPPED - no changes. Total: ");
+            Serial.print(micros() - totalStartTime);
+            Serial.println(" us");
+        }
+        return;
+    }
+    
+    // Allocate buffer for file content (config is ~4KB)
+    // Use smaller buffers to reduce heap pressure - allocate sequentially
+    const size_t MAX_CONFIG_SIZE = 3000;  // 6KB should fit config
+    char* fileContent = (char*)malloc(MAX_CONFIG_SIZE);
+    if (!fileContent) {
+        Serial.println("saveConfigIncremental: malloc1 failed, falling back to full save");
+        saveConfigToFile(filename);
+        updateShadowConfig();
+        return;
+    }
+    
+    char* newContent = (char*)malloc(MAX_CONFIG_SIZE);
+    if (!newContent) {
+        Serial.println("saveConfigIncremental: malloc2 failed, falling back to full save");
+        free(fileContent);
+        saveConfigToFile(filename);
+        updateShadowConfig();
+        return;
+    }
+    
+    // Read existing file content
+    stepTime = micros();
+    size_t bytesRead = 0;
+    bool fileExists = safeFileReadAll(filename, fileContent, MAX_CONFIG_SIZE, &bytesRead, 2000);
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave] File read (");
+        Serial.print(bytesRead);
+        Serial.print(" bytes): ");
+        Serial.print(micros() - stepTime);
+        Serial.println(" us");
+    }
+    
+    if (!fileExists || bytesRead == 0) {
+        // File doesn't exist or is empty - do full save
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] No existing file, doing full save");
+        free(fileContent);
+        free(newContent);
+        saveConfigToFile(filename);
+        updateShadowConfig();
+        return;
+    }
+    
+    // Check if file has all required sections and keys
+    // If any are missing (e.g., new options from firmware update), do full save
+    stepTime = micros();
+    bool isComplete = configFileIsComplete(fileContent);
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave] Completeness check: ");
+        Serial.print(micros() - stepTime);
+        Serial.println(" us");
+    }
+    
+    if (!isComplete) {
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] File incomplete, doing full save");
+        Serial.println("Config file incomplete, doing full save to add new options");
+        free(fileContent);
+        free(newContent);
+        saveConfigToFile(filename);
+        updateShadowConfig();
+        return;
+    }
+    
+    // Parse and rebuild file with updated values
+    // We process line by line, updating values as needed
+    stepTime = micros();
+    char* srcPos = fileContent;
+    char* dstPos = newContent;
+    char* dstEnd = newContent + MAX_CONFIG_SIZE - 256;  // Leave room for additions
+    
+    char currentSection[32] = "";
+    char line[256];
+    
+    // Track which keys we've seen to detect missing new options
+    bool seenKeys[128] = {false};  // Simple bitset for tracking
+    int keyIndex = 0;
+    
+    // Helper lambda-like structure for key tracking
+    #define MARK_KEY_SEEN(section, key) \
+        do { if (keyIndex < 128) seenKeys[keyIndex++] = true; } while(0)
+    
+    while (*srcPos && dstPos < dstEnd) {
+        // Extract one line
+        char* lineEnd = strchr(srcPos, '\n');
+        size_t lineLen;
+        if (lineEnd) {
+            lineLen = lineEnd - srcPos;
+            if (lineLen > sizeof(line) - 1) lineLen = sizeof(line) - 1;
+            memcpy(line, srcPos, lineLen);
+            line[lineLen] = '\0';
+            srcPos = lineEnd + 1;
+        } else {
+            lineLen = strlen(srcPos);
+            if (lineLen > sizeof(line) - 1) lineLen = sizeof(line) - 1;
+            memcpy(line, srcPos, lineLen);
+            line[lineLen] = '\0';
+            srcPos += lineLen;
+        }
+        
+        // Trim the line for parsing
+        char trimmedLine[256];
+        strncpy(trimmedLine, line, sizeof(trimmedLine));
+        trim(trimmedLine);
+        
+        // Check for section header
+        if (trimmedLine[0] == '[' && trimmedLine[strlen(trimmedLine)-1] == ']') {
+            strncpy(currentSection, trimmedLine + 1, strlen(trimmedLine) - 2);
+            currentSection[strlen(trimmedLine) - 2] = '\0';
+            toLower(currentSection);
+            
+            // Copy section header as-is
+            int written = snprintf(dstPos, dstEnd - dstPos, "%s\n", line);
+            dstPos += written;
+            continue;
+        }
+        
+        // Check for key=value
+        char* equalsPos = strchr(trimmedLine, '=');
+        if (equalsPos && trimmedLine[0] != '#' && !(trimmedLine[0] == '/' && trimmedLine[1] == '/')) {
+            char key[64];
+            size_t keyLen = equalsPos - trimmedLine;
+            if (keyLen > sizeof(key) - 1) keyLen = sizeof(key) - 1;
+            memcpy(key, trimmedLine, keyLen);
+            key[keyLen] = '\0';
+            trim(key);
+            toLower(key);
+            
+            // Generate updated line based on section and key
+            char newLine[256];
+            bool updated = false;
+            
+            // Match section and key to generate new value
+            //! [config] section
+            if (strcmp(currentSection, "config") == 0) {
+                if (strcmp(key, "firmware_version") == 0) {
+                    snprintf(newLine, sizeof(newLine), "firmware_version = %s;", firmwareVersion);
+                    updated = true;
+                }
+            }
+            //! [firmware] section
+            else if (strcmp(currentSection, "firmware") == 0) {
+                if (strcmp(key, "last_version") == 0) {
+                    snprintf(newLine, sizeof(newLine), "last_version = %s;", jumperlessConfig.firmware.last_version);
+                    updated = true;
+                } else if (strcmp(key, "files_provisioned") == 0) {
+                    snprintf(newLine, sizeof(newLine), "files_provisioned = %d;", jumperlessConfig.firmware.files_provisioned ? 1 : 0);
+                    updated = true;
+                }
+            }
+            //! [hardware] section
+            else if (strcmp(currentSection, "hardware") == 0) {
+                if (strcmp(key, "generation") == 0) {
+                    snprintf(newLine, sizeof(newLine), "generation = %d;", jumperlessConfig.hardware.generation);
+                    updated = true;
+                } else if (strcmp(key, "revision") == 0) {
+                    snprintf(newLine, sizeof(newLine), "revision = %d;", jumperlessConfig.hardware.revision);
+                    updated = true;
+                } else if (strcmp(key, "probe_revision") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_revision = %d;", jumperlessConfig.hardware.probe_revision);
+                    updated = true;
+                }
+            }
+            //! [dacs] section
+            else if (strcmp(currentSection, "dacs") == 0) {
+                if (strcmp(key, "set_dacs_on_boot") == 0) {
+                    snprintf(newLine, sizeof(newLine), "set_dacs_on_boot = %d;", jumperlessConfig.dacs.set_dacs_on_boot ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "set_rails_on_boot") == 0) {
+                    snprintf(newLine, sizeof(newLine), "set_rails_on_boot = %d;", jumperlessConfig.dacs.set_rails_on_boot ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "probe_power_dac") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_power_dac = %d;", jumperlessConfig.dacs.probe_power_dac == 0 ? 0 : 1);
+                    updated = true;
+                } else if (strcmp(key, "limit_max") == 0) {
+                    snprintf(newLine, sizeof(newLine), "limit_max = %.2f;", jumperlessConfig.dacs.limit_max);
+                    updated = true;
+                } else if (strcmp(key, "limit_min") == 0) {
+                    snprintf(newLine, sizeof(newLine), "limit_min = %.2f;", jumperlessConfig.dacs.limit_min);
+                    updated = true;
+                }
+            }
+            //! [debug] section
+            else if (strcmp(currentSection, "debug") == 0) {
+                if (strcmp(key, "file_parsing") == 0) {
+                    snprintf(newLine, sizeof(newLine), "file_parsing = %d;", jumperlessConfig.debug.file_parsing ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "net_manager") == 0) {
+                    snprintf(newLine, sizeof(newLine), "net_manager = %d;", jumperlessConfig.debug.net_manager ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "nets_to_chips") == 0) {
+                    snprintf(newLine, sizeof(newLine), "nets_to_chips = %d;", jumperlessConfig.debug.nets_to_chips ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "nets_to_chips_alt") == 0) {
+                    snprintf(newLine, sizeof(newLine), "nets_to_chips_alt = %d;", jumperlessConfig.debug.nets_to_chips_alt ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "leds") == 0) {
+                    snprintf(newLine, sizeof(newLine), "leds = %d;", jumperlessConfig.debug.leds ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "logic_analyzer") == 0) {
+                    snprintf(newLine, sizeof(newLine), "logic_analyzer = %d;", jumperlessConfig.debug.logic_analyzer ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "arduino") == 0) {
+                    snprintf(newLine, sizeof(newLine), "arduino = %d;", jumperlessConfig.debug.arduino);
+                    updated = true;
+                }
+            }
+            //! [routing] section
+            else if (strcmp(currentSection, "routing") == 0) {
+                if (strcmp(key, "stack_paths") == 0) {
+                    snprintf(newLine, sizeof(newLine), "stack_paths = %d;", jumperlessConfig.routing.stack_paths);
+                    updated = true;
+                } else if (strcmp(key, "stack_rails") == 0) {
+                    snprintf(newLine, sizeof(newLine), "stack_rails = %d;", jumperlessConfig.routing.stack_rails);
+                    updated = true;
+                } else if (strcmp(key, "stack_dacs") == 0) {
+                    snprintf(newLine, sizeof(newLine), "stack_dacs = %d;", jumperlessConfig.routing.stack_dacs);
+                    updated = true;
+                } else if (strcmp(key, "rail_priority") == 0) {
+                    snprintf(newLine, sizeof(newLine), "rail_priority = %d;", jumperlessConfig.routing.rail_priority);
+                    updated = true;
+                }
+            }
+            //! [calibration] section
+            else if (strcmp(currentSection, "calibration") == 0) {
+                if (strcmp(key, "top_rail_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "top_rail_zero = %d;", jumperlessConfig.calibration.top_rail_zero);
+                    updated = true;
+                } else if (strcmp(key, "top_rail_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "top_rail_spread = %.2f;", jumperlessConfig.calibration.top_rail_spread);
+                    updated = true;
+                } else if (strcmp(key, "bottom_rail_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "bottom_rail_zero = %d;", jumperlessConfig.calibration.bottom_rail_zero);
+                    updated = true;
+                } else if (strcmp(key, "bottom_rail_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "bottom_rail_spread = %.2f;", jumperlessConfig.calibration.bottom_rail_spread);
+                    updated = true;
+                } else if (strcmp(key, "dac_0_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "dac_0_zero = %d;", jumperlessConfig.calibration.dac_0_zero);
+                    updated = true;
+                } else if (strcmp(key, "dac_0_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "dac_0_spread = %.2f;", jumperlessConfig.calibration.dac_0_spread);
+                    updated = true;
+                } else if (strcmp(key, "dac_1_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "dac_1_zero = %d;", jumperlessConfig.calibration.dac_1_zero);
+                    updated = true;
+                } else if (strcmp(key, "dac_1_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "dac_1_spread = %.2f;", jumperlessConfig.calibration.dac_1_spread);
+                    updated = true;
+                } else if (strcmp(key, "adc_0_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_0_zero = %.2f;", jumperlessConfig.calibration.adc_0_zero);
+                    updated = true;
+                } else if (strcmp(key, "adc_0_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_0_spread = %.2f;", jumperlessConfig.calibration.adc_0_spread);
+                    updated = true;
+                } else if (strcmp(key, "adc_1_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_1_zero = %.2f;", jumperlessConfig.calibration.adc_1_zero);
+                    updated = true;
+                } else if (strcmp(key, "adc_1_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_1_spread = %.2f;", jumperlessConfig.calibration.adc_1_spread);
+                    updated = true;
+                } else if (strcmp(key, "adc_2_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_2_zero = %.2f;", jumperlessConfig.calibration.adc_2_zero);
+                    updated = true;
+                } else if (strcmp(key, "adc_2_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_2_spread = %.2f;", jumperlessConfig.calibration.adc_2_spread);
+                    updated = true;
+                } else if (strcmp(key, "adc_3_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_3_zero = %.2f;", jumperlessConfig.calibration.adc_3_zero);
+                    updated = true;
+                } else if (strcmp(key, "adc_3_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_3_spread = %.2f;", jumperlessConfig.calibration.adc_3_spread);
+                    updated = true;
+                } else if (strcmp(key, "adc_4_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_4_zero = %.2f;", jumperlessConfig.calibration.adc_4_zero);
+                    updated = true;
+                } else if (strcmp(key, "adc_4_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_4_spread = %.2f;", jumperlessConfig.calibration.adc_4_spread);
+                    updated = true;
+                } else if (strcmp(key, "adc_7_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_7_zero = %.2f;", jumperlessConfig.calibration.adc_7_zero);
+                    updated = true;
+                } else if (strcmp(key, "adc_7_spread") == 0) {
+                    snprintf(newLine, sizeof(newLine), "adc_7_spread = %.2f;", jumperlessConfig.calibration.adc_7_spread);
+                    updated = true;
+                } else if (strcmp(key, "probe_max") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_max = %d;", jumperlessConfig.calibration.probe_max);
+                    updated = true;
+                } else if (strcmp(key, "probe_min") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_min = %d;", jumperlessConfig.calibration.probe_min);
+                    updated = true;
+                } else if (strcmp(key, "probe_switch_threshold_high") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_switch_threshold_high = %.2f;", jumperlessConfig.calibration.probe_switch_threshold_high);
+                    updated = true;
+                } else if (strcmp(key, "probe_switch_threshold_low") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_switch_threshold_low = %.2f;", jumperlessConfig.calibration.probe_switch_threshold_low);
+                    updated = true;
+                } else if (strcmp(key, "probe_switch_threshold") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_switch_threshold = %.2f;", jumperlessConfig.calibration.probe_switch_threshold);
+                    updated = true;
+                } else if (strcmp(key, "measure_mode_output_voltage") == 0) {
+                    snprintf(newLine, sizeof(newLine), "measure_mode_output_voltage = %.2f;", jumperlessConfig.calibration.measure_mode_output_voltage);
+                    updated = true;
+                } else if (strcmp(key, "probe_current_zero") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probe_current_zero = %.2f;", jumperlessConfig.calibration.probe_current_zero);
+                    updated = true;
+                }
+            }
+            //! [logo_pads] section
+            else if (strcmp(currentSection, "logo_pads") == 0) {
+                if (strcmp(key, "top_guy") == 0) {
+                    snprintf(newLine, sizeof(newLine), "top_guy = %d;", jumperlessConfig.logo_pads.top_guy);
+                    updated = true;
+                } else if (strcmp(key, "bottom_guy") == 0) {
+                    snprintf(newLine, sizeof(newLine), "bottom_guy = %d;", jumperlessConfig.logo_pads.bottom_guy);
+                    updated = true;
+                } else if (strcmp(key, "building_pad_top") == 0) {
+                    snprintf(newLine, sizeof(newLine), "building_pad_top = %d;", jumperlessConfig.logo_pads.building_pad_top);
+                    updated = true;
+                } else if (strcmp(key, "building_pad_bottom") == 0) {
+                    snprintf(newLine, sizeof(newLine), "building_pad_bottom = %d;", jumperlessConfig.logo_pads.building_pad_bottom);
+                    updated = true;
+                }
+            }
+            //! [display] section
+            else if (strcmp(currentSection, "display") == 0) {
+                if (strcmp(key, "lines_wires") == 0) {
+                    snprintf(newLine, sizeof(newLine), "lines_wires = %d;", jumperlessConfig.display.lines_wires);
+                    updated = true;
+                } else if (strcmp(key, "menu_brightness") == 0) {
+                    snprintf(newLine, sizeof(newLine), "menu_brightness = %d;", jumperlessConfig.display.menu_brightness);
+                    updated = true;
+                } else if (strcmp(key, "led_brightness") == 0) {
+                    snprintf(newLine, sizeof(newLine), "led_brightness = %d;", jumperlessConfig.display.led_brightness);
+                    updated = true;
+                } else if (strcmp(key, "rail_brightness") == 0) {
+                    snprintf(newLine, sizeof(newLine), "rail_brightness = %d;", jumperlessConfig.display.rail_brightness);
+                    updated = true;
+                } else if (strcmp(key, "special_net_brightness") == 0) {
+                    snprintf(newLine, sizeof(newLine), "special_net_brightness = %d;", jumperlessConfig.display.special_net_brightness);
+                    updated = true;
+                } else if (strcmp(key, "net_color_mode") == 0) {
+                    snprintf(newLine, sizeof(newLine), "net_color_mode = %d;", jumperlessConfig.display.net_color_mode);
+                    updated = true;
+                } else if (strcmp(key, "dump_leds") == 0) {
+                    snprintf(newLine, sizeof(newLine), "dump_leds = %d;", jumperlessConfig.display.dump_leds);
+                    updated = true;
+                } else if (strcmp(key, "dump_format") == 0) {
+                    snprintf(newLine, sizeof(newLine), "dump_format = %d;", jumperlessConfig.display.dump_format);
+                    updated = true;
+                } else if (strcmp(key, "terminal_line_buffering") == 0) {
+                    snprintf(newLine, sizeof(newLine), "terminal_line_buffering = %d;", jumperlessConfig.display.terminal_line_buffering);
+                    updated = true;
+                }
+            }
+            //! [serial_1] section
+            else if (strcmp(currentSection, "serial_1") == 0) {
+                if (strcmp(key, "function") == 0) {
+                    snprintf(newLine, sizeof(newLine), "function = %d;", jumperlessConfig.serial_1.function);
+                    updated = true;
+                } else if (strcmp(key, "baud_rate") == 0) {
+                    snprintf(newLine, sizeof(newLine), "baud_rate = %d;", jumperlessConfig.serial_1.baud_rate);
+                    updated = true;
+                } else if (strcmp(key, "print_passthrough") == 0) {
+                    snprintf(newLine, sizeof(newLine), "print_passthrough = %d;", jumperlessConfig.serial_1.print_passthrough);
+                    updated = true;
+                } else if (strcmp(key, "connect_on_boot") == 0) {
+                    snprintf(newLine, sizeof(newLine), "connect_on_boot = %d;", jumperlessConfig.serial_1.connect_on_boot);
+                    updated = true;
+                } else if (strcmp(key, "lock_connection") == 0) {
+                    snprintf(newLine, sizeof(newLine), "lock_connection = %d;", jumperlessConfig.serial_1.lock_connection);
+                    updated = true;
+                } else if (strcmp(key, "autoconnect_flashing") == 0) {
+                    snprintf(newLine, sizeof(newLine), "autoconnect_flashing = %d;", jumperlessConfig.serial_1.autoconnect_flashing);
+                    updated = true;
+                } else if (strcmp(key, "async_passthrough") == 0) {
+                    snprintf(newLine, sizeof(newLine), "async_passthrough = %d;", jumperlessConfig.serial_1.async_passthrough ? 1 : 0);
+                    updated = true;
+                }
+            }
+            //! [serial_2] section
+            else if (strcmp(currentSection, "serial_2") == 0) {
+                if (strcmp(key, "function") == 0) {
+                    snprintf(newLine, sizeof(newLine), "function = %d;", jumperlessConfig.serial_2.function);
+                    updated = true;
+                } else if (strcmp(key, "baud_rate") == 0) {
+                    snprintf(newLine, sizeof(newLine), "baud_rate = %d;", jumperlessConfig.serial_2.baud_rate);
+                    updated = true;
+                } else if (strcmp(key, "print_passthrough") == 0) {
+                    snprintf(newLine, sizeof(newLine), "print_passthrough = %d;", jumperlessConfig.serial_2.print_passthrough);
+                    updated = true;
+                } else if (strcmp(key, "connect_on_boot") == 0) {
+                    snprintf(newLine, sizeof(newLine), "connect_on_boot = %d;", jumperlessConfig.serial_2.connect_on_boot);
+                    updated = true;
+                } else if (strcmp(key, "lock_connection") == 0) {
+                    snprintf(newLine, sizeof(newLine), "lock_connection = %d;", jumperlessConfig.serial_2.lock_connection);
+                    updated = true;
+                } else if (strcmp(key, "autoconnect_flashing") == 0) {
+                    snprintf(newLine, sizeof(newLine), "autoconnect_flashing = %d;", jumperlessConfig.serial_2.autoconnect_flashing);
+                    updated = true;
+                }
+            }
+            //! [top_oled] section
+            else if (strcmp(currentSection, "top_oled") == 0) {
+                if (strcmp(key, "enabled") == 0) {
+                    snprintf(newLine, sizeof(newLine), "enabled = %d;", jumperlessConfig.top_oled.enabled);
+                    updated = true;
+                } else if (strcmp(key, "i2c_address") == 0) {
+                    snprintf(newLine, sizeof(newLine), "i2c_address = %d;", jumperlessConfig.top_oled.i2c_address);
+                    updated = true;
+                } else if (strcmp(key, "width") == 0) {
+                    snprintf(newLine, sizeof(newLine), "width = %d;", jumperlessConfig.top_oled.width);
+                    updated = true;
+                } else if (strcmp(key, "height") == 0) {
+                    snprintf(newLine, sizeof(newLine), "height = %d;", jumperlessConfig.top_oled.height);
+                    updated = true;
+                } else if (strcmp(key, "connection_type") == 0) {
+                    snprintf(newLine, sizeof(newLine), "connection_type = %s;", getConnectionTypeString(jumperlessConfig.top_oled.connection_type));
+                    updated = true;
+                } else if (strcmp(key, "sda_pin") == 0) {
+                    snprintf(newLine, sizeof(newLine), "sda_pin = %d;", jumperlessConfig.top_oled.sda_pin);
+                    updated = true;
+                } else if (strcmp(key, "scl_pin") == 0) {
+                    snprintf(newLine, sizeof(newLine), "scl_pin = %d;", jumperlessConfig.top_oled.scl_pin);
+                    updated = true;
+                } else if (strcmp(key, "gpio_sda") == 0) {
+                    snprintf(newLine, sizeof(newLine), "gpio_sda = %d;", jumperlessConfig.top_oled.gpio_sda);
+                    updated = true;
+                } else if (strcmp(key, "gpio_scl") == 0) {
+                    snprintf(newLine, sizeof(newLine), "gpio_scl = %d;", jumperlessConfig.top_oled.gpio_scl);
+                    updated = true;
+                } else if (strcmp(key, "sda_row") == 0) {
+                    snprintf(newLine, sizeof(newLine), "sda_row = %d;", jumperlessConfig.top_oled.sda_row);
+                    updated = true;
+                } else if (strcmp(key, "scl_row") == 0) {
+                    snprintf(newLine, sizeof(newLine), "scl_row = %d;", jumperlessConfig.top_oled.scl_row);
+                    updated = true;
+                } else if (strcmp(key, "connect_on_boot") == 0) {
+                    snprintf(newLine, sizeof(newLine), "connect_on_boot = %d;", jumperlessConfig.top_oled.connect_on_boot ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "lock_connection") == 0) {
+                    snprintf(newLine, sizeof(newLine), "lock_connection = %d;", jumperlessConfig.top_oled.lock_connection ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "show_in_terminal") == 0) {
+                    snprintf(newLine, sizeof(newLine), "show_in_terminal = %d;", jumperlessConfig.top_oled.show_in_terminal ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "font") == 0) {
+                    snprintf(newLine, sizeof(newLine), "font = %d;", jumperlessConfig.top_oled.font);
+                    updated = true;
+                } else if (strcmp(key, "startup_message") == 0) {
+                    snprintf(newLine, sizeof(newLine), "startup_message = %s", jumperlessConfig.top_oled.startup_message);
+                    updated = true;
+                }
+            }
+            
+            if (updated) {
+                int written = snprintf(dstPos, dstEnd - dstPos, "%s\n", newLine);
+                dstPos += written;
+            } else {
+                // Unknown key, keep original line
+                int written = snprintf(dstPos, dstEnd - dstPos, "%s\n", line);
+                dstPos += written;
+            }
+        } else {
+            // Comment, empty line, or other - copy as-is
+            int written = snprintf(dstPos, dstEnd - dstPos, "%s\n", line);
+            dstPos += written;
+        }
+    }
+    
+    *dstPos = '\0';
+    size_t writeSize = dstPos - newContent;
+    
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave] Parse & rebuild: ");
+        Serial.print(micros() - stepTime);
+        Serial.println(" us");
+    }
+    
+    // Check if content actually changed before writing
+    // This avoids flash writes when the rebuilt content is identical
+    bool contentChanged = (writeSize != bytesRead) || (memcmp(fileContent, newContent, writeSize) != 0);
+    
+    if (!contentChanged) {
+        if (debugConfigSaveTiming) {
+            Serial.println("[ConfigSave] Content unchanged after rebuild, skipping write");
+        }
+        free(fileContent);
+        free(newContent);
+        updateShadowConfig();
+        return;
+    }
+    
+    // Write the updated content using r+ mode (overwrite in place, no truncate)
+    // This is MUCH faster than "w" mode which reallocates clusters
+    stepTime = micros();
+    uint32_t opTime;
+    
+    bool was_paused = pauseCore2ForFlash(100);
+    
+    // Use "r+" mode to overwrite in place - avoids cluster reallocation
+    // This is significantly faster than truncate + write
+    opTime = micros();
+    File file = safeFileOpen(filename, "r+", 1000);
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave]   safeFileOpen(r+): ");
+        Serial.print(micros() - opTime);
+        Serial.println(" us");
+    }
+    if (!file) {
+        // Fall back to "w" mode if r+ fails
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave]   r+ failed, trying w mode");
+        file = safeFileOpen(filename, "w", 1000);
+        if (!file) {
+            Serial.println("saveConfigIncremental: failed to open file for writing");
+            unpauseCore2ForFlash(was_paused);
+            free(fileContent);
+            free(newContent);
+            return;
+        }
+    }
+    
+    // Seek to beginning and overwrite
+    file.seek(0);
+    
+    // Write content directly to file handle
+    opTime = micros();
+    size_t written = file.write((const uint8_t*)newContent, writeSize);
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave]   file.write: ");
+        Serial.print(micros() - opTime);
+        Serial.println(" us");
+    }
+    
+    // If new content is shorter, we need to truncate
+    // FatFS truncate: seek to end position and call truncate
+    if (writeSize < bytesRead) {
+        file.seek(writeSize);
+        // Note: Arduino File doesn't have truncate(), but the extra bytes 
+        // won't matter since we track by content not file size
+    }
+    
+    // Skip explicit flush() - it does BOTH f_sync AND _fs->sync (full filesystem sync)
+    // FatFS f_close() internally calls f_sync which is sufficient for the file data
+    // This avoids the expensive _fs->sync() full filesystem sync
+    
+    opTime = micros();
+    safeFileClose(file, true);  // true = write mode, will pause Core2 during close
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave]   safeFileClose: ");
+        Serial.print(micros() - opTime);
+        Serial.println(" us");
+    }
+    
+    unpauseCore2ForFlash(was_paused);
+    
+    bool success = (written == writeSize);
+    
+    if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSave] File write total (");
+        Serial.print(writeSize);
+        Serial.print(" bytes): ");
+        Serial.print(micros() - stepTime);
+        Serial.println(" us");
+    }
+    
+    free(fileContent);
+    free(newContent);
+    
+    if (success) {
+        updateShadowConfig();
+        if (debugConfigSaveTiming) {
+            Serial.print("[ConfigSave] SUCCESS - Total: ");
+            Serial.print(micros() - totalStartTime);
+            Serial.println(" us");
+        }
+    } else {
+        Serial.println("saveConfigIncremental: write failed");
+    }
+
 }
 
 void saveConfig(void) {
-    int hwRevision = jumperlessConfig.hardware.revision;
-
     if (jumperlessConfig.calibration.probe_min == 0 || jumperlessConfig.calibration.probe_max == 0) {
         jumperlessConfig.calibration.probe_min = 15;
-        jumperlessConfig.calibration.probe_max = 4060;
+        jumperlessConfig.calibration.probe_max = 4040;
     }
 
-   // printGPIOState();
-  // printConfigSectionToSerial(7, true, false);
-   saveConfigToFile("/config.txt");
-   /// printGPIOState();
+    // Use optimized incremental save - only writes if config has changed
+    // Falls back to full save if file doesn't exist or incremental fails
+    saveConfigIncremental("/config.txt");
+    
     readSettingsFromConfig();
-  ///  printGPIOState();
-    ///initChipStatus();
-    //if (jumperlessConfig.hardware.hardware_revision != hwRevision ) {
-        // leds.clear();
-        // leds.end();
-        // leds.begin();
-       
-        // showLEDsCore2 = -1;
-   // }
 }
 
 // Firmware versioning and file provisioning system
@@ -1095,6 +1991,7 @@ bool checkAndHandleFirmwareUpdate(void) {
         jumperlessConfig.firmware.last_version[sizeof(jumperlessConfig.firmware.last_version) - 1] = '\0';
         
         // Save config with new version
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] TRIGGER: checkAndHandleFirmwareUpdate");
         saveConfig();
         if (debugFP) {
         Serial.println("\n\rFirmware version updated in config.\n\r");
@@ -1113,6 +2010,11 @@ void loadConfig(void) {
     }
     
     readSettingsFromConfig();
+    
+    // Initialize shadow config for dirty tracking
+    // This allows saveConfig() to skip writes when nothing has changed
+    updateShadowConfig();
+    
     // Defer initChipStatus to reduce startup time - it can be done later
     // initChipStatus();
 }
@@ -1784,6 +2686,7 @@ bool dacChange = false;
             else if (strcmp(line, "clear_calibration") == 0 || strcmp(line, "clear_cal") == 0 || 
                      strcmp(line, "reset_calibration") == 0 || strcmp(line, "reset_cal") == 0) {
                 resetConfigToDefaults(1, 0);
+                saveConfig();
                 Serial.println("Done. Calibration has been cleared");
                 ledChange = true;
                 dacChange = true;
@@ -1792,6 +2695,7 @@ bool dacChange = false;
             else if (strcmp(line, "clear_hardware") == 0 || strcmp(line, "clear_hw") == 0 || 
                      strcmp(line, "reset_hardware") == 0 || strcmp(line, "reset_hw") == 0) {
                 resetConfigToDefaults(0, 1);
+                saveConfig();
                 Serial.println("Done. Hardware has been cleared");
                 ledChange = true;
                 dacChange = true;
@@ -1799,6 +2703,7 @@ bool dacChange = false;
             }
             else if (strcmp(line, "clear_all") == 0 || strcmp(line, "reset_all") == 0) {
                 resetConfigToDefaults(1, 1);
+                saveConfig();
                 Serial.println("Done. All settings have been cleared");
                 ledChange = true;
                 dacChange = true;
@@ -1942,6 +2847,7 @@ bool dacChange = false;
                     continue;
                 } else if (strcmp(line, "clear_calibration") == 0 || strcmp(line, "clear_cal") == 0 || strcmp(line, "reset_calibration") == 0 || strcmp(line, "reset_cal") == 0) {
                     resetConfigToDefaults(1, 0);
+                    saveConfig();
                     Serial.println("Done. Calibration has been cleared");
                     ledChange = true;
                     dacChange = true;
@@ -1950,6 +2856,7 @@ bool dacChange = false;
                     continue;
                 } else if (strcmp(line, "clear_hardware") == 0 || strcmp(line, "clear_hw") == 0 || strcmp(line, "reset_hardware") == 0 || strcmp(line, "reset_hw") == 0) {
                     resetConfigToDefaults(0, 1);
+                    saveConfig();
                     Serial.println("Done. Hardware has been cleared");
                     ledChange = true;
                     dacChange = true;
@@ -1958,6 +2865,7 @@ bool dacChange = false;
                     continue;
                 } else if (strcmp(line, "clear_all") == 0 || strcmp(line, "reset_all") == 0) {
                     resetConfigToDefaults(1, 1);
+                    saveConfig();
                     Serial.println("Done. All settings have been cleared");
                     ledChange = true;
                     dacChange = true;
@@ -2241,6 +3149,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "width") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.width);
         else if (strcmp(key, "height") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.height);
         else if (strcmp(key, "rotation") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.rotation);
+        else if (strcmp(key, "connection_type") == 0) sprintf(oldValue, "%s", getConnectionTypeString(jumperlessConfig.top_oled.connection_type));
         else if (strcmp(key, "sda_pin") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.sda_pin);
         else if (strcmp(key, "scl_pin") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.scl_pin);
         else if (strcmp(key, "gpio_sda") == 0) sprintf(oldValue, "%d", jumperlessConfig.top_oled.gpio_sda);
@@ -2360,8 +3269,30 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "width") == 0) jumperlessConfig.top_oled.width = parseInt(value);
         else if (strcmp(key, "height") == 0) jumperlessConfig.top_oled.height = parseInt(value);
         else if (strcmp(key, "rotation") == 0) jumperlessConfig.top_oled.rotation = parseInt(value);
-        else if (strcmp(key, "sda_pin") == 0) jumperlessConfig.top_oled.sda_pin = parseInt(value);
-        else if (strcmp(key, "scl_pin") == 0) jumperlessConfig.top_oled.scl_pin = parseInt(value);
+        else if (strcmp(key, "connection_type") == 0) {
+            int connType = parseConnectionType(value);
+            // Disconnect current OLED before changing connection type
+            oled.disconnect();
+            // Update pins and oledUsingHardwiredPins flag
+            updateOledPinsForConnectionType(connType);
+            // Save config immediately so it persists after reset
+            saveConfig();
+            // Reinitialize OLED with new connection type
+            delay(100);  // Brief delay to let I2C settle
+            oled.init();
+        }
+        else if (strcmp(key, "sda_pin") == 0) {
+            oled.disconnect();
+            jumperlessConfig.top_oled.sda_pin = parseInt(value);
+            delay(50);
+            oled.init();
+        }
+        else if (strcmp(key, "scl_pin") == 0) {
+            oled.disconnect();
+            jumperlessConfig.top_oled.scl_pin = parseInt(value);
+            delay(50);
+            oled.init();
+        }
         else if (strcmp(key, "gpio_sda") == 0) jumperlessConfig.top_oled.gpio_sda = parseInt(value);
         else if (strcmp(key, "gpio_scl") == 0) jumperlessConfig.top_oled.gpio_scl = parseInt(value);
         else if (strcmp(key, "sda_row") == 0) jumperlessConfig.top_oled.sda_row = parseInt(value);
@@ -2607,7 +3538,7 @@ bool fastParseAndUpdateConfig(const char* configString) {
     // Serial.print("value: ");
     // Serial.println(value);
     updateConfigValue(section, key, value);
-    //configChanged = true;
+    configChanged = true;
     return true;
 }
 

@@ -795,7 +795,7 @@ int getMenuSelection( void ) {
                     i = subMenuStartIndex - 1;
                 } else if ( i == subMenuEndIndex && loopCount == 1 ) {
 
-                    Serial.println( "!!! " );
+                   // Serial.println( "!!! " );
                     b.clear( );
                     returnToMenuPosition = -1;
                     returnToMenuLevel = -1;
@@ -940,7 +940,7 @@ int getMenuSelection( void ) {
                         i = subMenuEndIndex + 1;
                     } else if ( i == subMenuStartIndex && loopCount == 1 ) {
 
-                        Serial.println( "!!! " );
+                        Serial.println( " " );
 
                         b.clear( );
                         returnToMenuPosition = -1;
@@ -2534,6 +2534,7 @@ float getActionFloat( int menuPosition, int rail ) {
         // Check for confirmation (short press) - check SECOND on every iteration
         if ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) || 
              ProbeButton::getInstance().getButtonPress() == 2 ) {
+            currentChoice = roundf(currentChoice * 10.0f) / 10.0f;
             encoderButtonState = IDLE;
             currentAction.analogVoltage = currentChoice;
             
@@ -2549,6 +2550,7 @@ float getActionFloat( int menuPosition, int rail ) {
             if ( keepSelecting == 1 ) {
                 selectNodeAction( );
             }
+
             return currentChoice;
         }
         
@@ -2802,6 +2804,7 @@ float getActionFloat( int menuPosition, int rail ) {
                 globalState.power.bottomRail = roundf(currentChoice * 10.0f) / 10.0f;
             }
             
+            
             // Apply voltage to hardware (only for safe range)
             if ( firstTime == 0 && currentChoice > 0.0 && currentChoice <= 5.0 ) {
                 switch ( rail ) {
@@ -2831,7 +2834,7 @@ float getActionFloat( int menuPosition, int rail ) {
             firstTime = 0;
         }
     }
-    // Should never reach here due to button checks in loop
+    
     return currentChoice;
 }
 
@@ -3508,8 +3511,8 @@ int doMenuAction( int menuPosition, int selection ) {
         }
     }
     
-    printActionStruct( );
-    clearLEDsExceptRails( );
+   // printActionStruct( );
+   // clearLEDsExceptRails( );
     showLEDsCore2 = -1;
     
 
@@ -3518,7 +3521,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     if ( currentCategory == SHOWACTION ) { //! Show
 
-        Serial.print( "Show Action\n\r" );
+       // Serial.print( "Show Action\n\r" );
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Voltage" ) !=
              -1 ) {
 
@@ -3646,7 +3649,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == RAILSACTION ) { //! Rails
 
-        Serial.print( "Rails Action\n\r" );
+      //  Serial.print( "Rails Action\n\r" );
         showLEDsCore2 = 1;
         waitCore2( );
 
@@ -3685,7 +3688,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == SLOTSACTION ) { //! Slots
 
-        Serial.print( "Slots Action\n\r" );
+       // Serial.print( "Slots Action\n\r" );
 
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Save" ) !=
              -1 ) {
@@ -3728,7 +3731,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == OUTPUTACTION ) { //! Output
 
-        Serial.print( "Output Action\n\r" );
+       // Serial.print( "Output Action\n\r" );
         printActionStruct( );
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "GPIO" ) !=
              -1 ) {
@@ -3845,7 +3848,7 @@ int doMenuAction( int menuPosition, int selection ) {
             }
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Limits" ) != -1 ) {
             if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Min Max" ) != -1 ) {
-                Serial.print( "Min Max\n\r" );
+               // Serial.print( "Min Max\n\r" );
                 if ( currentAction.from[ 0 ] == 0 ) {
                     jumperlessConfig.dacs.limit_min = 0.0;
                 } else if ( currentAction.from[ 0 ] == 1 ) {
@@ -3872,12 +3875,12 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == APPSACTION ) {
 
-        Serial.print( "Apps Action\n\r" ); //! Apps Action
+       // Serial.print( "Apps Action\n\r" ); //! Apps Action
 
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Games" ) !=
              -1 ) {
             doomOn = 1;
-            Serial.println( "\n\n\n\rGames\n\r" );
+           // Serial.println( "\n\n\n\rGames\n\r" );
         }
         // digitalWrite(RESETPIN, HIGH);
 
@@ -3907,11 +3910,11 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == ARDUINOACTION ) {
 
-        Serial.print( "Arduino Action\n\r" );
+       //    Serial.print( "Arduino Action\n\r" );
 
     } else if ( currentCategory == PROBEACTION ) {
 
-        Serial.print( "Probe Action\n\r" );
+        //   Serial.print( "Probe Action\n\r" );
 
     } else if ( currentCategory == CONNECTACTION ) {
         // Connect/Disconnect using encoder or probe
@@ -4049,7 +4052,7 @@ int doMenuAction( int menuPosition, int selection ) {
             }
             debugFlagSet( 13 );
         }
-        Serial.print( "Display Action\n\r" );
+        //Serial.print( "Display Action\n\r" );
 
     } else if ( currentCategory == OLEDACTION ) { //! OLED Options
 
@@ -4076,7 +4079,7 @@ int doMenuAction( int menuPosition, int selection ) {
             jumperlessConfig.top_oled.rotation = currentAction.integerValue;
             configChanged = true;
             // Apply rotation immediately without full reinit
-            display.setRotation(jumperlessConfig.top_oled.rotation);
+            getDisplay().setRotation(jumperlessConfig.top_oled.rotation);
            // saveConfig();
         }
         
@@ -4261,43 +4264,42 @@ int doMenuAction( int menuPosition, int selection ) {
             configChanged = true;
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Pins" ) != -1 ) {
             // Handle OLED connection type selection:
-            // 0 = GPIO 7/8 (via crossbar using GPIO 26/27)
-            // 1 = RP6/RP7 (hardwired GPIO 6/7)
-            // 2 = Internal I2C0 (hardwired GPIO 4/5)
+            // 0 = GPIO 7/8 (via crossbar using GPIO 26/27) - uses I2C1 (Wire1)
+            // 1 = RP6/RP7 (hardwired GPIO 6/7) - uses I2C1 (Wire1)
+            // 2 = Internal I2C0 (hardwired GPIO 4/5) - uses I2C0 (Wire)
             int newConnectionType = currentAction.from[ 0 ];
+            
+            // Print feedback BEFORE disconnecting (while OLED still works)
+            if ( newConnectionType == 0 ) {
+                Serial.println("\n\rOLED pins set to GPIO 7/8 (crossbar, pins 26/27)");
+            } else if ( newConnectionType == 1 ) {
+                Serial.println("\n\rOLED pins set to RP6/RP7 (hardwired, pins 6/7)");
+            } else if ( newConnectionType == 2 ) {
+                Serial.println("\n\rOLED pins set to Internal I2C0 (hardwired, pins 4/5)");
+            }
             
             // Disconnect current OLED before changing pins
             oled.disconnect( );
             
-            // Update all pins for the new connection type
+            // Update all pins for the new connection type (also sets oledUsingHardwiredPins)
             updateOledPinsForConnectionType( newConnectionType );
             configChanged = true;
             
-            // Display feedback
-            oled.clear( );
-            oled.setTextSize( 1 );
-            oled.clearPrintShow( "OLED Pins:", 1, true, false, false, 0, 0 );
-            oled.setTextSize( 2 );
-            if ( newConnectionType == 0 ) {
-                oled.print( "GPIO 7/8" );
-                Serial.println("\n\rOLED pins set to GPIO 7/8 (crossbar, pins 26/27)");
-            } else if ( newConnectionType == 1 ) {
-                oled.print( "RP6/7" );
-                Serial.println("\n\rOLED pins set to RP6/RP7 (hardwired, pins 6/7)");
-            } else if ( newConnectionType == 2 ) {
-                oled.print( "Internal" );
-                Serial.println("\n\rOLED pins set to Internal I2C0 (hardwired, pins 4/5)");
-            }
-            oled.show( );
-            oled.setTextSize( 1 );
+            // Save config immediately so it persists after reset
+  
             
-            // Reconnect with new pins
+            // Small delay to let I2C settle before reconnecting
+            delay( 100 );
+            
+            // Reconnect with new pins - init() will set up correct I2C and display
             oled.init( );
+
+            saveConfig();
         }
 
     } else if ( currentCategory == NOCATEGORY ) {
 
-        Serial.print( "No Category\n\r" );
+       // Serial.print( "No Category\n\r" );
     }
 
     return 1;

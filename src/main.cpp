@@ -115,7 +115,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.5.3.1"; //! remember to update this
+const char firmwareVersion[] = "5.5.3.4"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -302,9 +302,10 @@ startupTimers[ 4 ] = millis( );
     jOS.registerService( &singleCharCommands ); // NORMAL - command execution (synchronous, not periodic)
 
     // LOW priority services - background tasks
-    jOS.registerService( &oledService ); // LOW - display updates
-    jOS.registerService( &probeSwitch ); // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );   // LOW - expensive ADC pad reading
+    jOS.registerService( &oledService );      // LOW - display updates
+    jOS.registerService( &probeSwitch );      // LOW - switch position (not time-critical)
+    jOS.registerService( &probePads );        // LOW - expensive ADC pad reading
+    jOS.registerService( &configSaveService ); // LOW - background config save (non-blocking)
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts
@@ -581,11 +582,8 @@ dontshowmenu:
     tud_task();
 #endif
 
-    if ( configChanged == true && millis( ) > 3000 ) {
-        Jerial.print( "config changed, saving..." );
-        saveConfig( );
-        configChanged = false;
-    }
+    // Config saving is now handled by ConfigSaveService which monitors configChanged flag
+    // This allows saves from anywhere in the UI, not just when main menu is shown
     connectFromArduino = '\0';
     firstConnection = -1;
     core1passthrough = 1;

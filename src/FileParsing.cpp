@@ -344,7 +344,7 @@ bool removeBridgeFromState(int node1, int node2, bool autoRefresh) {
     
     // Optionally update hardware immediately
     if (autoRefresh) {
-        refreshLocalConnections(1, 1, 0);
+        refreshLocalConnections(-1, 1, 0);
     }
     
     if (debugFP) {
