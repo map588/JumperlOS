@@ -31,6 +31,7 @@ void resetConfigToDefaults(int clearCalibration = 0, int clearHardware = 0);
 bool checkAndHandleFirmwareUpdate(void);
 void provisionFirmwareFiles(void);
 bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsigned int dataLen);
+int compareVersions(const char* v1, const char* v2);  // Compare version strings (X.Y.Z.W)
 
 // File operations
 void updateConfigFromFile(const char* filename);

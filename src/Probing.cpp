@@ -4948,39 +4948,6 @@ void Probing::probeLEDhandler( void ) {
     showingProbeLEDs = 0;
 }
 
-// highlightNets function moved to Highlighting.cpp
-
-// Double click detector state machine
-
-// C wrapper functions for MicroPython module
-extern "C" int jl_probe_button_nonblocking( void ) {
-    // checkProbeButton() is already non-blocking, so just call it directly
-    // Returns: 0=NONE, 1=REMOVE(rear), 2=CONNECT(front)
-    return checkProbeButton( );
-}
-
-extern "C" int jl_probe_button_blocking( void ) {
-    // Loop until any button is pressed
-    // Returns: 1=REMOVE(rear), 2=CONNECT(front) (never returns 0)
-    int button_state = 0;
-    while ( button_state == 0 ) {
-        mp_hal_check_interrupt( );
-
-        // Check if interrupt was requested and return special value
-        if ( mp_interrupt_requested ) {
-            mp_interrupt_requested = false; // Clear the flag
-            return -999;                    // Special return value indicating interrupt
-        }
-
-        button_state = checkProbeButton( );
-        if ( button_state != 0 ) {
-            return button_state;
-        }
-        delay( 1 ); // Small delay to prevent busy-waiting
-    }
-    return button_state; // This should never be reached, but just in case
-}
-
 //! legacy functions from OG probing
 
 int Probing::selectFromLastFound( void ) {

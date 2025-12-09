@@ -1,0 +1,68 @@
+# Ruff configuration for Jumperless MicroPython scripts
+# See: https://docs.astral.sh/ruff/
+
+# Global settings
+line-length = 100
+indent-width = 4
+target-version = "py311"
+
+# File discovery
+extend-exclude = [
+    "build",
+    "dist",
+    ".pio",
+    "micropython_repo",
+    "lib/micropython",
+    "__pycache__",
+]
+
+[lint]
+# Enable rules
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings  
+    "F",   # pyflakes
+    "I",   # isort (import sorting)
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+]
+
+# Disable specific rules that don't apply to MicroPython/embedded
+# These are GLOBALLY ignored for all files
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "F403",   # Star import used (required for Jumperless global imports pattern)
+    "F405",   # Undefined name from star import (expected with Jumperless)
+    "E402",   # Module level import not at top (allow conditional imports)
+    "B008",   # Function call in argument defaults (common in embedded)
+    "SIM108", # Use ternary operator (sometimes less readable)
+    "F401",   # Unused import (re-export modules trigger this)
+]
+
+# Additional per-file ignores (these are already covered by global ignore above)
+[lint.per-file-ignores]
+"python_scripts/**/*.py" = ["F403", "F405"]  # Scripts use global imports
+"pythonStuff/**/*.py" = ["F403", "F405", "F401"]  # Development files
+"**/test_*.py" = ["F403", "F405", "S101"]    # Tests use global imports and asserts
+"jumperless_module.py" = ["F401"]             # Re-exports trigger unused import warnings
+"jumperless_globals.py" = ["F403", "F405"]    # Global import helper
+"**/*_example*.py" = ["F403", "F405"]         # Example scripts
+
+[format]
+# Formatting options
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# Respect existing line breaks for readability
+docstring-code-format = true
+docstring-code-line-length = 80
+
+[lint.isort]
+# Import sorting configuration
+known-first-party = ["jumperless"]
+combine-as-imports = true
+force-wrap-aliases = true

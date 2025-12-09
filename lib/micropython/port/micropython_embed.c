@@ -78,9 +78,17 @@ int mp_embed_exec_str(const char *str) {
         mp_lexer_t *lex = mp_lexer_new_from_str_len(source_name, str, strlen(str), 0);
         if (lex) {
             mp_parse_tree_t parse_tree = mp_parse(lex, input_kind);
-            mp_obj_t module_fun = mp_compile(&parse_tree, source_name, true);
+            // Compile as non-REPL file input so expression statements do NOT echo results
+            mp_obj_t module_fun = mp_compile(&parse_tree, source_name, false);
             if (module_fun != MP_OBJ_NULL) {
+                // Execute code with interrupt handling active
+                // Ensure interrupt character is set (usually 3 for Ctrl+C)
+                // Note: mp_hal_set_interrupt_char handled externally or by default
+                
                 mp_call_function_0(module_fun);
+                
+                // Handle any pending exceptions or callbacks immediately after execution
+                mp_handle_pending(true); 
             }
         }
         nlr_pop();

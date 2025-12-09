@@ -120,10 +120,16 @@ SRC_EXTMOD_C = \
 	extmod/modplatform.c \
 	extmod/moductypes.c \
 	extmod/modmachine.c \
+	extmod/vfs.c \
+	extmod/vfs_reader.c \
+	extmod/modos.c \
+	extmod/modbinascii.c \
+
 
 # Define shared source files we want
 SRC_SHARED_C = \
 	shared/readline/readline.c \
+	shared/runtime/pyexec.c \
 
 # Process extmod sources like regular sources
 PY_O += $(addprefix $(BUILD)/, $(SRC_EXTMOD_C:.c=.o))
@@ -138,7 +144,7 @@ MICROPYTHON_EMBED_PORT = $(MICROPYTHON_TOP)/ports/embed
 MICROPY_ROM_TEXT_COMPRESSION ?= 0
 
 # Set CFLAGS for the MicroPython build.
-CFLAGS += -I. -I$(TOP) -I$(BUILD) -I$(MICROPYTHON_EMBED_PORT) -I$(MICROPYTHON_EMBED_PORT)/port
+CFLAGS += -I. -I$(TOP) -I$(TOP)/extmod -I$(BUILD) -I$(MICROPYTHON_EMBED_PORT) -I$(MICROPYTHON_EMBED_PORT)/port
 CFLAGS += -Wall -Werror -std=c99
 
 # Define the required generated header files.
@@ -160,7 +166,7 @@ clean-micropython-embed-package:
 	$(RM) -rf $(PACKAGE_DIR)
 
 PACKAGE_DIR ?= micropython_embed
-PACKAGE_DIR_LIST = $(addprefix $(PACKAGE_DIR)/,py extmod shared/runtime shared/timeutils shared/readline genhdr port drivers/bus)
+PACKAGE_DIR_LIST = $(addprefix $(PACKAGE_DIR)/,py extmod shared/runtime shared/timeutils shared/readline genhdr port drivers/bus lib/uzlib)
 
 .PHONY: micropython-embed-package
 micropython-embed-package: $(GENHDR_OUTPUT)
@@ -180,10 +186,24 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/extmod/modmachine.h $(PACKAGE_DIR)/extmod
 	# Machine module implementation
 	$(Q)$(CP) $(TOP)/extmod/modmachine.c $(PACKAGE_DIR)/extmod
+	# VFS support for standard os/open
+	$(Q)$(CP) $(TOP)/extmod/vfs.c $(PACKAGE_DIR)/extmod
+	$(Q)$(CP) $(TOP)/extmod/vfs_reader.c $(PACKAGE_DIR)/extmod
+	$(Q)$(CP) $(TOP)/extmod/vfs.h $(PACKAGE_DIR)/extmod
+	$(Q)$(CP) $(TOP)/extmod/modos.c $(PACKAGE_DIR)/extmod
+	$(Q)$(CP) $(TOP)/extmod/modbinascii.c $(PACKAGE_DIR)/extmod
 	# Drivers headers needed by modmachine.h
 	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/drivers/bus || true
 	$(Q)$(CP) $(TOP)/drivers/bus/spi.h $(PACKAGE_DIR)/drivers/bus
 	# Skip machine_uart sources for embed build; not needed unless enabling UART
+
+	$(ECHO) "- lib/uzlib (for binascii/crc32)"
+	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/lib/uzlib || true
+	$(Q)$(CP) $(TOP)/lib/uzlib/*.[ch] $(PACKAGE_DIR)/lib/uzlib
+	# Compression helpers (defl_static) need extra config types we don't build; drop them
+	$(Q)$(RM) -f $(PACKAGE_DIR)/lib/uzlib/defl_static.c
+	# lz77 pulls in defl_static; drop it to avoid missing include
+	$(Q)$(RM) -f $(PACKAGE_DIR)/lib/uzlib/lz77.c
 
 	$(ECHO) "- shared"
 	$(Q)$(CP) $(TOP)/shared/runtime/gchelper.h $(PACKAGE_DIR)/shared/runtime

@@ -68,6 +68,7 @@ KevinC@ppucc.io
 #include "SingleCharCommands.h" // Single-character command system
 #include "WaveGen.h"            // New async wavegen
 #include "externVars.h"
+#include "MpRemoteService.h"    // mpremote/ViperIDE raw REPL service
 
 bread b;
 
@@ -115,7 +116,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.5.3.4"; //! remember to update this
+const char firmwareVersion[] = "5.6.0.0"; //! remember to update this
 
 bool newConfigOptions = false; //! set to true with new config options //!
 
@@ -144,6 +145,9 @@ void setup( ) {
 
     // Check for firmware updates and provision new files if needed
     checkAndHandleFirmwareUpdate();
+
+    // Initialize MicroPython examples at boot so they're ready for USBSer2 REPL access
+    initializeMicroPythonExamples();
 
     configLoaded = 1;
     startupTimers[ 1 ] = millis( );
@@ -295,6 +299,7 @@ startupTimers[ 4 ] = millis( );
     jOS.registerService( &slotManager );    // HIGH - states auto-save
     jOS.registerService( &probing );        // HIGH - user interaction sensitive (probe reading)
     jOS.registerService( &highlighting );   // HIGH - visual feedback
+    jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
 
     // NORMAL priority services - periodic tasks
     jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
@@ -581,6 +586,9 @@ dontshowmenu:
     Serial.write('H');  // Reached dontshowmenu
     tud_task();
 #endif
+
+
+
 
     // Config saving is now handled by ConfigSaveService which monitors configChanged flag
     // This allows saves from anywhere in the UI, not just when main menu is shown
@@ -1003,7 +1011,7 @@ int spread = 13;
 
 
 unsigned long schedulerTimer = 0;
-unsigned long schedulerUpdateTime = 5300;
+unsigned long schedulerUpdateTime = 0100;
 
 int swirled = 0;
 int countsss = 0;

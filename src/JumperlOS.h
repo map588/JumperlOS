@@ -211,6 +211,35 @@ public:
     void servicePython();
     
     /**
+     * @brief Force execution of a specific service by name
+     * 
+     * This allows selective service execution during critical operations
+     * (e.g., running ProbeButton during fast Python loops).
+     * 
+     * @param name Service name (case-sensitive, must match getName())
+     * @return true if service was found and executed, false otherwise
+     */
+    bool forceServiceByName(const char* name);
+    
+    /**
+     * @brief Force execution of a specific service by index
+     * 
+     * Faster than forceServiceByName if you already have the index.
+     * 
+     * @param index Service index (0 to serviceCount-1)
+     * @return true if index valid and service executed, false otherwise
+     */
+    bool forceServiceByIndex(uint8_t index);
+    
+    /**
+     * @brief Get service index by name for later use with forceServiceByIndex
+     * 
+     * @param name Service name (case-sensitive)
+     * @return Service index, or -1 if not found
+     */
+    int getServiceIndex(const char* name) const;
+    
+    /**
      * @brief Get the currently blocking service (if any)
      * @return Pointer to blocking service, or nullptr if none
      */

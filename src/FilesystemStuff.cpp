@@ -2,18 +2,18 @@
 #include "FatFS.h"
 #include "FileParsing.h"
 #include "Graphics.h"
+#include "Jerial.h"    // TermControl is now part of Jerial
+#include "JumperlOS.h" // For ContextManager
 #include "Menus.h"
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
+#include "SharedBuffer.h" // For zero-copy transfer debugging
 #include "config.h"
+#include "externVars.h" // For fs_mutex filesystem synchronization
 #include "micropythonExamples.h"
 #include "oled.h"
 #include <cstring>
 #include <time.h>
-#include "Jerial.h" // TermControl is now part of Jerial
-#include "externVars.h"  // For fs_mutex filesystem synchronization
-#include "JumperlOS.h"  // For ContextManager
-#include "SharedBuffer.h"  // For zero-copy transfer debugging
 
 // External references
 extern class oled oled;
@@ -220,6 +220,30 @@ void FileManager::initializeFilesystem( ) {
 
         if ( root_accessible ) {
             // Serial.println("[FS] Filesystem initialization successful - root directory accessible");
+
+            // Create required Python directories if they don't exist
+            const char* pythonDirs[] = {
+                "/python_scripts",
+                "/python_scripts/lib",
+                "/python_scripts/modules",
+                "/python_scripts/examples" };
+
+            for ( const char* dir : pythonDirs ) {
+                if ( !FatFS.exists( dir ) ) {
+                    // Serial.print("[FS] Creating directory: ");
+                    // Serial.println(dir);
+                    if ( FatFS.mkdir( dir ) ) {
+                        // Serial.print("[FS] Successfully created: ");
+                        // Serial.println(dir);
+                    } else {
+                        // Serial.print("[FS] Failed to create: ");
+                        // Serial.println(dir);
+                    }
+                } else {
+                    // Serial.print("[FS] Directory already exists: ");
+                    // Serial.println(dir);
+                }
+            }
         } else {
             // Serial.println("[FS] Warning: Root directory not accessible via Dir API");
             // Serial.println("[FS] Will show filesystem unavailable message");
@@ -248,7 +272,7 @@ FileType FileManager::getFileType( const String& filename ) {
         return FILE_TYPE_COLORS;
     } else if ( lower.endsWith( ".txt" ) || lower.endsWith( ".md" ) || lower.endsWith( ".readme" ) ) {
         return FILE_TYPE_TEXT;
-    } else if (  lower.endsWith( ".bmp" ) || lower.endsWith( ".bin" ) ) {
+    } else if ( lower.endsWith( ".bmp" ) || lower.endsWith( ".bin" ) ) {
         return FILE_TYPE_BITMAP;
     } else if ( lower.endsWith( ".png" ) || lower.endsWith( ".jpg" ) || lower.endsWith( ".jpeg" ) || lower.endsWith( ".gif" ) || lower.endsWith( ".tiff" ) || lower.endsWith( ".ico" ) || lower.endsWith( ".webp" ) ) {
         return FILE_TYPE_IMAGE;
@@ -991,10 +1015,10 @@ bool FileManager::createFile( const String& filename ) {
     String fullPath = getFullPath( currentPath, filename );
 
     // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire();
-    
+    fs_mutex_acquire( );
+
     if ( FatFS.exists( fullPath.c_str( ) ) ) {
-        fs_mutex_release();  // THREAD SAFETY: Release before early return
+        fs_mutex_release( ); // THREAD SAFETY: Release before early return
         outputToArea( "File already exists: " + filename, FileColors::ERROR );
         return false;
     }
@@ -1002,12 +1026,12 @@ bool FileManager::createFile( const String& filename ) {
     File file = FatFS.open( fullPath.c_str( ), "w" );
     if ( file ) {
         file.close( );
-        fs_mutex_release();  // THREAD SAFETY: Release mutex
+        fs_mutex_release( ); // THREAD SAFETY: Release mutex
         outputToArea( "Created file: " + filename, FileColors::STATUS );
         refreshListing( );
         return true;
     } else {
-        fs_mutex_release();  // THREAD SAFETY: Release mutex on failure
+        fs_mutex_release( ); // THREAD SAFETY: Release mutex on failure
         outputToArea( "Failed to create file: " + filename, FileColors::ERROR );
         return false;
     }
@@ -1017,11 +1041,11 @@ bool FileManager::deleteFile( const String& filename ) {
     String fullPath = getFullPath( currentPath, filename );
 
     // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire();
-    
+    fs_mutex_acquire( );
+
     bool success = FatFS.remove( fullPath.c_str( ) );
-    fs_mutex_release();  // THREAD SAFETY: Release mutex
-    
+    fs_mutex_release( ); // THREAD SAFETY: Release mutex
+
     if ( success ) {
         outputToArea( "Deleted: " + filename, FileColors::STATUS );
         refreshListing( );
@@ -1035,17 +1059,17 @@ bool FileManager::deleteFile( const String& filename ) {
 bool FileManager::editFile( const String& filename ) {
     // Check if this is a bitmap file (.bin or .bmp)
     String lower = filename;
-    lower.toLowerCase();
-    
-    if (lower.endsWith(".bin") || lower.endsWith(".bmp")) {
+    lower.toLowerCase( );
+
+    if ( lower.endsWith( ".bin" ) || lower.endsWith( ".bmp" ) ) {
         // Launch bitmap editor
         changeTerminalColor( FileColors::STATUS, false );
         Serial.println( "\n\n\rOpening " + filename + " in bitmap editor..." );
         changeTerminalColor( -1, false ); // Reset colors
-        
-        return launchBitmapEditor(filename);
+
+        return launchBitmapEditor( filename );
     }
-    
+
     // Regular text file - use eKilo
     changeTerminalColor( FileColors::STATUS, false );
     Serial.println( "\n\n\rOpening " + filename + " in text editor..." );
@@ -1078,7 +1102,7 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
             shouldExitForREPL = true;
         }
         // Check for zero-copy transfer path (new preferred mechanism)
-        else if ( ContextManager::getInstance().hasTransferPath() ) {
+        else if ( ContextManager::getInstance( ).hasTransferPath( ) ) {
             // Transfer path is set - store empty and let caller use transfer path
             // The caller (Python REPL) will read directly from the file
             lastOpenedFileContent = "";
@@ -1124,11 +1148,11 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
 
 bool FileManager::viewFile( const String& filename ) {
     // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire();
-    
+    fs_mutex_acquire( );
+
     File file = FatFS.open( filename.c_str( ), "r" );
     if ( !file ) {
-        fs_mutex_release();  // THREAD SAFETY: Release before early return
+        fs_mutex_release( ); // THREAD SAFETY: Release before early return
         changeTerminalColor( FileColors::ERROR, false );
         Serial.println( "Failed to open file: " + filename );
         changeTerminalColor( -1, false ); // Reset colors
@@ -1157,7 +1181,7 @@ bool FileManager::viewFile( const String& filename ) {
     }
 
     file.close( );
-    fs_mutex_release();  // THREAD SAFETY: Release mutex after file operations
+    fs_mutex_release( );              // THREAD SAFETY: Release mutex after file operations
     changeTerminalColor( -1, false ); // Reset colors
     Serial.println( "\nPress any key to continue..." );
 
@@ -1194,10 +1218,10 @@ void FileManager::run( ) {
             running = false;
             break;
         }
-        
+
         // Call SlotManager service for file change detection
         // This ensures slot files update immediately when we return from editor
-        SlotManager::getInstance().service();
+        SlotManager::getInstance( ).service( );
 
         // Process any pending OLED updates
         processOLEDUpdate( );
@@ -1409,9 +1433,9 @@ void FileManager::run( ) {
             // Wait briefly to see if this is an escape sequence or standalone ESC
 
             if ( Serial.available( ) == 0 ) {
-            delayMicroseconds( 2000 ); // 5ms delay to wait for escape sequence
+                delayMicroseconds( 2000 ); // 5ms delay to wait for escape sequence
             }
-            
+
             if ( Serial.available( ) ) {
                 char seq1 = Serial.read( );
                 if ( seq1 == '[' && Serial.available( ) ) {
@@ -1549,7 +1573,7 @@ void FileManager::initInteractiveMode( ) {
     // Enter Jumperless interactive mode
     Serial.write( 0x0E );
     termInInteractiveMode = 1;
-        Serial.flush( );
+    Serial.flush( );
     delay( 10 ); // Give system time to switch modes
 
     // Show cursor by default - only hide during drawing
@@ -1975,11 +1999,11 @@ void FileManager::showInteractiveFileView( const String& filename ) {
     clearScreen( );
 
     // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire();
-    
+    fs_mutex_acquire( );
+
     File file = FatFS.open( filename.c_str( ), "r" );
     if ( !file ) {
-        fs_mutex_release();  // THREAD SAFETY: Release before early return
+        fs_mutex_release( ); // THREAD SAFETY: Release before early return
         moveCursor( 5, 5 );
         changeTerminalColor( FileColors::ERROR, false );
         Serial.print( "Failed to open file: " + filename );
@@ -2021,7 +2045,7 @@ void FileManager::showInteractiveFileView( const String& filename ) {
     }
 
     file.close( );
-    fs_mutex_release();  // THREAD SAFETY: Release mutex after file operations
+    fs_mutex_release( ); // THREAD SAFETY: Release mutex after file operations
 
     moveCursor( 23, 3 );
     changeTerminalColor( FileColors::STATUS, false );
@@ -2115,17 +2139,17 @@ void printColoredPath( const String& path ) {
 // App entry points
 void filesystemApp( bool waitForEnter ) {
     // Push context onto the stack for proper navigation
-    ContextEntry ctx(ContextType::FILE_MANAGER);
-    ctx.onExit = [](void*) {
+    ContextEntry ctx( ContextType::FILE_MANAGER );
+    ctx.onExit = []( void* ) {
         // Cleanup callback - called when context is popped
-        closeAllFiles();
+        closeAllFiles( );
         // Clear transfer path to prevent stale file paths from being loaded by Python
-        ContextManager::getInstance().clearTransferPath();
-        if (oled.oledConnected) {
-            oled.restoreNormalFont();
+        ContextManager::getInstance( ).clearTransferPath( );
+        if ( oled.oledConnected ) {
+            oled.restoreNormalFont( );
         }
     };
-    ContextManager::getInstance().pushContext(ctx);
+    ContextManager::getInstance( ).pushContext( ctx );
 
     bool showOledInTerminal = jumperlessConfig.top_oled.show_in_terminal;
     jumperlessConfig.top_oled.show_in_terminal = false;
@@ -2151,7 +2175,7 @@ void filesystemApp( bool waitForEnter ) {
         }
 
         // Clear the enter keypress
-        while ( Serial.available( ) > 0) {
+        while ( Serial.available( ) > 0 ) {
             Serial.read( );
         }
         encoderButtonState = IDLE;
@@ -2200,7 +2224,7 @@ void filesystemApp( bool waitForEnter ) {
         if ( c == 'q' || c == 'Q' ) {
             Serial.println( "  File Manager cancelled." );
             // Pop context on early exit
-            ContextManager::getInstance().popContext();
+            ContextManager::getInstance( ).popContext( );
             return;
         }
     }
@@ -2211,9 +2235,9 @@ void filesystemApp( bool waitForEnter ) {
     restoreScreenState( );
 
     jumperlessConfig.top_oled.show_in_terminal = showOledInTerminal;
-    
+
     // Pop context - cleanup callback will be called automatically
-    ContextManager::getInstance().popContext();
+    ContextManager::getInstance( ).popContext( );
 }
 
 void eKiloApp( ) {
@@ -2263,18 +2287,18 @@ String launchEkilo( const char* filename, bool replMode ) {
     }
 
     // Push EKILO_EDITOR context onto the stack
-    ContextEntry ctx(ContextType::EKILO_EDITOR);
-    ctx.onExit = [](void*) {
+    ContextEntry ctx( ContextType::EKILO_EDITOR );
+    ctx.onExit = []( void* ) {
         // Cleanup callback - close any open files
-        closeAllFiles();
+        closeAllFiles( );
         // NOTE: Do NOT clear transfer path here - the caller (Python REPL) needs to read it
         // The caller is responsible for clearing the transfer path after reading
     };
     // Store filename in transfer path for child contexts (Python REPL)
-    if (finalFilename.length() > 0) {
-        ContextManager::getInstance().setTransferPath(finalFilename.c_str());
+    if ( finalFilename.length( ) > 0 ) {
+        ContextManager::getInstance( ).setTransferPath( finalFilename.c_str( ) );
     }
-    ContextManager::getInstance().pushContext(ctx);
+    ContextManager::getInstance( ).pushContext( ctx );
 
     // Clear any pending serial data
     while ( Serial.available( ) > 0 ) {
@@ -2316,42 +2340,42 @@ String launchEkilo( const char* filename, bool replMode ) {
     // ========== MEMORY CLEANUP BEFORE EDITOR ==========
     // Force garbage collection to free memory and reduce fragmentation
     // This is critical when launching editor from Python REPL context
-    if (isMicroPythonInitialized()) {
-        forceGarbageCollection();
+    if ( isMicroPythonInitialized( ) ) {
+        forceGarbageCollection( );
     }
-    
+
     // Give system a moment to stabilize after GC
-    yield();
-    delay(5);
-    
+    yield( );
+    delay( 5 );
+
     // ========== UNIFIED EDITOR CALL ==========
     // Use ekilo_run() - the single entry point for all editor operations
-    const char* fileToOpen = finalFilename.length() > 0 ? finalFilename.c_str() : nullptr;
-    
-    bool success = ekilo_run(fileToOpen);
-    
+    const char* fileToOpen = finalFilename.length( ) > 0 ? finalFilename.c_str( ) : nullptr;
+
+    bool success = ekilo_run( fileToOpen );
+
     // Get result from ContextManager (zero-copy)
-    const EkiloResult* result = ekilo_get_result();
+    const EkiloResult* result = ekilo_get_result( );
     bool fileSaved = result && result->saved;
-    
+
     // Store saved path for later use
     String savedFilePath = "";
-    if (result && result->saved_path[0] != '\0') {
-        savedFilePath = String(result->saved_path);
+    if ( result && result->saved_path[ 0 ] != '\0' ) {
+        savedFilePath = String( result->saved_path );
     }
-    
+
     // Only launch REPL if Ctrl+P was pressed AND file is a .py file
     bool shouldLaunchREPL = false;
-    if (result && result->launch_repl) {
+    if ( result && result->launch_repl ) {
         // Check if file is a Python file
-        bool isPythonFile = savedFilePath.endsWith(".py") || savedFilePath.endsWith(".PY");
-        if (isPythonFile) {
+        bool isPythonFile = savedFilePath.endsWith( ".py" ) || savedFilePath.endsWith( ".PY" );
+        if ( isPythonFile ) {
             shouldLaunchREPL = true;
         } else {
             // Not a Python file - warn user and don't launch REPL
-            Serial.println("\n\r[!] Ctrl+P only launches Python REPL for .py files");
-            Serial.println("[!] Saved file, returning to previous screen...");
-            delay(1500);  // Give user time to read message
+            Serial.println( "\n\r[!] Ctrl+P only launches Python REPL for .py files" );
+            Serial.println( "[!] Saved file, returning to previous screen..." );
+            delay( 1500 ); // Give user time to read message
         }
     }
 
@@ -2377,13 +2401,13 @@ String launchEkilo( const char* filename, bool replMode ) {
         }
 
         // After REPL exits, pop context and return
-        ContextManager::getInstance().popContext();
-        ekilo_clear_result();  // Clean up result data
-        
+        ContextManager::getInstance( ).popContext( );
+        ekilo_clear_result( ); // Clean up result data
+
         // Clear screen before returning - Python REPL left garbage on screen
         Serial.print( "\x1b[2J\x1b[H" );
-        Serial.flush();
-        
+        Serial.flush( );
+
         // Return marker to signal that REPL was already launched
         // This prevents the caller from trying to load the file again
         return "[REPL_LAUNCHED]";
@@ -2440,8 +2464,8 @@ String launchEkilo( const char* filename, bool replMode ) {
     Serial.flush( );
 
     // Pop EKILO_EDITOR context - cleanup callback will be called
-    ContextManager::getInstance().popContext();
-    ekilo_clear_result();  // Clean up result data
+    ContextManager::getInstance( ).popContext( );
+    ekilo_clear_result( ); // Clean up result data
 
     // Transfer path is set in ContextManager for zero-copy access
     // Return empty string so callers use the transfer path mechanism
@@ -2508,18 +2532,18 @@ String FileManager::promptForFilename( const String& prompt ) {
 // Uses context system for proper navigation and cleanup
 String filesystemAppPythonScriptsREPL( ) {
     // Push FILE_MANAGER context onto the stack
-    ContextEntry ctx(ContextType::FILE_MANAGER);
-    ctx.onExit = [](void*) {
+    ContextEntry ctx( ContextType::FILE_MANAGER );
+    ctx.onExit = []( void* ) {
         // Cleanup callback - close any open files
-        closeAllFiles();
+        closeAllFiles( );
         // NOTE: Do NOT clear transfer path or SharedBuffer here
         // The caller (Python REPL) needs to read them after we return
     };
-    ContextManager::getInstance().pushContext(ctx);
-    
+    ContextManager::getInstance( ).pushContext( ctx );
+
     // Clear screen for file manager interface
-    Serial.print("\x1b[2J\x1b[H");
-    Serial.flush();
+    Serial.print( "\x1b[2J\x1b[H" );
+    Serial.flush( );
     saveScreenState( );
 
     FileManager manager;
@@ -2569,7 +2593,7 @@ String filesystemAppPythonScriptsREPL( ) {
     manager.setREPLMode( false );
 
     // Pop FILE_MANAGER context - this preserves the transfer path for caller
-    ContextManager::getInstance().popContext();
+    ContextManager::getInstance( ).popContext( );
 
     // Return empty string - caller should use hasTransferPath() to check for file
     // The transfer path (if set by eKilo) is preserved for the caller to read
@@ -2729,15 +2753,15 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
     }
 
     // CRITICAL: Pause Core2 during flash write operations
-    bool was_paused = pauseCore2ForFlash(100);
-    
+    bool was_paused = pauseCore2ForFlash( 100 );
+
     // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire();
-    
+    fs_mutex_acquire( );
+
     File file = FatFS.open( filename, "w" );
     if ( !file ) {
-        fs_mutex_release();
-        unpauseCore2ForFlash(was_paused);
+        fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
         return false;
     }
 
@@ -2750,18 +2774,18 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
 
         if ( bytesWritten != bytesToWrite ) {
             file.close( );
-            fs_mutex_release();
-            unpauseCore2ForFlash(was_paused);
+            fs_mutex_release( );
+            unpauseCore2ForFlash( was_paused );
             return false;
         }
 
         totalBytesWritten += bytesWritten;
     }
 
-    file.flush();
+    file.flush( );
     file.close( );
-    fs_mutex_release();
-    unpauseCore2ForFlash(was_paused);
+    fs_mutex_release( );
+    unpauseCore2ForFlash( was_paused );
     return true;
 }
 
@@ -2791,16 +2815,16 @@ bool writeStringToFile( const char* filename, const char* content ) {
     }
 
     // CRITICAL: Pause Core2 during flash write operations
-    bool was_paused = pauseCore2ForFlash(100);
-    
+    bool was_paused = pauseCore2ForFlash( 100 );
+
     // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire();
-    
+    fs_mutex_acquire( );
+
     // Reduce verbosity - only show messages for errors or final verification
     File file = FatFS.open( filename, "w" );
     if ( !file ) {
-        fs_mutex_release();
-        unpauseCore2ForFlash(was_paused);
+        fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
         addFilesystemMessage( "ERROR: Cannot open " + String( filename ) + " for writing", 196 );
         return false;
     }
@@ -2815,8 +2839,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
         if ( bytesWritten != bytesToWrite ) {
             addFilesystemMessage( "ERROR: Write failed at byte " + String( totalBytesWritten ), 196 );
             file.close( );
-            fs_mutex_release();
-            unpauseCore2ForFlash(was_paused);
+            fs_mutex_release( );
+            unpauseCore2ForFlash( was_paused );
             return false;
         }
 
@@ -2835,7 +2859,7 @@ bool writeStringToFile( const char* filename, const char* content ) {
         }
     }
 
-    file.flush();
+    file.flush( );
     file.close( );
 
     // Quick verification - don't spend too much time on this
@@ -2843,8 +2867,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
     if ( verifyFile ) {
         size_t actualSize = verifyFile.size( );
         verifyFile.close( );
-        fs_mutex_release();
-        unpauseCore2ForFlash(was_paused);
+        fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
         if ( actualSize != contentLength ) {
             addFilesystemMessage( "ERROR: Size mismatch " + String( actualSize ) + " vs " + String( contentLength ), 196 );
             return false;
@@ -2853,8 +2877,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
     } else {
         // Don't fail on verification errors - the file might still be usable
         // Just continue silently
-        fs_mutex_release();
-        unpauseCore2ForFlash(was_paused);
+        fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
     }
 
     return true;
@@ -2866,9 +2890,9 @@ bool writeStringToFile( const char* filename, const char* content ) {
 
 void initializeMicroPythonExamples( bool forceInitialization ) {
     // Safety check - don't do anything if Serial is not available
-    if ( !Serial ) {
-        return;
-    }
+    // if ( !Serial ) {
+    //     return;
+    // }
 
     // Build arrays dynamically based on enabled examples
     struct ExampleInfo {
@@ -2879,6 +2903,15 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 
     // Create array of enabled examples
     ExampleInfo examples[] = {
+#ifdef INCLUDE_JUMPERLESS_MODULE
+        { "/python_scripts/lib/jumperless.py", JUMPERLESS_MODULE_PY, "jumperless.py" },
+#endif
+#ifdef INCLUDE_JUMPERLESS_STUB
+        { "/python_scripts/lib/jumperless.pyi", JUMPERLESS_STUB_PYI, "jumperless.pyi" },
+#endif
+#ifdef INCLUDE_VIPER_INIT
+        { "/python_scripts/lib/viper_init.py", VIPER_INIT_PY, "viper_init.py" },
+#endif
 #ifdef INCLUDE_DAC_BASICS
         { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py" },
 #endif
@@ -2912,6 +2945,9 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #ifdef INCLUDE_UART_LOOPBACK
         { "/python_scripts/examples/uart_loopback.py", UART_LOOPBACK_PY, "uart_loopback.py" },
 #endif
+#ifdef INCLUDE_INTERACTION_DEMO
+        { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py" },
+#endif
     };
 
     int totalExamples = sizeof( examples ) / sizeof( examples[ 0 ] );
@@ -2937,7 +2973,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         }
 
         // If all enabled files exist and not forced, exit silently
-        if ( allFilesExist && FatFS.exists( "/python_scripts" ) && FatFS.exists( "/python_scripts/examples" ) ) {
+        if ( allFilesExist && FatFS.exists( "/python_scripts" ) && FatFS.exists( "/python_scripts/examples" ) && FatFS.exists( "/python_scripts/lib" ) ) {
             return;
         }
     }
@@ -3025,6 +3061,31 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
             globalFileManager->outputToArea( "Created examples directory", 155 );
         } else {
             addFilesystemMessage( "Created examples directory", 155 );
+        }
+    }
+
+    // Ensure lib directory exists inside python_scripts for the jumperless module
+    if ( !FatFS.exists( "/python_scripts/lib" ) ) {
+        if ( useOutputArea ) {
+            globalFileManager->outputToArea( "[CREATE] Creating lib directory...", 155 );
+        } else {
+            addFilesystemMessage( "[CREATE] Creating lib directory...", 155 );
+        }
+
+        // Create the lib directory
+        if ( !FatFS.mkdir( "/python_scripts/lib" ) ) {
+            if ( useOutputArea ) {
+                globalFileManager->outputToArea( "ERROR: Failed to create lib directory", 196 );
+            } else {
+                addFilesystemMessage( "ERROR: Failed to create lib directory", 196 );
+            }
+            return;
+        }
+
+        if ( useOutputArea ) {
+            globalFileManager->outputToArea( "Created lib directory", 155 );
+        } else {
+            addFilesystemMessage( "Created lib directory", 155 );
         }
     }
 
@@ -3165,6 +3226,9 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 bool verifyMicroPythonExamples( ) {
     // Check if all expected files exist
     const char* expectedFiles[] = {
+        "/python_scripts/lib/jumperless.py",
+        "/python_scripts/lib/jumperless.pyi",
+        "/python_scripts/lib/viper_init.py",
         "/python_scripts/examples/01_dac_basics.py",
         "/python_scripts/examples/02_adc_basics.py",
         "/python_scripts/examples/03_gpio_basics.py",
@@ -3225,214 +3289,223 @@ bool verifyMicroPythonExamples( ) {
 // These functions provide thread-safe file I/O with proper Core2 synchronization.
 // All file operations in the codebase should use these functions.
 
-File safeFileOpen(const char* path, const char* mode, uint32_t timeout_ms) {
-    if (!path || !mode) return File();
-    
+File safeFileOpen( const char* path, const char* mode, uint32_t timeout_ms ) {
+    if ( !path || !mode )
+        return File( );
+
     // Acquire filesystem mutex
-    if (timeout_ms == 0) {
-        fs_mutex_acquire();
-    } else if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
-        return File();  // Timeout - couldn't get mutex
+    if ( timeout_ms == 0 ) {
+        fs_mutex_acquire( );
+    } else if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
+        return File( ); // Timeout - couldn't get mutex
     }
-    
-    File file = FatFS.open(path, mode);
-    
+
+    File file = FatFS.open( path, mode );
+
     // Note: Mutex is NOT released here - caller must call safeFileClose()
     // This keeps the file exclusively locked while in use
-    if (!file) {
-        fs_mutex_release();  // Release if open failed
+    if ( !file ) {
+        fs_mutex_release( ); // Release if open failed
     }
-    
+
     return file;
 }
 
-void safeFileClose(File& file, bool was_write_mode) {
-    if (!file) {
+void safeFileClose( File& file, bool was_write_mode ) {
+    if ( !file ) {
         return;
     }
-    
-    if (was_write_mode) {
+
+    if ( was_write_mode ) {
         // Pause Core2 before close (which internally syncs)
-        bool was_paused = pauseCore2ForFlash(100);
+        bool was_paused = pauseCore2ForFlash( 100 );
         // Skip explicit flush() - it does BOTH f_sync AND _fs->sync (full FS sync)
         // FatFS f_close() internally calls f_sync() which is sufficient for file data
         // The _fs->sync() in flush() syncs the entire filesystem which is overkill
-        file.close();
-        unpauseCore2ForFlash(was_paused);
+        file.close( );
+        unpauseCore2ForFlash( was_paused );
     } else {
-        file.close();
+        file.close( );
     }
-    
-    fs_mutex_release();
+
+    fs_mutex_release( );
 }
 
-bool safeFileReadAll(const char* path, char* buffer, size_t buffer_size, 
-                     size_t* bytes_read, uint32_t timeout_ms) {
-    if (!path || !buffer || buffer_size == 0) return false;
-    
+bool safeFileReadAll( const char* path, char* buffer, size_t buffer_size,
+                      size_t* bytes_read, uint32_t timeout_ms ) {
+    if ( !path || !buffer || buffer_size == 0 )
+        return false;
+
     *bytes_read = 0;
-    
+
     // Acquire filesystem mutex
-    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         return false;
     }
-    
-    File file = FatFS.open(path, "r");
-    if (!file) {
-        fs_mutex_release();
+
+    File file = FatFS.open( path, "r" );
+    if ( !file ) {
+        fs_mutex_release( );
         return false;
     }
-    
-    size_t file_size = file.size();
-    size_t to_read = (file_size < buffer_size - 1) ? file_size : buffer_size - 1;
-    
-    *bytes_read = file.readBytes(buffer, to_read);
-    buffer[*bytes_read] = '\0';  // Null terminate
-    
-    file.close();
-    fs_mutex_release();
-    
+
+    size_t file_size = file.size( );
+    size_t to_read = ( file_size < buffer_size - 1 ) ? file_size : buffer_size - 1;
+
+    *bytes_read = file.readBytes( buffer, to_read );
+    buffer[ *bytes_read ] = '\0'; // Null terminate
+
+    file.close( );
+    fs_mutex_release( );
+
     return true;
 }
 
-bool safeFileWriteAll(const char* path, const char* content, size_t content_len,
-                      uint32_t timeout_ms) {
-    if (!path || !content) return false;
-    
-    if (content_len == 0) {
-        content_len = strlen(content);
+bool safeFileWriteAll( const char* path, const char* content, size_t content_len,
+                       uint32_t timeout_ms ) {
+    if ( !path || !content )
+        return false;
+
+    if ( content_len == 0 ) {
+        content_len = strlen( content );
     }
-    
+
     // Pause Core2 for entire write operation
-    bool was_paused = pauseCore2ForFlash(100);
-    
+    bool was_paused = pauseCore2ForFlash( 100 );
+
     // Acquire filesystem mutex
-    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
-        unpauseCore2ForFlash(was_paused);
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
+        unpauseCore2ForFlash( was_paused );
         return false;
     }
-    
-    File file = FatFS.open(path, "w");
-    if (!file) {
-        fs_mutex_release();
-        unpauseCore2ForFlash(was_paused);
+
+    File file = FatFS.open( path, "w" );
+    if ( !file ) {
+        fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
         return false;
     }
-    
-    size_t written = file.write((const uint8_t*)content, content_len);
-    file.flush();
-    file.close();
-    
-    fs_mutex_release();
-    unpauseCore2ForFlash(was_paused);
-    
-    return (written == content_len);
+
+    size_t written = file.write( (const uint8_t*)content, content_len );
+    file.flush( );
+    file.close( );
+
+    fs_mutex_release( );
+    unpauseCore2ForFlash( was_paused );
+
+    return ( written == content_len );
 }
 
-int safeFileWrite(File& file, const uint8_t* data, size_t len) {
-    if (!file || !data || len == 0) return -1;
-    
+int safeFileWrite( File& file, const uint8_t* data, size_t len ) {
+    if ( !file || !data || len == 0 )
+        return -1;
+
     // Note: Assumes caller already holds fs_mutex from safeFileOpen()
     // Pause Core2 for the write operation
-    bool was_paused = pauseCore2ForFlash(100);
-    
-    int written = file.write(data, len);
-    
-    unpauseCore2ForFlash(was_paused);
-    
+    bool was_paused = pauseCore2ForFlash( 100 );
+
+    int written = file.write( data, len );
+
+    unpauseCore2ForFlash( was_paused );
+
     return written;
 }
 
-bool safeFileFlush(File& file) {
-    if (!file) return false;
-    
+bool safeFileFlush( File& file ) {
+    if ( !file )
+        return false;
+
     // Pause Core2 for flush operation (commits to flash)
-    bool was_paused = pauseCore2ForFlash(100);
-    
-    file.flush();
-    
-    unpauseCore2ForFlash(was_paused);
-    
+    bool was_paused = pauseCore2ForFlash( 100 );
+
+    file.flush( );
+
+    unpauseCore2ForFlash( was_paused );
+
     return true;
 }
 
-bool safeFileExists(const char* path, uint32_t timeout_ms) {
-    if (!path) return false;
-    
-    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+bool safeFileExists( const char* path, uint32_t timeout_ms ) {
+    if ( !path )
+        return false;
+
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         return false;
     }
-    
-    bool exists = FatFS.exists(path);
-    
-    fs_mutex_release();
-    
+
+    bool exists = FatFS.exists( path );
+
+    fs_mutex_release( );
+
     return exists;
 }
 
-int32_t safeFileSize(const char* path, uint32_t timeout_ms) {
-    if (!path) return -1;
-    
-    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
+int32_t safeFileSize( const char* path, uint32_t timeout_ms ) {
+    if ( !path )
+        return -1;
+
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         return -1;
     }
-    
-    File file = FatFS.open(path, "r");
-    if (!file) {
-        fs_mutex_release();
+
+    File file = FatFS.open( path, "r" );
+    if ( !file ) {
+        fs_mutex_release( );
         return -1;
     }
-    
-    int32_t size = file.size();
-    file.close();
-    
-    fs_mutex_release();
-    
+
+    int32_t size = file.size( );
+    file.close( );
+
+    fs_mutex_release( );
+
     return size;
 }
 
-bool safeMkdir(const char* path, uint32_t timeout_ms) {
-    if (!path) return false;
-    
+bool safeMkdir( const char* path, uint32_t timeout_ms ) {
+    if ( !path )
+        return false;
+
     // Pause Core2 for directory creation (flash write)
-    bool was_paused = pauseCore2ForFlash(100);
-    
-    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
-        unpauseCore2ForFlash(was_paused);
+    bool was_paused = pauseCore2ForFlash( 100 );
+
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
+        unpauseCore2ForFlash( was_paused );
         return false;
     }
-    
+
     // Check if already exists
-    if (FatFS.exists(path)) {
-        fs_mutex_release();
-        unpauseCore2ForFlash(was_paused);
-        return true;  // Already exists is success
+    if ( FatFS.exists( path ) ) {
+        fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
+        return true; // Already exists is success
     }
-    
-    bool success = FatFS.mkdir(path);
-    
-    fs_mutex_release();
-    unpauseCore2ForFlash(was_paused);
-    
+
+    bool success = FatFS.mkdir( path );
+
+    fs_mutex_release( );
+    unpauseCore2ForFlash( was_paused );
+
     return success;
 }
 
-bool safeFileDelete(const char* path, uint32_t timeout_ms) {
-    if (!path) return false;
-    
+bool safeFileDelete( const char* path, uint32_t timeout_ms ) {
+    if ( !path )
+        return false;
+
     // Pause Core2 for file deletion (flash write)
-    bool was_paused = pauseCore2ForFlash(100);
-    
-    if (!fs_mutex_acquire_timeout_ms(timeout_ms)) {
-        unpauseCore2ForFlash(was_paused);
+    bool was_paused = pauseCore2ForFlash( 100 );
+
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
+        unpauseCore2ForFlash( was_paused );
         return false;
     }
-    
-    bool success = FatFS.remove(path);
-    
-    fs_mutex_release();
-    unpauseCore2ForFlash(was_paused);
-    
+
+    bool success = FatFS.remove( path );
+
+    fs_mutex_release( );
+    unpauseCore2ForFlash( was_paused );
+
     return success;
 }
 
@@ -3580,7 +3653,6 @@ bool FileManager::isInputBlocked( ) {
     unsigned long elapsed = millis( ) - lastDisplayUpdate;
     return elapsed < INPUT_BLOCK_TIME;
 }
-
 
 //==============================================================================
 // Persistent Filesystem Message Management Functions

@@ -32,6 +32,7 @@ extern volatile encoderDirectionStates encoderDirectionState;
 extern volatile encoderButtonStates encoderButtonState;
 extern volatile encoderButtonStates lastButtonEncoderState;
 extern volatile encoderDirectionStates lastDirectionState;
+extern volatile bool encoderDirectionConsumed;
 
 void initRotaryEncoder(void);
 void unInitRotaryEncoder(void);

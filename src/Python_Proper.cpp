@@ -1,4 +1,5 @@
 #include "Python_Proper.h"
+#include "ArduinoStuff.h"
 #include <Arduino.h>
 #include <FatFS.h>
 #include "config.h"
@@ -13,6 +14,7 @@
 #include "SyntaxHighlighting.h"
 #include "CommandBuffer.h"  // For UART response capture
 #include "JumperlOS.h"
+#include "MpRemoteService.h"
 #include "SharedBuffer.h"  // For zero-copy transfer from Ekilo editor
 #include "externVars.h"  // For pauseCore2 synchronization
 extern "C" {
@@ -28,20 +30,25 @@ extern "C" {
 // Forward declaration for JFS file cleanup - must be called after script execution
 // to close any files opened by MicroPython that weren't explicitly closed
 extern "C" void jl_close_all_jfs_files(void);
+// Mount the Jumperless VFS at "/" for MicroPython
+extern "C" void jl_vfs_mount_root(void);
 
 // Global state for proper MicroPython integration
-static char mp_heap[MICROPY_HEAP_SIZE]; //heap for MicroPython (reduced to free memory for editor)
+// NOTE: mp_heap is NOT static - it's accessed by jl_soft_reboot() for VM reinit
+unsigned char mp_heap[MICROPY_HEAP_SIZE]; //heap for MicroPython (reduced to free memory for editor)
+const size_t mp_heap_size = MICROPY_HEAP_SIZE;
 static bool mp_initialized = false;
 static bool mp_repl_active = false;
 static bool jumperless_globals_loaded = false;
-bool mp_interrupt_requested = false; // Flag for Ctrl+Q interrupt
+bool mp_interrupt_requested = false; // Flag for keyboard interrupt
+bool mp_soft_reset_requested = false; // Flag for Ctrl+D soft reset requests
 
 // Global state for REPL initial file loading
 static String repl_initial_filepath = "";
 static bool repl_has_initial_file = false;
 
 // Keyboard interrupt character storage
-static int keyboard_interrupt_char = 17; // Default to Ctrl+Q (ASCII 17)
+static int keyboard_interrupt_char = 3; // Default to Ctrl+C (MicroPython default)
 
 // Command execution state
 static char mp_command_buffer[512];
@@ -73,6 +80,10 @@ static int replColors[15] = {
 
 Stream *global_mp_stream = &Serial;
 
+// Separate stream for interrupt checking - always points to main Serial
+// This prevents mp_hal_check_interrupt from consuming data when global_mp_stream is USBSer2
+Stream *mp_interrupt_check_stream = &Serial;
+
 // C-compatible pointer for HAL functions
 extern "C" {
     void *global_mp_stream_ptr = (void *)&Serial;
@@ -89,11 +100,9 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len);
 void mp_hal_delay_ms(mp_uint_t ms);
 mp_uint_t mp_hal_ticks_ms(void);
 
-// Forward declaration for filesystem setup
-void setupFilesystemAndPaths(void);
-
 // Forward declaration for interrupt checking  
 // (Note: Actual function is C++ linkage for use by other modules)
+// setupFilesystemAndPaths is now declared in Python_Proper.h
 
 // Arduino wrapper functions for HAL
 int arduino_serial_available(Stream *stream = global_mp_stream);
@@ -139,6 +148,11 @@ extern "C" void mp_hal_delay_ms(mp_uint_t ms) {
     // Check for interrupt every millisecond during delays
     mp_hal_check_interrupt();
     
+    // If interrupt requested, return immediately to allow VM to handle it
+    if (mp_interrupt_requested || mp_soft_reset_requested) {
+        return;
+    }
+    
     // Run essential services every 50ms during Python delays
     // This keeps current sense measurements and marching ants animation running
     if (millis() - last_service_time >= 50) {
@@ -166,20 +180,29 @@ extern "C" int arduino_serial_available(Stream *stream) {
 
 extern "C" int arduino_serial_read(Stream *stream) {
   // Check for interrupt request before reading
-  mp_hal_check_interrupt();
-  return global_mp_stream->read();
+ // mp_hal_check_interrupt();
+  int c = global_mp_stream->read();
+// Serial.write(c);
+// Serial.flush();
+  return c;
 }
 
 extern "C" void arduino_serial_write(const char *str, int len, void *stream) {
   Stream *s = (Stream *)stream;
   if (s) {
+    // When writing to USBSer2 (raw REPL transport), emit bytes verbatim to avoid
+    // surprising host decoders that expect exact raw REPL framing.
+    bool is_raw_repl_stream = (s == &USBSer2);
+
     // Convert \n to \r\n for proper terminal display
     for (int i = 0; i < len; i++) {
-
-      s->write(str[i]);
-
-      if (str[i] == '\n') {
-        s->write('\r');
+      if (!is_raw_repl_stream && str[i] == '\n') {
+        // Friendly REPL / main Serial: normalize to CRLF
+        //s->write('\r');
+        s->write('\n');
+      } else {
+        // Raw REPL stream: send bytes verbatim (no CR injection)
+        s->write(str[i]);
       }
     }
     s->flush();
@@ -197,7 +220,12 @@ extern "C" unsigned int arduino_millis() { return millis(); }
 // HAL function to set the keyboard interrupt character
 extern "C" mp_uint_t mp_hal_set_interrupt_char(int c) {
     keyboard_interrupt_char = c;
-    if (global_mp_stream) {
+    
+    // Suppress debug output when MpRemote is active (stream is USBSer2)
+    // These messages would interfere with mpremote/ViperIDE protocol
+    const bool is_mpremote_active = (global_mp_stream == &USBSer2);
+
+    if (global_mp_stream && !is_mpremote_active) {
         char char_name = (c >= 1 && c <= 26) ? (char)(c + 64) : '?';
         global_mp_stream->printf("[MP] Keyboard interrupt character set to Ctrl+%c (ASCII %d)\n\r", char_name, c);
     }
@@ -217,38 +245,73 @@ void setGlobalStream(Stream *stream) {
 // Terminal color control function is now in Graphics.cpp
 
 unsigned long lastInterruptCheckTime = 0;
-unsigned long interruptCheckInterval = 10;
+unsigned long interruptCheckInterval = 1;  // 1ms throttle for responsive interrupts
+
+// Debug flag for mpremote/ViperIDE - when enabled, echo Python output to main Serial
+// This helps debug issues with raw REPL output
+extern bool mpremote_debug_python_output;
+bool mpremote_debug_python_output = false;
+
 // MicroPython HAL stdout function with Jumperless-specific functionality
 extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     // Check for interrupt before outputting (this is called frequently)
-
+    
+    // DEBUG: If mpremote debug is enabled AND we're outputting to USBSer2, also echo to Serial
+    if (mpremote_debug_python_output && global_mp_stream == &USBSer2 && len > 0) {
+        Serial.print("[MpRemote-PY] ");
+        for (size_t i = 0; i < len && i < 200; i++) {
+            char c = str[i];
+            if (c == '\n') Serial.print("\\n");
+            else if (c == '\r') Serial.print("\\r");
+            else if (c >= 0x20 && c < 0x7F) Serial.print(c);
+            else Serial.printf("\\x%02X", (uint8_t)c);
+        }
+        if (len > 200) Serial.print("...");
+        Serial.println();
+    }
     
     // Basic output to global stream (regular MicroPython output)
     if (global_mp_stream) {
+        bool is_raw_repl_stream = (global_mp_stream == &USBSer2);
+        if (global_mp_stream_ptr == (void *)&USBSer2) {
+          is_raw_repl_stream = true;
+        }
+
         for (size_t i = 0; i < len; i++) {
             // CRITICAL: Service USB every 32 characters to prevent CDC buffer deadlock
             // Without this, Serial.write() can block if CDC TX buffer is full,
             // and USB never gets serviced, causing a permanent freeze
-            if (i % 12 == 0) {
+            if (i % 5 == 0) {
                 tud_task();  // Service USB to drain CDC TX buffer
                 mp_hal_check_interrupt();
             }
 
-
-            
-            
-            if (str[i] == '\n') {
+            if (!is_raw_repl_stream && str[i] == '\n') {
+                // Friendly REPL / main Serial: normalize to CRLF
+                //Serial.printf("[MP-OUT] CRLF\n");
                 global_mp_stream->write('\r');
+                global_mp_stream->write('\n');
+
+            } else {
+                // Raw REPL stream: send bytes verbatim (no CR injection)
+                global_mp_stream->write(str[i]);
+
+              //   if (MpRemoteService::getInstance().isDebugEnabled()) {
+              //     //Serial.printf("[MpRemote] Tx: ");
+              //     // Print with escape sequences shown
+                 
+              //         if (str[i] == '\r') Serial.print("\\r");
+              //         else if (str[i] == '\n') Serial.print("\\n");
+              //         else if (str[i] < 0x20) Serial.printf("\\x%02X", str[i]);
+              //         else Serial.write(str[i]);
+                  
+              //    //Serial.println();
+              // }
+                
             }
-            global_mp_stream->write(str[i]);
         }
         // Service USB after output to ensure data starts transmitting
         global_mp_stream->flush();
-        //if (millis() - lastInterruptCheckTime >= interruptCheckInterval) {
-         
-        //  lastInterruptCheckTime = millis();
-       // }
-        //tud_task();
     }
     
     // UART Response Capture: If this command came from UART, also queue output there
@@ -264,64 +327,131 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
 // HAL functions are now implemented in lib/micropython/port/mphalport.c
 
 // Function to check for interrupt and raise KeyboardInterrupt if requested
-void mp_hal_check_interrupt(void) {
-  // More frequent checking - check every call for better responsiveness
+// NOTE: Uses mp_interrupt_check_stream instead of global_mp_stream to avoid
+// consuming data from USBSer2 when it's being used as the output stream (e.g., for mpremote)
+extern "C" void mp_hal_check_interrupt(void) {
   static uint32_t last_interrupt_time = 0;
   static uint32_t last_check_time = 0;
   static uint32_t debug_counter = 0;
   debug_counter++;
-  
-  // Throttle checking to avoid overwhelming the system, but check more frequently than before
+
+  // Service USB so incoming Ctrl-C/Ctrl-D bytes reach the CDC buffer
+  // This is critical for responsive interrupt handling
+  tud_task();
+
+  const bool in_raw_repl = MpRemoteService::getInstance().isInRawRepl();
   uint32_t current_time = millis();
-  if (current_time - last_check_time < interruptCheckInterval) { // Check at most every 1ms instead of every call
+
+  // If an interrupt was requested from another context, schedule it immediately
+  if (mp_interrupt_requested) {
+    mp_sched_keyboard_interrupt();
+    mp_interrupt_requested = false;  // Clear flag after scheduling to avoid duplicate interrupts
+    last_interrupt_time = current_time;
+    return;
+  }
+  
+  // Soft reset flag is handled separately - it's checked by execution code for reinitialization
+  // Don't schedule additional interrupts here as the SystemExit was already scheduled when flag was set
+  
+  // Throttle stream polling to avoid excessive overhead
+  if (current_time - last_check_time < interruptCheckInterval) {
     return;
   }
   last_check_time = current_time;
   
-  // Check for Ctrl+Q more frequently - check every call when stream is available
-  if (global_mp_stream) {
-    // Check if there's any input available
-    while (global_mp_stream->available()) {
-      int c = global_mp_stream->read(); // Read and consume immediately
+  // Helper lambda to check a stream for interrupts
+  auto check_stream = [&](Stream* stream, const char* stream_name) {
+    if (!stream) return;
+    
+    int available = stream->available();
+    if (available > 0) {
+      int c = stream->peek(); // Only consume if it's a control signal
       
-      if (c == keyboard_interrupt_char) { // Check configured interrupt char
-        // Reduce debounce time for faster response in tight loops
-        if (current_time - last_interrupt_time > 50) { // Reduced from 100ms to 50ms
-          char char_display = (keyboard_interrupt_char >= 1 && keyboard_interrupt_char <= 26) ? 
-                             (char)(keyboard_interrupt_char + 64) : '?';
-          global_mp_stream->printf("^%c\n\r", char_display);
-          if (global_mp_stream) {
-            changeTerminalColor(replColors[4], true, global_mp_stream);
-            global_mp_stream->printf("KeyboardInterrupt (Ctrl+%c)\n\r", char_display);
-            changeTerminalColor(replColors[1], true, global_mp_stream);
-            mp_raise_type(&mp_type_KeyboardInterrupt);
+      // Debug log for interrupt diagnosis
+      // Only print occasionally or if it's a control char to avoid flooding
+      if (c == 0x03 || c == 0x04) {
+       //  Serial.printf("[MP-INT] %s: avail=%d, peek=0x%02X, kbd_char=%d\n", stream_name, available, c, keyboard_interrupt_char);
+      } else if (debug_counter % 500 == 0) {
+         // Serial.printf("[MP-INT-TRACE] %s: avail=%d, peek=0x%02X\n", stream_name, available, c);
+      }
+
+      int max_lookahead = 5;
+
+      if (c == 0x0D) {
+        for (int i = 0; i < max_lookahead; i++) {
+           c = stream->read();
+          // Serial.printf("[MP-INT-LOOKAHEAD] %s: avail=%d, peek=0x%02X, kbd_char=%d\n", stream_name, available, c, keyboard_interrupt_char);
+          // Serial.flush();
+          if (c == 0x03 || c == 0x04) {
+            break;
           }
-          last_interrupt_time = current_time;
-          
-          // Set flag for interrupt - the actual exception will be raised at Python level
-          mp_interrupt_requested = true;
-          return; // Exit immediately when interrupt detected
-        } else {
-          // Too soon after last interrupt, ignore
         }
       }
-      // For any other character, just consume it and continue
+
+      // Soft reset request (Ctrl+D)
+      if (c == 0x04) {
+        c = stream->read(); // Consume
+        mp_soft_reset_requested = true;
+        // Schedule a SystemExit to unwind the VM immediately; executeCode will
+        // also see mp_soft_reset_requested and reinit afterward.
+        mp_sched_exception(MP_OBJ_FROM_PTR(&mp_type_SystemExit));
+        last_interrupt_time = current_time;
+        // Serial.printf("[MP] Soft reset requested on %s\n", stream_name);
+        return;
+      }
+
+      // Keyboard interrupt character
+      if (c == keyboard_interrupt_char) {
+        c = stream->read(); // Consume
+        if (current_time - last_interrupt_time > 20) { // Debounce (20ms = responsive but not too sensitive)
+          // Schedule interrupt directly (don't set flag to avoid duplicate scheduling)
+          mp_sched_keyboard_interrupt();
+          last_interrupt_time = current_time;
+          
+          // Serial.printf("[MP] Interrupt (0x%02X) detected on %s\n", c, stream_name);
+
+          if (global_mp_stream && !in_raw_repl) {
+             // ... echo ^C ...
+          }
+        }
+        return;
+      }
     }
+  };
+
+  // Check Serial (always available)
+  check_stream(&Serial, "Serial");
+
+#ifdef USE_TINYUSB
+  // Check USBSer2 if available
+  check_stream(&USBSer2, "USBSer2");
+#endif
+
+  // Check mp_interrupt_check_stream if it's explicitly set to something else
+  if (mp_interrupt_check_stream && 
+      mp_interrupt_check_stream != &Serial && 
+#ifdef USE_TINYUSB
+      mp_interrupt_check_stream != &USBSer2
+#else
+      true
+#endif
+      ) {
+    check_stream(mp_interrupt_check_stream, "AltStream");
   }
 }
 
 
 
 
-bool initMicroPythonProper(Stream *stream) {
+bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
   // global_mp_stream = stream;
 
   if (mp_initialized) {
     return true;
   }
 
-  global_mp_stream->println(
-      "[MP] Initializing MicroPython...");
+  // global_mp_stream->println(
+  //     "[MP] Initializing MicroPython...");
 
   // Get proper stack pointer
   char stack_dummy;
@@ -330,10 +460,19 @@ bool initMicroPythonProper(Stream *stream) {
   changeTerminalColor(replColors[11], true, global_mp_stream);
   mp_embed_init(mp_heap, sizeof(mp_heap), stack_top);
 
-  // Set Ctrl+Q (ASCII 17) as the keyboard interrupt character instead of Ctrl+C (ASCII 3)
-  // This enables proper KeyboardInterrupt exceptions that can be caught by try/except
-  // and will automatically interrupt running loops/scripts when Ctrl+Q is pressed
-  mp_embed_exec_str("import micropython; micropython.kbd_intr(17)");
+  // Mount Jumperless filesystem into MicroPython's VFS so tools can use standard os/open
+  jl_vfs_mount_root();
+
+  // Configure keyboard interrupt character
+  // For raw REPL (mpremote/ViperIDE) we must preserve the default Ctrl+C
+  if (!preserve_interrupt_char) {
+    // Set Ctrl+Q (ASCII 17) as the keyboard interrupt character instead of Ctrl+C (ASCII 3)
+    // This enables proper KeyboardInterrupt exceptions that can be caught by try/except
+    // and will automatically interrupt running loops/scripts when Ctrl+Q is pressed
+    mp_embed_exec_str("import micropython; micropython.kbd_intr(17)");
+  } else {
+    keyboard_interrupt_char = 3; // Keep MicroPython default when host manages it
+  }
 
   // Simple initialization - don't load complex modules during startup
   // mp_embed_exec_str("print('MicroPython ready for Jumperless')");
@@ -572,7 +711,7 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   //! This is to break the Python App's input loop
   global_mp_stream->println();
 
-  if (global_mp_stream == &Serial) {
+  if (global_mp_stream == &Serial || global_mp_stream == &Jerial) {
     global_mp_stream->write(0x0E); // turn on interactive mode
     termInInteractiveMode = 1;
     global_mp_stream->flush();
@@ -1951,7 +2090,7 @@ void testGlobalImports(void) {
       "print('connect available:', 'connect' in globals())\n"
       "print('TOP_RAIL available:', 'TOP_RAIL' in globals())\n"
       "print('D13 available:', 'D13' in globals())\n"
-      "print('jumperless module available:', 'jumperless' in globals())\n");
+      "#print('jumperless module available:', 'jumperless' in globals())\n");
 }
 
 void addJumperlessPythonFunctions(void) {
@@ -3782,7 +3921,7 @@ void getMicroPythonCommandFromStream(Stream *stream) {
  * Initialize MicroPython quietly without any output
  * Returns true if successful, false if failed
  */
-bool initMicroPythonQuiet(void) {
+bool initMicroPythonQuiet(bool preserve_interrupt_char) {
   if (mp_initialized) {
     return true;
   }
@@ -3799,10 +3938,9 @@ bool initMicroPythonQuiet(void) {
   // Initialize MicroPython silently
   mp_embed_init(mp_heap, sizeof(mp_heap), stack_top);
   
-  // Set Ctrl+Q (ASCII 17) as the keyboard interrupt character instead of Ctrl+C (ASCII 3)
-  // This enables proper KeyboardInterrupt exceptions that can be caught by try/except
-  // and will automatically interrupt running loops/scripts when Ctrl+Q is pressed
-  mp_embed_exec_str("import micropython; micropython.kbd_intr(17)");
+  // Configure keyboard interrupt character: always keep default Ctrl+C
+  // mp_embed_exec_str("import micropython; micropython.kbd_intr(3)");
+  // keyboard_interrupt_char = 3;
   
   mp_initialized = true;
   mp_repl_active = false;
@@ -4415,8 +4553,7 @@ void testFormattedOutput(void) {
 
 // Filesystem setup and module path configuration
 void setupFilesystemAndPaths(void) {
-  changeTerminalColor(replColors[11], true, global_mp_stream);
-  global_mp_stream->println("Setting up filesystem and module paths...");
+  // Silent setup - no output during filesystem initialization
   changeTerminalColor(replColors[13], true, global_mp_stream);
   
   // Set up sys.path for module imports using our filesystem bridge
@@ -4456,18 +4593,18 @@ void setupFilesystemAndPaths(void) {
     "        except Exception as e:\n"
     "            print('Error adding ' + path + ': ' + str(e))\n"
     "    \n"
-    "    print('Module search paths:')\n"
-    "    for i, path in enumerate(sys.path):\n"
-    "        if path == '':\n"
-    "            print('  ' + str(i) + ': ' + '/  (root)')\n"
-    "        else:\n"
-    "            print('  ' + str(i) + ': ' + path)\n"
+    "    #print('Module search paths:')\n"
+    "    #for i, path in enumerate(sys.path):\n"
+    "    #    if path == '':\n"
+    "            #print('  ' + str(i) + ': ' + '/  (root)')\n"
+    "    #    else:\n"
+    "            #print('  ' + str(i) + ': ' + path)\n"
     "    \n"
     "    #print()\n"
-    "    print('Place .py and .mpy modules in:')\n"
-    "    print('  /python_scripts/lib/  - User modules')\n"
-    "    print('  /python_scripts/      - User scripts')\n"
-    "    print()\n"
+    "    #print('Place .py and .mpy modules in:')\n"
+    "    #print('  /python_scripts/lib/  - User modules')\n"
+    "    #print('  /python_scripts/      - User scripts')\n"
+    "    #print()\n"
     "    \n"
     "except ImportError as e:\n"
     "    print('sys or os module not available:', e)\n"
@@ -4527,6 +4664,7 @@ void closeAllOpenFiles(void) {
   // Restore previous pauseCore2 state
   unpauseCore2ForFlash(was_paused);
 }
+
 
 
 

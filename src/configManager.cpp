@@ -1911,6 +1911,29 @@ void provisionFirmwareFiles(void) {
 }
 
 /**
+ * Compare two version strings (format: "X.Y.Z.W")
+ * Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+ */
+int compareVersions(const char* v1, const char* v2) {
+    int v1_parts[4] = {0, 0, 0, 0};
+    int v2_parts[4] = {0, 0, 0, 0};
+    
+    // Parse v1
+    sscanf(v1, "%d.%d.%d.%d", &v1_parts[0], &v1_parts[1], &v1_parts[2], &v1_parts[3]);
+    
+    // Parse v2
+    sscanf(v2, "%d.%d.%d.%d", &v2_parts[0], &v2_parts[1], &v2_parts[2], &v2_parts[3]);
+    
+    // Compare each part
+    for (int i = 0; i < 4; i++) {
+        if (v1_parts[i] < v2_parts[i]) return -1;
+        if (v1_parts[i] > v2_parts[i]) return 1;
+    }
+    
+    return 0; // Equal
+}
+
+/**
  * Perform one-time config migrations for this firmware version
  * Only changes config values if they haven't been modified from defaults
  */
@@ -1930,9 +1953,28 @@ void performConfigMigrations(const char* oldVersion, const char* newVersion) {
         Serial.println("  - Set default startup image to images/bubbleJumpThin.bin");
     }
     
+    // Force update Python examples when upgrading to 5.6.0.0+
+    // This ensures users get the new automated example system
+    if (compareVersions(oldVersion, "5.6.0.0") < 0 && compareVersions(newVersion, "5.6.0.0") >= 0) {
+        if (debugFP) {
+            Serial.println("\n\r╔═══════════════════════════════════════╗");
+            Serial.println("║  Python Examples Update Required     ║");
+            Serial.println("╚═══════════════════════════════════════╝");
+            Serial.println("  - Updating to new automated example system");
+            Serial.println("  - Force-overwriting all Python examples...");
+        }
+        
+        // Force initialization will overwrite all Python examples
+        initializeMicroPythonExamples(true);
+        
+        if (debugFP) {
+            Serial.println("  ✓ Python examples updated successfully\n\r");
+        }
+    }
+    
     // Add more migrations here as needed for future firmware updates
     // Example:
-    // if (strcmp(oldVersion, "5.5.0.4") <= 0) {
+    // if (compareVersions(oldVersion, "5.5.0.4") <= 0) {
     //     // Migration for versions <= 5.5.0.4
     // }
 }

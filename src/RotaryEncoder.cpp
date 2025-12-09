@@ -121,47 +121,47 @@ void unInitRotaryEncoder(void) {
   }
 }
 
-const char rotaryEncoderHelp[] =
-    "\n\r" // this is for the og jumperless
-    "\t\t  Rotary Encoder Help\n\r"
-    "\t\t  -------------------\n\r"
-    "\n\r"
-    "            A  COM  B                                 \n\r"
-    "    _________________________________________________   \n\r"
-    "  /        D12 D11 D10                                \\ \n\r"
-    " / .        [,][,][,][][][][][][][][][][][][][]        \\  \n\r"
-    "|  ' `0    |  /```\\  |                                  | \n\r"
-    "|  '   `   | (  O  ) |                                  | \n\r"
-    "|  '     ` |  \\___/  |                                  | \n\r"
-    "|  '     '  ['][ ][']{}{}{}{}{}{}{}{}{}[][][][]         | \n\r"
-    "|  '     '  D13  AREF                                   | \n\r"
-    "|            button                                     | \n\r"
-    "\n\r"
-    "Stick a 5 pin rotary encoder into the board as shown above. \n\n\r"
-    "When rotary encoder mode is on, these pins will be connected\n\r"
-    "to the Jumperless [A-UART_Rx(16), B-UART_Tx(17), SW-GPIO_0] \n\n\r"
+// const char rotaryEncoderHelp[] =
+//     "\n\r" // this is for the og jumperless
+//     "\t\t  Rotary Encoder Help\n\r"
+//     "\t\t  -------------------\n\r"
+//     "\n\r"
+//     "            A  COM  B                                 \n\r"
+//     "    _________________________________________________   \n\r"
+//     "  /        D12 D11 D10                                \\ \n\r"
+//     " / .        [,][,][,][][][][][][][][][][][][][]        \\  \n\r"
+//     "|  ' `0    |  /```\\  |                                  | \n\r"
+//     "|  '   `   | (  O  ) |                                  | \n\r"
+//     "|  '     ` |  \\___/  |                                  | \n\r"
+//     "|  '     '  ['][ ][']{}{}{}{}{}{}{}{}{}[][][][]         | \n\r"
+//     "|  '     '  D13  AREF                                   | \n\r"
+//     "|            button                                     | \n\r"
+//     "\n\r"
+//     "Stick a 5 pin rotary encoder into the board as shown above. \n\n\r"
+//     "When rotary encoder mode is on, these pins will be connected\n\r"
+//     "to the Jumperless [A-UART_Rx(16), B-UART_Tx(17), SW-GPIO_0] \n\n\r"
 
-    "The LEDs under A0-A7 {shown in curly braces} show which of the \n\r"
-    "8 slots are active/connected(pink) and previewing(blue/green)\n\n\r"
-    "Press the encoder button to made the previewed slot active\n\r"
-    "(going into probing mode will make the previewed slot active)\n\n\r"
+//     "The LEDs under A0-A7 {shown in curly braces} show which of the \n\r"
+//     "8 slots are active/connected(pink) and previewing(blue/green)\n\n\r"
+//     "Press the encoder button to made the previewed slot active\n\r"
+//     "(going into probing mode will make the previewed slot active)\n\n\r"
 
-    "You can cycle through slots by entering z(next) or x(previous)\n\r"
-    "or by turning the rotary encoder and then pressing (obviously)\n\n\r"
+//     "You can cycle through slots by entering z(next) or x(previous)\n\r"
+//     "or by turning the rotary encoder and then pressing (obviously)\n\n\r"
 
-    "You can show the contents of all the slot files by entering s\n\r"
-    "(copy/paste the output into a text file on your computer) \n\n\r"
-    "Load files by entering o and paste the text into this terminal \n\n\r"
+//     "You can show the contents of all the slot files by entering s\n\r"
+//     "(copy/paste the output into a text file on your computer) \n\n\r"
+//     "Load files by entering o and paste the text into this terminal \n\n\r"
 
-    "Wokwi sketches will be loaded into whichever slot is active\n\n\r"
+//     "Wokwi sketches will be loaded into whichever slot is active\n\n\r"
 
-    "This is a WIP, so let me know if something's broken or you want\n\r"
-    "something added. \n\n\r ";
+//     "This is a WIP, so let me know if something's broken or you want\n\r"
+//     "something added. \n\n\r ";
 
-void printRotaryEncoderHelp(void) {
-  Serial.print(rotaryEncoderHelp);
-  return;
-}
+// void printRotaryEncoderHelp(void) {
+//   Serial.print(rotaryEncoderHelp);
+//   return;
+// }
 
 // Function to check if rotary encoder is properly initialized
 bool isRotaryEncoderInitialized(void) {
@@ -228,6 +228,7 @@ volatile encoderButtonStates encoderButtonState = IDLE;
 volatile encoderButtonStates lastButtonEncoderState = IDLE;
 
 volatile encoderDirectionStates lastDirectionState = NONE;
+volatile bool encoderDirectionConsumed = true;
 
 void rotaryEncoderStuff(void) {
 
@@ -355,6 +356,7 @@ if (false) {
     if (lastPositionEncoder > encoderRaw && encoderDirectionState != DOWN) {
       position++;
       encoderDirectionState = UP;
+      encoderDirectionConsumed = false;  // Mark as unconsumed
       //numberOfSteps = abs(lastPositionEncoder - encoderRaw);
       numberOfSteps = abs(lastPositionEncoder - encoderRaw);
 
@@ -364,16 +366,19 @@ if (false) {
               encoderDirectionState != UP) {
       position--;
       encoderDirectionState = DOWN;
+      encoderDirectionConsumed = false;  // Mark as unconsumed
 numberOfSteps = lastPositionEncoder - encoderRaw;
       lastPositionEncoder = encoderRaw;
 
-    } else {
+    } else if (encoderDirectionConsumed) {
+      // Only clear to NONE if already consumed
       encoderDirectionState = NONE;
     }
 
     //}
 
-  } else {
+  } else if (encoderDirectionConsumed) {
+    // Only clear to NONE if already consumed
     encoderDirectionState = NONE;
   }
 

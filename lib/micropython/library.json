@@ -17,7 +17,14 @@
       "+<port/*.c>",
       "+<shared/runtime/*.c>",
       "+<extmod/*.c>",
+      "+<../../../micropython_repo/extmod/vfs.c>",
+      "+<../../../micropython_repo/extmod/vfs_reader.c>",
+      "+<../../../micropython_repo/extmod/modos.c>",
       "+<../port/machine_uart_jl.c>",
+      "+<../port/modos_jl.c>",
+      "+<lib/uzlib/*.c>",
+      "-<lib/uzlib/defl_static.c>",
+      "-<lib/uzlib/lz77.c>",
       "-<py/mkrules.mk>",
       "-<py/*.mk>",
       "-<py/*.cmake>",
@@ -25,7 +32,7 @@
       "-<port/embed_util.c>",
       "-<shared/runtime/semihosting_rv32.c>",
       "-<shared/runtime/semihosting_arm.c>",
-      "-<shared/runtime/pyexec.c>",
+      "+<shared/runtime/pyexec.c>",
       "-<extmod/modlwip.c>",
       "-<extmod/modnetwork.c>",
       "-<extmod/modwebsocket.c>",
@@ -44,7 +51,10 @@
       "-I micropython_embed/genhdr",
       "-I micropython_embed/shared/runtime",
       "-I micropython_embed/extmod",
-      "-I ../../lib/micropython/port"
+      "-I micropython_embed/lib",
+      "-I ../../lib/micropython/port",
+      "-I ../../../micropython_repo/extmod",
+      "-I ../../../micropython_repo"
     ]
   }
 }

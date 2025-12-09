@@ -10,6 +10,13 @@ file(GLOB_RECURSE MICROPYTHON_SOURCES
     ${MICROPYTHON_EMBED_DIR}/port/*.c
 )
 
+# Pull in core VFS and os support from the upstream MicroPython sources
+list(APPEND MICROPYTHON_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/../micropython_repo/extmod/vfs.c
+    ${CMAKE_CURRENT_LIST_DIR}/../micropython_repo/extmod/vfs_reader.c
+    ${CMAKE_CURRENT_LIST_DIR}/../micropython_repo/extmod/modos.c
+)
+
 # Exclude files that might conflict with our custom implementations
 list(FILTER MICROPYTHON_SOURCES EXCLUDE REGEX ".*mphalport\\.c$")
 list(FILTER MICROPYTHON_SOURCES EXCLUDE REGEX ".*main\\.c$")
@@ -29,6 +36,7 @@ target_include_directories(micropython PUBLIC
     ${MICROPYTHON_EMBED_DIR}/shared/timeutils
     ${MICROPYTHON_EMBED_DIR}/shared/tinyusb
     ${MICROPYTHON_EMBED_DIR}/port/rp2_common
+    ${CMAKE_CURRENT_LIST_DIR}/../micropython_repo/extmod
 )
 
 # Set compile flags for MicroPython RP2 port

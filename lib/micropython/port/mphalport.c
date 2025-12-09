@@ -25,21 +25,36 @@
  */
 
 #include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include "py/mphal.h"
 
 #include "py/runtime.h"
 #include "py/lexer.h"
 #include "py/builtin.h"
 #include "py/mperrno.h"
+#include "py/objstr.h"
 #include <string.h>
 
-// Forward declaration for filesystem bridge function
+// Forward declaration for filesystem bridge functions
 extern char* jl_fs_read_file(const char* path);
+extern void* jl_fs_open_file(const char* path, const char* mode);
+extern int jl_fs_stat_isdir(const char* path);
+extern int jl_fs_exists(const char* path);
 
 // Import the global stream from our main Arduino code
 extern void* global_mp_stream_ptr;
 extern void arduino_serial_write(const char *str, int len, void *stream);
 extern int arduino_serial_read(void *stream);
+extern const mp_obj_type_t mp_type_jfs_file;
+
+// Local copy of the JFS file object layout (defined in modules/jumperless/modjumperless.c)
+typedef struct _mp_obj_jfs_file_t {
+    mp_obj_base_t base;
+    void* file_handle;
+    uint8_t is_open;
+    uint8_t is_binary;
+} mp_obj_jfs_file_t;
 
 // Send string of given length to stdout, converting \n to \r\n.
 // Note: Implementation moved to Python.cpp for Jumperless-specific functionality
@@ -51,7 +66,9 @@ extern int arduino_serial_read(void *stream);
 
 // Send string of given length to stdout (raw).
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
-    if (global_mp_stream_ptr) {
+    // CRITICAL: Check for NULL and validate pointer before writing
+    // During soft reset, global_mp_stream_ptr might be temporarily invalid
+    if (global_mp_stream_ptr && (uintptr_t)global_mp_stream_ptr > 0x20000000) {
         arduino_serial_write(str, len, global_mp_stream_ptr);
     }
     return len;
@@ -73,11 +90,12 @@ int mp_hal_stdin_rx_chr(void) {
         // This ensures that input() works properly even when the custom REPL is active
         int c = arduino_serial_read(global_mp_stream_ptr);
         
+        
         // Convert newline (\n) to carriage return (\r) for MicroPython readline compatibility
         // This handles the case where the app converts \r to \n before sending
-        if (c == '\n') {
-            return '\r';
-        }
+        // if (c == '\n') {
+        //     return '\r';
+        // }
         
         return c;
     }
@@ -85,29 +103,57 @@ int mp_hal_stdin_rx_chr(void) {
     return -1; // No character available
 }
 
-// Import stat function implementation removed - using inline version from builtin.h
+// // Provide import stat for the embed port (needed when MICROPY_VFS is disabled)
+// mp_import_stat_t mp_import_stat(const char *path) {
+//     if (jl_fs_stat_isdir(path)) {
+//         return MP_IMPORT_STAT_DIR;
+//     }
+//     if (jl_fs_exists(path)) {
+//         return MP_IMPORT_STAT_FILE;
+//     }
+//     return MP_IMPORT_STAT_NO_EXIST;
+// }
 
-// Lexer function for reading Python files through our filesystem bridge
-mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
-    // Convert qstr to C string
-    const char *path = qstr_str(filename);
+// // Lexer function for reading Python files through our filesystem bridge
+// mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
+//     // Convert qstr to C string
+//     const char *path = qstr_str(filename);
     
-    // Read file contents using our filesystem bridge
-    char *content = jl_fs_read_file(path);
-    if (content == NULL) {
-        mp_raise_OSError(MP_ENOENT);
-    }
+//     // Read file contents using our filesystem bridge
+//     char *content = jl_fs_read_file(path);
+//     if (content == NULL) {
+//         mp_raise_OSError(MP_ENOENT);
+//     }
     
-    // Create lexer from the file contents
-    // The lexer will take ownership of the content string
-    mp_lexer_t *lex = mp_lexer_new_from_str_len(filename, content, strlen(content), 0);
+//     // Create lexer from the file contents
+//     // The lexer will take ownership of the content string
+//     mp_lexer_t *lex = mp_lexer_new_from_str_len(filename, content, strlen(content), 0);
     
-    // Note: content should not be freed here as lexer now owns it
-    // MicroPython will handle freeing when the lexer is destroyed
-    return lex;
-}
+//     // Note: content should not be freed here as lexer now owns it
+//     // MicroPython will handle freeing when the lexer is destroyed
+//     return lex;
+// }
 
-// Open function implementation removed - VFS provides this when MICROPY_VFS is enabled
+// // Provide builtin open() using the JFS backend (since MICROPY_VFS is disabled)
+// mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+//     (void)kwargs; // encoding/newline not supported in this minimal backend
+//     const char *path = mp_obj_str_get_str(args[0]);
+//     const char *mode = (n_args > 1) ? mp_obj_str_get_str(args[1]) : "r";
+
+//     uint8_t is_binary = strchr(mode, 'b') != NULL ? 1 : 0;
+//     void *fh = jl_fs_open_file(path, mode);
+//     if (!fh) {
+//         mp_raise_OSError(MP_ENOENT);
+//     }
+
+//     mp_obj_jfs_file_t *file_obj = mp_obj_malloc_with_finaliser(mp_obj_jfs_file_t, &mp_type_jfs_file);
+//     file_obj->file_handle = fh;
+//     file_obj->is_open = true;
+//     file_obj->is_binary = is_binary;
+
+//     return MP_OBJ_FROM_PTR(file_obj);
+// }
+// MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 // HAL timing functions - basic implementations for embedded use
 // Note: mp_hal_delay_ms and mp_hal_ticks_ms are defined in Python_Proper.cpp

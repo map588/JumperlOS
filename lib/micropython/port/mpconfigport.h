@@ -40,6 +40,10 @@ typedef uint32_t mp_hal_pin_obj_t;
 
 #define MICROPY_CONFIG_ROM_LEVEL  MICROPY_CONFIG_ROM_LEVEL_FULL_FEATURES
 
+// Enable compiler and event-driven REPL for pyexec_event_repl_process_char()
+#define MICROPY_ENABLE_COMPILER     (1)
+#define MICROPY_REPL_EVENT_DRIVEN   (1)
+
 // CRITICAL: Enable finalizers for proper cleanup of file handles and other resources
 // This allows __del__ methods to be called during garbage collection
 #define MICROPY_ENABLE_FINALISER    (1)
@@ -78,13 +82,13 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_PY_STRUCT           (1)
 #define MICROPY_PY_MATH             (1)
 #define MICROPY_PY_GC               (1)
-#define MICROPY_PY_BINASCII         (0)  // Disable to save memory
-#define MICROPY_PY_ERRNO            (1)  // Disable to save memory
-#define MICROPY_PY_JSON             (0)
-#define MICROPY_PY_RE               (0)
-#define MICROPY_PY_HEAPQ            (0)
-#define MICROPY_PY_HASHLIB          (0)
-#define MICROPY_PY_RANDOM           (0)
+#define MICROPY_PY_BINASCII         (1)  
+#define MICROPY_PY_ERRNO            (1)  
+#define MICROPY_PY_JSON             (1)
+#define MICROPY_PY_RE               (1)
+#define MICROPY_PY_HEAPQ            (1)
+#define MICROPY_PY_HASHLIB          (1)
+#define MICROPY_PY_RANDOM           (1)
 
 // Standard library modules - disable most to save memory
 #define MICROPY_PY_TIME             (1)  // Keep disabled to avoid import issues
@@ -154,17 +158,21 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_ENABLE_SCHEDULER    (1)
 #define MICROPY_SCHEDULER_DEPTH     (8)
 
-// VFS support disabled - using jumperless filesystem bridge instead
-#define MICROPY_VFS                 (0)
-#define MICROPY_VFS_FAT             (0)  // Disable FAT to save memory
-#define MICROPY_VFS_LFS2            (0)  // Disable LFS2 to save memory
-#define MICROPY_VFS_POSIX           (0)  // Disable POSIX VFS
+// Enable standard MicroPython VFS so tools (e.g. mpremote/ViperIDE) behave normally
+#define MICROPY_VFS                 (1)
+#define MICROPY_VFS_FAT             (0)  // Use custom JFS VFS driver, not FatFs blockdev
+#define MICROPY_VFS_LFS2            (0)
+#define MICROPY_VFS_POSIX           (0)
+// Allow the lexer/reader to pull files via VFS (required for imports/open)
+#define MICROPY_READER_VFS          (1)
+// Disable legacy hand-written os bridge now that VFS+standard os are available
+#define MICROPY_JL_CUSTOM_OS_BRIDGE (0)
 
 #define MICROPY_ENABLE_FINALIZER    (1)
 
-// Disable problematic modules that depend on VFS
-#define MICROPY_PY_IO_FILEIO        (0)
-#define MICROPY_PY_IO               (0)
+// IO needs to be on for standard file objects when using VFS
+#define MICROPY_PY_IO_FILEIO        (1)
+#define MICROPY_PY_IO               (1)
 
 // Time module configuration
 #define MICROPY_PY_TIME_INCLUDEFILE "shared/timeutils/timeutils.h"
@@ -192,3 +200,14 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_PORT_BUILTIN_MODULE_WEAK_LINKS \
 
 #define MP_STATE_PORT MP_STATE_VM
+
+// Ensure the VM periodically polls for host-driven interrupts (Ctrl-C/Ctrl-D)
+#ifdef __cplusplus
+extern "C" {
+#endif
+void mp_hal_check_interrupt(void);
+#ifdef __cplusplus
+}
+#endif
+#define MP_HAL_CHECK_INTERRUPT_DECLARED 1
+#define MICROPY_VM_HOOK_LOOP  mp_hal_check_interrupt();

@@ -1,0 +1,10 @@
+{
+  "name": "Jumperless MicroPython",
+  "description": "Jumperless hardware control via MicroPython",
+  "version": "1.0.0",
+  "autoImport": ["from jumperless import *"],
+  "globalModules": ["jumperless"],
+  "preload": ["jumperless"],
+  "stubs": ["jumperless.pyi"],
+  "pythonPath": [".", "python_scripts", "python_scripts/lib"]
+}

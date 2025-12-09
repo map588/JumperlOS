@@ -12,6 +12,7 @@
 #include "AsyncPassthrough.h"
 #include "SingleCharCommands.h"
 #include "configManager.h"  // For ConfigSaveService
+#include "MpRemoteService.h"
 
 #ifdef USE_TINYUSB
 #include "tusb.h"
@@ -340,6 +341,12 @@ void jOSmanager::serviceCritical() {
     // Also keep current sense measurements updating during blocking operations
     // This ensures marching ants visualization stays current in probe mode
     Peripherals::getInstance().pollCurrentSense();
+
+    // CRITICAL FIX: Also execute MpRemoteService to check for interrupts
+    // even though it's technically HIGH priority, not CRITICAL.
+    // This is needed because MicroPython's time.sleep() calls serviceCritical()
+    // via jOS.serviceCritical(), and we need MpRemoteService to peek() for Ctrl-C.
+    MpRemoteService::getInstance().service();
 }
 
 /**
@@ -365,6 +372,99 @@ void jOSmanager::servicePython() {
     // Run peripherals service for current sense measurements
     // This updates currentSenseState.filteredCurrent_mA which drives marching ants
     Peripherals::getInstance().service();
+}
+
+/**
+ * @brief Force execution of a specific service by name
+ * 
+ * Allows selective service execution during critical operations where
+ * we need just one service to run (e.g., ProbeButton during fast Python loops).
+ * 
+ * @param name Service name (case-sensitive, must match getName())
+ * @return true if service was found and executed, false otherwise
+ */
+bool jOSmanager::forceServiceByName(const char* name) {
+    if (name == nullptr) {
+        return false;
+    }
+    
+    for (uint8_t i = 0; i < serviceCount; i++) {
+        if (!services[i].active) {
+            continue;
+        }
+        
+        Service* svc = services[i].service;
+        if (svc == nullptr) {
+            continue;
+        }
+        
+        // Check if name matches
+        if (strcmp(svc->getName(), name) == 0) {
+            svc->service();
+            return true;
+        }
+    }
+    
+    return false;  // Service not found
+}
+
+/**
+ * @brief Force execution of a specific service by index
+ * 
+ * Faster than forceServiceByName if you already have the index.
+ * Useful when you cache the index via getServiceIndex().
+ * 
+ * @param index Service index (0 to serviceCount-1)
+ * @return true if index valid and service executed, false otherwise
+ */
+bool jOSmanager::forceServiceByIndex(uint8_t index) {
+    if (index >= serviceCount) {
+        return false;
+    }
+    
+    if (!services[index].active) {
+        return false;
+    }
+    
+    Service* svc = services[index].service;
+    if (svc == nullptr) {
+        return false;
+    }
+    
+    svc->service();
+    return true;
+}
+
+/**
+ * @brief Get service index by name for later use with forceServiceByIndex
+ * 
+ * Allows you to look up a service once, then use the faster index-based
+ * call repeatedly (e.g., in a tight loop).
+ * 
+ * @param name Service name (case-sensitive)
+ * @return Service index (0 to serviceCount-1), or -1 if not found
+ */
+int jOSmanager::getServiceIndex(const char* name) const {
+    if (name == nullptr) {
+        return -1;
+    }
+    
+    for (uint8_t i = 0; i < serviceCount; i++) {
+        if (!services[i].active) {
+            continue;
+        }
+        
+        Service* svc = services[i].service;
+        if (svc == nullptr) {
+            continue;
+        }
+        
+        if (strcmp(svc->getName(), name) == 0) {
+            return i;
+        }
+    }
+    
+    return -1;  // Not found
 }
 
 /**

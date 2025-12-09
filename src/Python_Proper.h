@@ -2,8 +2,17 @@
 #define PYTHON_PROPER_H
 
 #include <Arduino.h>
+#include "py/mpconfig.h"
 
 extern Stream *global_mp_stream;
+
+// Separate stream for interrupt checking - always points to main Serial
+// This prevents mp_hal_check_interrupt from consuming data when global_mp_stream is USBSer2
+extern Stream *mp_interrupt_check_stream;
+
+// MicroPython heap for VM reinit (used by jl_soft_reboot)
+extern unsigned char mp_heap[];
+extern const size_t mp_heap_size;
 
 // Python connection context modes
 enum PythonConnectionContext {
@@ -160,14 +169,14 @@ struct REPLEditor {
 
 // Core initialization and cleanup
 void setGlobalStream(Stream *stream);
-bool initMicroPythonProper(Stream *stream = global_mp_stream);
+bool initMicroPythonProper(Stream *stream = global_mp_stream, bool preserve_interrupt_char = false);
 void deinitMicroPythonProper(void);
 
 
 
 // Single command execution for main.cpp
 void getMicroPythonCommandFromStream(Stream *stream = &Serial);
-bool initMicroPythonQuiet(void);
+bool initMicroPythonQuiet(bool preserve_interrupt_char = false);
 bool executeSinglePythonCommand(const char* command, char* result_buffer = nullptr, size_t buffer_size = 0);
 bool executeSinglePythonCommandFormatted(const char* command, char* result_buffer, size_t buffer_size);
 bool executeSinglePythonCommandFloat(const char* command, float* result);
@@ -197,6 +206,10 @@ void addNodeConstantsToGlobalNamespace(void);
 void testGlobalImports(void);
 void addMicroPythonModules(bool time = true, bool machine = false, bool os = true, bool math = true, bool gc = true);
 void testJumperlessNativeModule(void);
+void setupFilesystemAndPaths(void);
+
+// VFS functions (implemented in JumperlessMicroPythonAPI.cpp)
+extern "C" void jl_vfs_mount_root(void);
 void testStreamRedirection(Stream *newStream);
 void testSingleCommandExecution(void);
 void testFormattedOutput(void);
@@ -211,7 +224,8 @@ void forceGarbageCollection(void);
 
 // Interrupt handling
 extern bool mp_interrupt_requested; // Global interrupt flag for Ctrl+Q
-void mp_hal_check_interrupt(void);
+extern bool mp_soft_reset_requested; // Soft reset request flag
+extern "C" mp_uint_t mp_hal_set_interrupt_char(int c);
 
 // Terminal color control
 void changeTerminalColor(Stream *stream = global_mp_stream, int color = 69, bool bold = true);

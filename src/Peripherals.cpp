@@ -646,19 +646,23 @@ int gpioReadWithFloating(
     readingGPIO = true;
 
     if (gpio_get_function(pin) == GPIO_FUNC_I2C || gpio_get_function(pin) == GPIO_FUNC_UART || pin < 2){
+        readingGPIO = false;  // CRITICAL: Reset flag before early return
         return 0;
         return gpio_get( pin );
     }
 
     int dir = gpio_get_dir( pin );
+    
     if ( dir == 1 ) { // we'll just quickly set the pin to input and read it and
                       // then set it back to whatever it was
     
-        if (pin >1 && gpio_get_function(pin) != GPIO_FUNC_I2C && gpio_get_function(pin) != GPIO_FUNC_UART){
+        if (pin > 1 && gpio_get_function(pin) != GPIO_FUNC_I2C && gpio_get_function(pin) != GPIO_FUNC_UART){
         gpio_set_input_enabled(pin, false);
         gpio_set_input_enabled(pin, true);
         }
-        return gpio_get( pin );
+        int result = gpio_get( pin );
+        readingGPIO = false;  // CRITICAL: Reset flag before early return
+        return result;
     }
 
     
@@ -669,25 +673,32 @@ int gpioReadWithFloating(
         // pulldownState = -1;
     //} else 
     if ( gpio_is_pulled_up( pin ) == 1 ) {
+        pullupState = 1;
+        // Allow time for pullup to settle before checking
+        delayMicroseconds( settleDelay );
         if ( gpio_get( pin ) == 0 ) { /// don't mess with the pullups if the pin is
-                                      /// already being pulled down
+                                      /// already being pulled down by external source
             // state = high;
+            readingGPIO = false;  // CRITICAL: Reset flag before early return
             return low;
         }
-        pullupState = 1;
         gpio_disable_pulls( pin );
     } else if ( gpio_is_pulled_down( pin ) == 1 ) {
         pulldownState = 1;
-        if ( gpio_get( pin ) == 1 ) { /// don't mess with the pullups if the pin is
-                                      /// already being pulled up
-            if (pin >1 && gpio_get_function(pin) != GPIO_FUNC_I2C && gpio_get_function(pin) != GPIO_FUNC_UART){
-
-            gpio_set_input_enabled(pin, false); //? Aha! the eratta fix!
+        
+        // Apply RP2350 errata fix FIRST to ensure proper input buffer state
+        if (pin >1 && gpio_get_function(pin) != GPIO_FUNC_I2C && gpio_get_function(pin) != GPIO_FUNC_UART){
+            gpio_set_input_enabled(pin, false);
             delayMicroseconds(1);
             gpio_set_input_enabled(pin, true);
-
-            }
+        }
+        
+        // Allow time for pulldown to settle before checking
+        delayMicroseconds( settleDelay * 3 );  // Extra time for pulldown to take effect
+        
+        if ( gpio_get( pin ) == 1 ) { /// pin is still HIGH despite pulldown - external pull-up detected
             //gpio_set_pulls(pin, pullupState, pulldownState);
+            readingGPIO = false;  // CRITICAL: Reset flag before early return
             return high;
         }
 

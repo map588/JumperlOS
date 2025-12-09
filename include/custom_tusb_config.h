@@ -86,8 +86,8 @@ extern "C" {
 #define CFG_TUD_VENDOR USB_VENDOR_ENABLE
 
 // CDC FIFO size of TX and RX - OPTIMIZED FOR HIGH-THROUGHPUT STREAMING
-#define CFG_TUD_CDC_RX_BUFSIZE 4096   // Keep RX buffer reasonable
-#define CFG_TUD_CDC_TX_BUFSIZE 4096  // Larger TX buffer for streaming - double the previous size
+#define CFG_TUD_CDC_RX_BUFSIZE 1024   // Keep RX buffer reasonable
+#define CFG_TUD_CDC_TX_BUFSIZE 1024  // Larger TX buffer for streaming - double the previous size
 
 // STREAMING PERFORMANCE OPTIMIZATIONS
 #define CFG_TUSB_OPT_HIGH_SPEED 1
