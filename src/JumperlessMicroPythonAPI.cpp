@@ -5,6 +5,9 @@
  * to call Jumperless functionality directly without string parsing.
  */
 
+#include <errno.h> // For EEXIST, ENOTDIR, EIO errno constants
+#include <cstdarg> // For va_list, va_start, va_end
+
 #include "ArduinoStuff.h"
 #include "CH446Q.h"
 #include "Commands.h"
@@ -536,6 +539,78 @@ void jl_gpio_set_pull( int pin, int pull ) {
 
 } // temporarily close extern "C" for C++ declarations
 
+// Forward declaration of getGPIOIndexFromPin (C++ function defined in Peripherals.cpp)
+extern int getGPIOIndexFromPin(int pin);
+
+// Forward declaration of gpio_function_map (defined in Peripherals.cpp)
+extern gpio_function_t gpio_function_map[10];
+
+extern "C" { // reopen extern "C"
+
+// Debug flag for pin ownership - can be toggled via debugger or serial command
+bool debugGpioPinOwnership = false;  // Default to false for production use
+
+// Debug printf helper that works in embedded context
+// Uses Serial.printf which actually outputs to console
+void jl_debug_printf(const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    Serial.print(buffer);
+}
+
+// Pin ownership functions for MicroPython timing-critical operations
+void jl_gpio_claim_pin( int pin ) {
+    // Use the system's existing pin-to-index mapping
+    int index = getGPIOIndexFromPin(pin);
+    if (index >= 0 && index < 10) {
+        globalState.config.gpioPythonOwned[index] = true;
+        
+        // CRITICAL: Update the gpio_function_map to indicate this pin is in SIO mode
+        // This prevents other parts of the system from changing the function
+        gpio_function_map[index] = GPIO_FUNC_SIO;
+        
+        // CRITICAL: Memory barrier to ensure Core 2 sees the change
+        // This ensures the volatile write is visible to Core 2 immediately
+        __dmb();  // Data Memory Barrier
+        
+        if (debugGpioPinOwnership) {
+            Serial.printf("\n*** [MicroPython] Pin %d (index %d) CLAIMED - readGPIO will skip ***\n", pin, index);
+            Serial.printf("    GPIO function map[%d] = %d (SIO=%d)\n", index, gpio_function_map[index], GPIO_FUNC_SIO);
+        }
+    } else {
+        Serial.printf("\n*** [MicroPython] WARNING: Pin %d not found in gpioDef ***\n", pin);
+    }
+}
+
+void jl_gpio_release_pin( int pin ) {
+    // Use the system's existing pin-to-index mapping
+    int index = getGPIOIndexFromPin(pin);
+    if (index >= 0 && index < 10) {
+        globalState.config.gpioPythonOwned[index] = false;
+        
+        // CRITICAL: Memory barrier to ensure Core 2 sees the change
+        __dmb();  // Data Memory Barrier
+        
+        if (debugGpioPinOwnership) {
+            Serial.printf("\n*** [MicroPython] Pin %d (index %d) RELEASED ***\n", pin, index);
+        }
+    }
+}
+
+void jl_gpio_release_all_pins( void ) {
+    for ( int i = 0; i < 10; i++ ) {
+        globalState.config.gpioPythonOwned[ i ] = false;
+    }
+    
+    // CRITICAL: Memory barrier to ensure Core 2 sees all changes
+    __dmb();  // Data Memory Barrier
+}
+
+} // temporarily close extern "C" for C++ declarations
+
 // Note: setCustomNetName() and hasCustomNetName() are declared in States.h with C++ linkage
 
 // Forward declarations for color parsing (C++ functions that return String)
@@ -968,6 +1043,9 @@ extern "C" void jl_soft_reboot( void ) {
 }
 
 void jl_exit_micropython_restore_entry_state( void ) {
+    // Release all GPIO pins claimed by MicroPython
+    jl_gpio_release_all_pins( );
+
     // Pause Core 2 during state modifications to prevent race conditions
     bool was_paused = pauseCore2;
     pauseCore2 = true;
@@ -1894,16 +1972,23 @@ int jl_fs_read_bytes( void* file_handle, char* buffer, int size ) {
     if ( !file_handle || !buffer || size <= 0 )
         return -1;
 
+    // CRITICAL: Pause Core2 during flash read operations to prevent corruption!
+    // Core2 concurrent flash access can corrupt read data, causing null bytes
+    bool was_paused = pauseCore2ForFlash( 100 );
+    
     fs_mutex_acquire( ); // THREAD SAFETY: Lock filesystem
 
     File* file = (File*)file_handle;
     if ( !*file ) {
         fs_mutex_release( );
+        unpauseCore2ForFlash( was_paused );
         return -1; // File not open
     }
     int result = file->readBytes( buffer, size );
 
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash( was_paused );
+    
     if ( debug_fs ) {
         Serial.println( "DEBUG: jl_fs_read_bytes: Read bytes" );
         Serial.flush( );
@@ -2043,6 +2128,10 @@ void jl_fs_flush( void* file_handle ) {
     }
 }
 
+// WARNING: This function uses a static buffer and should NOT be used for VFS file operations
+// during import, as nested calls will corrupt the buffer. VFS file objects now store
+// the filename directly in the mp_obj_jfs_file_t structure to avoid this issue.
+// This function is kept for backwards compatibility with non-VFS direct file operations.
 char* jl_fs_name( void* file_handle ) {
     if ( !file_handle )
         return nullptr;
@@ -2059,15 +2148,62 @@ char* jl_fs_name( void* file_handle ) {
 }
 
 // Directory operations - all require mutex for thread safety
+// Returns 0 on success, negative errno on failure
 int jl_fs_mkdir( const char* path ) {
     if ( !path )
-        return 0;
+        return -EIO; // Invalid argument
 
+    // Check if directory already exists BEFORE attempting create
+    // This prevents unnecessary flash write attempts
     fs_mutex_acquire( ); // THREAD SAFETY: Lock filesystem
-    int result = FatFS.mkdir( path ) ? 1 : 0;
+    
+    bool exists = FatFS.exists( path );
+    if ( exists ) {
+        // Check if it's a directory
+        bool isdir = false;
+        if ( path[ 0 ] == '/' && path[ 1 ] == '\0' ) {
+            isdir = true; // Root is always a directory
+        } else {
+            File f = FatFS.open( path, "r" );
+            if ( f ) {
+                isdir = f.isDirectory( );
+                f.close( );
+            }
+        }
+        
+        fs_mutex_release( ); // THREAD SAFETY: Unlock before returning
+        
+        if ( isdir ) {
+            // Directory already exists - return EEXIST (errno 17)
+            // This is expected behavior when creating directories recursively
+            return -EEXIST;
+        } else {
+            // Path exists but is a file, not a directory
+            return -ENOTDIR; // errno 20
+        }
+    }
+    
+    // Directory doesn't exist - try to create it
+    // CRITICAL: Pause Core2 during flash write (directory creation modifies flash)
+    fs_mutex_release( ); // Release before pausing Core2
+    bool was_paused = pauseCore2ForFlash( 100 );
+    fs_mutex_acquire( ); // Reacquire after pause
+    
+    bool result = FatFS.mkdir( path );
+    
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash( was_paused );
+    
+    if ( !result ) {
+        // mkdir failed - could be various reasons:
+        // - Parent directory doesn't exist (ENOENT)
+        // - Disk full
+        // - Permission issues
+        // Return generic EIO since FatFS doesn't give detailed errors
+        return -EIO;
+    }
 
-    return result;
+    return 0; // Success
 }
 
 int jl_fs_rmdir( const char* path ) {

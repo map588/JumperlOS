@@ -17,7 +17,7 @@
 #include "py/mphal.h"
 #include "py/mperrno.h"
 
-#if MICROPY_JL_CUSTOM_OS_BRIDGE && MICROPY_PY_OS
+#if MICROPY_JL_CUSTOM_OS_BRIDGE && MICROPY_PY_OS || 1
 
 // Forward declarations for C functions implemented in JumperlessMicroPythonAPI.cpp
 extern int jl_fs_exists(const char* path);
@@ -211,11 +211,14 @@ static mp_obj_t mp_os_stat(mp_obj_t path_obj) {
 static MP_DEFINE_CONST_FUN_OBJ_1(mp_os_stat_obj, mp_os_stat);
 
 // os.mkdir(path) - Create directory
+// jl_fs_mkdir returns 0 on success, negative errno on failure
 static mp_obj_t mp_os_mkdir(mp_obj_t path_obj) {
     const char* path = mp_obj_str_get_str(path_obj);
     int result = jl_fs_mkdir(path);
-    if (!result) {
-        mp_raise_OSError(EIO);
+    if (result < 0) {
+        // jl_fs_mkdir returns negative errno on failure
+        // Convert to positive errno for mp_raise_OSError
+        mp_raise_OSError(-result);
     }
     return mp_const_none;
 }

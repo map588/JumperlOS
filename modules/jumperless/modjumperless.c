@@ -22,6 +22,7 @@
 #include "py/obj.h"
 #include "py/objstr.h"
 #include "py/runtime.h"
+#include "py/stream.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,9 @@ void jl_gpio_set_dir( int pin, int direction );
 int jl_gpio_get_dir( int pin );
 void jl_gpio_set_pull( int pin, int pull );
 int jl_gpio_get_pull( int pin );
+void jl_gpio_claim_pin( int pin );
+void jl_gpio_release_pin( int pin );
+void jl_gpio_release_all_pins( void );
 int jl_nodes_connect( int node1, int node2, int save );
 int jl_nodes_disconnect( int node1, int node2 );
 int jl_nodes_is_connected( int node1, int node2 );
@@ -2094,6 +2098,33 @@ static mp_obj_t jl_gpio_get_pull_func( mp_obj_t pin_obj ) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_gpio_get_pull_obj, jl_gpio_get_pull_func );
 
+// GPIO pin ownership functions for timing-critical operations (e.g., NeoPixels)
+static mp_obj_t jl_gpio_claim_pin_func( mp_obj_t pin_obj ) {
+    int pin = map_pin_obj_to_physical_gpio( pin_obj );
+    if ( pin < 0 ) {
+        mp_raise_ValueError( MP_ERROR_TEXT( "GPIO pin must be 1-10, GPIO_1-GPIO_8, GPIO_20-GPIO_27, or UART_TX/UART_RX" ) );
+    }
+    jl_gpio_claim_pin( pin );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_gpio_claim_pin_obj, jl_gpio_claim_pin_func );
+
+static mp_obj_t jl_gpio_release_pin_func( mp_obj_t pin_obj ) {
+    int pin = map_pin_obj_to_physical_gpio( pin_obj );
+    if ( pin < 0 ) {
+        mp_raise_ValueError( MP_ERROR_TEXT( "GPIO pin must be 1-10, GPIO_1-GPIO_8, GPIO_20-GPIO_27, or UART_TX/UART_RX" ) );
+    }
+    jl_gpio_release_pin( pin );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_gpio_release_pin_obj, jl_gpio_release_pin_func );
+
+static mp_obj_t jl_gpio_release_all_pins_func( void ) {
+    jl_gpio_release_all_pins( );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_gpio_release_all_pins_obj, jl_gpio_release_all_pins_func );
+
 // PWM Functions
 static mp_obj_t jl_pwm_func( size_t n_args, const mp_obj_t* args ) {
     int gpio_pin = mp_obj_get_int( args[ 0 ] );
@@ -3736,6 +3767,7 @@ typedef struct _mp_obj_jfs_file_t {
     void* file_handle;
     bool is_open;
     bool is_binary;
+    char filename[256];  // Store filename to avoid static buffer issues - MUST be initialized!
 } mp_obj_jfs_file_t;
 
 // File type declaration
@@ -3744,6 +3776,7 @@ const mp_obj_type_t mp_type_jfs_file;
 // File object methods
 static mp_obj_t jfs_file_read( size_t n_args, const mp_obj_t* args ) {
     mp_obj_jfs_file_t* self = MP_OBJ_TO_PTR( args[ 0 ] );
+    
     if ( !self->is_open || !self->file_handle ) {
         mp_raise_ValueError( "I/O operation on closed file" );
     }
@@ -3943,17 +3976,14 @@ static mp_obj_t jfs_file_name( mp_obj_t self_in ) {
         return mp_const_none;
     }
 
-    char* name = jl_fs_name( self->file_handle );
-    if ( !name ) {
-        return mp_const_none;
-    }
-
-    return mp_obj_new_str( name, strlen( name ) );
+    // Use stored filename instead of calling jl_fs_name() to avoid static buffer issues
+    return mp_obj_new_str( self->filename, strlen( self->filename ) );
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jfs_file_name_obj, jfs_file_name );
 
 static mp_obj_t jfs_file_close( mp_obj_t self_in ) {
     mp_obj_jfs_file_t* self = MP_OBJ_TO_PTR( self_in );
+    
     if ( self->is_open && self->file_handle ) {
         jl_fs_close_file( self->file_handle );
         self->file_handle = NULL;
@@ -4041,12 +4071,125 @@ static mp_obj_t jfs_file_del( mp_obj_t self_in ) {
     return mp_const_none;
 }
 
-// File type definition with finalizer
+// ============================================================================
+// STREAM PROTOCOL IMPLEMENTATION
+// Required for VFS reader to import .py files from filesystem
+// ============================================================================
+
+// Stream protocol read function - called by mp_stream_rw() during imports
+// Returns number of bytes read, or MP_STREAM_ERROR on failure
+static mp_uint_t jfs_file_stream_read( mp_obj_t self_in, void* buf, mp_uint_t size, int* errcode ) {
+    mp_obj_jfs_file_t* self = MP_OBJ_TO_PTR( self_in );
+    
+    // Validate file is open
+    if ( !self->is_open || !self->file_handle ) {
+        *errcode = MP_EINVAL;
+        return MP_STREAM_ERROR;
+    }
+    
+    // Read bytes from JFS
+    int bytes_read = jl_fs_read_bytes( self->file_handle, (char*)buf, size );
+    
+    if ( bytes_read < 0 ) {
+        *errcode = MP_EIO;
+        return MP_STREAM_ERROR;
+    }
+    
+    return (mp_uint_t)bytes_read;
+}
+
+// Stream protocol write function - called by file write operations
+// Returns number of bytes written, or MP_STREAM_ERROR on failure
+static mp_uint_t jfs_file_stream_write( mp_obj_t self_in, const void* buf, mp_uint_t size, int* errcode ) {
+    mp_obj_jfs_file_t* self = MP_OBJ_TO_PTR( self_in );
+    
+    // Validate file is open
+    if ( !self->is_open || !self->file_handle ) {
+        *errcode = MP_EINVAL;
+        return MP_STREAM_ERROR;
+    }
+    
+    // Write bytes to JFS
+    int bytes_written = jl_fs_write_bytes( self->file_handle, (const char*)buf, size );
+    
+    if ( bytes_written < 0 ) {
+        *errcode = MP_EIO;
+        return MP_STREAM_ERROR;
+    }
+    
+    return (mp_uint_t)bytes_written;
+}
+
+// Stream protocol ioctl function - handles close, seek, flush, etc.
+// Called by VFS reader for various stream operations
+static mp_uint_t jfs_file_stream_ioctl( mp_obj_t self_in, mp_uint_t request, uintptr_t arg, int* errcode ) {
+    mp_obj_jfs_file_t* self = MP_OBJ_TO_PTR( self_in );
+    
+    switch ( request ) {
+        case MP_STREAM_CLOSE:
+            // Close the file handle
+            if ( self->is_open && self->file_handle ) {
+                jl_fs_close_file( self->file_handle );
+                self->file_handle = NULL;
+                self->is_open = false;
+            }
+            return 0;
+            
+        case MP_STREAM_SEEK: {
+            // Seek to a position in the file
+            if ( !self->is_open || !self->file_handle ) {
+                *errcode = MP_EINVAL;
+                return MP_STREAM_ERROR;
+            }
+            
+            struct mp_stream_seek_t* seek_s = (struct mp_stream_seek_t*)arg;
+            int result = jl_fs_seek( self->file_handle, seek_s->offset, seek_s->whence );
+            
+            if ( !result ) {
+                *errcode = MP_EIO;
+                return MP_STREAM_ERROR;
+            }
+            
+            // Return new position
+            int new_pos = jl_fs_position( self->file_handle );
+            return (mp_uint_t)new_pos;
+        }
+            
+        case MP_STREAM_FLUSH:
+            // Flush buffered writes to disk
+            if ( self->is_open && self->file_handle ) {
+                jl_fs_flush( self->file_handle );
+            }
+            return 0;
+            
+        case MP_STREAM_GET_BUFFER_SIZE:
+            // Return preferred buffer size for reading
+            // VFS reader uses this to allocate read buffer
+            // Return 64 bytes as a reasonable chunk size for our filesystem
+            return 64;
+            
+        default:
+            *errcode = MP_EINVAL;
+            return MP_STREAM_ERROR;
+    }
+}
+
+// Stream protocol structure - MicroPython uses this to read/write files
+static const mp_stream_p_t jfs_file_stream_p = {
+    .read = jfs_file_stream_read,
+    .write = jfs_file_stream_write,
+    .ioctl = jfs_file_stream_ioctl,
+    .is_text = 0,  // Binary mode by default (text mode handled by wrapper)
+};
+
+// File type definition with finalizer AND stream protocol
 // The MP_TYPE_FLAG_HAS_SPECIAL_ACCESSORS flag enables the __del__ method to be called during GC
+// The protocol slot enables VFS reader to import .py files
 MP_DEFINE_CONST_OBJ_TYPE(
     mp_type_jfs_file,
     MP_QSTR_JFSFile,
     MP_TYPE_FLAG_HAS_SPECIAL_ACCESSORS,
+    protocol, &jfs_file_stream_p,
     locals_dict, &jfs_file_locals_dict );
 
 // JFS module functions
@@ -4068,6 +4211,12 @@ static mp_obj_t jfs_open( size_t n_args, const mp_obj_t* args ) {
     // which closes the underlying C++ File handle and prevents memory leaks
     // Note: mp_obj_malloc_with_finaliser sets the type for us
     mp_obj_jfs_file_t* file_obj = mp_obj_malloc_with_finaliser( mp_obj_jfs_file_t, &mp_type_jfs_file );
+    
+    // CRITICAL: Initialize ALL fields before ANY operations
+    // Store filename FIRST to avoid crashes if anything tries to access it
+    strncpy( file_obj->filename, path, sizeof( file_obj->filename ) - 1 );
+    file_obj->filename[ sizeof( file_obj->filename ) - 1 ] = '\0';
+    
     file_obj->file_handle = file_handle;
     file_obj->is_open = true;
     file_obj->is_binary = is_binary;
@@ -4117,8 +4266,9 @@ static MP_DEFINE_CONST_FUN_OBJ_1( jfs_listdir_obj, jfs_listdir );
 static mp_obj_t jfs_mkdir( mp_obj_t path_obj ) {
     const char* path = mp_obj_str_get_str( path_obj );
     int result = jl_fs_mkdir( path );
-    if ( !result ) {
-        mp_raise_OSError( 2 ); // ENOENT - failed to create directory
+    if ( result < 0 ) {
+        // jl_fs_mkdir returns negative errno on failure
+        mp_raise_OSError( -result );
     }
     return mp_const_none;
 }
@@ -4378,7 +4528,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0( jl_context_get_obj, jl_context_get );
 //==============================================================================
 // Jumperless VFS driver (bridges jl_fs_* to MicroPython's native VFS layer)
 //==============================================================================
-#if MICROPY_VFS
+#if MICROPY_VFS || 1
 
 // extmod/vfs.h isn't part of the embedded subset we compile, so pull in the
 // minimal pieces we need here to avoid another copy of the header.
@@ -4400,12 +4550,22 @@ static char jl_vfs_cwd[ 256 ] = "/";
 
 static mp_import_stat_t jl_vfs_import_stat( void* self, const char* path ) {
     (void)self;
+    
+    // CRITICAL: Null check - import system may pass NULL paths
+    if ( !path || path[0] == '\0' ) {
+        return MP_IMPORT_STAT_NO_EXIST;
+    }
+    
+    // Check directory first (more common for package lookups)
     if ( jl_fs_stat_isdir( path ) ) {
         return MP_IMPORT_STAT_DIR;
     }
+    
+    // Then check if it's a regular file
     if ( jl_fs_exists( path ) ) {
         return MP_IMPORT_STAT_FILE;
     }
+    
     return MP_IMPORT_STAT_NO_EXIST;
 }
 
@@ -4428,6 +4588,15 @@ static mp_obj_t jl_vfs_open_method( mp_obj_t self_in, mp_obj_t path_obj, mp_obj_
     (void)self_in;
     const char* path = mp_obj_str_get_str( path_obj );
     const char* mode = mp_obj_str_get_str( mode_obj );
+    
+    // CRITICAL: Validate inputs before any operations
+    if ( !path || path[0] == '\0' ) {
+        mp_raise_OSError( MP_EINVAL );
+    }
+    if ( !mode || mode[0] == '\0' ) {
+        mode = "r";  // Default to read mode
+    }
+    
     bool is_binary = strchr( mode, 'b' ) != NULL;
 
     void* file_handle = jl_fs_open_file( path, mode );
@@ -4435,10 +4604,18 @@ static mp_obj_t jl_vfs_open_method( mp_obj_t self_in, mp_obj_t path_obj, mp_obj_
         mp_raise_OSError( MP_ENOENT );
     }
 
+    // Allocate file object with finalizer for automatic cleanup
     mp_obj_jfs_file_t* file_obj = mp_obj_malloc_with_finaliser( mp_obj_jfs_file_t, &mp_type_jfs_file );
+    
+    // CRITICAL: Initialize ALL fields in order - filename FIRST
+    // This ensures the object is always in a valid state
+    strncpy( file_obj->filename, path, sizeof( file_obj->filename ) - 1 );
+    file_obj->filename[ sizeof( file_obj->filename ) - 1 ] = '\0';
+    
     file_obj->file_handle = file_handle;
     file_obj->is_open = true;
     file_obj->is_binary = is_binary;
+    
     return MP_OBJ_FROM_PTR( file_obj );
 }
 static MP_DEFINE_CONST_FUN_OBJ_3( jl_vfs_open_obj, jl_vfs_open_method );
@@ -4564,8 +4741,10 @@ static MP_DEFINE_CONST_FUN_OBJ_2( jl_vfs_stat_obj, jl_vfs_stat_method );
 static mp_obj_t jl_vfs_mkdir_method( mp_obj_t self_in, mp_obj_t path_obj ) {
     (void)self_in;
     const char* path = mp_obj_str_get_str( path_obj );
-    if ( !jl_fs_mkdir( path ) ) {
-        mp_raise_OSError( EIO );
+    int result = jl_fs_mkdir( path );
+    if ( result < 0 ) {
+        // jl_fs_mkdir returns negative errno on failure
+        mp_raise_OSError( -result );
     }
     return mp_const_none;
 }
@@ -5063,6 +5242,11 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_get_gpio_dir ), MP_ROM_PTR( &jl_gpio_get_dir_obj ) },
     { MP_ROM_QSTR( MP_QSTR_set_gpio_pull ), MP_ROM_PTR( &jl_gpio_set_pull_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_gpio_pull ), MP_ROM_PTR( &jl_gpio_get_pull_obj ) },
+
+    // GPIO pin ownership functions (for timing-critical operations like NeoPixels)
+    { MP_ROM_QSTR( MP_QSTR_gpio_claim_pin ), MP_ROM_PTR( &jl_gpio_claim_pin_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_gpio_release_pin ), MP_ROM_PTR( &jl_gpio_release_pin_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_gpio_release_all_pins ), MP_ROM_PTR( &jl_gpio_release_all_pins_obj ) },
 
     // PWM functions
     { MP_ROM_QSTR( MP_QSTR_pwm ), MP_ROM_PTR( &jl_pwm_obj ) },

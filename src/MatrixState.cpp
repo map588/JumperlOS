@@ -16,10 +16,10 @@
 static const netStruct specialFunctionNetsInit[] = { //these are the special function nets that will always be made
   //netNumber,       ,netName          ,memberNodes[]         ,memberBridges[][2]     ,specialFunction        ,intsctNet[] ,doNotIntersectNodes[]                 ,priority (unused)
       {     127      ,"Empty Net"      ,{EMPTY_NET}           ,{{}}                   ,EMPTY_NET              ,{}          ,{EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET} , 0},
-      {     1        ,"GND"            ,{GND}                 ,{{}}                   ,GND                    ,{}          ,{BOTTOM_RAIL,TOP_RAIL,DAC0,DAC1}    , 1},
+      {     1        ,"GND"            ,{GND}                 ,{{}}                   ,GND                    ,{}          ,{BOTTOM_RAIL,TOP_RAIL,DAC1}    , 1},
       {     2        ,"Top Rail"       ,{TOP_RAIL}            ,{{}}                   ,TOP_RAIL               ,{}          ,{GND, BOTTOM_RAIL, DAC0, DAC1}                               , 1},
       {     3        ,"Bottom Rail"    ,{BOTTOM_RAIL}         ,{{}}                   ,BOTTOM_RAIL            ,{}          ,{GND, TOP_RAIL, DAC0, DAC1}                               , 1},
-      {     4        ,"DAC 0"          ,{DAC0}                ,{{}}                   ,DAC0                   ,{}          ,{GND, TOP_RAIL, BOTTOM_RAIL, DAC1}                               , 1},
+      {     4        ,"DAC 0"          ,{DAC0}                ,{{}}                   ,DAC0                   ,{}          ,{ TOP_RAIL, BOTTOM_RAIL, DAC1}                               , 1},
       {     5        ,"DAC 1"          ,{DAC1}                ,{{}}                   ,DAC1                   ,{}          ,{GND, TOP_RAIL, BOTTOM_RAIL, DAC0}                               , 1},
       // {     6        ,"I Sense +"      ,{ISENSE_PLUS}         ,{{}}                   ,ISENSE_PLUS            ,{}          ,{ISENSE_MINUS}                      , 2},
       // {     7        ,"I Sense -"      ,{ISENSE_MINUS}        ,{{}}                   ,ISENSE_MINUS           ,{}          ,{ISENSE_PLUS}                       , 2},
@@ -347,13 +347,13 @@ int globalDoNotIntersects[60][2] = {
   {GND, TOP_RAIL},
   {GND, BOTTOM_RAIL},
   {GND, DAC1},
-  {GND, DAC0},
+  // {GND, DAC0},
   {TOP_RAIL, DAC1},
   {TOP_RAIL, DAC0},
   {BOTTOM_RAIL, DAC1},
   {BOTTOM_RAIL, DAC0},
   {TOP_RAIL, BOTTOM_RAIL},
-  {DAC0, DAC1},
+  // {DAC0, DAC1},
   {RP_GPIO_20, TOP_RAIL},
   {RP_GPIO_20, BOTTOM_RAIL},
   {RP_GPIO_20, DAC1}, //maybe

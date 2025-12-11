@@ -158,6 +158,7 @@ int mp_hal_stdin_rx_chr(void) {
 // HAL timing functions - basic implementations for embedded use
 // Note: mp_hal_delay_ms and mp_hal_ticks_ms are defined in Python_Proper.cpp
 #include <Arduino.h>
+#include "hardware/clocks.h"
 
 void mp_hal_delay_us(mp_uint_t us) {
     delayMicroseconds(us);
@@ -171,5 +172,10 @@ mp_uint_t mp_hal_ticks_cpu(void) {
     // For RP2040/RP2350, we can use the same as ticks_us
     // In a real implementation, this might use a higher resolution counter
     return micros();
+}
+
+// Get CPU frequency in Hz - required by machine.bitstream for precise timing
+uint32_t mp_hal_get_cpu_freq(void) {
+    return clock_get_hz(clk_sys);
 }
 

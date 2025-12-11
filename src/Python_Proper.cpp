@@ -281,7 +281,7 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
             // CRITICAL: Service USB every 32 characters to prevent CDC buffer deadlock
             // Without this, Serial.write() can block if CDC TX buffer is full,
             // and USB never gets serviced, causing a permanent freeze
-            if (i % 5 == 0) {
+            if (i % 50 == 0) {
                 tud_task();  // Service USB to drain CDC TX buffer
                 mp_hal_check_interrupt();
             }
@@ -326,117 +326,130 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
 
 // HAL functions are now implemented in lib/micropython/port/mphalport.c
 
+// Static helper function to check a stream for interrupts
+// Extracted from lambda to avoid recreation overhead on every call
+static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_time, 
+                                               uint32_t& last_interrupt_time, 
+                                               bool in_raw_repl) {
+  if (!stream) return false;
+  
+  int available = stream->available();
+  if (available == 0) return false;
+  
+  int c = stream->peek(); // Only consume if it's a control signal
+  bool already_consumed = false; // Track if we consumed 'c' during lookahead
+  
+  // Handle carriage return lookahead (e.g., \r followed by Ctrl-C/D)
+  // If we see \r, look ahead up to 5 bytes for control characters
+  if (c == 0x0D) {
+    const int max_lookahead = 5;
+    bool found_control = false;
+    for (int i = 0; i < max_lookahead && stream->available() > 0; i++) {
+      c = stream->read(); // Consume byte
+      already_consumed = true;
+      if (c == 0x03 || c == 0x04) {
+        found_control = true;
+        break;
+      }
+    }
+    // If we consumed bytes but didn't find a control char, exit early
+    // (we've already consumed the \r and subsequent bytes)
+    if (!found_control) {
+      return false;
+    }
+  }
+
+  // Soft reset request (Ctrl+D)
+  if (c == 0x04) {
+    if (!already_consumed) {
+      stream->read(); // Consume only if not already consumed during lookahead
+    }
+    mp_soft_reset_requested = true;
+    // Schedule a SystemExit to unwind the VM immediately; executeCode will
+    // also see mp_soft_reset_requested and reinit afterward.
+    mp_sched_exception(MP_OBJ_FROM_PTR(&mp_type_SystemExit));
+    last_interrupt_time = current_time;
+    return true;
+  }
+
+  // Keyboard interrupt character
+  if (c == keyboard_interrupt_char) {
+    if (!already_consumed) {
+      stream->read(); // Consume only if not already consumed during lookahead
+    }
+    if (current_time - last_interrupt_time > 20) { // Debounce (20ms = responsive but not too sensitive)
+      // Schedule interrupt directly (don't set flag to avoid duplicate scheduling)
+      mp_sched_keyboard_interrupt();
+      last_interrupt_time = current_time;
+      
+      if (global_mp_stream && !in_raw_repl) {
+         // ... echo ^C ...
+      }
+    }
+    return true;
+  }
+  
+  return false;
+}
+
 // Function to check for interrupt and raise KeyboardInterrupt if requested
 // NOTE: Uses mp_interrupt_check_stream instead of global_mp_stream to avoid
 // consuming data from USBSer2 when it's being used as the output stream (e.g., for mpremote)
 extern "C" void mp_hal_check_interrupt(void) {
   static uint32_t last_interrupt_time = 0;
   static uint32_t last_check_time = 0;
-  static uint32_t debug_counter = 0;
-  debug_counter++;
 
-  // Service USB so incoming Ctrl-C/Ctrl-D bytes reach the CDC buffer
-  // This is critical for responsive interrupt handling
-  tud_task();
-
-  const bool in_raw_repl = MpRemoteService::getInstance().isInRawRepl();
-  uint32_t current_time = millis();
-
-  // If an interrupt was requested from another context, schedule it immediately
+  // CRITICAL: Check interrupt flag FIRST before any throttling or expensive operations
+  // This flag can be set from ISR and needs immediate response
   if (mp_interrupt_requested) {
     mp_sched_keyboard_interrupt();
     mp_interrupt_requested = false;  // Clear flag after scheduling to avoid duplicate interrupts
-    last_interrupt_time = current_time;
+    last_interrupt_time = millis();
     return;
   }
-  
-  // Soft reset flag is handled separately - it's checked by execution code for reinitialization
-  // Don't schedule additional interrupts here as the SystemExit was already scheduled when flag was set
+
+  uint32_t current_time = millis();
   
   // Throttle stream polling to avoid excessive overhead
   if (current_time - last_check_time < interruptCheckInterval) {
     return;
   }
   last_check_time = current_time;
+
+  // Only service USB if it's actually in use (check if global_mp_stream is USBSer2)
+  // This avoids unnecessary tud_task() overhead when USB isn't active
+// #ifdef USE_TINYUSB
+//   if (global_mp_stream == &USBSer2 || mp_interrupt_check_stream == &USBSer2) {
+    tud_task(); // Service USB so incoming Ctrl-C/Ctrl-D bytes reach the CDC buffer
+//   }
+// #else
+  // If not using TinyUSB, skip tud_task() entirely
+// #endif
+
+  // Cache in_raw_repl check once instead of calling getInstance() multiple times
+  const bool in_raw_repl = MpRemoteService::getInstance().isInRawRepl();
   
-  // Helper lambda to check a stream for interrupts
-  auto check_stream = [&](Stream* stream, const char* stream_name) {
-    if (!stream) return;
-    
-    int available = stream->available();
-    if (available > 0) {
-      int c = stream->peek(); // Only consume if it's a control signal
-      
-      // Debug log for interrupt diagnosis
-      // Only print occasionally or if it's a control char to avoid flooding
-      if (c == 0x03 || c == 0x04) {
-       //  Serial.printf("[MP-INT] %s: avail=%d, peek=0x%02X, kbd_char=%d\n", stream_name, available, c, keyboard_interrupt_char);
-      } else if (debug_counter % 500 == 0) {
-         // Serial.printf("[MP-INT-TRACE] %s: avail=%d, peek=0x%02X\n", stream_name, available, c);
-      }
-
-      int max_lookahead = 5;
-
-      if (c == 0x0D) {
-        for (int i = 0; i < max_lookahead; i++) {
-           c = stream->read();
-          // Serial.printf("[MP-INT-LOOKAHEAD] %s: avail=%d, peek=0x%02X, kbd_char=%d\n", stream_name, available, c, keyboard_interrupt_char);
-          // Serial.flush();
-          if (c == 0x03 || c == 0x04) {
-            break;
-          }
-        }
-      }
-
-      // Soft reset request (Ctrl+D)
-      if (c == 0x04) {
-        c = stream->read(); // Consume
-        mp_soft_reset_requested = true;
-        // Schedule a SystemExit to unwind the VM immediately; executeCode will
-        // also see mp_soft_reset_requested and reinit afterward.
-        mp_sched_exception(MP_OBJ_FROM_PTR(&mp_type_SystemExit));
-        last_interrupt_time = current_time;
-        // Serial.printf("[MP] Soft reset requested on %s\n", stream_name);
-        return;
-      }
-
-      // Keyboard interrupt character
-      if (c == keyboard_interrupt_char) {
-        c = stream->read(); // Consume
-        if (current_time - last_interrupt_time > 20) { // Debounce (20ms = responsive but not too sensitive)
-          // Schedule interrupt directly (don't set flag to avoid duplicate scheduling)
-          mp_sched_keyboard_interrupt();
-          last_interrupt_time = current_time;
-          
-          // Serial.printf("[MP] Interrupt (0x%02X) detected on %s\n", c, stream_name);
-
-          if (global_mp_stream && !in_raw_repl) {
-             // ... echo ^C ...
-          }
-        }
-        return;
-      }
-    }
-  };
-
-  // Check Serial (always available)
-  check_stream(&Serial, "Serial");
+  // Check Serial (always available) - most common case
+  if (check_stream_for_interrupt(&Serial, current_time, last_interrupt_time, in_raw_repl)) {
+    return; // Interrupt handled, early exit
+  }
 
 #ifdef USE_TINYUSB
   // Check USBSer2 if available
-  check_stream(&USBSer2, "USBSer2");
+  if (check_stream_for_interrupt(&USBSer2, current_time, last_interrupt_time, in_raw_repl)) {
+    return; // Interrupt handled, early exit
+  }
 #endif
 
   // Check mp_interrupt_check_stream if it's explicitly set to something else
   if (mp_interrupt_check_stream && 
-      mp_interrupt_check_stream != &Serial && 
+      mp_interrupt_check_stream != &Serial 
 #ifdef USE_TINYUSB
-      mp_interrupt_check_stream != &USBSer2
-#else
-      true
+      && mp_interrupt_check_stream != &USBSer2
 #endif
       ) {
-    check_stream(mp_interrupt_check_stream, "AltStream");
+    check_stream_for_interrupt(mp_interrupt_check_stream, current_time, 
+                                last_interrupt_time, in_raw_repl);
   }
 }
 
@@ -2115,7 +2128,7 @@ void addJumperlessPythonFunctions(void) {
   mp_embed_exec_str(
       "try:\n"
       "    import jumperless\n"
-      "    print('Native jumperless module available')\n"
+      "    #print('Native jumperless module available')\n"
       "    funcs = [attr for attr in dir(jumperless) if not attr.startswith('_')]\n"
       "    #print('Available functions: ' + str(funcs))\n"
       "    \n"
@@ -2315,7 +2328,7 @@ void showREPLreference(int verbose) {
 const char *test_code = R"""(
 try:
     import jumperless
-            print("☺ Native jumperless module imported successfully")
+            #print("☺ Native jumperless module imported successfully")
     
     # Test that functions exist
     if hasattr(jumperless, 'dac_set') and hasattr(jumperless, 'adc_get'):
@@ -4552,64 +4565,31 @@ void testFormattedOutput(void) {
 //Very recent change here
 
 // Filesystem setup and module path configuration
+// This function automatically adds /python_scripts/lib and other directories to sys.path
+// so you don't need to manually append paths for importing modules like neopixel
 void setupFilesystemAndPaths(void) {
   // Silent setup - no output during filesystem initialization
   changeTerminalColor(replColors[13], true, global_mp_stream);
   
-  // Set up sys.path for module imports using our filesystem bridge
+  // Set up sys.path for module imports using VFS
+  // CRITICAL: This must be called AFTER jl_vfs_mount_root() so VFS is available
   mp_embed_exec_str(
-    "try:\n"
-    "    import sys\n"
-    "    import jumperless\n"
-    "    \n"
-    "    # Clear existing sys.path and set up Jumperless-specific paths\n"
-    "    sys.path.clear()\n"
-    "    sys.path.append('')  # Current directory\n"
-    "    \n"
-    "    # Add Jumperless module directories using our filesystem bridge\n"
-    "    paths_to_add = [\n"
-    "        '/python_scripts',\n"
-    "        '/python_scripts/lib',\n"
-    "        '/python_scripts/modules',\n"
-    "        '/python_scripts/examples',\n"
-    "        #'/lib',\n"
-    "        #'/modules'\n"
-    "    ]\n"
-    "    \n"
-    "    for path in paths_to_add:\n"
-    "        try:\n"
-    "            # Check if path exists using jumperless filesystem bridge\n"
-    "            if path in ['/', '']:\n"
-    "                if path not in sys.path:\n"
-    "                    sys.path.append(path)\n"
-    "            elif jumperless.fs_exists(path):\n"
-    "                if path not in sys.path:\n"
-    "                    sys.path.append(path)\n"
-    "                   # print('Added ' + path + ' to sys.path')\n"
-    "                #else:\n"
-    "                   # print('Path already in sys.path: ' + path)\n"
-    "            #else:\n"
-    "                #print('Skipping non-existent path: ' + path)\n"
-    "        except Exception as e:\n"
-    "            print('Error adding ' + path + ': ' + str(e))\n"
-    "    \n"
-    "    #print('Module search paths:')\n"
-    "    #for i, path in enumerate(sys.path):\n"
-    "    #    if path == '':\n"
-    "            #print('  ' + str(i) + ': ' + '/  (root)')\n"
-    "    #    else:\n"
-    "            #print('  ' + str(i) + ': ' + path)\n"
-    "    \n"
-    "    #print()\n"
-    "    #print('Place .py and .mpy modules in:')\n"
-    "    #print('  /python_scripts/lib/  - User modules')\n"
-    "    #print('  /python_scripts/      - User scripts')\n"
-    "    #print()\n"
-    "    \n"
-    "except ImportError as e:\n"
-    "    print('sys or os module not available:', e)\n"
-    "except Exception as e:\n"
-    "    print('Error setting up module paths:', e)\n"
+    "import sys\n"
+    "# Clear existing sys.path and set up Jumperless-specific paths\n"
+    "sys.path.clear()\n"
+    "sys.path.append('')  # Current directory (working directory)\n"
+    "\n"
+    "# Add Jumperless module directories\n"
+    "# MicroPython will skip paths that don't exist during import, so it's safe to add them all\n"
+    "sys.path.append('/python_scripts')\n"
+    "sys.path.append('/python_scripts/lib')\n"
+    "sys.path.append('/python_scripts/modules')\n"
+    "sys.path.append('/python_scripts/examples')\n"
+    "\n"
+    "# Debug: Print sys.path to verify setup\n"
+    "#print('Module search paths:')\n"
+    "#for i, p in enumerate(sys.path):\n"
+    "   # print('  ' + str(i) + ': ' + (p if p else '/ (cwd)'))\n"
   );
   
   // Test basic module availability

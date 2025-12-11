@@ -34,8 +34,8 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_GCREGS_SETJMP       (1)
 
 #define MICROPY_HELPER_REPL         (1)
-#define MICROPY_HELPER_LEXER_UNIX   (0)  // Disable to save memory
-#define MICROPY_MEM_STATS           (1)  // Disable to save memory
+#define MICROPY_HELPER_LEXER_UNIX   (0)  
+#define MICROPY_MEM_STATS           (1)  
 #define MICROPY_KBD_EXCEPTION      (1)
 
 #define MICROPY_CONFIG_ROM_LEVEL  MICROPY_CONFIG_ROM_LEVEL_FULL_FEATURES
@@ -49,15 +49,15 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_ENABLE_FINALISER    (1)
 
 // REPL configuration - basic only
-#define MICROPY_REPL_AUTO_INDENT    (1)  // Disable to save memory
-#define MICROPY_REPL_EMACS_KEYS     (1)  // Disable to save memory
+#define MICROPY_REPL_AUTO_INDENT    (1)  
+#define MICROPY_REPL_EMACS_KEYS     (1)  
 
 // Float support - enable single-precision floating point
 #define MICROPY_FLOAT_IMPL          (MICROPY_FLOAT_IMPL_FLOAT)
 #define MICROPY_PY_BUILTINS_FLOAT   (1)
 
 // Python builtins - minimal set
-#define MICROPY_PY_BUILTINS_COMPILE (0)  // Disable to save memory
+#define MICROPY_PY_BUILTINS_COMPILE (1)  
 #define MICROPY_PY_BUILTINS_EVAL_EXEC (1)
 #define MICROPY_PY_BUILTINS_HELP    (1)
 #define MICROPY_PY___FILE__         (0)  // Disable to avoid import path issues
@@ -77,8 +77,8 @@ typedef uint32_t mp_hal_pin_obj_t;
 
 // Basic modules - minimal set
 #define MICROPY_PY_ARRAY            (1)
-#define MICROPY_PY_COLLECTIONS      (1)  // Disable to save memory
-// #define MICROPY_PY_IO               (1)  // Disabled below to remove VFS dependency
+#define MICROPY_PY_COLLECTIONS      (1)  
+
 #define MICROPY_PY_STRUCT           (1)
 #define MICROPY_PY_MATH             (1)
 #define MICROPY_PY_GC               (1)
@@ -105,30 +105,36 @@ typedef uint32_t mp_hal_pin_obj_t;
 
 // Machine module - enable with rp2 implementations
 #define MICROPY_PY_MACHINE                      (1)
-#define MICROPY_PY_MACHINE_RESET                (0)
-#define MICROPY_PY_MACHINE_BARE_METAL_FUNCS     (0)
+#define MICROPY_PY_MACHINE_RESET                (1)  // Enable machine.reset()
+#define MICROPY_PY_MACHINE_BARE_METAL_FUNCS     (1)  // Enable unique_id(), freq()
+#define MICROPY_PY_MACHINE_BOOTLOADER           (1)  // Enable machine.bootloader()
 #define MICROPY_PY_MACHINE_DISABLE_IRQ_ENABLE_IRQ (1)
 
 // Use extmod/modmachine.c glue; provide only features we implement locally
 
 // Peripherals (extmod glue + rp2 backend files)
-#define MICROPY_PY_MACHINE_PWM                  (0)
+#define MICROPY_PY_MACHINE_PWM                  (1)  // Enable PWM
+#define MICROPY_PY_MACHINE_PWM_INCLUDEFILE      "../../lib/micropython/port/machine_pwm_jl.c"
 
-#define MICROPY_PY_MACHINE_SPI                  (0)
-#define MICROPY_PY_MACHINE_SPI_MSB              (0)
-#define MICROPY_PY_MACHINE_SPI_LSB              (1)
-#define MICROPY_PY_MACHINE_SOFTSPI              (0)
+#define MICROPY_PY_MACHINE_SPI                  (1)  // Enable hardware SPI
+#define MICROPY_PY_MACHINE_SPI_MSB              (0)  // MSB first (standard)
+#define MICROPY_PY_MACHINE_SPI_LSB              (1)  // LSB first
+#define MICROPY_PY_MACHINE_SOFTSPI              (1)  // Enable software SPI
 
-#define MICROPY_PY_MACHINE_I2C                  (0)
-#define MICROPY_PY_MACHINE_SOFTI2C              (0)
+#define MICROPY_PY_MACHINE_I2C                  (1)  // Enable hardware I2C
+#define MICROPY_PY_MACHINE_SOFTI2C              (1)  // Enable software I2C
 
-#define MICROPY_PY_MACHINE_I2S                  (0)
+#define MICROPY_PY_MACHINE_I2S                  (0)  // I2S not implemented yet
 
-#define MICROPY_PY_MACHINE_UART                 (1)
+#define MICROPY_PY_MACHINE_UART                 (1)  // Already enabled
 
-#define MICROPY_PY_MACHINE_ADC                  (0)
+#define MICROPY_PY_MACHINE_ADC                  (1)  // Enable ADC
+#define MICROPY_PY_MACHINE_ADC_INCLUDEFILE      "../../lib/micropython/port/machine_adc_jl.c"
 
-#define MICROPY_PY_MACHINE_BITSTREAM            (0)
+#define MICROPY_PY_MACHINE_WDT                  (1)  // Enable watchdog timer
+#define MICROPY_PY_MACHINE_WDT_INCLUDEFILE      "../../lib/micropython/port/machine_wdt_jl.c"
+
+#define MICROPY_PY_MACHINE_BITSTREAM            (1)  // Already enabled
 #define MICROPY_PY_MACHINE_PULSE                (0)
 
 // Disable extras to avoid unresolved symbols
@@ -136,7 +142,7 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_PY_MACHINE_SIGNAL               (0)
 #define MICROPY_PY_MACHINE_PIN_BASE             (0)
 
-// Allow port to extend machine module (e.g., expose Pin)
+// Allow port to extend machine module (e.g., expose Pin, Timer, RTC, etc.)
 #define MICROPY_PY_MACHINE_INCLUDEFILE          "../../lib/micropython/port/modmachine_jl.inc"
 
 // Additional useful modules - disable to save memory

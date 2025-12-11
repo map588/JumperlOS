@@ -116,16 +116,9 @@ private:
     Stream* m_previous_stream = nullptr;
     
     // Protocol handlers
-    void handleIdleState(int c);
-    void handleRawReplState(int c);
-    void handleReceivingCodeState(int c);
-    void handleRawPasteCheck(int c);
-    void executeFriendlyReplLine();  // Execute a line in friendly REPL mode
+
     
-    void enterRawRepl(bool with_soft_reset = false);
-    void exitRawRepl();
-    void executeCode();
-    void sendSoftReboot();
+
     void sendRawReplPrompt();
     
     // Output capture

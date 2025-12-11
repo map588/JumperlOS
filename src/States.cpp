@@ -488,6 +488,7 @@ void ConfigState::setDefaults() {
         gpioPwmFrequency[i] = 1.0f;
         gpioPwmDutyCycle[i] = 0.5f;
         gpioPwmEnabled[i] = false;
+        gpioPythonOwned[i] = false;  // No pins owned by MicroPython by default
     }
     
     // UART defaults

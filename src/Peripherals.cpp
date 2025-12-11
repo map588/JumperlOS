@@ -928,7 +928,19 @@ void readGPIO( void ) {
     if ( false ) {
         return;
     }
+    
+    // CRITICAL: Memory barrier to ensure Core 2 sees latest ownership flags from Core 1
+    // Without this, Core 2 might use cached values and not skip claimed pins
+    __dmb();  // Data Memory Barrier
+    
     for ( int i = 0; i < 10; i++ ) { // if you want to read the UART pins, set this to 10
+
+        // Skip pins owned by MicroPython for timing-critical operations (e.g., NeoPixels)
+        // The volatile keyword + memory barrier ensures we see the latest value from Core 1
+        if ( globalState.config.gpioPythonOwned[ i ] ) {
+            // Pin is owned by MicroPython - skip to avoid interference with timing-critical operations
+            continue;
+        }
 
         // **IMPROVED**: Skip logic analyzer pins during capture, but allow other GPIO reading
         // Logic analyzer uses GPIO 20-27 (i=0 through i=7), leave UART pins (i=8,9) alone

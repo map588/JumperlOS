@@ -115,27 +115,38 @@ include $(MICROPYTHON_TOP)/py/mkenv.mk
 include $(TOP)/py/py.mk
 
 # Define extmod source files we specifically want  
+# Note: machine_*.c peripheral files use INCLUDEFILE pattern and are NOT compiled here
+# Their QSTRs are generated via explicit references in modmachine_jl.inc
+# Exception: machine_bitstream.c is compiled (doesn't use INCLUDEFILE)
 SRC_EXTMOD_C = \
 	extmod/modtime.c \
 	extmod/modplatform.c \
 	extmod/moductypes.c \
 	extmod/modmachine.c \
+	extmod/machine_bitstream.c \
 	extmod/vfs.c \
 	extmod/vfs_reader.c \
 	extmod/modos.c \
 	extmod/modbinascii.c \
-
 
 # Define shared source files we want
 SRC_SHARED_C = \
 	shared/readline/readline.c \
 	shared/runtime/pyexec.c \
 
+# Define driver files for soft I2C/SPI
+SRC_DRIVERS_C = \
+	drivers/bus/softspi.c \
+	drivers/bus/softqspi.c \
+
 # Process extmod sources like regular sources
 PY_O += $(addprefix $(BUILD)/, $(SRC_EXTMOD_C:.c=.o))
 PY_O += $(addprefix $(BUILD)/, $(SRC_SHARED_C:.c=.o))
+PY_O += $(addprefix $(BUILD)/, $(SRC_DRIVERS_C:.c=.o))
 SRC_QSTR += $(SRC_EXTMOD_C)
 SRC_QSTR += $(SRC_SHARED_C)
+SRC_QSTR += $(SRC_DRIVERS_C)
+# Note: Peripheral QSTRs come from jl_qstr_refs() in modmachine_jl.inc
 
 # Set the location of the MicroPython embed port.
 MICROPYTHON_EMBED_PORT = $(MICROPYTHON_TOP)/ports/embed
@@ -144,7 +155,7 @@ MICROPYTHON_EMBED_PORT = $(MICROPYTHON_TOP)/ports/embed
 MICROPY_ROM_TEXT_COMPRESSION ?= 0
 
 # Set CFLAGS for the MicroPython build.
-CFLAGS += -I. -I$(TOP) -I$(TOP)/extmod -I$(BUILD) -I$(MICROPYTHON_EMBED_PORT) -I$(MICROPYTHON_EMBED_PORT)/port
+CFLAGS += -I. -I$(TOP) -I$(TOP)/extmod -I$(TOP)/drivers -I$(BUILD) -I$(MICROPYTHON_EMBED_PORT) -I$(MICROPYTHON_EMBED_PORT)/port
 CFLAGS += -Wall -Werror -std=c99
 
 # Define the required generated header files.
@@ -166,7 +177,7 @@ clean-micropython-embed-package:
 	$(RM) -rf $(PACKAGE_DIR)
 
 PACKAGE_DIR ?= micropython_embed
-PACKAGE_DIR_LIST = $(addprefix $(PACKAGE_DIR)/,py extmod shared/runtime shared/timeutils shared/readline genhdr port drivers/bus lib/uzlib)
+PACKAGE_DIR_LIST = $(addprefix $(PACKAGE_DIR)/,py extmod shared/runtime shared/timeutils shared/readline genhdr port drivers/bus drivers/spi lib/uzlib)
 
 .PHONY: micropython-embed-package
 micropython-embed-package: $(GENHDR_OUTPUT)
@@ -192,9 +203,29 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/extmod/vfs.h $(PACKAGE_DIR)/extmod
 	$(Q)$(CP) $(TOP)/extmod/modos.c $(PACKAGE_DIR)/extmod
 	$(Q)$(CP) $(TOP)/extmod/modbinascii.c $(PACKAGE_DIR)/extmod
-	# Drivers headers needed by modmachine.h
+	# Machine bitstream support (compiled)
+	$(Q)$(CP) $(TOP)/extmod/machine_bitstream.c $(PACKAGE_DIR)/extmod || true
+	# Machine peripheral support files (glue layer from extmod)
+	# These are generic glue that connects to port-specific implementations via INCLUDEFILE
+	$(Q)$(CP) $(TOP)/extmod/machine_adc.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_pwm.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_wdt.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_i2c.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_spi.c $(PACKAGE_DIR)/extmod || true
+	# Machine peripheral headers
+	$(Q)$(CP) $(TOP)/extmod/machine_mem.h $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_pinbase.h $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_pulse.h $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_signal.h $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_i2c.h $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/machine_spi.h $(PACKAGE_DIR)/extmod || true
+	# Drivers headers and implementations for soft I2C/SPI
+	$(ECHO) "- drivers/bus"
 	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/drivers/bus || true
-	$(Q)$(CP) $(TOP)/drivers/bus/spi.h $(PACKAGE_DIR)/drivers/bus
+	$(Q)$(CP) $(TOP)/drivers/bus/*.h $(PACKAGE_DIR)/drivers/bus || true
+	$(Q)$(CP) $(TOP)/drivers/bus/softspi.c $(PACKAGE_DIR)/drivers/bus || true
+	$(Q)$(CP) $(TOP)/drivers/bus/softqspi.c $(PACKAGE_DIR)/drivers/bus || true
+	$(Q)$(CP) $(TOP)/drivers/bus/qspi.h $(PACKAGE_DIR)/drivers/bus || true
 	# Skip machine_uart sources for embed build; not needed unless enabling UART
 
 	$(ECHO) "- lib/uzlib (for binascii/crc32)"
@@ -220,8 +251,27 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/shared/readline/*.c $(PACKAGE_DIR)/shared/readline || true
 	$(ECHO) "- genhdr"
 	$(Q)$(CP) $(GENHDR_OUTPUT) $(PACKAGE_DIR)/genhdr
-	$(ECHO) "- port"
+	$(ECHO) "- port (embed port base files)"
 	$(Q)$(CP) $(MICROPYTHON_EMBED_PORT)/port/*.[ch] $(PACKAGE_DIR)/port
+	$(ECHO) "- port (Jumperless-specific files from lib/micropython/port/)"
+	# Copy Jumperless-specific machine implementations
+	$(Q)$(CP) ../../lib/micropython/port/machine_pin_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_uart_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_timer_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_rtc_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_wdt_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_pwm_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_adc_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_i2c_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_spi_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/machine_bitstream_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/modmachine_jl.inc $(PACKAGE_DIR)/port/ || true
+	# Copy Jumperless mpconfigport.h and mphalport files
+	$(Q)$(CP) ../../lib/micropython/port/mpconfigport.h $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/mphalport.h $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/mphalport.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/micropython_embed.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../lib/micropython/port/micropython_embed.h $(PACKAGE_DIR)/port/ || true
 
 # Include remaining core make rules.
 include $(TOP)/py/mkrules.mk
@@ -258,7 +308,8 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     QSTR_COUNT=$(grep -c "^QDEF" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     JUMPERLESS_QSTRS=$(grep -c "jumperless\|dac_set\|adc_get\|nodes_connect" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     TIME_QSTRS=$(grep -c "time\|sleep\|ticks" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
-    MACHINE_QSTRS=$(grep -c "machine\|Pin\|ADC\|PWM" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
+    MACHINE_QSTRS=$(grep -c "machine\|Pin\|ADC\|PWM\|Timer\|RTC\|WDT\|I2C\|SPI" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
+    PERIPHERAL_QSTRS=$(grep -c "duty_u16\|duty_ns\|freq\|baudrate\|read_u16\|datetime\|feed\|scan\|writeto\|readfrom" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     
     echo -e "${GREEN}◆ MicroPython embed build successful!${NC}"
     echo -e "${GREEN}   Generated $QSTR_COUNT total QSTR definitions${NC}"
@@ -269,8 +320,9 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     fi
     echo -e "${GREEN}   Time module QSTRs found: $TIME_QSTRS${NC}"
     echo -e "${GREEN}   Machine module QSTRs found: $MACHINE_QSTRS${NC}"
+    echo -e "${GREEN}   Peripheral method QSTRs found: $PERIPHERAL_QSTRS${NC}"
     echo -e "${GREEN}   Files ready for PlatformIO integration with embed API${NC}"
-    echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, etc.${NC}"
+    echo -e "${GREEN}   Available modules: time, machine (Pin,PWM,ADC,Timer,RTC,WDT,I2C,SPI,UART), os, math, gc, array, etc.${NC}"
 else
     echo -e "${RED}◇ MicroPython embed build failed!${NC}"
     echo -e "${RED}   qstrdefs.generated.h not found${NC}"
@@ -293,4 +345,6 @@ fi
 
 echo -e "${GREEN}◆ MicroPython embed port is ready with built-in modules!${NC}"
 echo -e "${GREEN}   You can now use: mp_embed_init(), mp_embed_exec_str(), mp_embed_deinit()${NC}"
-echo -e "${GREEN}   Available modules: import time, import machine, import os, etc.${NC}" 
+echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, binascii, etc.${NC}"
+echo -e "${GREEN}   Machine peripherals: Pin, PWM, ADC, Timer, RTC, WDT, I2C, SPI, UART${NC}"
+echo -e "${GREEN}   Machine functions: reset(), unique_id(), reset_cause(), freq(), bootloader()${NC}" 

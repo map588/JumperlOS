@@ -52,7 +52,7 @@ void isrFromPio(void) {
   setCSex(chipSelect, 0);
 
   // Small delay to ensure signal stability
-  delayMicroseconds(10);
+  //delayMicroseconds(10);
   chipSelect = -1;
 
   // Clear the state machine interrupt (not PIO0_IRQ_0)
@@ -97,7 +97,7 @@ void initCH446Q(void) {
   // Serial.print("offset: ");
   // Serial.println(offset);
 
-  pio_spi_ch446_multi_cs_init(pio, sm, offset, 8, 2, 0, 1, clk, dat);
+  pio_spi_ch446_multi_cs_init(pio, sm, offset, 8, 1, 0, 1, clk, dat);
 
   for (int i = 0; i < 12; i++) {
     pinMode(28 + i, OUTPUT_12MA);
@@ -540,12 +540,13 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
 
 
   unsigned long wait_start = micros();
+  unsigned long wait_end = micros() + 1000000;
   while (chipSelect != -1) {
     //delayMicroseconds(1);
     tight_loop_contents();
     
     // DEBUG: Warn if waiting too long
-    if (micros() - wait_start > 1000000) {  // 1 second timeout
+    if (micros() > wait_end) {  // 1 second timeout
       ch446q_timeout_count++;
       Serial.print("WARNING: CH446Q sendXYraw waiting for chipSelect for more than 1 second! (timeout #");
       Serial.print(ch446q_timeout_count);

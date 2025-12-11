@@ -2948,6 +2948,9 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #ifdef INCLUDE_INTERACTION_DEMO
         { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py" },
 #endif
+#ifdef INCLUDE_TEST_NEOPIXEL
+        { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py" },
+#endif
     };
 
     int totalExamples = sizeof( examples ) / sizeof( examples[ 0 ] );

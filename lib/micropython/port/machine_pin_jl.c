@@ -18,6 +18,9 @@
 
 #include "hardware/gpio.h"
 
+// Forward declaration for pin ownership function
+extern void jl_gpio_claim_pin(int pin);
+
 // Fallback Pin protocol definitions if extmod/virtpin.h is not packaged
 #ifndef MP_PIN_READ
 #define MP_PIN_READ   (1)
@@ -136,6 +139,11 @@ static mp_obj_t machine_pin_obj_init_helper(const machine_pin_obj_t *self, size_
     
     gpio_set_pulls(self->id, up, down);
 
+    // CRITICAL: Claim pin for MicroPython to prevent background GPIO reading interference
+    // This is essential for timing-critical operations like NeoPixel control
+    // Claim the pin whenever init() is called to ensure bitstream operations work
+    jl_gpio_claim_pin(self->id);
+
     return mp_const_none;
 }
 
@@ -160,6 +168,17 @@ static mp_obj_t mp_pin_make_new(const mp_obj_type_t *type, size_t n_args, size_t
         mp_map_t kw_args;
         mp_map_init_fixed_table(&kw_args, n_kw, all_args + n_args);
         machine_pin_obj_init_helper(self, n_args - 1, all_args + 1, &kw_args);
+    } else {
+        // Even if no mode is specified, we need to initialize the pin for GPIO use
+        // This is critical for operations like NeoPixels that use bitstream
+        printf("[Pin Init] Initializing GPIO %d for SIO function\n", self->id);
+        gpio_init(self->id);  // Initialize pin for GPIO (SIO function)
+        gpio_set_function(self->id, GPIO_FUNC_SIO);  // Explicitly set to SIO
+        printf("[Pin Init] GPIO %d function = %d (should be %d for SIO)\n", 
+               self->id, gpio_get_function(self->id), GPIO_FUNC_SIO);
+        
+        // Claim the pin to prevent interference from readGPIO()
+        jl_gpio_claim_pin(self->id);
     }
 
     return MP_OBJ_FROM_PTR(self);
