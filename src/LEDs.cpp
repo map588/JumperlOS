@@ -603,10 +603,11 @@ static float scrollAccelerationFactor = 1.0f;  // Current acceleration multiplie
 static unsigned long scrollAccelerationLastTime = 0;  // Last time we updated acceleration
 
 uint32_t colorPicker(uint8_t startHue, uint8_t brightness) {
+  return HsvToRaw(hsvColor{ (uint8_t)(startHue % 255), 255, brightness });
   // Static precomputed data for all 256 possible hue values (0-255)
   clearColorOverrides(1, 1, 0);
 
-  unsigned long holdConfirmTime = 1500;
+  unsigned long holdConfirmTime = 1000;
 
   static bool initialized = false;
   static char allNames[256][12];

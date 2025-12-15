@@ -731,6 +731,12 @@ volatile int globalEncoderCursorNode = -1;             // -1 = cursor hidden
 volatile int globalEncoderCursorInHeader = 0;          // 1 if in nano header
 volatile uint32_t globalEncoderCursorColor = 0x4500e8; // Cursor color
 
+
+
+unsigned long idleTime = millis( );
+unsigned long idleSaveTime = 3000;
+
+
 /**
  * @brief Handle encoder-based node selection in probe mode
  *
@@ -786,6 +792,7 @@ void Probing::handleEncoderCursorNavigation(
     // Don't clear color overrides here - they need to persist while cursor is visible in zones
     // Overrides are cleared when changing zones or on timeout
     if ( encoderDelta != 0 && ( millis( ) - probeModeStartTime > 100 ) ) {
+        idleTime = millis( );
         // Encoder moved - show cursor and reset BOTH timeouts
         lastEncoderMovement = millis( );
         probeTimeout = millis( ); // Reset probe mode timeout to keep it active during use
@@ -1235,9 +1242,10 @@ void Probing::handleEncoderCursorNavigation(
         globalEncoderCursorInHeader = 0;
         showLEDsCore2 = 2;
     }
+    rotaryEncoderButtonStuff();
 
     // Check if button pressed while cursor is hidden - re-show cursor instead of exiting
-    if ( !encoderCursorVisible && ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) ) {
+    if ( !encoderCursorVisible && ( encoderButtonState == RELEASED ) ) {
         // Button pressed after timeout - re-show cursor and consume the button press
         encoderCursorVisible = true;
         lastEncoderMovement = millis( ); // Reset cursor timeout
@@ -1251,9 +1259,10 @@ void Probing::handleEncoderCursorNavigation(
     // Check for encoder button press to select node
     // Only process encoder button if cursor is visible (otherwise it might interfere with normal operation)
 
-    if ( encoderCursorVisible && ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) || ( ProbeButton::getInstance( ).getButtonState( ) == ( setOrClear == 1 ? 2 : 1 ) ) && ( millis( ) - probeModeStartTime > 500 ) ) ) {
+    if ( encoderCursorVisible && ( ( encoderButtonState == RELEASED ) || ( ProbeButton::getInstance( ).getButtonState( ) == ( setOrClear == 1 ? 2 : 1 ) ) && ( millis( ) - probeModeStartTime > 500 ) ) ) {
         // IMMEDIATELY reset button state to prevent it from triggering click menu
-
+        // Serial.println("Encoder button press to select node - processing");
+        // Serial.flush();
         encoderButtonState = IDLE;
         lastButtonEncoderState = IDLE; // Set to IDLE (not PRESSED) to prevent menu trigger on release
         blockProbeButton = 8000;
@@ -1375,6 +1384,13 @@ void Probing::handleEncoderCursorNavigation(
         globalEncoderCursorInHeader = 0;
         lastEncoderMovement = millis( ); // Reset timeout
 
+        if (cursorZone != ZONE_BREADBOARD) {
+            probeButton.clearButtonState( );
+            blockProbeButton = 100;
+            blockProbeButtonTimer = millis( );
+            showLEDsCore2 = -1;
+        }
+
         // If we selected from special function zone, reset to row 15 breadboard for next selection
         if ( cursorZone >= ZONE_RAILS ) {
             persistentEncoderCursorNode = 14; // Row 15 (0-indexed)
@@ -1393,7 +1409,8 @@ void Probing::handleEncoderCursorNavigation(
 
         // Clear breadboard display and continue to normal probe processing
         // clearLEDsExceptRails( );
-        // showLEDsCore2 = -1;
+
+        //showLEDsCore2 = -1;
 
         // Continue to normal probe processing below
     } else {
@@ -1574,6 +1591,8 @@ restartProbingNoPrint:
     unsigned long probeModeStartTime = millis( );
     unsigned long lastLoopTime = millis( );
 
+
+
     //! this is the main loop for probing
     while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 80000 ) {
 
@@ -1635,6 +1654,29 @@ restartProbingNoPrint:
             row[ 0 ] = readProbe( );
         }
 
+        //! save local node file if idle for 3 seconds`
+        if ( millis( ) - idleTime > idleSaveTime ) { // save local node file if idle for 3 seconds
+            idleTime = millis( );
+            // delay( 100 );
+            // Serial.println("Saving local node file");
+            // Serial.println("idleTime = " + String(idleTime));
+            // Serial.println("numberOfLocalChanges = " + String(numberOfLocalChanges));
+            // Serial.println("connectionsThisSession = " + String(connectionsThisSession));
+            // Serial.println("setOrClear = " + String(setOrClear));
+            // Serial.println("node1or2 = " + String(node1or2));
+            // Serial.println("nodesToConnect[0] = " + String(nodesToConnect[0]));
+            // Serial.println("nodesToConnect[1] = " + String(nodesToConnect[1]));
+            // Serial.println("connectedRows[0] = " + String(connectedRows[0]));
+            // Serial.println("connectedRows[1] = " + String(connectedRows[1]));
+            // Serial.flush();
+            // saveLocalNodeFile( netSlot );
+            if ( numberOfLocalChanges > 0 ) {
+                SlotManager::getInstance( ).service();
+                // refreshConnections( 0, 1, 0 );
+                numberOfLocalChanges = 0;
+            }
+        }
+
         // Handle encoder returns from readProbe() - these are handled by cursor logic above
         if ( row[ 0 ] == -19 || row[ 0 ] == -17 || row[ 0 ] == -10 ) {
             // Encoder movement/button - already handled by cursor logic
@@ -1667,14 +1709,14 @@ restartProbingNoPrint:
                     // Serial.print("\n\r");
                     // Serial.print("saving local node file\n\r");
 
-                    // refreshConnections();
-                    // numberOfLocalChanges = 0;
+                // refreshConnections();
+                // numberOfLocalChanges = 0;
                 }
             }
             // showLEDsCore2 = -1;
 
         } else {
-            if ( millis( ) - fadeTimer > 10 ) {
+            if ( millis( ) - fadeTimer > 12 ) {
                 fadeTimer = millis( );
 
                 if ( fadeIndex < 12 ) {
@@ -1710,14 +1752,14 @@ restartProbingNoPrint:
                     // b.printRawRow(0b00001010, deleteMisses[i] - 1, deleteFadeSides[fadeOffset], 0xfffffe);
                     b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, deleteFade[ fadeOffset ],
                                    0xfffffe );
-                    showLEDsCore2 = 2;
+                   // showLEDsCore2 = 2;
                 }
 
                 if ( deleteMissesIndex == 0 && fadeClear == 0 ) {
                     fadeClear = 1;
                     // Serial.println( "fadeClear = 1" );
                     // Serial.flush( );
-                    showLEDsCore2 = -1;
+                    // showLEDsCore2 = -1;
                     if ( numberOfLocalChanges > 0 ) {
                         // saveLocalNodeFile( netSlot );
                         // Serial.print("\n\r");
@@ -1755,6 +1797,8 @@ restartProbingNoPrint:
                     nodesToConnect[ 1 ] = -1;
                     node1or2 = 0;
                     // clearLEDsExceptRails();
+                    blockProbeButton = 8000;
+                    blockProbeButtonTimer = millis( );
                     probeHighlight = -1;
                     showLEDsCore2 = -1;
                     // connectionsThisSession = 0;
@@ -1846,7 +1890,7 @@ restartProbingNoPrint:
 
                     for ( int i = deleteMissesIndex - 1; i >= 0; i-- ) {
 
-                        b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, 0, 0xfffffe );
+                        // b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, 0, 0xfffffe );
                         //   Serial.print(i);
                         //   Serial.print("   ");
                         //   Serial.print(deleteMisses[i]);
@@ -1881,7 +1925,7 @@ restartProbingNoPrint:
             nodesToConnect[ 0 ] = -1;
             nodesToConnect[ 1 ] = -1;
             probeHighlight = -1;
-            showLEDsCore2 = -1;
+            // showLEDsCore2 = -1;
             break;
         } else {
             // probingTimer = millis();
@@ -1898,6 +1942,10 @@ restartProbingNoPrint:
             lastProbedRows[ 0 ] = row[ 0 ];
             if ( connectedRowsIndex == 1 ) {
                 nodesToConnect[ node1or2 ] = connectedRows[ 0 ];
+
+                // Serial.print("nodesToConnect[node1or2] = ");
+                // Serial.println(nodesToConnect[node1or2]);
+                // Serial.flush();
 
                 // oled.clear();
                 // oled.print(definesToChar(nodesToConnect[0]));
@@ -1951,22 +1999,22 @@ restartProbingNoPrint:
                     b.printRawRow( 0b0010001, nodesToConnect[ node1or2 ] - 1, 0x000121e,
                                    0xfffffe );
                     showLEDsCore2 = 2;
-                    delay( 30 );
+                    delay( 40 );
                     b.printRawRow( 0b00001010, nodesToConnect[ node1or2 ] - 1, 0x0f0498,
                                    0xfffffe );
                     showLEDsCore2 = 2;
-                    delay( 30 );
+                    delay( 40 );
 
                     b.printRawRow( 0b00000100, nodesToConnect[ node1or2 ] - 1, 0x4000e8,
                                    0xfffffe );
                     showLEDsCore2 = 2;
-                    // delay( 50 );
-                    // showLEDsCore2 = 2;
+                     delay( 60 );
+                     showLEDsCore2 = 2;
                 }
 
                 node1or2++;
                 probingTimer = millis( );
-                showLEDsCore2 = 1;
+                //showLEDsCore2 = 1;
                 doubleSelectTimeout = millis( );
                 doubleSelectCountdown = 200;
                 // delay(500);
@@ -2043,7 +2091,7 @@ restartProbingNoPrint:
                         Serial.flush( );
                     } else {
 
-                        Serial.print( "   \tconnected\n\r" );
+                        Serial.print( "     \tconnected\n\r" );
                         Serial.flush( );
                     }
 
@@ -2095,7 +2143,7 @@ restartProbingNoPrint:
                     }
 
                     doubleSelectTimeout = millis( );
-                    doubleSelectCountdown = 200;
+                    doubleSelectCountdown = 400;
 
                 } else if ( setOrClear == 0 ) {
 
@@ -2197,32 +2245,7 @@ restartProbingNoPrint:
                         sprintf( node1Name, "%s cleared", definesToChar( nodesToConnect[ 0 ] ) );
 
                         oled.clearPrintShow( node1Name, 2, true, true, true );
-                        // oled.clearPrintShow("cleared  ", 1, false, true, true);
-                        // oled.setTextSize(2);
 
-                        // Serial.println(numberOfLocalChanges);
-                        // clearLEDsExceptMiddle(1,60);
-
-                        // NOTE: refreshLocalConnections() is already called inside removeBridgeFromState()
-                        // No need to call it again here - that was causing double refresh delay!
-
-                        // delay(10);
-                        // waitCore2( );
-                        // showLEDsCore2 = -1;
-
-                        showLEDsCore2 = -1;
-
-                        // else {
-
-                        // showLEDsCore2 = -1;
-                        // }
-                        //  refreshLocalConnections(1);
-                        //   deleteMissesIndex = 0;
-                        //   for (int i = 0; i < 20; i++) {
-                        //     deleteMisses[i] = -1;
-                        //   }
-                        //   delay(20);
-                        //  showLEDsCore2 = -1;
                         fadeClear = 0;
                         fadeTimer = 0;
                     } else {
@@ -2280,7 +2303,9 @@ restartProbingNoPrint:
             firstConnection = -1;
             break;
         }
-    }
+    } //! end main probing loop
+
+
     // Serial.println("fuck you");
     //  digitalWrite(RESETPIN, LOW);
     node1or2 = 0;
@@ -2651,9 +2676,9 @@ int Probing::selectSFprobeMenu( int function ) {
     default: {
         connectedRows[ 0 ] = function;
         connectedRowsIndex = 1;
-        lightUpRail( );
+        // lightUpRail( );
         // delay(500);
-        showLEDsCore2 = -1;
+        // showLEDsCore2 = -1;
         // delayWithButton(900);
         sfProbeMenu = 0;
         inPadMenu = 0;
@@ -2678,7 +2703,7 @@ int Probing::selectSFprobeMenu( int function ) {
 
     connectedRows[ 0 ] = function;
     connectedRowsIndex = 1;
-    lightUpRail( );
+    // lightUpRail( );
     // delay(500);
     showLEDsCore2 = -1;
     // delayWithButton(900);
@@ -4647,7 +4672,7 @@ void Probing::checkPads( void ) {
     case BUILDING_PAD_TOP:
         Serial.print( "Building top" );
         clearColorOverrides( 1, 1, 0 ); //! highlighted net
-        if ( brightenedNet != -1 ) {
+        if ( brightenedNet != -1 && false) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
             changedNetColors[ brightenedNet ].color = colorPicker( hsv.h, jumperlessConfig.display.led_brightness );
             changedNetColors[ brightenedNet ].node1 = brightenedNode;
@@ -4660,7 +4685,7 @@ void Probing::checkPads( void ) {
             clearHighlighting( );
             checkChangedNetColors( -1 );
             // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
-            showLEDsCore2 = 1; // Trigger LED update on core 2
+            showLEDsCore2 = -1; // Trigger LED update on core 2
             // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
@@ -4670,7 +4695,7 @@ void Probing::checkPads( void ) {
     case BUILDING_PAD_BOTTOM:
         Serial.print( "Building bottom" );
         clearColorOverrides( 1, 1, 0 );
-        if ( brightenedNet != -1 ) {
+        if ( brightenedNet != -1 && false) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
             changedNetColors[ brightenedNet ].color = colorPicker( hsv.h, jumperlessConfig.display.led_brightness );
             changedNetColors[ brightenedNet ].node1 = brightenedNode;
@@ -4683,7 +4708,7 @@ void Probing::checkPads( void ) {
             clearHighlighting( );
             checkChangedNetColors( -1 );
             // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
-            showLEDsCore2 = 1; // Trigger LED update on core 2
+            showLEDsCore2 = -1; // Trigger LED update on core 2
             // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
@@ -4967,8 +4992,7 @@ int Probing::readProbe( ) {
                 // Serial.flush();
                 return -17;
             }
-        } else if ( encoderButtonState == PRESSED &&
-                    lastButtonEncoderState == IDLE ) {
+        } else if ( encoderButtonState != IDLE ) {
             // Serial.println("encoder pressed");
             // Serial.flush();
             return -10;

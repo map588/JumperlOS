@@ -459,26 +459,6 @@ menu:
         }
         firstLoop = 2;
 
-        // Serial.println("--------------------------------");
-        // loadChangedNetColorsFromFile( netSlot, 0 );
-
-        // routableBufferPower(1, 1);
-
-        // Serial.println("waiting for core 2 to finish initializing " + String(millis()));
-        // while (core2initFinished == 0) {
-        //     delayMicroseconds(1000);
-        //     Serial.println("core2initFinished = 0 waiting for core 2 to finish initializing " + String(millis()));
-        //     Serial.flush();
-        // }
-
-        // // CRITICAL: Also wait for loop1() to actually start before proceeding
-        // // This prevents race condition where we set sendAllPathsCore2 before loop1() can process it
-        // Serial.println("waiting for core 2 loop to start " + String(millis()));
-        // while (core2loopStarted == 0) {
-        //     delayMicroseconds(1000);
-        // }
-        // Serial.println("core 2 loop started " + String(millis()));
-
         goto loadfile;
     }
 
@@ -491,13 +471,7 @@ menu:
             // Serial.println("Initializing OLED");
             oled.init( );
         }
-        // Serial.println("millis = " + String(millis()));
-        // Serial.println("oled initialized");
-        // Serial.flush();
-
-        // Jerial.addInputSource(JerialEndpoint::SERIAL1);
-
-        // runApp(-1, "jdi MIPdisplay");
+ 
         printColorJogoSmall( );
 
         firstLoop = 0;
@@ -1015,7 +989,7 @@ int swirlCount = 42;
 int spread = 13;
 
 unsigned long schedulerTimer = 0;
-unsigned long schedulerUpdateTime = 0100;
+unsigned long schedulerUpdateTime = 400;
 
 int swirled = 0;
 int countsss = 0;
@@ -1218,7 +1192,7 @@ void loop1( ) {
     // }
 }
 
-#define FORCE_SHOW_INTERVAL 100 // 1 second
+#define FORCE_SHOW_INTERVAL 1000 // 1 second
 unsigned long lastForcedShow = 0;
 
 // DEBUG: Set to 1 to disable Core 2 processing for crash debugging

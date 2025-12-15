@@ -65,3 +65,4 @@ This code maintains the original LGPL-3.0 license from Adafruit. All modificatio
 
 **See also**: `LOCAL_NEOPIXEL_LIBRARY.md` in the project root for detailed optimization plans and implementation guide.
 
+

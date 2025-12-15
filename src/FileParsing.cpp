@@ -347,12 +347,13 @@ bool removeBridgeFromState(int node1, int node2, bool autoRefresh) {
     globalState.markDirty();
     
     // Optionally update hardware immediately
-    if (autoRefresh) {
+    if (autoRefresh && removedCount > 0) {
         refreshLocalConnections(-1, 1, 0);
-    }
+    
     
     // Update fake GPIO pins if this bridge affects their routing
     updateFakeGpioAfterConnectionChange(node1, node2);
+    }
     
     if (debugFP) {
         if (node2 == -1) {

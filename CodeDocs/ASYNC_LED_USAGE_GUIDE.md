@@ -293,3 +293,4 @@ Issues that indicate system-level problems:
 - LEDs work with `showBlocking()` but not `show()`
 
 These likely indicate hardware or SDK issues, not application bugs.
+
