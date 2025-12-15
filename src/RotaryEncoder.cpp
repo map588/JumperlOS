@@ -230,21 +230,28 @@ volatile encoderButtonStates lastButtonEncoderState = IDLE;
 volatile encoderDirectionStates lastDirectionState = NONE;
 volatile bool encoderDirectionConsumed = true;
 
-void rotaryEncoderStuff(void) {
+// Timer to prevent Core 2 from clearing button events before Core 1 can read them
+static unsigned long buttonEventTimestamp = 0;
+const unsigned long BUTTON_EVENT_MIN_DURATION_US = 10000; // 10ms minimum hold time - ensures Core 1 catches events even when busy
 
 
-if (false) {
-  return;
-}
-
-  if (encoderOverride > 0) {
-    encoderOverride--;
-    // Serial.print("encoderOverride: ");
-    // Serial.println(encoderOverride);
-    return;
+void rotaryEncoderButtonStuff(void) {
+  // CRITICAL: Don't update lastButtonEncoderState while we're holding an event for Core 1
+  // This preserves the PRESSED->RELEASED transition that Core 1 checks for
+  // Only update when state actually changes or when not in a held event state
+  bool isHoldingEventForCore1 = false;
+  if (encoderButtonState == RELEASED || encoderButtonState == DOUBLECLICKED) {
+    // Check if we're still within the minimum hold time
+    if (micros() - buttonEventTimestamp < BUTTON_EVENT_MIN_DURATION_US) {
+      isHoldingEventForCore1 = true;
+    }
   }
-
-  lastButtonEncoderState = encoderButtonState;
+  
+  // Only update lastButtonEncoderState if we're not holding an event
+  // EXCEPTION: If Core 1 cleared state to IDLE, always update (event was consumed)
+  if (!isHoldingEventForCore1 || encoderButtonState == IDLE) {
+    lastButtonEncoderState = encoderButtonState;
+  }
 
   buttonState = gpio_get(BUTTON_ENC);
   // Serial.print("buttonState: ");
@@ -260,16 +267,37 @@ if (false) {
     // Serial.println(encoderIsPressed);
   }
 
+  // State machine logic - only transitions on actual changes
+  // RELEASED and DOUBLECLICKED states persist until explicitly cleared by consuming code
+  // This prevents missing button events in polling loops
+  
+  // Multi-core protection: Ensure event states persist long enough for Core 1 to detect
+  // Core 2 runs this function much faster than Core 1 can poll, so we need a minimum hold time
 
-
+  // Only transition to IDLE if we're not in a persistent event state
   if (encoderIsPressed == 0 && encoderWasPressed == 0) {
-    encoderButtonState = IDLE;
+    // Don't auto-clear RELEASED or DOUBLECLICKED states immediately
+    // Wait for minimum duration OR explicit clear by consuming code
+    if (encoderButtonState == RELEASED || encoderButtonState == DOUBLECLICKED) {
+      // Check if enough time has passed since the event was set
+      if (micros() - buttonEventTimestamp >= BUTTON_EVENT_MIN_DURATION_US) {
+        // Time expired - now safe to auto-clear if still not consumed
+        lastButtonEncoderState = encoderButtonState; // Update before clearing
+        encoderButtonState = IDLE;
+      }
+    } else if (encoderButtonState != RELEASED && encoderButtonState != DOUBLECLICKED) {
+      // For PRESSED or HELD states, clear immediately when button released
+      encoderButtonState = IDLE;
+    }
     // lastButtonEncoderState = IDLE;
   }
 
   if (encoderIsPressed == 0 && encoderWasPressed == 1) {
+    // CRITICAL: Set lastButtonEncoderState BEFORE changing to RELEASED
+    // This ensures the PRESSED state is captured for Core 1's detection pattern
+    lastButtonEncoderState = encoderButtonState;  // Should be PRESSED or HELD
     encoderButtonState = RELEASED;
-    // lastButtonEncoderState = PRESSED;
+    buttonEventTimestamp = micros();  // Mark event time for minimum hold duration
     encoderReleased = 1;
     doubleClickTimer = millis();
     buttonDebounceTimer2 = micros();
@@ -287,13 +315,13 @@ if (false) {
 
   if (encoderIsPressed == 1 && encoderWasPressed == 0) {
     buttonHoldTimer = millis();
-    // lastButtonEncoderState = IDLE;
     pio_sm_restart(pioEnc, smEnc);
     // encoderRaw = quadrature_encoder_get_count(pioEnc, smEnc);
     // lastPositionEncoder = encoderRaw;
 
     if (millis() - doubleClickTimer < doubleClickLength) {
       encoderButtonState = DOUBLECLICKED;
+      buttonEventTimestamp = micros();  // Mark event time for minimum hold duration
 
     } else {
       encoderButtonState = PRESSED;
@@ -306,6 +334,29 @@ if (false) {
 
   lastButtonState = buttonState;
   encoderWasPressed = encoderIsPressed;
+}
+
+bool isEncoderButtonPhysicallyPressed(void) {
+  // Button is active LOW - returns true when physically pressed (GPIO reads 0)
+  return gpio_get(BUTTON_ENC) == 0;
+}
+
+void rotaryEncoderStuff(void) {
+
+
+if (false) {
+  return;
+}
+
+  if (encoderOverride > 0) {
+    encoderOverride--;
+    // Serial.print("encoderOverride: ");
+    // Serial.println(encoderOverride);
+    return;
+  }
+
+  // Handle button state checking and updates
+  rotaryEncoderButtonStuff();
 
   if (lastRotaryDivider != rotaryDivider) {
     pio_sm_restart(pioEnc, smEnc);

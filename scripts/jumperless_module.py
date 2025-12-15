@@ -470,22 +470,6 @@ clickwheel_down = _native.clickwheel_down
 clickwheel_press = _native.clickwheel_press
 
 # ============================================================================
-# Logic Analyzer Functions
-# ============================================================================
-la_set_trigger = _native.la_set_trigger
-la_capture_single_sample = _native.la_capture_single_sample
-la_start_continuous_capture = _native.la_start_continuous_capture
-la_stop_capture = _native.la_stop_capture
-la_is_capturing = _native.la_is_capturing
-la_set_sample_rate = _native.la_set_sample_rate
-la_set_num_samples = _native.la_set_num_samples
-la_enable_channel = _native.la_enable_channel
-la_set_control_analog = _native.la_set_control_analog
-la_set_control_digital = _native.la_set_control_digital
-la_get_control_analog = _native.la_get_control_analog
-la_get_control_digital = _native.la_get_control_digital
-
-# ============================================================================
 # Filesystem Functions
 # ============================================================================
 fs_exists = _native.fs_exists
@@ -498,50 +482,6 @@ fs_cwd = _native.fs_cwd
 # JFS Filesystem Module
 # ============================================================================
 jfs = _native.jfs
-
-# ============================================================================
-# Python-level helper functions
-# ============================================================================
-
-def quick_connect(*nodes):
-    """
-    Connect multiple nodes in sequence.
-    
-    Usage:
-        quick_connect(1, 2, 3, 4)  # Connects 1-2, 2-3, 3-4
-        quick_connect(D13, TOP_RAIL, A0)  # Connects D13-TOP_RAIL, TOP_RAIL-A0
-    """
-    if len(nodes) < 2:
-        raise ValueError("Need at least 2 nodes to connect")
-    
-    for i in range(len(nodes) - 1):
-        connect(nodes[i], nodes[i + 1])
-
-def disconnect_all(*nodes):
-    """
-    Disconnect all specified nodes from everything.
-    
-    Usage:
-        disconnect_all(1, 2, 3)  # Disconnects nodes 1, 2, and 3 from everything
-        disconnect_all(D13, A0, TOP_RAIL)
-    """
-    for node_val in nodes:
-        disconnect(node_val, -1)
-
-def voltage_divider(vin_node, vout_node, gnd_node=GND):
-    """
-    Set up a simple voltage divider monitoring circuit.
-    
-    Args:
-        vin_node: Input voltage node to measure
-        vout_node: Output node (typically an ADC)
-        gnd_node: Ground reference (default: GND)
-    
-    Usage:
-        voltage_divider(TOP_RAIL, ADC0)  # Monitor TOP_RAIL voltage on ADC0
-    """
-    connect(vin_node, vout_node)
-    connect(vout_node, gnd_node)
 
 
 # Export all functions and constants for "from jumperless import *"

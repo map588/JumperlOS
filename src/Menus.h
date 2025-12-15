@@ -32,7 +32,7 @@ public:
     // Service interface
     ServiceStatus service() override;
     const char* getName() const override { return "Menus"; }
-    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    ServicePriority getPriority() const override { return ServicePriority::HIGH; }
     
     // Member variables (previously globals)
     int inClickMenu = 0;

@@ -24,18 +24,20 @@ extern int numberOfUnconnectablePaths;
 extern int unconnectablePaths[10][2];
 
 
+extern int gndChipAlternator;
+
 // extern int newBridges[MAX_NETS][MAX_DUPLICATE][2];
 
 void clearAllNTCC(void);
 
 void sortPathsByNet(void);  
-void bridgesToPaths(int fillUnused = 1, int allowStacking = 0);
+void bridgesToPaths(int fillUnused = 1, int allowStacking = 0, int startIndex = 0);
 
 void findStartAndEndChips(int node1, int node2, int net);
 
 void couldntFindPath(int forcePrint = 1);
 
-void resolveChipCandidates();
+void resolveChipCandidates(int startIndex = 0);
 
 void printPathArray();
 
@@ -77,11 +79,11 @@ void swapNodes (int);
 
 int ijklPaths(int pathNumber, int allowStacking = 1);
 
-void commitPaths(int allowStacking = 2,int powerOnly = -1, int noOrOnlyDuplicates = 2);
+void commitPaths(int allowStacking = 2,int powerOnly = -1, int noOrOnlyDuplicates = 2, int startIndex = 0);
 int checkForOverlappingPaths(void);
 void printPathsCompact(int showCullDupes = 1);
 
-void resolveAltPaths(int allowStacking = 0, int powerOnly = -1, int noOrOnlyDuplicates = 2);
+void resolveAltPaths(int allowStacking = 0, int powerOnly = -1, int noOrOnlyDuplicates = 2, int startIndex = 0);
 
 void printChipStatus(void);
 
@@ -89,7 +91,7 @@ void printChipStatus(void);
 
 void swapDuplicateNode (int);
 
-void resolveUncommittedHops(int allowStacking = 2, int powerOnly = -1, int noOrOnlyDuplicates = 2);
+void resolveUncommittedHops(int allowStacking = 2, int powerOnly = -1, int noOrOnlyDuplicates = 2, int startIndex = 0);
 void resolveUncommittedHops2(void);
 
 bool freeOrSameNetX(int chip, int x, int net, int allowStacking = 0);

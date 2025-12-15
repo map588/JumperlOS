@@ -1,0 +1,23 @@
+{
+  "name": "Jadafruit_NeoPixel",
+  "version": "1.15.2",
+  "description": "Local modified copy of Adafruit NeoPixel library for custom optimizations",
+  "keywords": "neopixel, ws2812, led, rgb",
+  "authors": [
+    {
+      "name": "Adafruit",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adafruit/Adafruit_NeoPixel"
+  },
+  "license": "LGPL-3.0",
+  "frameworks": "arduino",
+  "platforms": "*",
+  "build": {
+    "includeDir": "."
+  }
+}
+

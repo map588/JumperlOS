@@ -17,6 +17,7 @@
 #include "MpRemoteService.h"
 #include "SharedBuffer.h"  // For zero-copy transfer from Ekilo editor
 #include "externVars.h"  // For pauseCore2 synchronization
+#include "micropythonExamples.h"  // For embedded Python scripts including ViperIDE reinit
 extern "C" {
 #include "py/gc.h"
 #include "py/runtime.h"
@@ -398,6 +399,7 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
 extern "C" void mp_hal_check_interrupt(void) {
   static uint32_t last_interrupt_time = 0;
   static uint32_t last_check_time = 0;
+  static uint32_t last_gc_check_time = 0;
 
   // CRITICAL: Check interrupt flag FIRST before any throttling or expensive operations
   // This flag can be set from ISR and needs immediate response
@@ -409,6 +411,28 @@ extern "C" void mp_hal_check_interrupt(void) {
   }
 
   uint32_t current_time = millis();
+  
+  // PROACTIVE MEMORY MANAGEMENT: Check for low memory and trigger GC if needed
+  // This prevents MemoryError during long-running scripts by freeing memory before it's critically low
+  // Only check every 500ms to avoid overhead - GC is expensive (~50-100ms on embedded systems)
+  if (current_time - last_gc_check_time >= 500) {
+    last_gc_check_time = current_time;
+    
+    #if MICROPY_ENABLE_GC
+    // Get free memory without triggering GC
+    gc_info_t info;
+    gc_info(&info);
+    
+    // Trigger GC if less than 10KB free (critical threshold for script execution)
+    // This ensures we always have breathing room for allocations
+    const size_t CRITICAL_FREE_THRESHOLD = 10 * 1024;  // 10KB
+    if (info.free < CRITICAL_FREE_THRESHOLD) {
+      // Memory is getting critically low - run GC to free up space
+      // This prevents MemoryError from occurring mid-script
+      gc_collect();
+    }
+    #endif
+  }
   
   // Throttle stream polling to avoid excessive overhead
   if (current_time - last_check_time < interruptCheckInterval) {
@@ -507,6 +531,15 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
 
   changeTerminalColor(replColors[11], true, global_mp_stream);
   //global_mp_stream->println("[MP] interrupt char: " + String(keyboard_interrupt_char));
+  
+  // Execute ViperIDE reinit script when connecting to USBSer2 (mpremote/ViperIDE)
+  // This sends filesystem information that ViperIDE/mpremote tools expect on connection
+  // #ifdef INCLUDE_VIPERIDE_REINIT
+  // if (global_mp_stream == &USBSer2) {
+  //   mp_embed_exec_str(VIPERIDE_REINIT_PY);
+  // }
+  // #endif
+  
   return true;
 }
 
@@ -4058,6 +4091,8 @@ static const FunctionTypeMap function_type_map[] = {
   // Node functions
   {"connect", OUTPUT_BOOL_CONNECTED},
   {"disconnect", OUTPUT_NONE},
+  {"fast_connect", OUTPUT_BOOL_CONNECTED},      // Fast refresh version
+  {"fast_disconnect", OUTPUT_NONE},             // Fast refresh version
   {"nodes_clear", OUTPUT_NONE},
   {"is_connected", OUTPUT_BOOL_CONNECTED},
   {"connect_nodes", OUTPUT_BOOL_CONNECTED},     // Alias
@@ -4148,7 +4183,7 @@ static const char* jumperless_functions[] = {
   "set_gpio", "get_gpio", "set_gpio_dir", "get_gpio_dir", "set_gpio_pull", "get_gpio_pull",
   "set_gpio_direction", "get_gpio_direction",
   // Node functions
-  "connect", "disconnect", "nodes_clear", "is_connected",
+  "connect", "disconnect", "fast_connect", "fast_disconnect", "nodes_clear", "is_connected",
   "connect_nodes", "disconnect_nodes", "clear_nodes", "clear_connections", "nodes_connected", "connected",
   // OLED functions
   "oled_print", "oled_clear", "oled_show", "oled_connect", "oled_disconnect",

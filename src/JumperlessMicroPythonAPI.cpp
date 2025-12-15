@@ -7,11 +7,13 @@
 
 #include <errno.h> // For EEXIST, ENOTDIR, EIO errno constants
 #include <cstdarg> // For va_list, va_start, va_end
+#include <cmath>   // For fabs() float comparison
 
 #include "ArduinoStuff.h"
 #include "CH446Q.h"
 #include "Commands.h"
 #include "FileParsing.h"
+#include "FakeGpio.h"
 
 #include "Graphics.h"
 #include "NetsToChipConnections.h"
@@ -34,6 +36,8 @@ extern WaveGen wavegen;             // defined in main.cpp
 
 // External declarations
 extern SafeString nodeFileString;
+// extern void refreshConnections( int ledShowOption = -1, int fillUnused = 1, int clean = 0 );
+// lastChipXY is now declared in CH446Q.h as chipXYBitfield[12]
 
 #include "Apps.h"
 #include "CH446Q.h"
@@ -862,15 +866,183 @@ int jl_get_bridge( int bridgeIdx, int* node1, int* node2, int* duplicates ) {
     return 1;
 }
 
+} // temporarily close extern "C" for C++ fake GPIO integration
+
+// Note: Fake GPIO implementation has been moved to FakeGpio.cpp
+// This file now contains only thin extern "C" wrappers for MicroPython
+
+extern "C" { // reopen extern "C" for MicroPython API wrappers
+
+// ============================================================================
+// Fake GPIO C API Wrappers - Forward calls to FakeGpio.cpp
+// ============================================================================
+
+// Configure INPUT mode fake GPIO
+int jl_fake_gpio_config_input(int node, float threshold_high, float threshold_low) {
+    return fakeGpioConfigInput(node, threshold_high, threshold_low);
+}
+
+// Configure OUTPUT mode fake GPIO (voltage-based, legacy)
+int jl_fake_gpio_config_output(int node, float v_high, float v_low, float threshold_high, float threshold_low) {
+    return fakeGpioConfigOutput(node, v_high, v_low, threshold_high, threshold_low);
+}
+
+// Configure OUTPUT mode fake GPIO (node-based, preferred)
+int jl_fake_gpio_config_output_nodes(int node, int high_node, int low_node, float threshold_high, float threshold_low) {
+    return fakeGpioConfigOutputNodes(node, high_node, low_node, threshold_high, threshold_low);
+}
+
+// Unified config function (auto-detects mode)
+int jl_fake_gpio_config(int node, float v_high, float v_low, float threshold_high, float threshold_low, int mode = -1) {
+    return fakeGpioConfig(node, v_high, v_low, threshold_high, threshold_low, mode);
+}
+
+// Read fake GPIO pin
+int jl_fake_gpio_read(int node) {
+    return fakeGpioRead(node);
+}
+
+// Write fake GPIO pin
+int jl_fake_gpio_write(int node, int state) {
+    return fakeGpioWrite(node, state);
+}
+
+// Set mode (for MicroPython Pin class compatibility)
+void jl_fake_gpio_set_mode(int node, int mode) {
+    // This is called from MicroPython Pin.init() to set INPUT/OUTPUT mode
+    // The actual configuration should have been done via jl_fake_gpio_config_*
+    // This is just for compatibility - the mode is already set during config
+    // We could add validation here if needed
+    (void)node;  // Unused - mode is set during config
+    (void)mode;  // Unused - mode is set during config
+}
+
+// Fast toggle functions
+int jl_fake_gpio_disconnect(int node1, int node2) {
+    return fakeGpioDisconnect(node1, node2);
+}
+
+int jl_fake_gpio_reconnect(int node1, int node2) {
+    return fakeGpioReconnect(node1, node2);
+}
+
+
+
+// Get path info for a specific bridge/path index
+// Returns formatted string: "node1,node2,net,chip0,chip1,chip2,chip3,x0,x1,x2,x3,x4,x5,y0,y1,y2,y3,y4,y5,duplicate"
+const char* jl_get_path_info( int pathIdx ) {
+    static char pathBuffer[ 512 ];
+    pathBuffer[ 0 ] = '\0';
+
+    // Note: Paths should already be computed by refreshLocalConnections()
+    // We don't recompute here to avoid unnecessary overhead
+    // If you need to force recomputation, call refreshLocalConnections() first
+    
+    // Validate index and ensure paths are computed
+    if ( pathIdx < 0 || pathIdx >= globalState.connections.numPaths ) {
+        // Serial.print( "jl_get_path_info: Invalid index " );
+        // Serial.print( pathIdx );
+        // Serial.print( ", numPaths=" );
+        // Serial.println( globalState.connections.numPaths );
+        return pathBuffer;
+    }
+
+    const pathStruct& path = globalState.connections.paths[ pathIdx ];
+
+    // Format: node1,node2,net,chips[4],x[6],y[6],duplicate
+    snprintf( pathBuffer, sizeof( pathBuffer ),
+              "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+              path.node1, path.node2, path.net,
+              path.chip[ 0 ], path.chip[ 1 ], path.chip[ 2 ], path.chip[ 3 ],
+              path.x[ 0 ], path.x[ 1 ], path.x[ 2 ], path.x[ 3 ], path.x[ 4 ], path.x[ 5 ],
+              path.y[ 0 ], path.y[ 1 ], path.y[ 2 ], path.y[ 3 ], path.y[ 4 ], path.y[ 5 ],
+              path.duplicate );
+
+    return pathBuffer;
+}
+
+// Get all active paths as a formatted string
+// Returns count, followed by each path on a new line
+const char* jl_get_all_path_info( void ) {
+    static char allPathsBuffer[ 4096 ]; // Large buffer for multiple paths
+    allPathsBuffer[ 0 ] = '\0';
+
+    // Note: Paths should already be computed by refreshLocalConnections()
+    // We don't recompute here to avoid unnecessary overhead
+    
+    int numPaths = globalState.connections.numPaths;
+    int numBridges = globalState.connections.numBridges;
+    int pos = 0;
+    
+    Serial.print( "jl_get_all_path_info: numBridges=" );
+    Serial.print( numBridges );
+    Serial.print( ", numPaths=" );
+    Serial.println( numPaths );
+
+    // First line: number of paths
+    pos += snprintf( allPathsBuffer + pos, sizeof( allPathsBuffer ) - pos, "%d\n", numPaths );
+
+    // Each subsequent line: path info
+    for ( int i = 0; i < numPaths && pos < sizeof( allPathsBuffer ) - 256; i++ ) {
+        const pathStruct& path = globalState.connections.paths[ i ];
+        pos += snprintf( allPathsBuffer + pos, sizeof( allPathsBuffer ) - pos,
+                         "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                         path.node1, path.node2, path.net,
+                         path.chip[ 0 ], path.chip[ 1 ], path.chip[ 2 ], path.chip[ 3 ],
+                         path.x[ 0 ], path.x[ 1 ], path.x[ 2 ], path.x[ 3 ], path.x[ 4 ], path.x[ 5 ],
+                         path.y[ 0 ], path.y[ 1 ], path.y[ 2 ], path.y[ 3 ], path.y[ 4 ], path.y[ 5 ],
+                         path.duplicate );
+    }
+
+    return allPathsBuffer;
+}
+
+// Get path info for a connection between two specific nodes
+// Returns same format as jl_get_path_info, or empty string if not found
+const char* jl_get_path_between( int node1, int node2 ) {
+    static char pathBuffer[ 512 ];
+    pathBuffer[ 0 ] = '\0';
+
+    // Note: Paths should already be computed by refreshLocalConnections()
+    // We don't recompute here to avoid unnecessary overhead
+    
+    // Serial.print( "jl_get_path_between: Looking for " );
+    // Serial.print( node1 );
+    // Serial.print( " <-> " );
+    // Serial.print( node2 );
+    // Serial.print( ", numPaths=" );
+    // Serial.println( globalState.connections.numPaths );
+
+    // Search for path matching these nodes (in either order)
+    for ( int i = 0; i < globalState.connections.numPaths; i++ ) {
+        const pathStruct& path = globalState.connections.paths[ i ];
+        if ( ( path.node1 == node1 && path.node2 == node2 ) ||
+             ( path.node1 == node2 && path.node2 == node1 ) ) {
+            // Found it - format and return
+            snprintf( pathBuffer, sizeof( pathBuffer ),
+                      "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                      path.node1, path.node2, path.net,
+                      path.chip[ 0 ], path.chip[ 1 ], path.chip[ 2 ], path.chip[ 3 ],
+                      path.x[ 0 ], path.x[ 1 ], path.x[ 2 ], path.x[ 3 ], path.x[ 4 ], path.x[ 5 ],
+                      path.y[ 0 ], path.y[ 1 ], path.y[ 2 ], path.y[ 3 ], path.y[ 4 ], path.y[ 5 ],
+                      path.duplicate );
+            break;
+        }
+    }
+
+    return pathBuffer;
+}
+
 // Node Functions
-int jl_nodes_connect( int node1, int node2, int save ) {
+int jl_nodes_connect( int node1, int node2, int save, int duplicates ) {
 
     // Add to RAM state
-    addBridgeToState( node1, node2, -1, true );
+    // duplicates: -1 = allow, 0 = no duplicates, 1+ = allow N duplicates
+    addBridgeToState( node1, node2, duplicates, true );
 
     // Update shown readings to detect current sense connections
     // This enables the marching ants animation when ISENSE_PLUS/MINUS are connected
-    chooseShownReadings( );
+    //chooseShownReadings( );
 
     return 1;
 }
@@ -880,7 +1052,40 @@ int jl_nodes_disconnect( int node1, int node2 ) {
     removeBridgeFromState( node1, node2, true );
 
     // Update shown readings to detect current sense disconnections
-    chooseShownReadings( );
+    //chooseShownReadings( );
+
+    return 1;
+}
+
+int jl_nodes_fast_connect( int node1, int node2, int duplicates ) {
+    // OPTIMIZATION: Fast connection with immediate refresh
+    // Uses fastRefresh() instead of full refresh for minimal latency
+    
+    // Add to RAM state
+    // duplicates: -1 = allow, 0 = no duplicates, 1+ = allow N duplicates
+    addBridgeToState( node1, node2, duplicates, false );
+
+    // Update shown readings to detect current sense connections
+    // chooseShownReadings( );
+    
+    // Fast refresh with immediate hardware update (bypasses Core 2 scheduler)
+    fastRefresh( 1 );  // 1 = show LEDs after refresh
+
+    return 1;
+}
+
+int jl_nodes_fast_disconnect( int node1, int node2 ) {
+    // OPTIMIZATION: Fast disconnection with immediate refresh
+    // Uses fastRefresh() instead of full refresh for minimal latency
+    
+    // Remove from RAM state
+    removeBridgeFromState( node1, node2, false );
+
+    // Update shown readings to detect current sense disconnections
+    // chooseShownReadings( );
+    
+    // Fast refresh with immediate hardware update (bypasses Core 2 scheduler)
+    fastRefresh( 1 );  // 1 = show LEDs after refresh
 
     return 1;
 }
@@ -1140,9 +1345,13 @@ void jl_send_raw( int chip, int x, int y, int setOrClear ) {
         return; // Invalid coordinates
     }
 
-    // Call the existing sendXYraw function with setOrClear=1 (set path)
-    lastChipXY[ chip ].connected[ x ][ y ] = setOrClear;
-    sendXYraw( chip, x, y, setOrClear );
+    // Update lastChipXY bitfield and send to hardware
+    if (setOrClear) {
+        lastChipXY[chip].connected[y] |= (1 << x);   // Set bit
+    } else {
+        lastChipXY[chip].connected[y] &= ~(1 << x);  // Clear bit
+    }
+    sendXYraw(chip, x, y, setOrClear);
 }
 
 void jl_send_raw_str( const char* chip_str, int x, int y, int setOrClear ) {

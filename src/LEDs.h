@@ -3,7 +3,7 @@
 #define LEDS_H
 
 //#include "Adafruit_NeoMatrix.h"
-#include "Adafruit_NeoPixel.h"
+#include "JeoPixel.h"
 #include "JumperlessDefines.h"
 #include "NetsToChipConnections.h"
 #include "RotaryEncoder.h"
@@ -68,8 +68,8 @@ extern volatile uint8_t LEDbrightness;
 extern volatile uint8_t LEDbrightnessSpecial;
 
 //extern volatile uint8_t pauseCore2;
-extern Adafruit_NeoPixel bbleds;
-extern Adafruit_NeoPixel probeLEDs;
+  extern JeoPixel bbleds;
+extern JeoPixel probeLEDs;
 extern uint8_t probeLEDstateMachine;
 
 extern volatile int hideNets;
@@ -134,6 +134,7 @@ class ledClass { //I'm literally copying this from Adafruit_NeoPixel.h so I can 
   public:
   void begin(void);
   void show(void);
+  void showBBBlocking(void); // Force synchronous LED update - waits for DMA to complete
   void setPin(int16_t p);
   void setPixelColor(uint16_t n, uint8_t r, uint8_t g, uint8_t b);
   void setPixelColor(uint16_t n, uint32_t c);
@@ -145,8 +146,22 @@ class ledClass { //I'm literally copying this from Adafruit_NeoPixel.h so I can 
   void clear(void);
   void end(void);
 
+  // Dirty flag optimization: only refresh strips that changed
+  void markBBDirty(void);
+  void markTopDirty(void);
+  void markAllDirty(void);
+  bool isBBDirty(void);
+  bool isTopDirty(void);
+  
+  // Direct buffer access (no dirty marking) - for clear functions
+  void setPixelColorDirect(uint16_t n, uint32_t c);
+  void setPixelColorDirect(uint16_t n, uint8_t r, uint8_t g, uint8_t b);
+
   //void clear(int start = 0, int end = LED_COUNT+LED_COUNT_TOP);
 
+private:
+  volatile bool bbDirty = true;   // Breadboard LEDs need refresh
+  volatile bool topDirty = true;  // Top LEDs need refresh
 };
   
 

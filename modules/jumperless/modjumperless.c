@@ -69,8 +69,10 @@ int jl_gpio_get_pull( int pin );
 void jl_gpio_claim_pin( int pin );
 void jl_gpio_release_pin( int pin );
 void jl_gpio_release_all_pins( void );
-int jl_nodes_connect( int node1, int node2, int save );
+int jl_nodes_connect( int node1, int node2, int save, int duplicates );
 int jl_nodes_disconnect( int node1, int node2 );
+int jl_nodes_fast_connect( int node1, int node2, int duplicates );
+int jl_nodes_fast_disconnect( int node1, int node2 );
 int jl_nodes_is_connected( int node1, int node2 );
 int jl_nodes_save( int slot );
 int jl_nodes_print_bridges( void );
@@ -97,6 +99,25 @@ int jl_get_num_nets( void );
 int jl_get_num_bridges( void );
 const char* jl_get_net_nodes( int netNum );
 int jl_get_bridge( int bridgeIdx, int* node1, int* node2, int* duplicates );
+
+// Fake GPIO path query functions
+const char* jl_get_path_info( int pathIdx );
+const char* jl_get_all_path_info( void );
+const char* jl_get_path_between( int node1, int node2 );
+
+// Fast toggle functions
+int jl_fake_gpio_disconnect( int node1, int node2 );
+int jl_fake_gpio_reconnect( int node1, int node2 );
+
+// Fake GPIO pin functions
+int jl_fake_gpio_config_input( int node, float threshold_high, float threshold_low );
+int jl_fake_gpio_config_output( int node, float v_high, float v_low, float threshold_high, float threshold_low );
+int jl_fake_gpio_config_output_nodes( int node, int high_node, int low_node, float threshold_high, float threshold_low );
+int jl_fake_gpio_config( int node, float v_high, float v_low, float threshold_high, float threshold_low, int mode );
+void jl_fake_gpio_set_mode( int node, int mode );
+void jl_fake_gpio_write( int node, int value );
+int jl_fake_gpio_read( int node );
+void jl_fake_gpio_reroute_chip_k( int chip_k_x, int chip_k_y, int target_node );
 
 // Logic Analyzer Functions
 void jl_logic_analyzer_set_analog( int channel, float value );
@@ -2246,11 +2267,12 @@ static mp_obj_t jl_nodes_connect_func( size_t n_args, const mp_obj_t* args ) {
     int node1 = get_node_value( args[ 0 ] );
     int node2 = get_node_value( args[ 1 ] );
     int save = ( n_args > 2 ) ? mp_obj_is_true( args[ 2 ] ) ? 1 : 0 : 0; // Default save=False (use local copy)
+    int duplicates = ( n_args > 3 ) ? mp_obj_get_int( args[ 3 ] ) : -1; // Default -1 = allow duplicates
 
-    jl_nodes_connect( node1, node2, save );
+    jl_nodes_connect( node1, node2, save, duplicates );
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_nodes_connect_obj, 2, 3, jl_nodes_connect_func );
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_nodes_connect_obj, 2, 4, jl_nodes_connect_func );
 
 static mp_obj_t jl_nodes_disconnect_func( mp_obj_t node1_obj, mp_obj_t node2_obj ) {
     int node1 = get_node_value( node1_obj );
@@ -2260,6 +2282,25 @@ static mp_obj_t jl_nodes_disconnect_func( mp_obj_t node1_obj, mp_obj_t node2_obj
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2( jl_nodes_disconnect_obj, jl_nodes_disconnect_func );
+
+static mp_obj_t jl_nodes_fast_connect_func( size_t n_args, const mp_obj_t* args ) {
+    int node1 = get_node_value( args[ 0 ] );
+    int node2 = get_node_value( args[ 1 ] );
+    int duplicates = ( n_args > 2 ) ? mp_obj_get_int( args[ 2 ] ) : -1; // Default -1 = allow duplicates
+
+    jl_nodes_fast_connect( node1, node2, duplicates );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_nodes_fast_connect_obj, 2, 3, jl_nodes_fast_connect_func );
+
+static mp_obj_t jl_nodes_fast_disconnect_func( mp_obj_t node1_obj, mp_obj_t node2_obj ) {
+    int node1 = get_node_value( node1_obj );
+    int node2 = get_node_value( node2_obj );
+
+    jl_nodes_fast_disconnect( node1, node2 );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2( jl_nodes_fast_disconnect_obj, jl_nodes_fast_disconnect_func );
 
 static mp_obj_t jl_nodes_clear_func( void ) {
     jl_nodes_clear( );
@@ -2518,6 +2559,432 @@ static mp_obj_t jl_get_net_info_func( mp_obj_t net_num_obj ) {
     return dict;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_get_net_info_obj, jl_get_net_info_func );
+
+// get_path_info(path_idx) - Returns path info as dict
+static mp_obj_t jl_get_path_info_func( mp_obj_t idx_obj ) {
+    int idx = mp_obj_get_int( idx_obj );
+    const char* path_str = jl_get_path_info( idx );
+    
+    if ( strlen( path_str ) == 0 ) {
+        return mp_const_none;
+    }
+    
+    // Parse CSV: node1,node2,net,chip[4],x[6],y[6],duplicate
+    int vals[ 20 ];
+    int count = 0;
+    const char* p = path_str;
+    while ( *p && count < 20 ) {
+        vals[ count++ ] = atoi( p );
+        while ( *p && *p != ',' ) p++;
+        if ( *p == ',' ) p++;
+    }
+    
+    if ( count != 20 ) {
+        return mp_const_none; // Parse error
+    }
+    
+    // Create dict with parsed values
+    mp_obj_t dict = mp_obj_new_dict( 7 );
+    
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_node1 ), mp_obj_new_int( vals[ 0 ] ) );
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_node2 ), mp_obj_new_int( vals[ 1 ] ) );
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_net ), mp_obj_new_int( vals[ 2 ] ) );
+    
+    // Create chip array [4]
+    mp_obj_t chips[ 4 ];
+    for ( int i = 0; i < 4; i++ ) {
+        chips[ i ] = mp_obj_new_int( vals[ 3 + i ] );
+    }
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_chips ), mp_obj_new_list( 4, chips ) );
+    
+    // Create x array [6]
+    mp_obj_t x_arr[ 6 ];
+    for ( int i = 0; i < 6; i++ ) {
+        x_arr[ i ] = mp_obj_new_int( vals[ 7 + i ] );
+    }
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_x ), mp_obj_new_list( 6, x_arr ) );
+    
+    // Create y array [6]
+    mp_obj_t y_arr[ 6 ];
+    for ( int i = 0; i < 6; i++ ) {
+        y_arr[ i ] = mp_obj_new_int( vals[ 13 + i ] );
+    }
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_y ), mp_obj_new_list( 6, y_arr ) );
+    
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_duplicate ), mp_obj_new_int( vals[ 19 ] ) );
+    
+    return dict;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_get_path_info_obj, jl_get_path_info_func );
+
+// get_all_paths() - Returns list of all path dicts
+static mp_obj_t jl_get_all_paths_func( void ) {
+    const char* all_paths_str = jl_get_all_path_info( );
+    
+    // First line is count
+    int num_paths = atoi( all_paths_str );
+    if ( num_paths <= 0 ) {
+        return mp_obj_new_list( 0, NULL );
+    }
+    
+    // Create list to hold all path dicts
+    mp_obj_t list = mp_obj_new_list( 0, NULL );
+    
+    // Parse each line
+    const char* p = all_paths_str;
+    // Skip first line (count)
+    while ( *p && *p != '\n' ) p++;
+    if ( *p == '\n' ) p++;
+    
+    for ( int i = 0; i < num_paths && *p; i++ ) {
+        // Parse this line's CSV
+        int vals[ 20 ];
+        int count = 0;
+        while ( *p && *p != '\n' && count < 20 ) {
+            vals[ count++ ] = atoi( p );
+            while ( *p && *p != ',' && *p != '\n' ) p++;
+            if ( *p == ',' ) p++;
+        }
+        if ( *p == '\n' ) p++;
+        
+        if ( count == 20 ) {
+            // Create dict for this path
+            mp_obj_t dict = mp_obj_new_dict( 7 );
+            
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_node1 ), mp_obj_new_int( vals[ 0 ] ) );
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_node2 ), mp_obj_new_int( vals[ 1 ] ) );
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_net ), mp_obj_new_int( vals[ 2 ] ) );
+            
+            // Create chip array
+            mp_obj_t chips[ 4 ];
+            for ( int j = 0; j < 4; j++ ) {
+                chips[ j ] = mp_obj_new_int( vals[ 3 + j ] );
+            }
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_chips ), mp_obj_new_list( 4, chips ) );
+            
+            // Create x array
+            mp_obj_t x_arr[ 6 ];
+            for ( int j = 0; j < 6; j++ ) {
+                x_arr[ j ] = mp_obj_new_int( vals[ 7 + j ] );
+            }
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_x ), mp_obj_new_list( 6, x_arr ) );
+            
+            // Create y array
+            mp_obj_t y_arr[ 6 ];
+            for ( int j = 0; j < 6; j++ ) {
+                y_arr[ j ] = mp_obj_new_int( vals[ 13 + j ] );
+            }
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_y ), mp_obj_new_list( 6, y_arr ) );
+            
+            mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_duplicate ), mp_obj_new_int( vals[ 19 ] ) );
+            
+            mp_obj_list_append( list, dict );
+        }
+    }
+    
+    return list;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_get_all_paths_obj, jl_get_all_paths_func );
+
+// get_path_between(node1, node2) - Returns path dict or None if not found
+static mp_obj_t jl_get_path_between_func( mp_obj_t node1_obj, mp_obj_t node2_obj ) {
+    int node1 = mp_obj_get_int( node1_obj );
+    int node2 = mp_obj_get_int( node2_obj );
+    const char* path_str = jl_get_path_between( node1, node2 );
+    
+    if ( strlen( path_str ) == 0 ) {
+        return mp_const_none;
+    }
+    
+    // Parse CSV: same format as get_path_info
+    int vals[ 20 ];
+    int count = 0;
+    const char* p = path_str;
+    while ( *p && count < 20 ) {
+        vals[ count++ ] = atoi( p );
+        while ( *p && *p != ',' ) p++;
+        if ( *p == ',' ) p++;
+    }
+    
+    if ( count != 20 ) {
+        return mp_const_none;
+    }
+    
+    // Create dict
+    mp_obj_t dict = mp_obj_new_dict( 7 );
+    
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_node1 ), mp_obj_new_int( vals[ 0 ] ) );
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_node2 ), mp_obj_new_int( vals[ 1 ] ) );
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_net ), mp_obj_new_int( vals[ 2 ] ) );
+    
+    // Create chip array
+    mp_obj_t chips[ 4 ];
+    for ( int i = 0; i < 4; i++ ) {
+        chips[ i ] = mp_obj_new_int( vals[ 3 + i ] );
+    }
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_chips ), mp_obj_new_list( 4, chips ) );
+    
+    // Create x array
+    mp_obj_t x_arr[ 6 ];
+    for ( int i = 0; i < 6; i++ ) {
+        x_arr[ i ] = mp_obj_new_int( vals[ 7 + i ] );
+    }
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_x ), mp_obj_new_list( 6, x_arr ) );
+    
+    // Create y array
+    mp_obj_t y_arr[ 6 ];
+    for ( int i = 0; i < 6; i++ ) {
+        y_arr[ i ] = mp_obj_new_int( vals[ 13 + i ] );
+    }
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_y ), mp_obj_new_list( 6, y_arr ) );
+    
+    mp_obj_dict_store( dict, MP_OBJ_NEW_QSTR( MP_QSTR_duplicate ), mp_obj_new_int( vals[ 19 ] ) );
+    
+    return dict;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2( jl_get_path_between_obj, jl_get_path_between_func );
+
+// Fast GPIO Toggle Functions
+// fake_gpio_disconnect(node1, node2) - Context manager for temporary disconnection
+typedef struct _mp_obj_fake_gpio_disconnect_t {
+    mp_obj_base_t base;
+    int node1;
+    int node2;
+} mp_obj_fake_gpio_disconnect_t;
+
+static mp_obj_t fake_gpio_disconnect_make_new( const mp_obj_type_t* type, size_t n_args, size_t n_kw, const mp_obj_t* args ) {
+    mp_arg_check_num( n_args, n_kw, 2, 2, false );
+
+    mp_obj_fake_gpio_disconnect_t* self = m_new_obj( mp_obj_fake_gpio_disconnect_t );
+    self->base.type = type;
+    self->node1 = mp_obj_get_int( args[ 0 ] );
+    self->node2 = mp_obj_get_int( args[ 1 ] );
+
+    return MP_OBJ_FROM_PTR( self );
+}
+
+static mp_obj_t fake_gpio_disconnect_enter( mp_obj_t self_in ) {
+    mp_obj_fake_gpio_disconnect_t* self = MP_OBJ_TO_PTR( self_in );
+
+    if ( !jl_fake_gpio_disconnect( self->node1, self->node2 ) ) {
+        mp_raise_ValueError( MP_ERROR_TEXT( "Failed to disconnect path" ) );
+    }
+
+    return self_in;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( fake_gpio_disconnect_enter_obj, fake_gpio_disconnect_enter );
+
+static mp_obj_t fake_gpio_disconnect_exit( size_t n_args, const mp_obj_t* args ) {
+    mp_obj_fake_gpio_disconnect_t* self = MP_OBJ_TO_PTR( args[ 0 ] );
+
+    if ( !jl_fake_gpio_reconnect( self->node1, self->node2 ) ) {
+        mp_raise_ValueError( MP_ERROR_TEXT( "Failed to reconnect path" ) );
+    }
+
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( fake_gpio_disconnect_exit_obj, 4, 4, fake_gpio_disconnect_exit );
+
+static const mp_rom_map_elem_t fake_gpio_disconnect_locals_dict_table[] = {
+    { MP_ROM_QSTR( MP_QSTR___enter__ ), MP_ROM_PTR( &fake_gpio_disconnect_enter_obj ) },
+    { MP_ROM_QSTR( MP_QSTR___exit__ ), MP_ROM_PTR( &fake_gpio_disconnect_exit_obj ) },
+};
+static MP_DEFINE_CONST_DICT( fake_gpio_disconnect_locals_dict, fake_gpio_disconnect_locals_dict_table );
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    fake_gpio_disconnect_type,
+    MP_QSTR_FakeGpioDisconnect,
+    MP_TYPE_FLAG_NONE,
+    make_new, fake_gpio_disconnect_make_new,
+    locals_dict, &fake_gpio_disconnect_locals_dict
+    );
+
+// FakeGpioPin class - machine.Pin compatible fake GPIO
+// 
+// Usage Examples:
+//   # Simple 5V/0V digital output (most common case)
+//   pin = j.FakeGpioPin(20)  # Defaults to OUTPUT mode, 5V HIGH, 0V LOW
+//   pin.on()   # Set HIGH (5V)
+//   pin.off()  # Set LOW (0V)
+//
+//   # Explicit mode specification
+//   pin = j.FakeGpioPin(20, j.OUTPUT)
+//
+//   # Custom voltage levels (e.g., ±8V using DACs)
+//   pin = j.FakeGpioPin(20, j.OUTPUT, v_high=8.0, v_low=-8.0)
+//
+//   # Input mode (for reading voltages - future feature)
+//   pin = j.FakeGpioPin(20, j.INPUT, threshold_high=2.0, threshold_low=0.8)
+//
+// Note: Configuration automatically:
+//   - Clears any existing connections to the pin
+//   - Intelligently allocates voltage sources (TOP_RAIL, GND, or DACs)
+//   - Errors if no DAC is available for custom voltages (prevents damage)
+//   - Uses fast chip K switching for high-speed toggling
+//
+typedef struct _mp_obj_fake_gpio_pin_t {
+    mp_obj_base_t base;
+    int node;
+} mp_obj_fake_gpio_pin_t;
+
+// Mode constants
+#define FAKE_GPIO_MODE_INPUT  0
+#define FAKE_GPIO_MODE_OUTPUT 1
+
+// Voltage source node constants (MicroPython exposed values)
+// These are passed directly to the C++ config function which handles conversion
+#define MP_NODE_GND          100
+#define MP_NODE_TOP_RAIL     101
+#define MP_NODE_BOTTOM_RAIL  102
+#define MP_NODE_DAC0         106
+#define MP_NODE_DAC1         107
+
+// Helper to check if a value is a valid voltage source node constant
+static bool is_voltage_source_node(int value) {
+    return (value == MP_NODE_GND || 
+            value == MP_NODE_TOP_RAIL || 
+            value == MP_NODE_BOTTOM_RAIL || 
+            value == MP_NODE_DAC0 || 
+            value == MP_NODE_DAC1);
+}
+
+static mp_obj_t fake_gpio_pin_make_new( const mp_obj_type_t* type, size_t n_args, size_t n_kw, const mp_obj_t* args ) {
+    mp_arg_check_num( n_args, n_kw, 1, 6, false );
+
+    mp_obj_fake_gpio_pin_t* self = m_new_obj( mp_obj_fake_gpio_pin_t );
+    self->base.type = type;
+    self->node = mp_obj_get_int( args[ 0 ] );
+    
+    // Mode defaults to OUTPUT (most common case)
+    int mode = ( n_args > 1 ) ? mp_obj_get_int( args[ 1 ] ) : FAKE_GPIO_MODE_OUTPUT;
+
+    // Threshold defaults
+    float threshold_high = ( n_args > 4 ) ? mp_obj_get_float( args[ 4 ] ) : 2.0;
+    float threshold_low = ( n_args > 5 ) ? mp_obj_get_float( args[ 5 ] ) : 0.8;
+
+    if ( mode == FAKE_GPIO_MODE_INPUT ) {
+        // INPUT mode: args[2] = threshold_high, args[3] = threshold_low
+        if ( n_args > 2 ) threshold_high = mp_obj_get_float( args[ 2 ] );
+        if ( n_args > 3 ) threshold_low = mp_obj_get_float( args[ 3 ] );
+        
+        if ( !jl_fake_gpio_config_input( self->node, threshold_high, threshold_low ) ) {
+            mp_raise_ValueError( MP_ERROR_TEXT( "Failed to configure fake GPIO INPUT pin" ) );
+        }
+    } else {
+        // OUTPUT mode: Detect if using node-based or voltage-based configuration
+        // Node-based: args[2] and args[3] are MicroPython node constants (100-102, 106-107)
+        // Voltage-based: args[2] and args[3] are voltage values
+        
+        bool use_node_based = false;
+        int high_node = MP_NODE_TOP_RAIL;  // Default to TOP_RAIL
+        int low_node = MP_NODE_GND;         // Default to GND
+        float v_high = 5.0;                 // Fallback voltage defaults
+        float v_low = 0.0;
+        
+        if ( n_args > 2 ) {
+            // Check if arg[2] is a voltage source node constant
+            int arg2_int = mp_obj_get_int( args[ 2 ] );
+            
+            if ( is_voltage_source_node( arg2_int ) ) {
+                // Valid node constant - use node-based mode
+                use_node_based = true;
+                high_node = arg2_int;  // Pass through as-is, C++ will convert
+            } else {
+                // Not a node constant - treat as voltage value
+                v_high = mp_obj_get_float( args[ 2 ] );
+            }
+        }
+        
+        if ( n_args > 3 ) {
+            if ( use_node_based ) {
+                int arg3_int = mp_obj_get_int( args[ 3 ] );
+                if ( is_voltage_source_node( arg3_int ) ) {
+                    low_node = arg3_int;  // Pass through as-is, C++ will convert
+                } else {
+                    mp_raise_ValueError( MP_ERROR_TEXT( "Invalid low_node - must be TOP_RAIL/BOTTOM_RAIL/DAC0/DAC1/GND" ) );
+                }
+            } else {
+                v_low = mp_obj_get_float( args[ 3 ] );
+            }
+        }
+        
+        // Configure using appropriate method
+        // Node values are passed directly - C++ config function handles conversion
+        int result;
+        if ( use_node_based ) {
+            result = jl_fake_gpio_config_output_nodes( self->node, high_node, low_node, threshold_high, threshold_low );
+        } else {
+            result = jl_fake_gpio_config_output( self->node, v_high, v_low, threshold_high, threshold_low );
+        }
+        
+        if ( !result ) {
+            mp_raise_ValueError( MP_ERROR_TEXT( "Failed to configure fake GPIO OUTPUT pin" ) );
+        }
+    }
+
+    // Set mode (already stored by config, but this is for consistency)
+    jl_fake_gpio_set_mode( self->node, mode );
+
+    return MP_OBJ_FROM_PTR( self );
+}
+
+// value([val]) - Get or set pin value
+static mp_obj_t fake_gpio_pin_value( size_t n_args, const mp_obj_t* args ) {
+    mp_obj_fake_gpio_pin_t* self = MP_OBJ_TO_PTR( args[ 0 ] );
+
+    if ( n_args == 1 ) {
+        // Read value
+        int val = jl_fake_gpio_read( self->node );
+        return mp_obj_new_int( val );
+    } else {
+        // Write value
+        int val = mp_obj_get_int( args[ 1 ] );
+        jl_fake_gpio_write( self->node, val );
+        return mp_const_none;
+    }
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( fake_gpio_pin_value_obj, 1, 2, fake_gpio_pin_value );
+
+// on() - Set pin HIGH
+static mp_obj_t fake_gpio_pin_on( mp_obj_t self_in ) {
+    mp_obj_fake_gpio_pin_t* self = MP_OBJ_TO_PTR( self_in );
+    jl_fake_gpio_write( self->node, 1 );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( fake_gpio_pin_on_obj, fake_gpio_pin_on );
+
+// off() - Set pin LOW
+static mp_obj_t fake_gpio_pin_off( mp_obj_t self_in ) {
+    mp_obj_fake_gpio_pin_t* self = MP_OBJ_TO_PTR( self_in );
+    jl_fake_gpio_write( self->node, 0 );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( fake_gpio_pin_off_obj, fake_gpio_pin_off );
+
+// toggle() - Toggle pin state
+static mp_obj_t fake_gpio_pin_toggle( mp_obj_t self_in ) {
+    mp_obj_fake_gpio_pin_t* self = MP_OBJ_TO_PTR( self_in );
+    int current = jl_fake_gpio_read( self->node );
+    jl_fake_gpio_write( self->node, !current );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( fake_gpio_pin_toggle_obj, fake_gpio_pin_toggle );
+
+static const mp_rom_map_elem_t fake_gpio_pin_locals_dict_table[] = {
+    { MP_ROM_QSTR( MP_QSTR_value ), MP_ROM_PTR( &fake_gpio_pin_value_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_on ), MP_ROM_PTR( &fake_gpio_pin_on_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_off ), MP_ROM_PTR( &fake_gpio_pin_off_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_toggle ), MP_ROM_PTR( &fake_gpio_pin_toggle_obj ) },
+};
+static MP_DEFINE_CONST_DICT( fake_gpio_pin_locals_dict, fake_gpio_pin_locals_dict_table );
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    fake_gpio_pin_type,
+    MP_QSTR_FakeGpioPin,
+    MP_TYPE_FLAG_NONE,
+    make_new, fake_gpio_pin_make_new,
+    locals_dict, &fake_gpio_pin_locals_dict
+    );
 
 // OLED Functions
 static mp_obj_t jl_oled_print_func( size_t n_args, const mp_obj_t* args ) {
@@ -5293,6 +5760,8 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     // Node functions
     { MP_ROM_QSTR( MP_QSTR_connect ), MP_ROM_PTR( &jl_nodes_connect_obj ) },
     { MP_ROM_QSTR( MP_QSTR_disconnect ), MP_ROM_PTR( &jl_nodes_disconnect_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_fast_connect ), MP_ROM_PTR( &jl_nodes_fast_connect_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_fast_disconnect ), MP_ROM_PTR( &jl_nodes_fast_disconnect_obj ) },
     { MP_ROM_QSTR( MP_QSTR_nodes_clear ), MP_ROM_PTR( &jl_nodes_clear_obj ) },
     { MP_ROM_QSTR( MP_QSTR_is_connected ), MP_ROM_PTR( &jl_nodes_is_connected_obj ) },
     { MP_ROM_QSTR( MP_QSTR_nodes_save ), MP_ROM_PTR( &jl_nodes_save_obj ) },
@@ -5309,6 +5778,22 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_get_net_nodes ), MP_ROM_PTR( &jl_get_net_nodes_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_bridge ), MP_ROM_PTR( &jl_get_bridge_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_net_info ), MP_ROM_PTR( &jl_get_net_info_obj ) },
+    // Fake GPIO path query functions
+    { MP_ROM_QSTR( MP_QSTR_get_path_info ), MP_ROM_PTR( &jl_get_path_info_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_get_all_paths ), MP_ROM_PTR( &jl_get_all_paths_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_get_path_between ), MP_ROM_PTR( &jl_get_path_between_obj ) },
+    // Fake GPIO fast toggle
+    { MP_ROM_QSTR( MP_QSTR_FakeGpioDisconnect ), MP_ROM_PTR( &fake_gpio_disconnect_type ) },
+    // Fake GPIO pin class
+    { MP_ROM_QSTR( MP_QSTR_FakeGpioPin ), MP_ROM_PTR( &fake_gpio_pin_type ) },
+    // Fake GPIO mode constants
+    // Fake GPIO mode constants
+    { MP_ROM_QSTR( MP_QSTR_FAKE_GPIO_INPUT ), MP_ROM_INT( FAKE_GPIO_MODE_INPUT ) },
+    { MP_ROM_QSTR( MP_QSTR_FAKE_GPIO_OUTPUT ), MP_ROM_INT( FAKE_GPIO_MODE_OUTPUT ) },
+    // Short aliases for convenience
+    { MP_ROM_QSTR( MP_QSTR_OUTPUT ), MP_ROM_INT( FAKE_GPIO_MODE_OUTPUT ) },
+    { MP_ROM_QSTR( MP_QSTR_INPUT ), MP_ROM_INT( FAKE_GPIO_MODE_INPUT ) },
+    
     // Aliases for net API
     { MP_ROM_QSTR( MP_QSTR_net_name ), MP_ROM_PTR( &jl_get_net_name_obj ) },
     { MP_ROM_QSTR( MP_QSTR_net_color ), MP_ROM_PTR( &jl_get_net_color_obj ) },

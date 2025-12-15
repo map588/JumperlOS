@@ -56,7 +56,7 @@ static const char* jumperless_functions[] = {
     "gpio_set", "gpio_get", "gpio_set_dir", "gpio_get_dir", "gpio_set_pull", "gpio_get_pull",
     "set_gpio", "get_gpio", "set_gpio_dir", "get_gpio_dir", "set_gpio_pull", "get_gpio_pull",
     // Node connections
-    "connect", "disconnect", "is_connected", "nodes_clear", "node",
+    "connect", "disconnect", "fast_connect", "fast_disconnect", "is_connected", "nodes_clear", "node",
     "nodes_save", "nodes_discard", "nodes_has_changes", "switch_slot",
     // Net information API
     "get_net_name", "set_net_name", "get_net_color", "get_net_color_name", "set_net_color",

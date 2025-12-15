@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+#include <cstdint>  // For uint16_t
 #include "CH446Q.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
@@ -38,7 +39,10 @@ volatile uint32_t irq_flags = 0;
 //   bool connected[16][8]; // 16 X values, 8 Y values, stores whether a connection exists
 //   };
 
-struct justXY lastChipXY[12];
+chipXYBitfield lastChipXY[12];
+
+// OPTIMIZATION: Track which chips have connections to avoid scanning empty chips
+static bool chipHadConnections[12] = {false};
 
 void isrFromPio(void) {
 
@@ -108,61 +112,67 @@ void initCH446Q(void) {
   // digitalWrite(CS_A, HIGH);
 
   // Initialize lastChipXY array (all connections off)
-  for (int chip = 0; chip < 12; chip++) {
-    for (int x = 0; x < 16; x++) {
-      for (int y = 0; y < 8; y++) {
-        lastChipXY[chip].connected[x][y] = false;
-        }
-      }
-    }
+  // OPTIMIZATION: Use memset with bitfield (much faster)
+  memset(lastChipXY, 0, sizeof(lastChipXY));
   
   chipOrderValid = false; // Initialize chip order as invalid
   }
 
-void sendPaths(int clean) {
-  // if (sendAllPathsCore2 == 1) {
-    // digitalWrite(RESETPIN, HIGH);
-    // // refreshPaths();
-    // delayMicroseconds(10);
-    // digitalWrite(RESETPIN, LOW);
+// CRITICAL: Run from RAM to prevent XIP flash cache contention with Core 0
+// When both cores execute code from flash simultaneously, they compete for XIP cache
+// This causes unpredictable slowdowns. Running Core 2 from RAM eliminates this issue.
+void __not_in_flash_func(sendPaths)(int clean) {
+  // Performance profiling (matches PROFILE_FAST_REFRESH in Commands.cpp)
+  #define PROFILE_CORE2_SENDPATHS 0
+  unsigned long core2_start = micros();
+  unsigned long core2_step = core2_start;
 
-  unsigned long wait_start = micros();
-  // while (core1busy == true) {
-  //   delayMicroseconds(1);  // Small delay to prevent tight loop
-    
-  //   // DEBUG: Warn if waiting too long
-  //   if (micros() - wait_start > 1000000) {  // 1 second timeout
-  //     Serial.println("WARNING: CH446Q waiting for core1busy for more than 1 second!");
-  //     break;  // Break out of the loop to prevent infinite hang
-  //   }
-  // }
   core2busy = true;
 
-  unsigned long pathTimer = micros();
-
-  // Create chip-ordered index for efficient hardware operations while keeping paths in net order
-  createChipOrderedIndex();
-
+  // OPTIMIZATION: Only create chip-ordered index if invalid or doing clean refresh
+  // For incremental updates (clean==0), we send paths in net order which is fine
+  if (clean == 1 || !chipOrderValid) {
+    createChipOrderedIndex();
+    #if PROFILE_CORE2_SENDPATHS
+    Serial.print("Core 2: createChipOrderedIndex: "); 
+    Serial.print(micros() - core2_step); 
+    Serial.println(" us");
+    core2_step = micros();
+    #endif
+  }
 
   if (clean == 1) {
     digitalWrite(RESETPIN, HIGH);
     delayMicroseconds(1000);
     digitalWrite(RESETPIN, LOW);
-    }
+    #if PROFILE_CORE2_SENDPATHS
+    Serial.print("Core 2: RESET pulse: "); 
+    Serial.print(micros() - core2_step); 
+    Serial.println(" us");
+    core2_step = micros();
+    #endif
+  }
+  
   sendAllPaths(clean);
-  //}
+  #if PROFILE_CORE2_SENDPATHS
+  Serial.print("Core 2: sendAllPaths: "); 
+  Serial.print(micros() - core2_step); 
+  Serial.println(" us");
+  core2_step = micros();
+  #endif
+  
   core2busy = false;
-  // core2busy = false;
-  unsigned long pathTime = micros() - pathTimer;
-
-  // delayMicroseconds(3200);
-  //  Serial.print("pathTime = ");
-  //  Serial.println(pathTime);
   sendAllPathsCore2 = 0;
   __dmb();  // Memory barrier so Core 0 sees the update
-  //printChipStateArray();
-  // }
-  }
+  
+  #if PROFILE_CORE2_SENDPATHS
+  unsigned long core2_total = micros() - core2_start;
+  Serial.print("Core 2 TOTAL: "); 
+  Serial.print(core2_total); 
+  Serial.println(" us");
+  Serial.println();
+  #endif
+}
 
 
 
@@ -174,71 +184,80 @@ void refreshPaths(void) {
   sendAllPaths(1);
   }
 
-void sendAllPaths(int clean) // should we sort them by chip? for now, no
-  {
+// CRITICAL: Run from RAM to prevent XIP flash cache contention
+void __not_in_flash_func(sendAllPaths)(int clean) {
+  #define PROFILE_SENDALLPATHS 0
   unsigned long startTime = micros();
+  unsigned long stepTime = startTime;
+  
   if (clean == 1) {
-    // Reset the lastChipXY array on clean start
-    for (int chip = 0; chip < 12; chip++) {
-      for (int x = 0; x < 16; x++) {
-        for (int y = 0; y < 8; y++) {
-          lastChipXY[chip].connected[x][y] = false;
-          }
-        }
-      }
+    // OPTIMIZATION: Use memset to clear lastChipXY (faster than nested loops)
+    memset(lastChipXY, 0, sizeof(lastChipXY));
+    memset(chipHadConnections, 0, sizeof(chipHadConnections));  // Clear tracking array
+    #if PROFILE_SENDALLPATHS
+    Serial.print("  clear lastChipXY: "); 
+    Serial.print(micros() - stepTime); 
+    Serial.println(" us");
+    stepTime = micros();
+    #endif
 
-    // Send all paths in chip order for hardware efficiency, but preserve net order in path array
+    // Send all paths in chip order for hardware efficiency
+    int pathsSent = 0;
     for (int i = 0; i < numberOfPaths; i++) {
       int pathIdx = chipOrderValid ? chipOrderedIndex[i] : i;
       sendPath(pathIdx, 1, 0);
+      pathsSent++;
 
-      // Update lastChipXY
+      // Update lastChipXY and tracking array
       for (int j = 0; j < 4; j++) {
-        if (globalState.connections.paths[pathIdx].chip[j] != -1 && globalState.connections.paths[pathIdx].x[j] != -1 && globalState.connections.paths[pathIdx].y[j] != -1) {
+        if (globalState.connections.paths[pathIdx].chip[j] != -1 && 
+            globalState.connections.paths[pathIdx].x[j] != -1 && 
+            globalState.connections.paths[pathIdx].y[j] != -1) {
           int chip = globalState.connections.paths[pathIdx].chip[j];
           int x = globalState.connections.paths[pathIdx].x[j];
           int y = globalState.connections.paths[pathIdx].y[j];
 
           if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
-            lastChipXY[chip].connected[x][y] = true;
-            }
-          }
-        }
-      }
-    return;
-    } else {
-    // Only send changed paths
-    findDifferentPaths();
-    for (int i = 0; i < numberOfPaths; i++) {
-      if (changedPaths[i] == 1) {
-        sendPath(i, 1, 0);
-
-        if (debugNTCC) {
-          Serial.print("changed path ");
-          Serial.print(i);
-          Serial.print(" c: ");
-          Serial.print(globalState.connections.paths[i].chip[0]);
-          Serial.print(" x: ");
-          Serial.print(globalState.connections.paths[i].x[0]);
-          Serial.print(" y: ");
-          Serial.print(globalState.connections.paths[i].y[0]);
-          Serial.print("   -   c:");
-          Serial.print(globalState.connections.paths[i].chip[1]);
-          Serial.print(" x: ");
-          Serial.print(globalState.connections.paths[i].x[1]);
-          Serial.print(" y: ");
-          Serial.print(globalState.connections.paths[i].y[1]);
-          Serial.println();
+            lastChipXY[chip].connected[y] |= (1 << x);  // Set bit in bitfield
+            chipHadConnections[chip] = true;  // Track that this chip has connections
           }
         }
       }
     }
-  // unsigned long endTime = micros();
-  // unsigned long duration = endTime - startTime;
-  // Serial.print("Time taken: ");
-  // Serial.print(duration);
-  // Serial.println(" microseconds");
+    #if PROFILE_SENDALLPATHS
+    Serial.print("  send all paths ("); 
+    Serial.print(pathsSent); 
+    Serial.print("): "); 
+    Serial.print(micros() - stepTime); 
+    Serial.println(" us");
+    #endif
+    return;
+  } else {
+    // INCREMENTAL: Only send changed paths
+    findDifferentPaths();
+    #if PROFILE_SENDALLPATHS
+    Serial.print("  findDifferentPaths: "); 
+    Serial.print(micros() - stepTime); 
+    Serial.println(" us");
+    stepTime = micros();
+    #endif
+    
+    int changedCount = 0;
+    for (int i = 0; i < numberOfPaths; i++) {
+      if (changedPaths[i] == 1) {
+        sendPath(i, 1, 0);
+        changedCount++;
+      }
+    }
+    #if PROFILE_SENDALLPATHS
+    Serial.print("  send changed paths ("); 
+    Serial.print(changedCount); 
+    Serial.print("): "); 
+    Serial.print(micros() - stepTime); 
+    Serial.println(" us");
+    #endif
   }
+}
 
 
 void printChipStateArray(void) {
@@ -330,37 +349,37 @@ void printChipStateArray(void) {
         for (int y = 0; y < 8; y++) {
           int verticalLine = 0;
           int horizontalLine = 0;
-          for (int i = 0; i < 16; i++) {
-            if (lastChipXY[chip].connected[i][y]) {
-              verticalLine = 1;
-              }
-            for (int j = 0; j < 8; j++) {
-              if (lastChipXY[chip].connected[x][j]) {
-                horizontalLine = 1;
-                }
-              }
+          // Check if any x is connected at this y (vertical line)
+          if (lastChipXY[chip].connected[y] != 0) {
+            verticalLine = 1;
+          }
+          // Check if this x is connected at any y (horizontal line)
+          for (int j = 0; j < 8; j++) {
+            if (lastChipXY[chip].connected[j] & (1 << x)) {
+              horizontalLine = 1;
+              break;
             }
-          if (lastChipXY[chip].connected[x][y] == true) {
+          }
+          
+          if (lastChipXY[chip].connected[y] & (1 << x)) {
             Serial.print("─█─");
             Serial.flush();
-            } else {
+          } else {
             if (verticalLine && horizontalLine) {
               Serial.print("─┼─");
               Serial.flush();
-              } else if (verticalLine) {
-                Serial.print(" │ ");
-                Serial.flush();
-                } else if (horizontalLine) {
-                  Serial.print("───");
-                  Serial.flush();
-
-                  // Serial.print(lastChipXY[chip].connected[x][y] ? "█─" : "┼─");
-                  } else {
-                  Serial.print(" . ");
-                  Serial.flush();
-                  }
+            } else if (verticalLine) {
+              Serial.print(" │ ");
+              Serial.flush();
+            } else if (horizontalLine) {
+              Serial.print("───");
+              Serial.flush();
+            } else {
+              Serial.print(" . ");
+              Serial.flush();
             }
           }
+        }
 
         Serial.print(" "); // space between chip blocks
         Serial.print(xName(chip, x));
@@ -389,71 +408,90 @@ void printLastChipStateArray(void) {
 }
 
 // New function to update the current chip state array based on paths
-void updateChipStateArray() {
-  // First, clear all connections
-  bool newChipXY[12][16][8] = { {{false}} };
-
-  // Set connections based on current paths
-  for (int i = 0; i < MAX_NETS; i++) {
+// CRITICAL: Run from RAM to prevent XIP flash cache contention
+void __not_in_flash_func(updateChipStateArray)() {
+  // Clear changed paths array (only clear what we need)
+  memset(changedPaths, -1, numberOfPaths * sizeof(int));
+  
+  // OPTIMIZATION: Use bitfield instead of bool array (8x smaller, fits in cache)
+  // 16 bytes per chip vs 128 bytes
+  chipXYBitfield newChipXY[12];
+  memset(newChipXY, 0, sizeof(newChipXY));
+  bool newChipHasConnections[12] = {false};
+  
+  // Build new connection map and track which chips are used
+  for (int i = 0; i < numberOfPaths; i++) {
     for (int j = 0; j < 4; j++) {
-      if (globalState.connections.paths[i].chip[j] != -1 && globalState.connections.paths[i].x[j] != -1 && globalState.connections.paths[i].y[j] != -1) {
-        int chip = globalState.connections.paths[i].chip[j];
-        int x = globalState.connections.paths[i].x[j];
-        int y = globalState.connections.paths[i].y[j];
-
-        if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
-          newChipXY[chip][x][y] = true;
-          }
-        }
+      int chip = globalState.connections.paths[i].chip[j];
+      int x = globalState.connections.paths[i].x[j];
+      int y = globalState.connections.paths[i].y[j];
+      
+      // Validate and mark connection using bitfield
+      if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
+        newChipXY[chip].connected[y] |= (1 << x);  // Set bit
+        newChipHasConnections[chip] = true;
       }
     }
+  }
 
-  // Now we mark the paths that need changing
-  for (int i = 0; i < MAX_BRIDGES; i++) {
-    changedPaths[i] = -1; // Mark all as unchanged initially
-    }
-
-  // Find paths that have changed from last state
-  for (int i = 0; i < MAX_NETS; i++) {
+  // Mark paths that have changed (new or modified connections)
+  for (int i = 0; i < numberOfPaths; i++) {
+    bool pathChanged = false;
+    
     for (int j = 0; j < 4; j++) {
-      if (globalState.connections.paths[i].chip[j] != -1 && globalState.connections.paths[i].x[j] != -1 && globalState.connections.paths[i].y[j] != -1) {
-        int chip = globalState.connections.paths[i].chip[j];
-        int x = globalState.connections.paths[i].x[j];
-        int y = globalState.connections.paths[i].y[j];
-
-        if (lastChipXY[chip].connected[x][y] != newChipXY[chip][x][y]) {
-          changedPaths[i] = 1; // Mark path as changed
+      int chip = globalState.connections.paths[i].chip[j];
+      int x = globalState.connections.paths[i].x[j];
+      int y = globalState.connections.paths[i].y[j];
+      
+      if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
+        // Check if this crosspoint changed state using bitfield
+        bool wasConnected = (lastChipXY[chip].connected[y] & (1 << x)) != 0;
+        bool nowConnected = (newChipXY[chip].connected[y] & (1 << x)) != 0;
+        if (wasConnected != nowConnected) {
+          pathChanged = true;
           break;
-          }
         }
       }
     }
-
-  // Also find connections that need to be disconnected
-  for (int chip = 0; chip < 12; chip++) {
-    for (int x = 0; x < 16; x++) {
-      for (int y = 0; y < 8; y++) {
-        if (lastChipXY[chip].connected[x][y] && !newChipXY[chip][x][y]) {
-          // This connection needs to be disconnected
-          // Send a disconnect command
-          sendXYraw(chip, x, y, 0);
-          }
-        }
-      }
+    
+    if (pathChanged) {
+      changedPaths[i] = 1;
     }
+  }
 
-  // Update lastChipXY array
+  // CRITICAL: Handle disconnections
+  // Only scan chips that HAD connections in the previous state (tracked in chipHadConnections)
+  // OPTIMIZATION: Use bitwise operations for faster scanning
   for (int chip = 0; chip < 12; chip++) {
-    for (int x = 0; x < 16; x++) {
-      for (int y = 0; y < 8; y++) {
-        lastChipXY[chip].connected[x][y] = newChipXY[chip][x][y];
+    if (!chipHadConnections[chip]) continue;  // Skip chips that never had connections
+    
+    // Scan this chip for disconnections using bitfield
+    for (int y = 0; y < 8; y++) {
+      // XOR to find differences: bits that changed from 1 to 0
+      uint16_t removed = lastChipXY[chip].connected[y] & ~newChipXY[chip].connected[y];
+      
+      // Send disconnect for each removed connection
+      if (removed) {
+        for (int x = 0; x < 16; x++) {
+          if (removed & (1 << x)) {
+            sendXYraw(chip, x, y, 0);
+          }
         }
       }
     }
   }
 
+  // Update tracking for next iteration
+  memcpy(chipHadConnections, newChipHasConnections, sizeof(chipHadConnections));
+
+  // OPTIMIZATION: Copy new state to lastChipXY efficiently using memcpy
+  // Bitfield version is 8x smaller so this is very fast
+  memcpy(lastChipXY, newChipXY, sizeof(lastChipXY));
+}
+
 // Updated findDifferentPaths to use the chip state approach
-void findDifferentPaths(void) {
+// CRITICAL: Run from RAM to prevent XIP flash cache contention
+void __not_in_flash_func(findDifferentPaths)(void) {
   updateChipStateArray();
   }
 
@@ -464,24 +502,7 @@ void sendPath(int i, int setOrClear, int newOrLast) {
   int chipToConnect = 0;
   int chYdata = 0;
   int chXdata = 0;
-  // if (newOrLast == 1) {
-  //   for (int chip = 0; chip < 4; chip++) {
-  //     if (lastPath[i].chip[chip] != -1) {
-  //       chipSelect = lastPath[i].chip[chip];
 
-  //       chipToConnect = lastPath[i].chip[chip];
-
-  //       if (lastPath[i].y[chip] == -1 || lastPath[i].x[chip] == -1) {
-  //         if (debugNTCC||1)
-  //           Serial.print("!");
-
-  //         continue;
-  //         }
-
-  //       sendXYraw(chipToConnect, lastPath[i].x[chip], lastPath[i].y[chip], 0);
-  //       }
-  //     }
-  //   } else {
 
     for (int chip = 0; chip < 4; chip++) {
       if (globalState.connections.paths[i].chip[chip] != -1) {
@@ -499,21 +520,39 @@ void sendPath(int i, int setOrClear, int newOrLast) {
         sendXYraw(chipToConnect, globalState.connections.paths[i].x[chip], globalState.connections.paths[i].y[chip], setOrClear);
         }
       }
-   // }
+  
   }
 
 void sendXYraw(int chip, int x, int y, int setOrClear) {
   uint32_t chAddress = 0;
   chipSelect = chip;
 
-  // Serial.print("sendXYraw: chip = ");
-  // Serial.print(chip);
-  // Serial.print(", x = ");
-  // Serial.print(x);
-  // Serial.print(", y = ");
-  // Serial.print(y);
-  // Serial.print(", setOrClear = ");
-  // Serial.println(setOrClear);
+  // CRITICAL SAFETY: Chip K voltage source protection
+  // Chip K X positions: 4=TOP_RAIL, 5=BOTTOM_RAIL, 6=DAC1, 7=DAC0, 15=GND
+  // NEVER allow multiple voltage sources on the same Y (would short them together!)
+  #define CHIP_K 10
+  #define CHIP_K_VOLTAGE_SOURCES 0x80F0  // Bits: 15,7,6,5,4
+  
+  if (chip == CHIP_K && setOrClear == 1 && x >= 0 && x < 16 && y >= 0 && y < 8) {
+    // Check if this X is a voltage source
+    if ((1 << x) & CHIP_K_VOLTAGE_SOURCES) {
+      // FAST CHECK: Are any OTHER voltage sources already connected to this Y?
+      // Use bitwise AND to check all voltage positions at once (single instruction!)
+      uint16_t otherVoltages = CHIP_K_VOLTAGE_SOURCES & ~(1 << x);  // All voltages except the one we're setting
+      uint16_t conflicting = lastChipXY[CHIP_K].connected[y] & otherVoltages;
+      
+      if (conflicting) {
+        // SAFETY VIOLATION: Another voltage source is connected to this Y
+        // Disconnect ALL conflicting voltage sources before connecting the new one
+        for (int conflictX = 0; conflictX < 16; conflictX++) {
+          if (conflicting & (1 << conflictX)) {
+            // Recursively disconnect (this won't recurse further since setOrClear=0)
+            sendXYraw(CHIP_K, conflictX, y, 0);
+          }
+        }
+      }
+    }
+  }
 
   //unsigned long start = micros();
 
@@ -613,4 +652,62 @@ void createChipOrderedIndex() {
 void sortPathsByChipXY() {
   createChipOrderedIndex();
   }
+
+// Copy justXY bool array to bitfield (for conversion if needed)
+void copyJustXYToBitfield(const struct justXY& src, chipXYBitfield& dst) {
+  for (int y = 0; y < 8; y++) {
+    dst.connected[y] = 0;
+    for (int x = 0; x < 16; x++) {
+      if (src.connected[x][y]) {
+        dst.connected[y] |= (1 << x);
+        }
+      }
+    }
+  }
+
+// Copy bitfield to justXY bool array (for conversion if needed)
+void copyBitfieldToJustXY(const chipXYBitfield& src, struct justXY& dst) {
+  for (int y = 0; y < 8; y++) {
+    for (int x = 0; x < 16; x++) {
+      dst.connected[x][y] = (src.connected[y] & (1 << x)) != 0;
+      }
+    }
+  }
+
+// Capture current chipXY state into bitfield array
+// This snapshots the complete crossbar state for all 12 chips
+void captureCurrentChipXYState(chipXYBitfield snapshot[12]) {
+  // OPTIMIZATION: Since lastChipXY is already a bitfield, just copy it directly!
+  memcpy(snapshot, lastChipXY, sizeof(chipXYBitfield) * 12);
+}
+
+// Apply a complete chipXY state snapshot, sending only changed connections
+// This preserves existing unchanged connections while switching ADC routing
+// KEY OPTIMIZATION: Only sends changes, not entire state
+void applyChipXYState(const chipXYBitfield targetState[12]) {
+  for (int chip = 0; chip < 12; chip++) {
+    for (int y = 0; y < 8; y++) {
+      uint16_t currentRow = lastChipXY[chip].connected[y];  // Already bitfield!
+      uint16_t targetRow = targetState[chip].connected[y];
+      
+      // Find differences using XOR
+      uint16_t changes = currentRow ^ targetRow;
+      if (changes) {
+        // Send only changed connections
+        for (int x = 0; x < 16; x++) {
+          if (changes & (1 << x)) {
+            bool newState = (targetRow & (1 << x)) != 0;
+            sendXYraw(chip, x, y, newState ? 1 : 0);
+            // Update lastChipXY bitfield
+            if (newState) {
+              lastChipXY[chip].connected[y] |= (1 << x);   // Set bit
+            } else {
+              lastChipXY[chip].connected[y] &= ~(1 << x);  // Clear bit
+            }
+          }
+        }
+      }
+    }
+  }
+}
 

@@ -214,8 +214,15 @@ typedef uint32_t mp_hal_pin_obj_t;
 extern "C" {
 #endif
 void mp_hal_check_interrupt(void);
+// Forward declare the hook function - actual declaration is in py/compile.h context
+// Using int instead of mp_parse_input_kind_t to avoid header ordering issues
+void jl_after_python_exec_hook(int parse_input_kind, unsigned int exec_flags, void *exception, int *result);
 #ifdef __cplusplus
 }
 #endif
 #define MP_HAL_CHECK_INTERRUPT_DECLARED 1
 #define MICROPY_VM_HOOK_LOOP  mp_hal_check_interrupt();
+
+// CRITICAL: Hook called after every script execution to perform cleanup
+// This is where we trigger garbage collection to free memory for the next script
+#define MICROPY_BOARD_AFTER_PYTHON_EXEC  jl_after_python_exec_hook

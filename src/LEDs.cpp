@@ -12,7 +12,7 @@
 #include "Colors.h"  // Centralized color handling
 //#include <Adafruit_GFX.h>
 // #include <Adafruit_NeoMatrix.h>
-#include <Adafruit_NeoPixel.h>
+#include <JeoPixel.h>
 #include "config.h"
 // #include <FastLED.h>
 #include "Highlighting.h"
@@ -88,44 +88,42 @@ struct logoColorOverrideMap logoOverrideMap[15] = {
 volatile bool logoOverriden = false;
 
 
-// #if REV < 4
-// bool splitLEDs = 0;
-// Adafruit_NeoPixel bbleds(LED_COUNT + LED_COUNT_TOP, LED_PIN,
-//                          NEO_GRB + NEO_KHZ800);
-// Adafruit_NeoPixel topleds(1, -1, NEO_GRB + NEO_KHZ800);
-// #elif REV >= 4
+// CRITICAL: Initialize strips with correct sizes from the start
+// Rev 3 and below: Single strip with all LEDs
+// Rev 4+: Split into breadboard (LED_COUNT) and top (LED_COUNT_TOP)
 bool splitLEDs = 1;
-Adafruit_NeoPixel bbleds(LED_COUNT + LED_COUNT_TOP, LED_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_NeoPixel topleds(LED_COUNT_TOP, LED_PIN_TOP, NEO_GRB + NEO_KHZ800);
-//#endif
+JeoPixel bbleds(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);  // Start with correct size!
+JeoPixel topleds(LED_COUNT_TOP, LED_PIN_TOP, NEO_GRB + NEO_KHZ800);
 
 // #include "RamMacros.h"
 
 uint8_t *ram_bb_pixels = NULL;
 uint8_t *ram_top_pixels = NULL;
 
-Adafruit_NeoPixel probeLEDs(1, PROBE_LED_PIN, NEO_GRB + NEO_KHZ800);
+JeoPixel probeLEDs(1, PROBE_LED_PIN, NEO_GRB + NEO_KHZ800);
 // Adafruit_NeoPixel probeLEDs(1, 9, NEO_GRB + NEO_KHZ800);
 
 void ledClass::end(void) {
-  bbleds.~Adafruit_NeoPixel();
-  topleds.~Adafruit_NeoPixel();
+  bbleds.~JeoPixel();
+  topleds.~JeoPixel();
 
   }
 
 void ledClass::begin(void) {
 
 
-  
+ 
 
   if (jumperlessConfig.hardware.revision <= 3) {
+    // Rev 3 and below use single strip for all LEDs
     splitLEDs = 0;
-
+    bbleds.updateLength(LED_COUNT + LED_COUNT_TOP);
     } else {
+    // Rev 4+ already initialized with correct sizes
     splitLEDs = 1;
-    bbleds.updateLength(LED_COUNT);
     }
 
+  // CRITICAL: Call begin() AFTER updateLength() so DMA is set up with correct buffer size
   if (splitLEDs == 1) {
     topleds.begin();
     }
@@ -140,15 +138,103 @@ void ledClass::begin(void) {
   }
   }
 
-void ledClass::show(void) {
-  if (splitLEDs == 1) {
-    topleds.show();
+int topDirtyCount = 0;
+int bbDirtyCount = 0; 
+
+unsigned long lastShowTime = 0;
+#define SHOW_INTERVAL 100
+
+void __not_in_flash_func(ledClass::show)(void) {
+  // OPTIMIZATION: Only refresh LED strips that have actually changed
+  // This can reduce 13ms LED refresh time to 0ms when idle, or ~6.5ms if only one strip changed
+  
+  // CRITICAL: Check if DMA is still busy from previous transfer
+  // With async DMA, show() returns immediately but transfer continues in background
+  // If DMA is busy, DROP THE FRAME instead of spin-waiting to avoid deadlocks
+  // The double-buffering in the driver will queue the next frame automatically
+  if (splitLEDs == 1 ){//&& topDirty) {
+    // Only update if DMA is not busy - otherwise drop this frame
+    if (!topleds.isDMABusy() && !bbleds.isDMABusy()) {
+      topleds.show();
+      topDirty = false;
     }
-  bbleds.show();
+    // If busy, leave topDirty=true so we try again next time
   }
+  
+  //if (bbDirty) {
+    // Only update if DMA is not busy - otherwise drop this frame
+    if (!bbleds.isDMABusy()) {
+      bbleds.show();
+      bbDirty = false;
+    }
+    // If busy, leave bbDirty=true so we try again next time
+  //}
+}
+
+void __not_in_flash_func(ledClass::showBBBlocking)(void) {
+  // CRITICAL FIX FOR PROBE MENU DEADLOCK:
+  // Force synchronous LED update by bypassing DMA and using blocking PIO transfers
+  // This MUST be called before entering blocking probe menu loops
+  // otherwise the menu won't display and the code will spin forever
+  
+  // SIMPLIFIED: Bypass DMA entirely and use reliable blocking PIO method
+  // This is the same method used when DMA is unavailable - guaranteed to work
+  
+  if (splitLEDs == 1 ){//&& topDirty) {
+    topleds.showBlocking();  // Force blocking PIO transfer
+    topDirty = false;
+    topDirtyCount = 0;
+  //} else {
+    //topDirtyCount++;
+    //if (topDirtyCount > 100) {
+    //  Serial.print("topDirtyCount :");
+    //  Serial.println(topDirtyCount);
+    //  Serial.flush();
+    //  // topDirty = false;
+    //  // topDirtyCount = 0;
+    //}
+  }
+  
+  //if (bbDirty) {
+    bbleds.showBlocking();  // Force blocking PIO transfer
+    bbDirty = false;
+    bbDirtyCount = 0;
+  //} else {
+    //bbDirtyCount++;
+    //if (bbDirtyCount > 100) {
+    //  Serial.print("bbDirtyCount :");
+    //  Serial.println(bbDirtyCount);
+    //  Serial.flush();
+    //  // bbDirty = false;
+    //  // bbDirtyCount = 0;
+    //}
+  //}
+}
+
+// Dirty flag management
+void ledClass::markBBDirty(void) {
+  bbDirty = true;
+}
+
+void ledClass::markTopDirty(void) {
+  topDirty = true;
+}
+
+void ledClass::markAllDirty(void) {
+  bbDirty = true;
+  topDirty = true;
+}
+
+bool ledClass::isBBDirty(void) {
+  return bbDirty;
+}
+
+bool ledClass::isTopDirty(void) {
+  return topDirty;
+}
 
 // RAM-resident helper to set pixel color directly in buffer
-// Avoids calling flash-resident Adafruit_NeoPixel::setPixelColor
+// Avoids calling flash-resident JeoPixel::setPixelColor
 // ASSUMES NEO_GRB format!
 inline void __not_in_flash_func(setPixelColorRamHelper)(uint8_t* pixels, uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
   if (!pixels) return;
@@ -167,6 +253,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t
         // Fallback if pointers not set (shouldn't happen after begin)
         topleds.setPixelColor(n - LED_COUNT, r, g, b);
     }
+    topDirty = true; // Mark top strip as needing refresh
     } else {
     // bbleds.setPixelColor(n, r, g, b);
     if (ram_bb_pixels) {
@@ -174,6 +261,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t
     } else {
         bbleds.setPixelColor(n, r, g, b);
     }
+    bbDirty = true; // Mark breadboard strip as needing refresh
     }
   }
 
@@ -190,6 +278,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
     } else {
         topleds.setPixelColor(n - LED_COUNT, c);
     }
+    topDirty = true; // Mark top strip as needing refresh
 
     } else {
     // bbleds.setPixelColor(n, c);
@@ -198,8 +287,37 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
     } else {
         bbleds.setPixelColor(n, c);
     }
+    bbDirty = true; // Mark breadboard strip as needing refresh
     }
   }
+
+// Direct buffer access - NO dirty marking
+// Used by clear functions to avoid triggering premature LED updates
+void __not_in_flash_func(ledClass::setPixelColorDirect)(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  if (n >= LED_COUNT && splitLEDs == 1) {
+    if (ram_top_pixels) {
+        setPixelColorRamHelper(ram_top_pixels, n - LED_COUNT, r, g, b);
+    } else {
+        topleds.setPixelColor(n - LED_COUNT, r, g, b);
+    }
+    // NO dirty flag set - buffer updated but not marked for refresh
+  } else {
+    if (ram_bb_pixels) {
+        setPixelColorRamHelper(ram_bb_pixels, n, r, g, b);
+    } else {
+        bbleds.setPixelColor(n, r, g, b);
+    }
+    // NO dirty flag set - buffer updated but not marked for refresh
+  }
+}
+
+void __not_in_flash_func(ledClass::setPixelColorDirect)(uint16_t n, uint32_t c) {
+  uint8_t r = (uint8_t)(c >> 16);
+  uint8_t g = (uint8_t)(c >> 8);
+  uint8_t b = (uint8_t)c;
+  
+  setPixelColorDirect(n, r, g, b); // Call RGB version above
+}
 
 // blendType: 0 = no blend, 1 = only if brighter than current color, 2 = blend with current color
 // Note: This uses flash functions (RgbToHsv, blendColors) so it might still stall if blendType != 0
@@ -234,8 +352,10 @@ void __not_in_flash_func(ledClass::fill)(uint32_t c, uint16_t first, uint16_t co
 void ledClass::setBrightness(uint8_t b) {
   if (splitLEDs == 1) {
     topleds.setBrightness(b);
+    topDirty = true; // Brightness change requires refresh
     }
   bbleds.setBrightness(b);
+  bbDirty = true; // Brightness change requires refresh
   }
 
 void __not_in_flash_func(ledClass::clear)(void) {
@@ -245,6 +365,7 @@ void __not_in_flash_func(ledClass::clear)(void) {
     } else {
         topleds.clear();
     }
+    topDirty = true; // Mark top strip as needing refresh
     }
   
   int bb_count = (splitLEDs == 1) ? LED_COUNT : (LED_COUNT + LED_COUNT_TOP);
@@ -253,6 +374,7 @@ void __not_in_flash_func(ledClass::clear)(void) {
   } else {
       bbleds.clear();
   }
+  bbDirty = true; // Mark breadboard strip as needing refresh
   }
 
 uint32_t __not_in_flash_func(ledClass::getPixelColor)(uint16_t n) {
@@ -1595,7 +1717,12 @@ void rebuildChangedNetColorsFromBridges(void) {
     }
   }
   
-  // Step 2: Rebuild bridge-based colors using current net assignments
+  // Step 2: Rebuild bridge-based colors using O(1) node→net index lookup
+  // OPTIMIZATION: Use nodeToNetIndex[] for direct lookup instead of triple nested loop
+  // Old: O(bridges × nets × nodes) = 192 × 60 × 100 = 1,152,000 checks worst case!
+  // New: O(bridges) = 192 checks
+  extern int8_t nodeToNetIndex[256];  // From NetManager.cpp
+  
   for (int b = 0; b < globalState.connections.numBridges && b < MAX_BRIDGES; b++) {
     int n1 = globalState.connections.bridges[b][0];
     int n2 = globalState.connections.bridges[b][1];
@@ -1603,28 +1730,21 @@ void rebuildChangedNetColorsFromBridges(void) {
     
     if (bColor == 0xFFFFFFFF) continue;  // No color for this bridge
     
-    // Find which net this bridge belongs to now
-    for (int i = 6; i < MAX_NETS; i++) {
-      if (globalState.connections.nets[i].number <= 0) break;
+    // O(1) lookup: Find which net each node belongs to
+    if (n1 >= 0 && n1 < 256 && n2 >= 0 && n2 < 256) {
+      int net1 = nodeToNetIndex[n1];
+      int net2 = nodeToNetIndex[n2];
       
-      // Check if both nodes of the bridge are in this net
-      bool hasN1 = false;
-      bool hasN2 = false;
-      for (int n = 0; n < MAX_NODES && globalState.connections.nets[i].nodes[n] != 0; n++) {
-        if (globalState.connections.nets[i].nodes[n] == n1) hasN1 = true;
-        if (globalState.connections.nets[i].nodes[n] == n2) hasN2 = true;
-      }
-      
-      if (hasN1 && hasN2) {
+      // Both nodes must be in the same net (and in a valid net)
+      if (net1 >= 0 && net1 == net2 && net1 < MAX_NETS) {
         // This bridge belongs to this net - assign the color if not already manually set
-        if (changedNetColors[i].net != i || changedNetColors[i].fromBridge) {
-          changedNetColors[i].net = i;
-          changedNetColors[i].color = bColor;
-          changedNetColors[i].node1 = n1;
-          changedNetColors[i].node2 = n2;
-          changedNetColors[i].fromBridge = true;
+        if (changedNetColors[net1].net != net1 || changedNetColors[net1].fromBridge) {
+          changedNetColors[net1].net = net1;
+          changedNetColors[net1].color = bColor;
+          changedNetColors[net1].node1 = n1;
+          changedNetColors[net1].node2 = n2;
+          changedNetColors[net1].fromBridge = true;
         }
-        break;  // Found the net for this bridge, move to next bridge
       }
     }
   }
@@ -1650,143 +1770,87 @@ int removeChangedNetColors(int node, int saveToFile) {
   }
 
 int checkChangedNetColors(int netIndex) {
-  bool nodeFound = false;
-  int changedNetColorIndex = -1;
-  int nodeNetIndex = -1;
-  int loop = 0;
-
-  //return 0;
-
+  // OPTIMIZATION: Use nodeToNetIndex for O(1) lookups instead of quadruple nested loops
+  // Old: O(nets × nodes × changedColors × nodes) = ~60 × 100 × 60 × 100 = 36M checks worst case!
+  // New: O(changedColors) = ~60 checks
+  
+  extern int8_t nodeToNetIndex[256];  // From NetManager.cpp
   int ret = 0;
-  if (netIndex < 0) {
-    loop = 1;
+  bool loop = (netIndex < 0);  // If netIndex < 0, process all nets
+  
+  // Process changed net colors using direct lookup
+  for (int j = 5; j < numberOfNets; j++) {
+    if (changedNetColors[j].node1 <= 0) continue;  // Skip empty entries
+    
+    // O(1) lookup: Find which net this color belongs to
+    int n1 = changedNetColors[j].node1;
+    int n2 = changedNetColors[j].node2;
+    
+    if (n1 < 0 || n1 >= 256) continue;
+    
+    int net1 = nodeToNetIndex[n1];
+    
+    // If only one node specified, use that net
+    if (n2 <= 0 || n2 >= 256) {
+      if (net1 >= 0 && net1 < MAX_NETS) {
+        // Check if we're processing this specific net or all nets
+        if (!loop && net1 != netIndex) continue;
+        
+        // Move color to correct net index if needed
+        if (j != net1) {
+          changedNetColors[net1].net = net1;
+          changedNetColors[net1].color = changedNetColors[j].color;
+          changedNetColors[net1].node1 = changedNetColors[j].node1;
+          changedNetColors[net1].node2 = changedNetColors[j].node2;
+          changedNetColors[net1].fromBridge = changedNetColors[j].fromBridge;
+          
+          // Clear old entry
+          changedNetColors[j].net = -1;
+          changedNetColors[j].color = 0x000000;
+          changedNetColors[j].node1 = 0;
+          changedNetColors[j].node2 = 0;
+          changedNetColors[j].fromBridge = false;
+          ret = 1;
+        }
+        
+        // Apply color to net
+        globalState.connections.nets[net1].color = unpackRgb(changedNetColors[net1].color);
+        netColors[net1] = globalState.connections.nets[net1].color;
+        changedNetColors[net1].net = net1;
+      }
+    } else {
+      // Both nodes specified - verify they're in the same net
+      int net2 = nodeToNetIndex[n2];
+      
+      if (net1 >= 0 && net1 == net2 && net1 < MAX_NETS) {
+        // Check if we're processing this specific net or all nets
+        if (!loop && net1 != netIndex) continue;
+        
+        // Move color to correct net index if needed
+        if (j != net1) {
+          changedNetColors[net1].net = net1;
+          changedNetColors[net1].color = changedNetColors[j].color;
+          changedNetColors[net1].node1 = changedNetColors[j].node1;
+          changedNetColors[net1].node2 = changedNetColors[j].node2;
+          changedNetColors[net1].fromBridge = changedNetColors[j].fromBridge;
+          
+          // Clear old entry
+          changedNetColors[j].net = -1;
+          changedNetColors[j].color = 0x000000;
+          changedNetColors[j].node1 = 0;
+          changedNetColors[j].node2 = 0;
+          changedNetColors[j].fromBridge = false;
+          ret = 1;
+        }
+        
+        // Apply color to net
+        globalState.connections.nets[net1].color = unpackRgb(changedNetColors[net1].color);
+        netColors[net1] = globalState.connections.nets[net1].color;
+        changedNetColors[net1].net = net1;
+      }
     }
-
-
-  for (int i = 0; i < numberOfNets + 5; i++) {
-    nodeFound = false;
-    if (loop == 0) {
-      i = netIndex;
-      }
-
-
-    for (int k = 0; k < MAX_NODES; k++) {
-      if (globalState.connections.nets[i].nodes[k] <= 0) {
-        break;
-        }
-      if (nodeFound == true) {
-        break;
-        }
-      if (globalState.connections.nets[i].nodes[k] > 0) {
-
-        for (int j = 5; j < numberOfNets; j++) {
-
-          if (globalState.connections.nets[i].nodes[k] == changedNetColors[j].node1 && changedNetColors[j].node1 > 0) {
-            // Serial.print("node1: ");
-            // Serial.println(changedNetColors[j].node1);
-            if (changedNetColors[j].node2 > 0) {
-              // Serial.print("node2: ");
-              // Serial.println(changedNetColors[j].node2);
-
-              for (int l = 0; l < MAX_NODES; l++) {
-
-                if (globalState.connections.nets[i].nodes[l] <= 0) {
-                  break;
-                  }
-
-                if (globalState.connections.nets[i].nodes[l] > 0) {
-                  if (globalState.connections.nets[i].nodes[l] == changedNetColors[j].node2 && changedNetColors[j].node2 > 0) {
-                    nodeFound = true;
-                    changedNetColorIndex = j;
-                    nodeNetIndex = k;
-                    if (changedNetColors[j].net != i) {
-                      ret = 1;
-                      }
-                    changedNetColors[j].net = i;
-                    break;
-                    }
-                  }
-                }
-              } else {
-              nodeFound = true;
-              changedNetColorIndex = j;
-              nodeNetIndex = k;
-              if (changedNetColors[j].net != i) {
-                ret = 1;
-                }
-              changedNetColors[j].net = i;
-              break;
-              }
-
-            }
-          }
-        }
-      }
-
-
-
-    if (nodeFound && changedNetColorIndex > 0) {
-
-      //struct changedNetColor tempChangedNetColor = changedNetColors[i];
-
-      if (changedNetColorIndex != i) {
-        //changedNetColors[i] = changedNetColors[changedNetColorIndex];
-        changedNetColors[i].net = i;
-        changedNetColors[i].color = changedNetColors[changedNetColorIndex].color;
-        changedNetColors[i].node1 = changedNetColors[changedNetColorIndex].node1;
-        changedNetColors[i].node2 = changedNetColors[changedNetColorIndex].node2;
-        changedNetColors[i].fromBridge = changedNetColors[changedNetColorIndex].fromBridge;  // Preserve color source
-        //changedNetColors[i].net = i;
-        changedNetColors[changedNetColorIndex].net = -1;
-        changedNetColors[changedNetColorIndex].color = 0x000000;
-        changedNetColors[changedNetColorIndex].node1 = 0;
-        changedNetColors[changedNetColorIndex].node2 = 0;
-        changedNetColors[changedNetColorIndex].fromBridge = false;
-
-        //     Serial.print("swapped changedNetColors[");
-        //     Serial.print(changedNetColorIndex);
-        //     Serial.print("] with changedNetColors[");
-        //     Serial.print(i);
-        //     Serial.println("]");
-
-
-        // Serial.print("node found: ");
-        // Serial.println(i);
-        // Serial.print("changedNetColors[");
-        // Serial.print(i);
-        // Serial.print("].node1: ");
-        // Serial.println(changedNetColors[i].node1);
-        // Serial.print("globalState.connections.nets[");
-        // Serial.print(i);
-        // Serial.print("].node: ");
-        // Serial.println(globalState.connections.nets[i].nodes[nodeNetIndex]);
-        // Serial.print("changedNetColors[");
-        //   Serial.print(i);
-        // Serial.print("].net: ");
-        // Serial.println(changedNetColors[i].net);
-        // Serial.println();
-        }
-
-
-      globalState.connections.nets[i].color = unpackRgb(changedNetColors[i].color);
-      netColors[i] = globalState.connections.nets[i].color;
-      changedNetColors[i].net = i;
-
-
-      // //nodeFound = true;
-      //break;
-      } else {
-      changedNetColors[i].net = -1;
-      changedNetColors[i].color = 0x000000;
-      changedNetColors[i].node1 = 0;
-      changedNetColors[i].node2 = 0;
-      }
-    if (loop == 0) {
-      break;
-      }
-
-
-    }
+  }
+  
   return ret;
   }
 
@@ -2629,7 +2693,7 @@ void showSkippedNodes(uint32_t onColor, uint32_t offColor) {
 
   for (int i = 0; i < numberOfPaths; i++) {
 
-    if (globalState.connections.paths[i].skip == true) {
+    if (globalState.connections.paths[i].skip == 1) {
       // colorCycleOff = (colorCycleOff) % 254;
       // colorCycleOn = (colorCycleOn + (numberOfUnconnectablePaths)) % 254;
       if (globalState.connections.paths[i].node1 > 0 && globalState.connections.paths[i].node1 <= 60) {
@@ -4421,50 +4485,50 @@ void clearLEDs(void) {
 
 
 // Mark to run from RAM to avoid flash contention during saves
+// CRITICAL: Use setPixelColorDirect to write to buffer WITHOUT marking dirty
+// This prevents Core 2 from showing partial clears before new content is drawn
 void __not_in_flash_func(clearLEDsExceptRails)(void) {
   for (int i = 0; i < 300; i++) {
-
-    leds.setPixelColor(i, 0);
-    }
+    leds.setPixelColorDirect(i, 0);
+  }
 
   for (int i = 400; i < 430; i++) {
     if (i != 403 && i != 402 && i != 428 && i != 429 && i != 416 && i != 426 &&
         i != 427) {
-      leds.setPixelColor(i, 0);
-      }
+      leds.setPixelColorDirect(i, 0);
     }
-  // leds.setPixelColor(430, 0x051010);
   }
+  // Note: Buffer is cleared but NOT marked dirty
+  // Call showLEDsCore2 = 12 (or similar) to actually display
+}
 
 void clearLEDsMiddle(int start, int end) {
   for (int i = start - 1; i < end; i++) {
     if (i > 60) {
       return;
-      }
-    leds.setPixelColor(i * 5 + 2, 0);
     }
+    leds.setPixelColorDirect(i * 5 + 2, 0);  // No dirty marking
   }
+}
 
 void clearLEDsExceptMiddle(int start, int end) {
 
   if (end != -1) {
     for (int i = start; i < end; i++) {
-
-      leds.setPixelColor(i * 5, 0);
-      leds.setPixelColor(i * 5 + 1, 0);
-      leds.setPixelColor(i * 5 + 3, 0);
-      leds.setPixelColor(i * 5 + 4, 0);
-      }
-    } else {
-
+      leds.setPixelColorDirect(i * 5, 0);      // No dirty marking
+      leds.setPixelColorDirect(i * 5 + 1, 0);  // No dirty marking
+      leds.setPixelColorDirect(i * 5 + 3, 0);  // No dirty marking
+      leds.setPixelColorDirect(i * 5 + 4, 0);  // No dirty marking
+    }
+  } else {
     if (start > 0 && start <= 60)
       start = start - 1;
-    leds.setPixelColor(start * 5, 0);
-    leds.setPixelColor(start * 5 + 1, 0);
-    leds.setPixelColor(start * 5 + 3, 0);
-    leds.setPixelColor(start * 5 + 4, 0);
-    }
+    leds.setPixelColorDirect(start * 5, 0);      // No dirty marking
+    leds.setPixelColorDirect(start * 5 + 1, 0);  // No dirty marking
+    leds.setPixelColorDirect(start * 5 + 3, 0);  // No dirty marking
+    leds.setPixelColorDirect(start * 5 + 4, 0);  // No dirty marking
   }
+}
 
 // char* colorToName(uint32_t color, int length)
 // {

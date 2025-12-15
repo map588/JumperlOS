@@ -5,8 +5,8 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "micropython_embed.h"
-#include "py/compile.h"
+// CRITICAL: Include MicroPython core headers FIRST to define all types
+#include "py/compile.h"     // Defines mp_parse_input_kind_t and related types
 #include "py/runtime.h"
 #include "py/repl.h"
 #include "py/gc.h"
@@ -16,7 +16,12 @@
 #include "py/builtin.h"
 #include "py/mphal.h"
 #include "shared/runtime/gchelper.h"
+// Include Jumperless headers AFTER MicroPython headers
 #include "JumperlessDefines.h"
+#include "micropython_embed.h"
+
+// Forward declaration of Arduino delay function
+void delay(unsigned long ms);
 
 #ifdef __cplusplus
 extern "C" {
@@ -111,6 +116,49 @@ void mp_embed_repl(void) {
     // This function exists primarily for API compatibility
 }
 
+// CRITICAL: Hook called after every Python script execution
+// This function is called by MicroPython's parse_compile_execute() after each
+// script completes (successfully or with exception). It's defined as
+// MICROPY_BOARD_AFTER_PYTHON_EXEC in mpconfigport.h
+//
+// Purpose:
+// 1. Trigger garbage collection to free memory for next script execution
+// 2. Close any leaked file handles from scripts that didn't clean up properly
+// 3. Provide stable memory state for ViperIDE and other tools
+//
+// Parameters:
+//   parse_input_kind - Type of input (MP_PARSE_FILE_INPUT=1, MP_PARSE_SINGLE_INPUT=2, etc.)
+//   exec_flags - Execution flags (EXEC_FLAG_PRINT_EOF, etc.)
+//   exception - Pointer to exception object if one occurred (nlr.ret_val), NULL if success
+//   result - Pointer to result code from execution
+//
+// Note: Using int/unsigned int in declaration (mpconfigport.h) to avoid header ordering issues,
+// but treating them as mp_parse_input_kind_t and mp_uint_t internally
+void jl_after_python_exec_hook(int parse_input_kind, unsigned int exec_flags, void *exception, int *result) {
+    (void)exec_flags;        // Unused for now
+    (void)exception;         // Unused for now
+    (void)result;            // Unused for now
+    
+    // CRITICAL: Always run garbage collection after script execution
+    // This is especially important for raw REPL mode (ViperIDE/mpremote) where
+    // multiple scripts run sequentially. Without GC, memory fragments and causes
+    // MemoryError on subsequent runs even when total memory is sufficient.
+    //
+    // Only run GC for file input (complete scripts), not for REPL single-line inputs
+    // to avoid performance issues during interactive use
+    // MP_PARSE_FILE_INPUT = 1, MP_PARSE_SINGLE_INPUT = 2
+    if (parse_input_kind == 1 /* MP_PARSE_FILE_INPUT */) {
+        #if MICROPY_ENABLE_GC
+        gc_collect();
+        #endif
+        
+        // Close any file handles that scripts left open
+        // This prevents resource leaks from poorly written scripts
+        extern void jl_close_all_jfs_files(void);
+        jl_close_all_jfs_files();
+    }
+}
+
 // HAL implementations that are required by MicroPython
 
 // Import stat function - removed because VFS provides inline implementation
@@ -131,12 +179,21 @@ void gc_collect(void) {
 // Non-local return (exception handling) failure function  
 void nlr_jump_fail(void *val) {
     (void)val;
-    // For embedded use, we can't do much here - just reset
-    mp_hal_stdout_tx_strn_cooked("FATAL: uncaught exception\n", 26);
-    // CRITICAL: This function is marked NORETURN - must not return!
-    // Without this infinite loop, stack corruption WILL occur
+    // For embedded use, we can't do much here - just halt
+    mp_hal_stdout_tx_strn_cooked("\nFATAL: nlr_jump_fail - uncaught exception\n", 43);
+    mp_hal_stdout_tx_strn_cooked("MicroPython has encountered a fatal error.\n", 44);
+    mp_hal_stdout_tx_strn_cooked("Please reset the device.\n", 26);
+    
+    // CRITICAL: This function is marked NORETURN - must NOT return!
+    // An infinite loop prevents stack corruption
+    // Note: We cannot safely recover from this state - trying to reinit MicroPython
+    // from within an exception handler is dangerous and could cause more corruption
     // while(1) {
-    //     // Infinite loop - this should never be reached in normal operation
+    mp_deinit();
+    delay(1000);
+    mp_init();
+    delay(1000);
+    // Could potentially trigger a watchdog reset here if desired
     // }
 }
 

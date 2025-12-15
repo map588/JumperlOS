@@ -14,6 +14,8 @@
 #include "FileParsing.h"
 #include "LEDs.h"
 #include "Graphics.h"
+#include "FakeGpio.h"
+#include "MpRemoteService.h"
 
 
 
@@ -46,6 +48,8 @@ debugFlags:
   int temp_showProbeCurrent = showProbeCurrent;
   int temp_passthrough = jumperlessConfig.serial_1.print_passthrough;
   bool temp_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
+  bool temp_debugFakeGpio = getDebugFakeGpio();
+  int temp_printReceivedPython = mpRemoteService.getPrintReceivedPython();
   // Track originals for diffing on commit
   bool orig_debugFP = debugFP;
   bool orig_debugNM = debugNM;
@@ -58,6 +62,8 @@ debugFlags:
   int orig_showProbeCurrent = showProbeCurrent;
   int orig_passthrough = jumperlessConfig.serial_1.print_passthrough;
   bool orig_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
+  bool orig_debugFakeGpio = getDebugFakeGpio();
+  int orig_printReceivedPython = mpRemoteService.getPrintReceivedPython();
   
   int lines = 0;
   int last_bulk_cmd = -1; // 0 for all off, 9 for all on; reset to -1 on individual changes
@@ -98,6 +104,10 @@ debugFlags:
     Serial.print("\n\rw. wait loop timing debug     =    "); Serial.print(temp_debugWaitLoopTiming); lines_printed++; cycleTerminalColor();
 
     Serial.print("\n\rb. USB mass storage debug     =    "); Serial.print(temp_debugUSB); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rg. fake GPIO debug            =    "); Serial.print(temp_debugFakeGpio); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rm. print received Python      =    "); Serial.print(temp_printReceivedPython); lines_printed++; cycleTerminalColor();
 
     Serial.print("\n\r\n\r\n\r"); lines_printed += 2;
     Serial.flush();
@@ -143,6 +153,12 @@ debugFlags:
           if (temp_asyncPassthrough) {
             AsyncPassthrough::begin();
           }
+        }
+        if (temp_debugFakeGpio != orig_debugFakeGpio) {
+          setDebugFakeGpio(temp_debugFakeGpio);
+        }
+        if (temp_printReceivedPython != orig_printReceivedPython) {
+          mpRemoteService.setPrintReceivedPython(temp_printReceivedPython);
         }
         // Persist Arduino debug level if changed via menu
         saveConfig();
@@ -214,7 +230,9 @@ debugFlags:
       temp_debugLA = false;
       temp_debugWaitLoopTiming = false;
       temp_debugUSB = false;
+      temp_debugFakeGpio = false;
       temp_showProbeCurrent = 0;
+      temp_printReceivedPython = 0;
       last_bulk_cmd = 0;
     } else if (sel == 'z' || sel == 'Z') {
       temp_debugFP = true;
@@ -225,7 +243,9 @@ debugFlags:
       temp_debugLA = true;
       temp_debugWaitLoopTiming = true;
       temp_debugUSB = true;
+      temp_debugFakeGpio = true;
       temp_showProbeCurrent = 1;
+      temp_printReceivedPython = 1;
       last_bulk_cmd = 9;
     } else if (sel == 'u' || sel == 'U') {
       // Cycle passthrough: 0 -> 2 -> 1 -> 0
@@ -239,6 +259,8 @@ debugFlags:
     else if (sel == 'l' || sel == 'L') { temp_debugLA = !temp_debugLA; last_bulk_cmd = -1; }
     else if (sel == 'w' || sel == 'W') { temp_debugWaitLoopTiming = !temp_debugWaitLoopTiming; last_bulk_cmd = -1; }
     else if (sel == 'b' || sel == 'B') { temp_debugUSB = !temp_debugUSB; last_bulk_cmd = -1; }
+    else if (sel == 'g' || sel == 'G') { temp_debugFakeGpio = !temp_debugFakeGpio; last_bulk_cmd = -1; }
+    else if (sel == 'm' || sel == 'M') { temp_printReceivedPython = temp_printReceivedPython ? 0 : 1; last_bulk_cmd = -1; }
     else if (sel == 'p' || sel == 'P') { temp_asyncPassthrough = !temp_asyncPassthrough; last_bulk_cmd = -1; }
     else if (sel == 's' || sel == 'S') { temp_showProbeCurrent = temp_showProbeCurrent ? 0 : 1; last_bulk_cmd = -1; }
     else {
@@ -249,7 +271,8 @@ debugFlags:
     if (sel == 'x' || sel == 'X' || sel == 'z' || sel == 'Z' || sel == 'u' || sel == 'U' ||
         sel == 'f' || sel == 'F' || sel == 'n' || sel == 'N' || sel == 'c' || sel == 'C' ||
         sel == 'h' || sel == 'H' || sel == 'e' || sel == 'E' || sel == 'l' || sel == 'L' || 
-        sel == 'w' || sel == 'W' || sel == 'b' || sel == 'B' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S') {
+        sel == 'w' || sel == 'W' || sel == 'b' || sel == 'B' || sel == 'g' || sel == 'G' ||
+        sel == 'm' || sel == 'M' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S') {
       Serial.printf("\033[%dA", lines);
       for (int i = 0; i < lines; i++) { Serial.print("\033[2K\r\n\r"); }
       Serial.printf("\033[%dA", lines);

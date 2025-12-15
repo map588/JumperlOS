@@ -106,7 +106,7 @@ extern char defconString[16];
 extern const uint8_t font[][3];
 extern volatile int doomOn;
 
-extern uint32_t gpioReadingColors[10];
+extern uint32_t gpioReadingColors[42];  // 10 real + 32 fake GPIO
 extern uint8_t gpioAnimationBaseHues[10];
 
 extern int menuBrightnessSetting;
@@ -175,6 +175,9 @@ void printAllRLEimageData(void);
 void dumpLEDs(int posX = 50, int posY = 27, int pixelsOrRows = 0,
               int header = 0, int rgbOrRaw = 0, int logo = 0,
               Stream *stream = &Jerial);
+
+// Free dumpLEDs screen buffer (call when LED dumping is disabled to save 34KB)
+void freeDumpLEDsBuffer();
 void dumpHeader(int posX = 50, int posY = 20, int absolute = 1, int wide = 0,
                 Stream *stream = &Jerial);
 void dumpHeaderHex(Stream *stream = &Jerial);

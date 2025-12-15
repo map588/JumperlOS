@@ -10,8 +10,8 @@ KevinC@ppucc.io
 
 */
 
-#include "hardware/pio.h"
 #include "Jerial.h"
+#include "hardware/pio.h"
 #include "pico.h"
 #define PICO_RP2350A 0
 // #include <pico/stdlib.h>
@@ -26,7 +26,7 @@ KevinC@ppucc.io
 #include "ArduinoStuff.h"
 #include "CH446Q.h"
 #include "Commands.h"
-#include <Adafruit_NeoPixel.h>
+#include <JeoPixel.h>
 #include <EEPROM.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -34,7 +34,9 @@ KevinC@ppucc.io
 #include "Apps.h"
 #include "ArduinoStuff.h"
 #include "AsyncPassthrough.h"
+#include "CommandBuffer.h" // New simplified command buffer system
 #include "Debugs.h"
+#include "FakeGpio.h"
 #include "FileParsing.h"
 #include "FilesystemStuff.h"
 #include "Graphics.h"
@@ -42,7 +44,6 @@ KevinC@ppucc.io
 #include "Highlighting.h"
 #include "JulseView.h"
 #include "JumperlOS.h"
-#include "CommandBuffer.h"  // New simplified command buffer system
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "LogicAnalyzer.h"
@@ -65,10 +66,10 @@ KevinC@ppucc.io
 #include "user_functions.h"
 #include <hardware/adc.h>
 
+#include "MpRemoteService.h"    // mpremote/ViperIDE raw REPL service
 #include "SingleCharCommands.h" // Single-character command system
 #include "WaveGen.h"            // New async wavegen
 #include "externVars.h"
-#include "MpRemoteService.h"    // mpremote/ViperIDE raw REPL service
 
 bread b;
 
@@ -137,17 +138,17 @@ void setup( ) {
 
     // Initialize multicore synchronization primitives BEFORE Core 2 starts
     // This provides proper mutex-based protection for shared resources
-    core_sync_init();
+    core_sync_init( );
 
     startupTimers[ 0 ] = millis( );
 
     loadConfig( );
 
     // Check for firmware updates and provision new files if needed
-    checkAndHandleFirmwareUpdate();
+    checkAndHandleFirmwareUpdate( );
 
     // Initialize MicroPython examples at boot so they're ready for USBSer2 REPL access
-    initializeMicroPythonExamples();
+    initializeMicroPythonExamples( );
 
     configLoaded = 1;
     startupTimers[ 1 ] = millis( );
@@ -177,21 +178,21 @@ void setup( ) {
     }
 
     Serial.begin( 115200 );
-    
+
     // Configure Jerial for both input and output
     // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
     // InjectionBufferStream is automatically prioritized via MultiSourceStream layer
-    Jerial.setInputStream(JerialEndpoint::USB_SERIAL);  // Input with terminal control
-    Jerial.addOutputStream(JerialEndpoint::USB_SERIAL); // Output to USB
-    //Jerial.addOutputStream(JerialEndpoint::USB_SER2);  // Output to Serial1
-    //Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
-    //Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
-    Jerial.addInputSource(Jerial.getInjectionStream()); // Add injection stream as high-priority input source
-    
+    Jerial.setInputStream( JerialEndpoint::USB_SERIAL );  // Input with terminal control
+    Jerial.addOutputStream( JerialEndpoint::USB_SERIAL ); // Output to USB
+    // Jerial.addOutputStream(JerialEndpoint::USB_SER2);  // Output to Serial1
+    // Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
+    // Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
+    Jerial.addInputSource( Jerial.getInjectionStream( ) ); // Add injection stream as high-priority input source
+
     // Enable automatic tag stripping for input
     // This removes <j> and </j> tags from incoming USB commands to prevent weird behavior
     // Jerial.setAutoStripTags(true);
-    
+
     initDAC( );
     // Serial.println("DAC initialized");
     // Serial.flush();
@@ -204,7 +205,7 @@ void setup( ) {
     // digitalWrite(BUTTON_PIN, HIGH);
     startupTimers[ 2 ] = millis( );
 
-    //initINA219( );
+    // initINA219( );
 
     // Serial.println("INA219 initialized");
     // Serial.flush();
@@ -221,14 +222,14 @@ void setup( ) {
     // Serial.println("Core2 initialized");
     // Serial.flush();
 
-   // routableBufferPower( 1, 0 );
-    
+    // routableBufferPower( 1, 0 );
+
     // Serial.println("Routable buffer power initialized");
     // Serial.flush();
     if ( jumperlessConfig.serial_1.async_passthrough == true ) {
         AsyncPassthrough::begin( 115200 );
     }
-startupTimers[ 4 ] = millis( );
+    startupTimers[ 4 ] = millis( );
     drawAnimatedImage( 0 );
     startupAnimationFinished = 1;
     // Serial.println("Startup animation finished");
@@ -284,21 +285,21 @@ startupTimers[ 4 ] = millis( );
 
     // Wire up system services
     termSerialService.setTermControl( &Jerial );
-    //oledService.setOledDisplay( &oled );
+    // oledService.setOledDisplay( &oled );
 
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
-    jOS.registerService( &probeButton );            // CRITICAL - high-frequency button checking
-    jOS.registerService( &termSerialService );      // CRITICAL - terminal input (when line buffering enabled)
-    jOS.registerService( &injectedCommandService ); // CRITICAL - immediate command execution from injection buffer
-    jOS.registerService( &asyncPassthroughService );// CRITICAL - USB CDC1<->UART0 bridging (prevent data loss)
-    jOS.registerService( &menus );                  // CRITICAL - direct user input
+    jOS.registerService( &probeButton );             // CRITICAL - high-frequency button checking
+    jOS.registerService( &termSerialService );       // CRITICAL - terminal input (when line buffering enabled)
+    jOS.registerService( &injectedCommandService );  // CRITICAL - immediate command execution from injection buffer
+    jOS.registerService( &asyncPassthroughService ); // CRITICAL - USB CDC1<->UART0 bridging (prevent data loss)
+    jOS.registerService( &menus );                   // CRITICAL - direct user input
 
     // HIGH priority services - time-sensitive operations
-    jOS.registerService( &tinyUSBService ); // HIGH - USB communication
-    jOS.registerService( &slotManager );    // HIGH - states auto-save
-    jOS.registerService( &probing );        // HIGH - user interaction sensitive (probe reading)
-    jOS.registerService( &highlighting );   // HIGH - visual feedback
+    jOS.registerService( &tinyUSBService );  // HIGH - USB communication
+    jOS.registerService( &slotManager );     // HIGH - states auto-save
+    jOS.registerService( &probing );         // HIGH - user interaction sensitive (probe reading)
+    jOS.registerService( &highlighting );    // HIGH - visual feedback
     jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
 
     // NORMAL priority services - periodic tasks
@@ -307,24 +308,24 @@ startupTimers[ 4 ] = millis( );
     jOS.registerService( &singleCharCommands ); // NORMAL - command execution (synchronous, not periodic)
 
     // LOW priority services - background tasks
-    jOS.registerService( &oledService );      // LOW - display updates
-    jOS.registerService( &probeSwitch );      // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );        // LOW - expensive ADC pad reading
+    jOS.registerService( &oledService );       // LOW - display updates
+    jOS.registerService( &probeSwitch );       // LOW - switch position (not time-critical)
+    jOS.registerService( &probePads );         // LOW - expensive ADC pad reading
     jOS.registerService( &configSaveService ); // LOW - background config save (non-blocking)
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts
-    ContextEntry mainMenuCtx(ContextType::MAIN_MENU);
-    mainMenuCtx.onEnter = nullptr;  // No special setup needed
-    mainMenuCtx.onExit = nullptr;   // Main menu never exits normally
+    ContextEntry mainMenuCtx( ContextType::MAIN_MENU );
+    mainMenuCtx.onEnter = nullptr; // No special setup needed
+    mainMenuCtx.onExit = nullptr;  // Main menu never exits normally
     mainMenuCtx.onSuspend = nullptr;
-    mainMenuCtx.onResume = [](void*) {
-        // When returning to main menu from any child context, 
+    mainMenuCtx.onResume = []( void* ) {
+        // When returning to main menu from any child context,
         // ensure any cleanup is done
-        extern void closeAllFiles();
-        closeAllFiles();
+        extern void closeAllFiles( );
+        closeAllFiles( );
     };
-    ContextManager::getInstance().pushContext(mainMenuCtx);
+    ContextManager::getInstance( ).pushContext( mainMenuCtx );
 
     // Serial.println("Service registration complete");
     // Serial.flush();
@@ -363,7 +364,7 @@ void setup1( ) {
     // flash_safe_execute_core_init();
 
     setupCore2stuff( );
-startupCore2timers[ 7 ] = millis( );
+    startupCore2timers[ 7 ] = millis( );
     while ( startupAnimationFinished == 0 ) {
         // delayMicroseconds(1);
         // if (Serial.available() > 0) {
@@ -487,17 +488,17 @@ menu:
         // Serial.println("millis = " + String(millis()));
 
         if ( jumperlessConfig.top_oled.connect_on_boot == 1 ) {
-             //Serial.println("Initializing OLED");
+            // Serial.println("Initializing OLED");
             oled.init( );
         }
         // Serial.println("millis = " + String(millis()));
         // Serial.println("oled initialized");
         // Serial.flush();
 
-        //Jerial.addInputSource(JerialEndpoint::SERIAL1);
+        // Jerial.addInputSource(JerialEndpoint::SERIAL1);
 
         // runApp(-1, "jdi MIPdisplay");
-        printColorJogoSmall();
+        printColorJogoSmall( );
 
         firstLoop = 0;
 
@@ -554,8 +555,6 @@ menu:
         // USBSer2.print( "printMenu" );
         // USBSer2.flush( );
 
-        
-
 #if debug_startup_timers == 1
         for ( int i = 1; i < 16; i++ ) {
             Serial.print( "startupTimer[" );
@@ -579,57 +578,52 @@ menu:
 #endif
     }
 
-
-
 dontshowmenu:
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
-    Serial.write('H');  // Reached dontshowmenu
-    tud_task();
+    Serial.write( 'H' ); // Reached dontshowmenu
+    tud_task( );
 #endif
-
-
-
 
     // Config saving is now handled by ConfigSaveService which monitors configChanged flag
     // This allows saves from anywhere in the UI, not just when main menu is shown
     connectFromArduino = '\0';
     firstConnection = -1;
     core1passthrough = 1;
-    
+
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
-    Serial.write('I');  // About to enter busy loop
-    tud_task();
+    Serial.write( 'I' ); // About to enter busy loop
+    tud_task( );
 #endif
 
 #if debug_busy_timers == 1
     Serial.println( "Starting main loop: " + String( millis( ) ) + " ms" );
-    tud_task();
+    tud_task( );
 #endif
     busyPrintTime = millis( );
 
     //! This is the main busy wait loop waiting for input
     // CRITICAL: Use Jerial.available() to check injection buffer + Serial
     // CRITICAL: Force line buffering when injection buffer has data (commands need full lines!)
-    
+
     // Calculate whether to use line buffering (variables declared at function scope)
-    hasInjectedData = (Jerial.getInjectionStream() && Jerial.getInjectionStream()->available() > 0);
-    useLineBuffering = (jumperlessConfig.display.terminal_line_buffering == 1) || hasInjectedData;
+    hasInjectedData = ( Jerial.getInjectionStream( ) && Jerial.getInjectionStream( )->available( ) > 0 );
+    useLineBuffering = ( jumperlessConfig.display.terminal_line_buffering == 1 ) || hasInjectedData;
 
     // DEBUG DISABLED: Heartbeat markers removed to minimize USB pressure
     static uint32_t heartbeatCounter = 0;
     static uint32_t lastHeartbeatPrint = 0;
-    
+
     while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
               ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
-        
+
         // Heartbeat disabled for production
         heartbeatCounter++;
-        bool printHeartbeat = false;  // Was: (heartbeatCounter - lastHeartbeatPrint >= 10000)
-        
+        bool printHeartbeat = false; // Was: (heartbeatCounter - lastHeartbeatPrint >= 10000)
+
         // Recalculate useLineBuffering each iteration
-        hasInjectedData = (Jerial.getInjectionStream() && Jerial.getInjectionStream()->available() > 0);
-        useLineBuffering = (jumperlessConfig.display.terminal_line_buffering == 1) || hasInjectedData;
+        hasInjectedData = ( Jerial.getInjectionStream( ) && Jerial.getInjectionStream( )->available( ) > 0 );
+        useLineBuffering = ( jumperlessConfig.display.terminal_line_buffering == 1 ) || hasInjectedData;
 
         unsigned long loopStart = micros( );
 
@@ -639,59 +633,68 @@ dontshowmenu:
         // DEBUG: Checkpoint throughout busy loop to find freeze location
         static uint32_t loopCount = 0;
         loopCount++;
-        bool printLoop = (loopCount % 5000 == 0);
-        
-        if (printLoop) { Serial.write('L'); tud_task(); }  // Loop start
+        bool printLoop = ( loopCount % 5000 == 0 );
+
+        if ( printLoop ) {
+            Serial.write( 'L' );
+            tud_task( );
+        } // Loop start
 #endif
-        
+
         // Service all registered subsystems via jOSmanager
         // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services
         jOS.serviceAll( );
-        
+
         // DEBUG: Marker after serviceAll - if we see '<{...}' but not '>' then freeze is between
         // serviceAll() and the marker below
-        if (printHeartbeat) {
-            Serial.write('>');  // After serviceAll marker
-            tud_task();
-            lastHeartbeatPrint = heartbeatCounter;  // Update here so we get consistent '<{...}>'
+        if ( printHeartbeat ) {
+            Serial.write( '>' ); // After serviceAll marker
+            tud_task( );
+            lastHeartbeatPrint = heartbeatCounter; // Update here so we get consistent '<{...}>'
         }
-        
+
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
-        if (printLoop) { Serial.write('S'); tud_task(); }  // After serviceAll
-        
+        if ( printLoop ) {
+            Serial.write( 'S' );
+            tud_task( );
+        } // After serviceAll
+
         // DEBUG: Check Core 2 state
-        if (printLoop) {
+        if ( printLoop ) {
             extern volatile bool core2busy;
             extern volatile int sendAllPathsCore2;
             extern volatile int showLEDsCore2;
-            Serial.write('C');
-            Serial.write('2');
-            Serial.write('[');
-            Serial.print((int)core2busy);
-            Serial.write(',');
-            Serial.print(sendAllPathsCore2);
-            Serial.write(',');
-            Serial.print(showLEDsCore2);
-            Serial.write(']');
-            tud_task();
+            Serial.write( 'C' );
+            Serial.write( '2' );
+            Serial.write( '[' );
+            Serial.print( (int)core2busy );
+            Serial.write( ',' );
+            Serial.print( sendAllPathsCore2 );
+            Serial.write( ',' );
+            Serial.print( showLEDsCore2 );
+            Serial.write( ']' );
+            tud_task( );
         }
 #endif
 
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
-        if (printLoop) { Serial.write('1'); tud_task(); }  // Checkpoint 1
+        if ( printLoop ) {
+            Serial.write( '1' );
+            tud_task( );
+        } // Checkpoint 1
 #endif
-        
+
         // CRITICAL: Handle Arduino flashing (DTR pulse detection) on Core 0
         // This MUST run on Core 0 because it can call refreshLocalConnections()
         // via flashArduino() -> connectArduino() -> refresh() chain
         static unsigned long lastSecondSerialCheck = 0;
-        if (millis() - lastSecondSerialCheck > 10) {
-            lastSecondSerialCheck = millis();
-            
+        if ( millis( ) - lastSecondSerialCheck > 10 ) {
+            lastSecondSerialCheck = millis( );
+
             // AsyncPassthrough::task() now handled by asyncPassthroughService (CRITICAL priority)
-            
+
             // Handle Arduino flashing and serial passthrough
-          //  secondSerialHandler();
+            //  secondSerialHandler();
         }
         busyTimers[ 2 ] = micros( );
 
@@ -711,7 +714,7 @@ dontshowmenu:
         busyTimers[ 3 ] = micros( );
 
         // Check if terminal has completed line (includes injected commands - works regardless of buffering mode)
-        if ( Jerial.hasCompletedLine() ) {
+        if ( Jerial.hasCompletedLine( ) ) {
             break; // Line is ready for processing (could be user input or injected command)
         }
 
@@ -740,51 +743,51 @@ dontshowmenu:
             Serial.print( millis( ) );
             Serial.println( " ms" );
             Serial.println( "\n\r" );
-            tud_task();  // Non-blocking USB service instead of flush
+            tud_task( ); // Non-blocking USB service instead of flush
         }
 #endif
         if ( useLineBuffering ) {
             // Service Jerial to process line buffering (user input or injected commands)
             Jerial.service( );
         }
-        
+
         // NEW: Check for pending commands from CommandBuffer (from UART tags)
         // This is the synchronous, simplified path that replaces InjectedCommandService
-        if (CommandBuffer::getInstance().hasPendingCommand()) {
-            break;  // Exit busy loop to process the command
+        if ( CommandBuffer::getInstance( ).hasPendingCommand( ) ) {
+            break; // Exit busy loop to process the command
         }
     }
-    
+
     // =========================================================================
     // NEW: Handle pending commands from CommandBuffer (UART injected commands)
     // This runs BEFORE checking Jerial, ensuring UART commands are processed promptly
     // =========================================================================
-    if (CommandBuffer::getInstance().hasPendingCommand()) {
-        String cmdLine = CommandBuffer::getInstance().consumePendingCommand();
-        cmdLine.trim();
-        
-        if (cmdLine.length() > 0) {
+    if ( CommandBuffer::getInstance( ).hasPendingCommand( ) ) {
+        String cmdLine = CommandBuffer::getInstance( ).consumePendingCommand( );
+        cmdLine.trim( );
+
+        if ( cmdLine.length( ) > 0 ) {
             currentCommandLine = cmdLine;
-            input = cmdLine[0];
-            
+            input = cmdLine[ 0 ];
+
             // Execute the command
             inMainMenu = true;
-            CommandResult cmdResult = singleCharCommands.executeCommand((char)input, currentCommandLine);
+            CommandResult cmdResult = singleCharCommands.executeCommand( (char)input, currentCommandLine );
             inMainMenu = false;
-            
+
             // Queue response to UART if command came from there
-            if (CommandBuffer::getInstance().shouldRespondToUART()) {
+            if ( CommandBuffer::getInstance( ).shouldRespondToUART( ) ) {
                 // Response already sent to Serial - copy to UART buffer
                 // (The command handler writes to Serial, which we can intercept)
                 // For now, the command handlers need to check shouldRespondToUART()
                 // and queue responses via CommandBuffer::getInstance().queueForUART()
-                CommandBuffer::getInstance().setRespondToUART(false);  // Reset flag
+                CommandBuffer::getInstance( ).setRespondToUART( false ); // Reset flag
             }
-            
-            CommandBuffer::getInstance().incrementCommandsProcessed();
-            
+
+            CommandBuffer::getInstance( ).incrementCommandsProcessed( );
+
             // Handle special command results
-            switch (cmdResult) {
+            switch ( cmdResult ) {
             case CMD_LOAD_FILE:
                 goto loadfile;
             case CMD_SHOW_MENU:
@@ -793,29 +796,29 @@ dontshowmenu:
             default:
                 break;
             }
-            
-            goto dontshowmenu;  // Skip menu display
+
+            goto dontshowmenu; // Skip menu display
         }
     }
-    
+
     // Check for completed lines first (includes both injected and buffered input)
     // This works regardless of line buffering mode - injected commands always work
     // CRITICAL: Use line buffering when injection buffer has data
     static unsigned long lastCommandProcessedTime = 0;
     if ( useLineBuffering && Jerial.hasCompletedLine( ) ) {
         // Track command processing latency
-        
-        unsigned long timeSinceLastCommand = millis() - lastCommandProcessedTime;
-        if (lastCommandProcessedTime > 0 && timeSinceLastCommand > 500) {
-            #if debugJerial
-            Serial.print("⏱️  Main loop gap: ");
-            Serial.print(timeSinceLastCommand);
-            Serial.println(" ms between commands");
-            Serial.flush();
-            #endif
+
+        unsigned long timeSinceLastCommand = millis( ) - lastCommandProcessedTime;
+        if ( lastCommandProcessedTime > 0 && timeSinceLastCommand > 500 ) {
+#if debugJerial
+            Serial.print( "⏱️  Main loop gap: " );
+            Serial.print( timeSinceLastCommand );
+            Serial.println( " ms between commands" );
+            Serial.flush( );
+#endif
         }
-        lastCommandProcessedTime = millis();
-        
+        lastCommandProcessedTime = millis( );
+
         String cmdLine = Jerial.getCompletedLine( ); // Get and consume the line
         cmdLine.trim( );
         currentCommandLine = cmdLine; // Store for backwards compatibility with parsers
@@ -831,10 +834,10 @@ dontshowmenu:
         // NOTE: Jerial.read() now handles injection buffer with tag filtering automatically
         if ( Jerial.available( ) > 0 ) {
             input = Jerial.read( );
-            #if debugJerial
-            Serial.printf("Main: Read char '%c' (%d) from Jerial\n", (char)input, input);
-            Serial.flush();
-            #endif
+#if debugJerial
+            Serial.printf( "Main: Read char '%c' (%d) from Jerial\n", (char)input, input );
+            Serial.flush( );
+#endif
             // Set currentCommandLine with just the single character for backwards compatibility
             // CRITICAL: Cast to char first! String(int) creates decimal string "87", not "W"
             currentCommandLine = String( (char)input );
@@ -940,9 +943,9 @@ skipinput:
 
 loadfile:
     loadingFile = 1;
-// Serial.println("loadingFile" + String(millis()));
-// Serial.flush();
-startupTimers[ 10 ] = millis( );
+    // Serial.println("loadingFile" + String(millis()));
+    // Serial.flush();
+    startupTimers[ 10 ] = millis( );
     // Just clear preview mode flag - don't restore original slot
     // Let the normal load below handle loading the selected slot
     SlotManager& mgr = SlotManager::getInstance( );
@@ -952,7 +955,7 @@ startupTimers[ 10 ] = millis( );
         //  Clear preview flag without loading anything
         mgr.clearPreviewMode( );
     }
-startupTimers[ 11 ] = millis( );
+    startupTimers[ 11 ] = millis( );
     // Save current state if dirty before reloading to prevent data loss
     // BUT skip this on the very first load (firstLoop == 1) to avoid overwriting
     // the saved slot with an empty/uninitialized state
@@ -971,44 +974,45 @@ startupTimers[ 11 ] = millis( );
             Serial.println( "Warning: Failed to auto-save: " + saveError );
         }
     }
-startupTimers[ 12 ] = millis( );
+    startupTimers[ 12 ] = millis( );
     // Load YAML state from slot file into globalState
     String loadError;
     if ( !mgr.loadSlot( netSlot, loadError ) ) {
-         if ( debugFP ) {
-        Serial.print( "Warning: Failed to load slot " );
-        Serial.print( netSlot );
-        Serial.print( ": " );
-        Serial.println( loadError );
-        Serial.println( "Starting with empty slot" );
-         }
+        if ( debugFP ) {
+            Serial.print( "Warning: Failed to load slot " );
+            Serial.print( netSlot );
+            Serial.print( ": " );
+            Serial.println( loadError );
+            Serial.println( "Starting with empty slot" );
+        }
         // Empty slot is OK - just start fresh
         mgr.clearActiveSlot( );
     }
-startupTimers[ 13 ] = millis( );
+    startupTimers[ 13 ] = millis( );
     if ( slotChanged == 1 ) {
         // clearChangedNetColors(0);
         // loadChangedNetColorsFromFile( netSlot, 0 );
     }
 
+    // Initialize fake GPIO pins from loaded state (before refreshing connections)
+    // This reconstructs FakeGpioPinConfig entries from FAKE_GPIO bridges in the state
+    initializeFakeGpioFromLoadedState( );
+
     slotChanged = 0;
     loadingFile = 0;
-    if (firstLoop == 2) {
-        refreshConnections( -1, 1, 1);
+    if ( firstLoop == 2 ) {
+        refreshConnections( -1, 1, 1 );
     } else {
         refreshConnections( -1, 1, 0 );
     }
-startupTimers[ 14 ] = millis( );
-   // refreshConnections( -1, 1, 0 );
-
-
+    startupTimers[ 14 ] = millis( );
+    // refreshConnections( -1, 1, 0 );
 }
 
 unsigned long lastSwirlTime = 0;
 
 int swirlCount = 42;
 int spread = 13;
-
 
 unsigned long schedulerTimer = 0;
 unsigned long schedulerUpdateTime = 0100;
@@ -1019,7 +1023,6 @@ int countsss = 0;
 int probeCycle = 0;
 int netUpdateRefreshCount = 0;
 
-
 int clearBeforeSend = 0;
 
 int passthroughStatus = 0;
@@ -1027,30 +1030,54 @@ int passthroughStatus = 0;
 unsigned long serialInfoTimer = 0;
 
 unsigned long la_timer = 0;
-bool debugWaitLoopTimingCore2 = true;
+bool debugWaitLoopTimingCore2 = false; // Enable via 'core2timing' command
 unsigned long lastCore2LoopStart = 5000000;
-unsigned long t[22];
+unsigned long t[ 22 ];
+bool printPowerSupplySense = false;
 
+// Core 2 timing stats - smart accumulation
+unsigned long core2LoopIterations = 0;
+unsigned long lastTimingPrint = 0;
+unsigned long timingPrintInterval = 1000; // Print summary every 1000ms
 
+// Track LED show() calls
+unsigned long ledShowCallCount = 0;
+unsigned long ledShowTime = 0;
+unsigned long ledShowTotalTime = 0;
+unsigned long ledShowMinTime = 999999;
+unsigned long ledShowMaxTime = 0;
+
+unsigned long powerSupplySenseTimer = 0;
+unsigned long powerSupplySenseRate = 1000;
+
+#define LED_SHOW_MIN_TIME 14
 
 void loop1( ) {
 
     while ( pauseCore2 == true ) {
+        // Check for immediate bypass request even while paused
+        if ( sendAllPathsCore2 == 3 ) {
+            core2busy = true;
+            sendPaths( 0 ); // Send paths without cleaning
+            sendAllPathsCore2 = 0;
+            __dmb( ); // Memory barrier so Core 0 sees the update
+            core2busy = false;
+        }
         tight_loop_contents( );
         // replyWithSerialInfo( );
     }
 
-// if (micros() - lastCore2LoopStart > 5000000 &&  (micros( ) - schedulerTimer > schedulerUpdateTime)) {
-//     debugWaitLoopTimingCore2 = true;
-//     lastCore2LoopStart = micros( );
-// }
-//     else {
-//         debugWaitLoopTimingCore2 = false;
-//     }
+    // if (micros() - lastCore2LoopStart > 5000000 &&  (micros( ) - schedulerTimer > schedulerUpdateTime)) {
+    //     debugWaitLoopTimingCore2 = true;
+    //     lastCore2LoopStart = micros( );
+    // }
+    //     else {
+    //         debugWaitLoopTimingCore2 = false;
+    //     }
 
-for ( int i = 0; i < 22; i++ ) {
-t[i] = 0;
-}
+    for ( int i = 0; i < 22; i++ ) {
+        t[ i ] = 0;
+    }
 
     // Core 2 timing instrumentation (only when debug enabled)
     static unsigned long core2LoopStart = 0;
@@ -1081,7 +1108,7 @@ t[i] = 0;
     // Route PulseView traffic to the new logic analyzer
     // OPTIMIZATION: Only poll USB when logic analyzer is actually running or recently active
     // USB polling is expensive (1-55ms!), so skip it when LA is idle
-    t[0] = micros( );
+    t[ 0 ] = micros( );
     bool laActive = logicAnalyzer.is_running( ) || logicAnalyzer.is_armed( );
     // Check if LA had recent command (but ignore initial boot where last_command_time = 0)
     bool laRecentlyActive = ( logicAnalyzer.last_command_time > 0 ) &&
@@ -1091,31 +1118,45 @@ t[i] = 0;
         // Only check every 20ms when potentially active
         if ( millis( ) - last_la_check >= 20 ) {
             // Check pauseCore2 before potentially long logic analyzer operation
-            if (pauseCore2) return;  // Exit early to allow flash operations
+            if ( pauseCore2 )
+                return; // Exit early to allow flash operations
             last_la_check = millis( );
             logicAnalyzer.handler( );
         }
     }
-    
+
     // Check pauseCore2 after logic analyzer (can take 1-55ms!)
-    if (pauseCore2) return;
+    if ( pauseCore2 )
+        return;
 
     if ( debugWaitLoopTimingCore2 ) {
-        t[1] = micros( );
-        if ( ( t[1] - t[0] ) > 1000 ) {
-           // Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t[1] - t[0] );
+        t[ 1 ] = micros( );
+        if ( ( t[ 1 ] - t[ 0 ] ) > 1000 ) {
+            // Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t[1] - t[0] );
         }
+    }
+
+    if ( printPowerSupplySense == 1 && millis( ) - powerSupplySenseTimer > powerSupplySenseRate ) {
+
+        float supplySense = readAdcVoltage( 6, 4 );
+
+        Serial.print( "supplySense = " );
+        Serial.println( supplySense );
+
+        Serial.flush( );
+
+        powerSupplySenseTimer = millis( );
     }
 
     // OPTIMIZATION: Only service wavegen when it's actually running
     // wavegen.service() contains a blocking while() loop for I2C streaming!
-    t[2] = micros( );
+    t[ 2 ] = micros( );
     if ( wavegen.isRunning( ) ) {
-        //Serial.println("CORE2: wavegen.service() is being called");
+        // Serial.println("CORE2: wavegen.service() is being called");
         wavegen.service( );
     }
     if ( debugWaitLoopTimingCore2 ) {
-        t[3] = micros( );
+        t[ 3 ] = micros( );
         // if ( ( t[3] - t[2] ) > 1000 ) {
         //    // Serial.printf( "CORE2: wavegen.service() took %lu us\n", t[3] - t[2] );
         // }
@@ -1125,19 +1166,18 @@ t[i] = 0;
         playDoom( );
         doomOn = 0;
     } else if ( pauseCore2 == 0 && logicAnalyzer.getIsRunning( ) == false ) {
-        t[4] = micros( );
+        // Always call core2stuff() for logo swirls and animations
+        t[ 4 ] = micros( );
         core2stuff( );
-      //  if ( debugWaitLoopTimingCore2    ) {
-            t[5] = micros( );
-         //   if ( ( t[5] - t[4] ) > 500 ) { // Report if core2stuff takes > 5ms
-         //      // Serial.printf( "CORE2: core2stuff() took %lu us (%.2f ms)\n", t[5] - t[4], ( t[5] - t[4] ) / 1000.0 );
-         //   }
-         // }
-    } else if ( pauseCore2 == 0) {
+        t[ 5 ] = micros( );
+#if 0 // Enable for debugging
+        if ( ( t[5] - t[4] ) > 1000 ) { // Report if core2stuff takes > 1ms
+            Serial.printf( "CORE2: core2stuff() took %lu us\n", t[5] - t[4] );
+        }
+#endif
+    } else if ( pauseCore2 == 0 ) {
         // Serial.println("CORE2: pauseCore2 == 0");
         // Serial.flush();
-
-        
     }
 
     // REMOVED: AsyncPassthrough::task() and secondSerialHandler() moved to Core 0
@@ -1145,13 +1185,15 @@ t[i] = 0;
     // when handling Arduino flashing (DTR pulse detection)
 
     // Check pauseCore2 before serial operations
-    if (pauseCore2) return;
-    
+    if ( pauseCore2 )
+        return;
+
     replyWithSerialInfo( );
 
     // Check pauseCore2 before LED dump
-    if (pauseCore2) return;
-    
+    if ( pauseCore2 )
+        return;
+
     if ( dumpLED == 1 ) {
 
         if ( millis( ) - dumpLEDTimer > dumpLEDrate ) {
@@ -1168,20 +1210,16 @@ t[i] = 0;
             dumpLEDTimer = millis( );
         }
     }
-    unsigned long core2LoopEnd = micros( );
-    // Core 2 total loop timing
-    // if ( debugWaitLoopTimingCore2 && core2LoopEnd - core2LoopStart > 30000) {
-       
-    //    // if ( ( core2LoopEnd - core2LoopStart ) > 20000 ) { // Report if loop takes > 20ms
-    //         Serial.printf( "CORE2: *** FULL LOOP took %lu us (%.2f ms) ***\n",
-    //                        core2LoopEnd - core2LoopStart, ( core2LoopEnd - core2LoopStart ) / 1000.0 );
-    //    // }
-    //     for ( int i = 1; i < 22; i++ ) {
-    //         Serial.printf( "CORE2:   t[%d] - t[%d] = %lu us\n", i, i - 1, t[i] - t[i - 1] );
-    //         Serial.flush();
-    //     }
+    // Core 2 loop timing disabled by default to prevent deadlocks
+    // Enable by uncommenting and setting threshold higher (e.g., > 50000 for 50ms+)
+    // unsigned long core2LoopEnd = micros( );
+    // if ( core2LoopEnd - core2LoopStart > 50000 ) {
+    //     Serial.printf( "CORE2 LOOP: %lu us\n", core2LoopEnd - core2LoopStart );
     // }
 }
+
+#define FORCE_SHOW_INTERVAL 100 // 1 second
+unsigned long lastForcedShow = 0;
 
 // DEBUG: Set to 1 to disable Core 2 processing for crash debugging
 #define DEBUG_DISABLE_CORE2_PROCESSING 0
@@ -1189,7 +1227,7 @@ t[i] = 0;
 void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 {
     core2busy = false;
-    
+
 #if DEBUG_DISABLE_CORE2_PROCESSING
     // Skip all Core 2 processing for crash debugging
     // If crash stops when this is enabled, the bug is in Core 2 code
@@ -1198,44 +1236,77 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
     return;
 #endif
 
-    // THREAD SAFETY: Try to acquire the core sync mutex with a short timeout
-    // If Core 1 is holding the lock (e.g., during filesystem operations),
-    // we skip this iteration instead of potentially corrupting shared data
-    if (!core_sync_acquire_timeout_ms(5)) {
-        // Could not acquire mutex within 5ms - Core 1 is busy with shared resources
-        // Skip this frame to prevent concurrent access issues
+    // OPTIMIZATION: Check bypass flag BEFORE trying to acquire mutex
+    // This prevents deadlock when Core 0 is waiting for Core 2 but Core 2 can't get mutex
+    // The bypass flag (3) is specifically designed for fast, non-blocking operation
+    if ( sendAllPathsCore2 == 3 ) {
+        // For bypass mode, try to acquire mutex with very short timeout
+        // If we can't get it quickly, just skip this frame - Core 0 will retry
+        if ( core_sync_acquire_timeout_ms( 1 ) ) {
+            core2busy = true;
+            sendPaths( 0 ); // Send paths without cleaning (runs from RAM, no XIP issues)
+            sendAllPathsCore2 = 0;
+            __dmb( ); // Memory barrier so Core 0 sees the update
+            core2busy = false;
+            core_sync_release( );
+        } else {
+            // Couldn't get mutex quickly - clear flag so Core 0 doesn't wait forever
+            //  sendAllPathsCore2 = 0;
+            __dmb( );
+        }
+        return; // Exit immediately after handling bypass
+    }
+
+    // THREAD SAFETY: Try to acquire the core sync mutex with a VERY short timeout
+    // OPTIMIZATION: Use 100us timeout instead of 5ms to reduce blocking
+    // If Core 1 is holding the lock, we skip this frame and try again next iteration
+    // This allows Core 2 to continue with logo swirls and other non-mutex tasks
+    if ( !core_sync_acquire_timeout_ms( 0 ) ) { // 0 = try without blocking
+        // Could not acquire mutex immediately - Core 1 is busy with shared resources
+        // Skip this frame to prevent blocking Core 2 loop
+        // Logo swirls and animations will still run on next iteration
         return;
     }
-    
+
     // From here on, we hold the mutex and can safely access shared resources
     // Make sure to release it before returning!
-    
+
     // CRITICAL FIX: Check pauseCore2 immediately after acquiring mutex
     // If Core1 set pauseCore2=true while we were waiting for mutex, we need to
     // release and return immediately to avoid flash XIP crashes during file writes
-    if (pauseCore2) {
-        core_sync_release();
+    if ( pauseCore2 ) {
+        core_sync_release( );
         return;
     }
 
+    // Check for negative values (clear before show)
+    // Also preserve blocking mode flag (>= 10) through the abs() operation
+    bool useBlockingMode = false;
     if ( showLEDsCore2 < 0 ) {
         showLEDsCore2 = abs( showLEDsCore2 );
         // Serial.println("clearBeforeSend = 1");
-
         clearBeforeSend = 1;
     }
 
-    if ( micros( ) - schedulerTimer > schedulerUpdateTime || showLEDsCore2 == 3 ||showLEDsCore2 == 4 ||
+    // Check for blocking mode flag (values >= 10)
+    if ( showLEDsCore2 >= 10 ) {
+        useBlockingMode = true;
+        showLEDsCore2 -= 10; // Normalize to regular value (10->0, 11->1, 12->2, etc)
+    }
+
+    if ( micros( ) - schedulerTimer > schedulerUpdateTime || showLEDsCore2 == 3 || showLEDsCore2 == 4 || showLEDsCore2 == 2 ||
          showLEDsCore2 == 6 && core1busy == false && core1request == 0 ) {
 
         if ( ( ( ( showLEDsCore2 >= 1 && loadingFile == 0 ) || showLEDsCore2 == 3 ||
-                 ( swirled == 1 ) && sendAllPathsCore2 == 0 ) || showProbeLEDs != lastProbeLEDs ) &&
+                 ( swirled == 1 ) && sendAllPathsCore2 == 0 ) ) &&
              sendAllPathsCore2 == 0 ) {
 
             if ( showLEDsCore2 == 6 ) {
                 showLEDsCore2 = 1;
             }
 
+            // Capture the current value to process, but don't clear it yet
+            // This prevents race conditions where menu code sets it again during processing
             int rails =
                 showLEDsCore2; // 3 doesn't show nets and keeps control of the LEDs
 
@@ -1253,10 +1324,15 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                 core2busy = false;
             }
 
+            // Special case for menu mode (rails == 2): call leds.show() to display menu text
+            // that was written to buffer by b.print() in menu code
+            bool needsLedShow = false;
+
             // Allow showing nets if not in menu OR if in preview mode
             if ( rails != 2 && rails != 5 && rails != 3 &&
                  ( inClickMenu == 0 || SlotManager::getInstance( ).isPreviewMode( ) ) &&
                  inPadMenu == 0 && hideNets == 0 ) {
+                needsLedShow = true;
 
                 // Skip defcon display when previewing slots - always show nets
                 if ( defconDisplay >= 0 && probeActive == 0 && !SlotManager::getInstance( ).isPreviewMode( ) ) {
@@ -1278,84 +1354,105 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                     }
 
                     // Check pauseCore2 before long-running showNets() to allow quick exit for flash ops
-                    if (pauseCore2) {
+                    if ( pauseCore2 ) {
                         core2busy = false;
-                        core_sync_release();
+                        core_sync_release( );
                         return;
                     }
-                    
-                    t[6] = micros( );
+
+                    t[ 6 ] = micros( );
                     showNets( );
                     if ( debugWaitLoopTimingCore2 ) {
-                        t[7] = micros( );
-                        if ( ( t[7] - t[6] ) > 5000 ) {
-                           // Serial.printf( "CORE2:   showNets() took %lu us\n", t[7] - t[6] );
+                        t[ 7 ] = micros( );
+                        if ( ( t[ 7 ] - t[ 6 ] ) > 5000 ) {
+                            // Serial.printf( "CORE2:   showNets() took %lu us\n", t[7] - t[6] );
                         }
                     }
 
-                    t[8] = micros( );
-                    readGPIO( ); // if want, I can make this update the LEDs like 10 times
-                                 // faster by putting outside this loop,
-                    t[9] = micros( );
+                    t[ 8 ] = micros( );
+                    readGPIO( );     // if want, I can make this update the LEDs like 10 times
+                                     // faster by putting outside this loop,
+                    readFakeGPIO( ); // Background reading for fake GPIO pins with visual updates
+                    t[ 9 ] = micros( );
+
+                    // CRITICAL: Update ADC/GPIO mappings before reading measurements
+                    // This ensures showADCreadings[] is populated from current paths
+                    // Prevents race condition where Core 0/1 updates paths but Core 2 reads stale ADC mappings
+                    chooseShownReadings( );
+
                     showLEDmeasurements( );
-             
 
-        
-                   
-
-                    t[10] = micros( );
+                    t[ 10 ] = micros( );
                     showAllRowAnimations( );
-                    
-                        t[11] = micros( );
-           
-                    
+
+                    t[ 11 ] = micros( );
 
                     core2busy = false;
                     netUpdateRefreshCount = 0;
                 }
+            } else if ( rails == 2 && ( inClickMenu == 1 || inPadMenu == 1 ) ) {
+                // Menu mode - display menu text buffer written by b.print()
+                // Supports both click menus (inClickMenu) and probe menus (inPadMenu)
+                needsLedShow = true;
             }
 
-            core2busy = true;
-            
-            // Check pauseCore2 before long-running leds.show() to allow quick exit for flash ops
-            if (pauseCore2) {
+            // Call leds.show() if either showNets() was called OR if we're in menu mode
+            if ( needsLedShow ) {
+                core2busy = true;
+
+                // Check pauseCore2 before long-running leds.show() to allow quick exit for flash ops
+                // if ( pauseCore2 ) {
+                //     core2busy = false;
+                //     core_sync_release( );
+                //     return;
+                // }
+
+                t[ 12 ] = micros( );
+
+                // Use blocking or async show based on flag
+                // Blocking mode (showLEDsCore2 >= 10) forces atomic display updates
+                // Used for voltage adjuster and other UIs that need complete frames
+                if ( useBlockingMode ) {
+                    leds.showBBBlocking( );
+                } else {
+                    if ( micros( ) - ledShowTime > LED_SHOW_MIN_TIME ) {
+                        ledShowTime = micros( );
+
+                        leds.show( );
+                    }
+                }
+                lastForcedShow = millis( );
+
+                t[ 13 ] = micros( );
+
+                // Update probe LEDs to reflect current state
+
                 core2busy = false;
-                core_sync_release();
-                return;
             }
 
-            t[12] = micros( );
-            leds.show( );
-
-                t[13] = micros( );
-
-
-            // Update probe LEDs to reflect current state
-            if ( checkingButton == 0 || showProbeLEDs == 2 ) {
-                t[14] = micros( );
-                probeLEDhandler( );
-               
-                t[15] = micros( );
-   
-            }
-            core2busy = false;
+            // Only clear showLEDsCore2 if it hasn't been set again during processing
+            // This prevents race conditions where menu rapidly sets it multiple times
             if ( rails != 3 && swirled == 0 ) {
-                showLEDsCore2 = 0;
+                // Compare-and-swap: only clear if value hasn't changed since we captured it
+                if ( showLEDsCore2 == rails ) {
+                    showLEDsCore2 = 0;
+                }
+                // If showLEDsCore2 != rails, it means it was set again during our processing
+                // Leave it alone so it gets processed on the next iteration
 
                 // delayMicroseconds(3200);
             }
 
             swirled = 0;
             if ( inClickMenu == 1 ) {
-                    t[16] = micros( );
+                t[ 16 ] = micros( );
                 rotaryEncoderStuff( );
-                t[17] = micros( );
-   
+                t[ 17 ] = micros( );
             }
             core2busy = false;
 
         } else if ( sendAllPathsCore2 != 0 ) {
-t[18] = micros( );
+            t[ 18 ] = micros( );
             if ( sendAllPathsCore2 == 1 ) {
                 sendPaths( 0 );
             } else if ( sendAllPathsCore2 == -1 ) {
@@ -1364,10 +1461,9 @@ t[18] = micros( );
                 sendPaths( sendAllPathsCore2 );
             }
             sendAllPathsCore2 = 0;
-t[19] = micros( );
+            t[ 19 ] = micros( );
         } else if ( millis( ) - lastSwirlTime > 51 && loadingFile == 0 &&
                     showLEDsCore2 == 0 && core1busy == false ) {
-           
 
             lastSwirlTime = millis( );
 
@@ -1386,46 +1482,101 @@ t[19] = micros( );
             }
 
             // leds.show();
-        // } else if ( inClickMenu == 0 && probeActive == 0 ) {
+            // } else if ( inClickMenu == 0 && probeActive == 0 ) {
 
-        //     if ( ( ( countsss > 8 && defconDisplay >= 0 ) || countsss > 10 ) &&
-        //          defconDisplay != -1 ) {
-        //         countsss = 0;
+            //     if ( ( ( countsss > 8 && defconDisplay >= 0 ) || countsss > 10 ) &&
+            //          defconDisplay != -1 ) {
+            //         countsss = 0;
 
-        //         if ( defconDisplay != -1 ) {
-        //             tempDD++;
+            //         if ( defconDisplay != -1 ) {
+            //             tempDD++;
 
-        //             if ( tempDD > 6 ) {
-        //                 tempDD = 0;
-        //             }
-        //             defconDisplay = tempDD;
-        //         }
+            //             if ( tempDD > 6 ) {
+            //                 tempDD = 0;
+            //             }
+            //             defconDisplay = tempDD;
+            //         }
 
-        //         if ( defconDisplay > 5 ) {
-        //             defconDisplay = 0;
-        //         }
-        //     }
+            //         if ( defconDisplay > 5 ) {
+            //             defconDisplay = 0;
+            //         }
+            //     }
 
-        //     if ( readcounter > 100 ) {
-        //         readcounter = 0;
-        //         if ( probeCycle > 4 ) {
-        //             probeCycle = 1;
-        //         }
-        //     }
+            //     if ( readcounter > 100 ) {
+            //         readcounter = 0;
+            //         if ( probeCycle > 4 ) {
+            //             probeCycle = 1;
+            //         }
+            //     }
 
-        //     rotaryEncoderStuff( );
-
+            //     rotaryEncoderStuff( );
+       
         } else {
-t[20] = micros( );
+            t[ 20 ] = micros( );
             rotaryEncoderStuff( );
-t[21] = micros( );
+            t[ 21 ] = micros( );
         }
+
+        // if ( millis( ) - lastForcedShow > FORCE_SHOW_INTERVAL ) {
+        //     lastForcedShow = millis( );
+        //     leds.show();
+        // }
 
         schedulerTimer = micros( );
         core2busy = false;
+    }  else if ( showProbeLEDs != 0 && checkingButton == 0 && ProbeButton::getInstance().getButtonState() == 0 ) {
+        t[ 14 ] = micros( );
+        probeLEDhandler( );
+        t[ 15 ] = micros( );
+        // lastProbeLEDs = showProbeLEDs;
     }
-    
+
     // THREAD SAFETY: Release the core sync mutex
     // This MUST be called before returning to allow Core 1 to access shared resources
-    core_sync_release();
+    core_sync_release( );
+
+    // TIMING DEBUG OUTPUT - Smart accumulation and periodic printing
+    if ( debugWaitLoopTimingCore2 ) {
+        core2LoopIterations++;
+
+        // Calculate LED show time for this iteration
+        unsigned long ledsShowTime = ( t[ 13 ] > t[ 12 ] ) ? ( t[ 13 ] - t[ 12 ] ) : 0;
+
+        // Accumulate LED show() statistics
+        if ( ledsShowTime > 0 ) {
+            ledShowCallCount++;
+            ledShowTotalTime += ledsShowTime;
+            if ( ledsShowTime < ledShowMinTime )
+                ledShowMinTime = ledsShowTime;
+            if ( ledsShowTime > ledShowMaxTime )
+                ledShowMaxTime = ledsShowTime;
+        }
+
+        // Print summary once per second
+        unsigned long now = millis( );
+        if ( now - lastTimingPrint >= timingPrintInterval ) {
+            lastTimingPrint = now;
+
+            if ( ledShowCallCount > 0 ) {
+                Serial.println( "\n==== LED TIMING SUMMARY (1 sec) ====" );
+                Serial.printf( "  leds.show() calls:  %lu\n", ledShowCallCount );
+                Serial.printf( "  Average time:       %lu us\n", ledShowTotalTime / ledShowCallCount );
+                Serial.printf( "  Min time:           %lu us\n", ledShowMinTime );
+                Serial.printf( "  Max time:           %lu us\n", ledShowMaxTime );
+                Serial.printf( "  Total LED time:     %.2f ms\n", ledShowTotalTime / 1000.0f );
+                Serial.printf( "  Core2 iterations:   %lu\n", core2LoopIterations );
+                Serial.printf( "  LED refresh rate:   %.1f Hz\n",
+                               ledShowCallCount * 1000.0f / timingPrintInterval );
+                Serial.println( "=================================\n" );
+                Serial.flush( );
+
+                // Reset counters
+                ledShowCallCount = 0;
+                ledShowTotalTime = 0;
+                ledShowMinTime = 999999;
+                ledShowMaxTime = 0;
+                core2LoopIterations = 0;
+            }
+        }
+    }
 }

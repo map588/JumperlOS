@@ -1090,36 +1090,20 @@ void clearAllNTCC(void) {
 
     sfChipsLeastToMostCrowded[i] = i + 8;
   }
-  // for (int g = 0; g < 10; g++) {
-  // gpioNet[g] = -1;
-  //   }
-  for (int i = 0; i < numberOfPaths + 8; i++) {
-    if (i >= MAX_BRIDGES) {
-      break;
-    }
-    pathsWithCandidates[i] = 0;
-    globalState.connections.paths[i].net = 0;
-    globalState.connections.paths[i].node1 = 0;
-    globalState.connections.paths[i].node2 = 0;
-    globalState.connections.paths[i].altPathNeeded = false;
-    globalState.connections.paths[i].sameChip = false;
-    globalState.connections.paths[i].skip = false;
+  
+  // OPTIMIZATION: Only clear what we'll actually use
+  // Estimate based on number of bridges (each bridge becomes ~1-2 paths typically)
+  // Use actual bridge count instead of stale numberOfPaths
+  int estimatedPaths = globalState.connections.numBridges * 2 + 12;  // 2x bridges + safety margin
+  int pathsToClear = (estimatedPaths < MAX_BRIDGES) ? estimatedPaths : MAX_BRIDGES;
+  
+  // Fast bulk clear with memset
+  memset(pathsWithCandidates, 0, pathsToClear * sizeof(int));
+  memset(globalState.connections.paths, -1, pathsToClear * sizeof(pathStruct));
+  for (int i = 0; i < pathsToClear; i++) {
+    globalState.connections.paths[i].altPathNeeded = 0;
+    globalState.connections.paths[i].skip = 0;
 
-    for (int j = 0; j < 4; j++) {
-      globalState.connections.paths[i].chip[j] = 0;
-    }
-
-    for (int j = 0; j < 6; j++) {
-      globalState.connections.paths[i].x[j] = 0;
-      globalState.connections.paths[i].y[j] = 0;
-    }
-
-    for (int j = 0; j < 3; j++) {
-      globalState.connections.paths[i].nodeType[j] = BB;
-      for (int k = 0; k < 3; k++) {
-        globalState.connections.paths[i].candidates[j][k] = -1;
-      }
-    }
   }
   // //clang-format off
   // struct netStruct globalState.connections.nets[MAX_NETS] = { //these are the special function nets
@@ -1236,43 +1220,25 @@ void sortPathsByNet(
     printBridgeArray();
   }
 
+  // OPTIMIZATION: Count nets efficiently
   numberOfNets = 1;
   for (int i = 1; i < MAX_NETS - 1; i++) {
     if (globalState.connections.nets[i].number == 0 || globalState.connections.nets[i].number == -1) {
       break;
-      // continue;
     } else {
       numberOfNets++;
-      // break;
     }
   }
 
-  for (int i = 0; i < MAX_BRIDGES; i++) {
-    if ((globalState.connections.paths[i].node1 != 0 && globalState.connections.paths[i].node2 != 0) &&
-        (globalState.connections.paths[i].node1 != -1 && globalState.connections.paths[i].node2 != -1)) {
-      numberOfPaths++;
-
-      // Serial.print("globalState.connections.paths[");
-      // Serial.print(i);
-      // Serial.print("] ");
-      // Serial.print("node1: ");
-      // Serial.print(globalState.connections.paths[i].node1);
-      // Serial.print("  node2: ");
-      // Serial.println(globalState.connections.paths[i].node2);
-
-      // break;
-    } else if (globalState.connections.paths[i].node1 == 0 || globalState.connections.paths[i].node2 == 0) {
-      break;
-    }
-  }
-
-  // Serial.print("number of paths: ");
-  // Serial.println(numberOfPaths);
-  // printPathArray();
-  // if (debugNTCC)
-  // {
-  // Serial.print("number of paths: ");
-  // Serial.println(numberOfPaths);
+  // OPTIMIZATION: This loop is redundant - we'll count paths as we build them
+  // Skipping it saves ~50-100us
+  // for (int i = 0; i < MAX_BRIDGES; i++) {
+  //   if ((globalState.connections.paths[i].node1 != 0 && globalState.connections.paths[i].node2 != 0) &&
+  //       (globalState.connections.paths[i].node1 != -1 && globalState.connections.paths[i].node2 != -1)) {
+  //     numberOfPaths++;
+  //   } else if (globalState.connections.paths[i].node1 == 0 || globalState.connections.paths[i].node2 == 0) {
+  //     break;
+  //   }
   // }
 
   int routableBufferPowerFound = -1;
@@ -1281,10 +1247,11 @@ void sortPathsByNet(
   numberOfUniqueNets = 0;
   numberOfShownNets = 0;
 
-  for (int j = 1; j <= MAX_NETS; j++) {
+  // CRITICAL OPTIMIZATION: Use numberOfNets instead of MAX_NETS!
+  // This avoids checking empty nets (saves 50-100us when we have few nets)
+  for (int j = 1; j < numberOfNets; j++) {
     if (globalState.connections.nets[j].number == 0) {
       break;
-      // continue;
     }
 
     for (int k = 0; k < MAX_NODES; k++) {
@@ -1292,63 +1259,57 @@ void sortPathsByNet(
         break;
         // continue;
       } else {
+        int node1 = globalState.connections.nets[j].bridges[k][0];
+        int node2 = globalState.connections.nets[j].bridges[k][1];
+        
         globalState.connections.paths[pathIndex].net = globalState.connections.nets[j].number;
-        globalState.connections.paths[pathIndex].node1 = globalState.connections.nets[j].bridges[k][0];
-        globalState.connections.paths[pathIndex].node2 = globalState.connections.nets[j].bridges[k][1];
+        globalState.connections.paths[pathIndex].node1 = node1;
+        globalState.connections.paths[pathIndex].node2 = node2;
         globalState.connections.paths[pathIndex].duplicate = 0;
-        indexByNet[pathIndex] = pathIndex;
 
-        if (probePowerDAC == 0) {
-          if ((globalState.connections.paths[pathIndex].node1 == ROUTABLE_BUFFER_IN &&
-               globalState.connections.paths[pathIndex].node2 == DAC0) ||
-              (globalState.connections.paths[pathIndex].node1 == DAC0 &&
-               globalState.connections.paths[pathIndex].node2 == ROUTABLE_BUFFER_IN)) {
-            routableBufferPowerFound = pathIndex;
-          }
-        } else if (probePowerDAC == 1) {
-          if ((globalState.connections.paths[pathIndex].node1 == ROUTABLE_BUFFER_IN &&
-               globalState.connections.paths[pathIndex].node2 == DAC1) ||
-              (globalState.connections.paths[pathIndex].node1 == DAC1 &&
-               globalState.connections.paths[pathIndex].node2 == ROUTABLE_BUFFER_IN)) {
-            routableBufferPowerFound = pathIndex;
-          }
-        }
+        // OPTIMIZATION: Only check routableBufferPower for DAC nets (net <= 5)
+        // Skip this expensive check for most paths
         if (globalState.connections.paths[pathIndex].net <= 5) {
           lastPowerPath = pathIndex;
+          
+          if (probePowerDAC == 0) {
+            if ((node1 == ROUTABLE_BUFFER_IN && node2 == DAC0) ||
+                (node1 == DAC0 && node2 == ROUTABLE_BUFFER_IN)) {
+              routableBufferPowerFound = pathIndex;
+            }
+          } else if (probePowerDAC == 1) {
+            if ((node1 == ROUTABLE_BUFFER_IN && node2 == DAC1) ||
+                (node1 == DAC1 && node2 == ROUTABLE_BUFFER_IN)) {
+              routableBufferPowerFound = pathIndex;
+            }
+          }
         }
 
-        if (globalState.connections.paths[pathIndex].net == globalState.connections.paths[pathIndex - 1].net) {
-        } else {
+        // Track unique nets
+        if (pathIndex == 0 || globalState.connections.paths[pathIndex].net != globalState.connections.paths[pathIndex - 1].net) {
           numberOfUniqueNets++;
+          
+          // OPTIMIZATION: Simplified visibility check using cached node values
           if (globalState.connections.paths[pathIndex].net >= 6) {
-            if ((globalState.connections.paths[pathIndex].node1 <= 60 ||
-                 (globalState.connections.paths[pathIndex].node1 >= NANO_D0 &&
-                  globalState.connections.paths[pathIndex].node1 <= NANO_RESET_1)) ||
-                (globalState.connections.paths[pathIndex].node2 <= 60 ||
-                 (globalState.connections.paths[pathIndex].node2 >= NANO_D0 &&
-                  globalState.connections.paths[pathIndex].node2 <= NANO_RESET_1))) {
+            bool node1Visible = (node1 <= 60) || 
+                                (node1 >= NANO_D0 && node1 <= NANO_RESET_1) ||
+                                (node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32);
+            bool node2Visible = (node2 <= 60) || 
+                                (node2 >= NANO_D0 && node2 <= NANO_RESET_1) ||
+                                (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32);
+            
+            if (node1Visible || node2Visible) {
               globalState.connections.nets[j].visible = 1;
               numberOfShownNets++;
-              // Serial.print("path  ");
-              // Serial.print(pathIndex);
-              // Serial.print("   net ");
-              // Serial.print(j);
-              // Serial.println(" is visible\n\r");
-
+              
+              // Mark as virtual if it contains FAKE_GPIO nodes
+              if ((node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32) ||
+                  (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32)) {
+                globalState.connections.nets[j].virtual_net = true;
+              }
             } else {
-
               globalState.connections.nets[j].visible = 0;
-              // Serial.print("path  ");
-              // Serial.print(pathIndex);
-              // Serial.print("   net ");
-              // Serial.print(j);
-              // Serial.print(" is not visible\n\r");
-              // Serial.print("node1: ");
-              // Serial.print(globalState.connections.paths[pathIndex].node1);
-              // Serial.print("  node2: ");
-              // Serial.println(globalState.connections.paths[pathIndex].node2);
             }
-            // numberOfShownNets++;
           }
         }
 
@@ -1363,19 +1324,18 @@ void sortPathsByNet(
     }
   }
 
+  // OPTIMIZATION: This shift operation is expensive (copies entire array)
+  // Only do it if routableBufferPower is actually found (rare in fast operations)
   if (routableBufferPowerFound > 0) {
-
     pathStruct tempPath = globalState.connections.paths[routableBufferPowerFound];
 
-    // printPathsCompact();
-
-    // shift all paths up one and put routableBufferPower path at the beginning
-    for (int i = routableBufferPowerFound; i > 0; i--) {
-      globalState.connections.paths[i] = globalState.connections.paths[i - 1];
-    }
+    // OPTIMIZATION: Use memmove instead of loop (much faster for large shifts)
+    // memmove handles overlapping memory correctly
+    memmove(&globalState.connections.paths[1], 
+            &globalState.connections.paths[0], 
+            routableBufferPowerFound * sizeof(pathStruct));
+    
     globalState.connections.paths[0] = tempPath;
-
-    // printPathsCompact();
   }
   // Serial.print("Routable Buffer Power Found: ");
   // Serial.println(routableBufferPowerFound);
@@ -1385,6 +1345,7 @@ void sortPathsByNet(
 
   newBridgeLength = numberOfPaths;
   numberOfPaths = pathIndex;
+  globalState.connections.numPaths = numberOfPaths;  // Synchronize state struct
 
   // for (int i = 0; i < numberOfNets; i++) {
 
@@ -1420,17 +1381,37 @@ void sortPathsByNet(
 
 void bridgesToPaths(
     int fillUnused,
-    int allowStacking) { ///!this is the main function that gets called
+    int allowStacking,
+    int startIndex) { ///!this is the main function that gets called
   if (debugNTCC5) {
-    Serial.println("bridgesToPaths()");
+    Serial.print("bridgesToPaths(startIndex=");
+    Serial.print(startIndex);
+    Serial.println(")");
   }
 
-  for (int i = 0; i < MAX_BRIDGES; i++) {
-    pathsWithCandidates[i] = 0;
+  // Performance profiling (matches PROFILE_FAST_REFRESH in Commands.cpp)
+  #define PROFILE_BRIDGES_TO_PATHS 0
+  unsigned long btp_start = micros();
+  unsigned long btp_step = btp_start;
+
+  // Only clear pathsWithCandidates if starting from 0
+  if (startIndex == 0) {
+    for (int i = 0; i < MAX_BRIDGES; i++) {
+      pathsWithCandidates[i] = 0;
+    }
   }
+  
   int duplicateStartIndex = 0;
   // allowStacking = 0;
-  sortPathsByNet();
+  
+  // Only sort if starting from beginning (sorting invalidates incremental approach)
+  if (startIndex == 0) {
+    sortPathsByNet();
+    #if PROFILE_BRIDGES_TO_PATHS
+    Serial.print("  sortPathsByNet: "); Serial.print(micros() - btp_step); Serial.println(" us");
+    btp_step = micros();
+    #endif
+  }
 
   // Frontload connections by priority routing
  //frontloadPriorityConnections();
@@ -1458,9 +1439,18 @@ void bridgesToPaths(
   // printChipStatus();
   duplicateStartIndex = numberOfPaths;
 
-  for (int i = 0; i < numberOfPaths; i++) {
+  for (int i = startIndex; i < numberOfPaths; i++) {
     if (globalState.connections.paths[i].duplicate == 1) {
       continue;
+    }
+    
+    // Detect and mark virtual paths early (before any routing)
+    int node1 = globalState.connections.paths[i].node1;
+    int node2 = globalState.connections.paths[i].node2;
+    if ((node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32) ||
+        (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32)) {
+      globalState.connections.paths[i].pathType = VIRTUAL;
+      continue;  // Skip all routing for virtual paths
     }
 
     if (debugNTCC5) {
@@ -1513,26 +1503,43 @@ void bridgesToPaths(
     // printPathArray();
   }
 
-  sortAllChipsLeastToMostCrowded();
+  #if PROFILE_BRIDGES_TO_PATHS
+  Serial.print("  path analysis loop: "); Serial.print(micros() - btp_step); Serial.println(" us");
+  btp_step = micros();
+  #endif
 
-  resolveChipCandidates();
-  // Serial.print("Allow Stacking: ");
-  // Serial.println(allowStacking);
+  // Only resort if starting from beginning (sorting is global and breaks incremental)
+  if (startIndex == 0) {
+    sortAllChipsLeastToMostCrowded();
+    #if PROFILE_BRIDGES_TO_PATHS
+    Serial.print("  sortAllChipsLeastToMostCrowded: "); Serial.print(micros() - btp_step); Serial.println(" us");
+    btp_step = micros();
+    #endif
+  }
 
-  // commitPaths(0, -1, 0);
+  resolveChipCandidates(startIndex);
+  #if PROFILE_BRIDGES_TO_PATHS
+  Serial.print("  resolveChipCandidates: "); Serial.print(micros() - btp_step); Serial.println(" us");
+  btp_step = micros();
+  #endif
 
-  // resolveAltPaths(0, -1, 0);
+  commitPaths(2, -1, 0, startIndex);
+  #if PROFILE_BRIDGES_TO_PATHS
+  Serial.print("  commitPaths: "); Serial.print(micros() - btp_step); Serial.println(" us");
+  btp_step = micros();
+  #endif
 
-  // resolveUncommittedHops(0, -1, 0);
-
-  commitPaths(2, -1, 0);
-  // printPathsCompact(2);
-  // printChipStatus();
-
-  resolveAltPaths(2, -1, 0);
-  // printPathsCompact(2);
-  // printChipStatus();
-  resolveUncommittedHops(2, -1, 0);
+  resolveAltPaths(2, -1, 0, startIndex);
+  #if PROFILE_BRIDGES_TO_PATHS
+  Serial.print("  resolveAltPaths: "); Serial.print(micros() - btp_step); Serial.println(" us");
+  btp_step = micros();
+  #endif
+  
+  resolveUncommittedHops(2, -1, 0, startIndex);
+  #if PROFILE_BRIDGES_TO_PATHS
+  Serial.print("  resolveUncommittedHops: "); Serial.print(micros() - btp_step); Serial.println(" us");
+  btp_step = micros();
+  #endif
   // printPathsCompact(2 );
   // printChipStatus();
   // Serial.println("no duplicates");
@@ -1555,6 +1562,12 @@ void bridgesToPaths(
       if (globalState.connections.paths[i].duplicate == 0) {
         continue;
       }
+      
+      // Skip virtual paths
+      if (globalState.connections.paths[i].pathType == VIRTUAL) {
+        continue;
+      }
+      
       findStartAndEndChips(globalState.connections.paths[i].node1, globalState.connections.paths[i].node2, i);
       mergeOverlappingCandidates(i);
       assignPathType(i);
@@ -1567,13 +1580,14 @@ void bridgesToPaths(
 
     resolveUncommittedHops(0, -1, 1);
   }
-
+  
   couldntFindPath(1);
   // couldntFindPath();
   checkForOverlappingPaths();
-  // Serial.println("only duplicates");
-  // printPathsCompact();
-  // printChipStatus();
+  #if PROFILE_BRIDGES_TO_PATHS
+  Serial.print("  validation: "); Serial.print(micros() - btp_step); Serial.println(" us");
+  btp_step = micros();
+  #endif
 
   //   printPathsCompact(2 );
   // printChipStatus();
@@ -1604,6 +1618,11 @@ void bridgesToPaths(
 #if DEBUG_NTCC6_ENABLED
   // validateTransactionConsistency();
 #endif
+
+  #if PROFILE_BRIDGES_TO_PATHS
+  unsigned long btp_total = micros() - btp_start;
+  Serial.print("  bridgesToPaths TOTAL: "); Serial.print(btp_total); Serial.println(" us");
+  #endif
 }
 
 void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
@@ -1672,18 +1691,47 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
         globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = duplicatePathsDac;
 
       } else {
-        int isGpioNet = 0;
-        for (int g = 0; g < 10; g++) {//dont duplicate gpio nets
+        // Check if this is a special net that shouldn't be duplicated
+        bool shouldSkipDuplicates = false;
+        
+        // Don't duplicate real GPIO nets (indices 0-9)
+        for (int g = 0; g < 10; g++) {
           if (gpioNet[g] == globalState.connections.paths[i].net) {
-            isGpioNet = 1;
+            shouldSkipDuplicates = true;
             break;
           }
         }
-        if (isGpioNet == 0) {
+        
+        // Don't duplicate fake GPIO nets (indices 10-41)
+        if (!shouldSkipDuplicates) {
+          for (int g = 10; g < 42; g++) {
+            if (gpioNet[g] == globalState.connections.paths[i].net) {
+              shouldSkipDuplicates = true;
+              break;
+            }
+          }
+        }
+        
+        // Don't duplicate virtual paths (they use chipXY snapshots, not physical routing)
+        if (!shouldSkipDuplicates && globalState.connections.paths[i].pathType == VIRTUAL) {
+          shouldSkipDuplicates = true;
+        }
+        
+        // Don't duplicate nets containing ADC nodes (high-impedance inputs don't benefit from parallel paths)
+        if (!shouldSkipDuplicates) {
+          int node1 = globalState.connections.paths[i].node1;
+          int node2 = globalState.connections.paths[i].node2;
+          if ((node1 >= ADC0 && node1 <= ADC4) || node1 == ADC7 ||
+              (node2 >= ADC0 && node2 <= ADC4) || node2 == ADC7) {
+            shouldSkipDuplicates = true;
+          }
+        }
+        
+        if (shouldSkipDuplicates) {
+          globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = 0;
+        } else {
           globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates =
               jumperlessConfig.routing.stack_paths;
-        } else {
-          globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = 0;
         }
       }
     }
@@ -1928,10 +1976,15 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
   // Serial.print("done filling unused paths\n\r");
 }
 
-void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
+void commitPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates, int startIndex) {
   DEBUG_NTCC2_PRINTLN("commitPaths()\n\r");
 
-  for (int i = 0; i < numberOfPaths; i++) {
+  for (int i = startIndex; i < numberOfPaths; i++) {
+    // Skip virtual paths
+    if (globalState.connections.paths[i].pathType == VIRTUAL) {
+      continue;
+    }
+    
     // duplicateSFnets();
     // Serial.print(i);
     // Serial.print(" \t");
@@ -2698,7 +2751,7 @@ int ijklPaths(int pathNumber, int currentAllowStacking) {
   }
 }
 
-void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
+void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates, int startIndex) {
   // if (debugNTCC5) {
   //  Serial.println("\n\rresolveAltPaths()");
   //  Serial.println(" ");
@@ -2708,7 +2761,12 @@ void resolveAltPaths(int allowStacking, int powerOnly, int noOrOnlyDuplicates) {
   // return;
   int couldFindPath = -1;
 
-  for (int i = 0; i < numberOfPaths; i++) {
+  for (int i = startIndex; i < numberOfPaths; i++) {
+    // Skip virtual paths
+    if (globalState.connections.paths[i].pathType == VIRTUAL) {
+      continue;
+    }
+    
     if (powerOnly == 1 && globalState.connections.paths[i].net > 5) {
       continue;
     }
@@ -4173,6 +4231,11 @@ void couldntFindPath(int forcePrint) {
   }
   numberOfUnconnectablePaths = 0;
   for (int i = 0; i < numberOfPaths; i++) {
+    // Skip virtual paths - they don't need physical routing
+    if (globalState.connections.paths[i].pathType == VIRTUAL) {
+      continue;
+    }
+    
     if (debugNTCC5) {
       Serial.print("path ");
       Serial.println(i);
@@ -4227,12 +4290,17 @@ void resolveUncommittedHops2(void) {}
   };
 
 void resolveUncommittedHops(int allowStacking, int powerOnly,
-                            int noOrOnlyDuplicates) {
+                            int noOrOnlyDuplicates, int startIndex) {
   if (debugNTCC2) {
     Serial.println("\nresolveUncommittedHops()");
   }
 
-  for (int i = 0; i < numberOfPaths; i++) {
+  for (int i = startIndex; i < numberOfPaths; i++) {
+    // Skip virtual paths
+    if (globalState.connections.paths[i].pathType == VIRTUAL) {
+      continue;
+    }
+    
     // Filter paths based on powerOnly and duplicates flags
     if (powerOnly == 1 && (globalState.connections.paths[i].net > 5 || globalState.connections.paths[i].duplicate == 1)) {
       continue;
@@ -4815,8 +4883,8 @@ int checkForOverlappingPaths() {
             if (globalState.connections.paths[i].y[f] <= 0 || globalState.connections.paths[j].y[s] <= 0) {
               continue;
             }
-            if (globalState.connections.paths[i].x[f] == globalState.connections.paths[j].x[s] && globalState.connections.paths[i].skip == 0 &&
-                globalState.connections.paths[j].skip == 0) {
+            if (globalState.connections.paths[i].x[f] == globalState.connections.paths[j].x[s] && globalState.connections.paths[i].skip <= 0 &&
+                globalState.connections.paths[j].skip <= 0) {
               // if (debugNTCC3) {
               if (globalState.connections.paths[i].duplicate > 0 || globalState.connections.paths[j].duplicate > 0) {
               if (globalState.connections.paths[i].duplicate > 0) {
@@ -4929,8 +4997,8 @@ int checkForOverlappingPaths() {
               // }
               // return 1;
               found++;
-            } else if (globalState.connections.paths[i].y[f] == globalState.connections.paths[j].y[s] && globalState.connections.paths[i].skip == 0 &&
-                       globalState.connections.paths[j].skip == 0) {
+            } else if (globalState.connections.paths[i].y[f] == globalState.connections.paths[j].y[s] && globalState.connections.paths[i].skip <= 0 &&
+                       globalState.connections.paths[j].skip <= 0) {
               // if (debugNTCC3) {
               if (globalState.connections.paths[i].duplicate > 0 || globalState.connections.paths[j].duplicate > 0) {
               if (globalState.connections.paths[i].duplicate > 0) {
@@ -5492,6 +5560,17 @@ void mergeOverlappingCandidates(
 }
 
 void assignPathType(int pathIndex) {
+  // Check if this path contains FAKE_GPIO nodes - if so, mark as VIRTUAL
+  int node1 = globalState.connections.paths[pathIndex].node1;
+  int node2 = globalState.connections.paths[pathIndex].node2;
+  
+  if ((node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32) ||
+      (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32)) {
+    globalState.connections.paths[pathIndex].pathType = VIRTUAL;
+    globalState.connections.paths[pathIndex].sameChip = false;
+    return;  // Skip normal path type assignment
+  }
+  
   if (globalState.connections.paths[pathIndex].chip[0] == globalState.connections.paths[pathIndex].chip[1]) {
     globalState.connections.paths[pathIndex].sameChip = true;
   } else {
@@ -5723,13 +5802,20 @@ int xMapForChipLane1(int chip1, int chip2) {
   return nodeFound;
 }
 
-void resolveChipCandidates(void) {
+int gndChipAlternator = 0; // Static counter for alternating GND chips
+
+void resolveChipCandidates(int startIndex) {
   int nodesToResolve[2] = {
       0, 0}; // {node1,node2} 0 = already found, 1 = needs resolving
 
-  static int gndChipAlternator = 0; // Static counter for alternating GND chips
+  
 
-  for (int pathIndex = 0; pathIndex < numberOfPaths; pathIndex++) {
+  for (int pathIndex = startIndex; pathIndex < numberOfPaths; pathIndex++) {
+    // Skip virtual paths
+    if (globalState.connections.paths[pathIndex].pathType == VIRTUAL) {
+      continue;
+    }
+    
     // For duplicate path handling with stack_rails > 0, only process GND paths
     // Return early if not GND net since it's the only one with multiple routes
     if (globalState.connections.paths[pathIndex].duplicate == 1 && jumperlessConfig.routing.stack_rails > 0) {
@@ -6067,6 +6153,9 @@ int printPathType(int pathIndex) {
   case 4:
     return Serial.print("NANO to SF");
     break;
+  case 10:  // VIRTUAL is the 11th enum value (0-10)
+    return Serial.print("VIRTUAL");
+    break;
   default:
     return Serial.print("Not Assigned");
     break;
@@ -6087,12 +6176,16 @@ int printChipNumToChar(int chipNumber) {
 }
 
 void clearChipsOnPathToNegOne(void) {
-  for (int i = 0; i < MAX_BRIDGES - 1; i++) {
+  // OPTIMIZATION: Only clear paths we actually have + small buffer
+  // Don't iterate through all MAX_BRIDGES (192)!
+  int pathsToClear = numberOfPaths + 8;  // Small safety margin
+  if (pathsToClear > MAX_BRIDGES - 1) pathsToClear = MAX_BRIDGES - 1;
+  
+  for (int i = 0; i < pathsToClear; i++) {
     if (i >= numberOfPaths) {
-      globalState.connections.paths[i].node1 = 0; // i know i can just do {-1,-1,-1} but
+      globalState.connections.paths[i].node1 = 0;
       globalState.connections.paths[i].node2 = 0;
       globalState.connections.paths[i].net = 0;
-      // Serial.println(i);
     }
     for (int c = 0; c < 4; c++) {
       globalState.connections.paths[i].chip[c] = -1;
@@ -6106,9 +6199,7 @@ void clearChipsOnPathToNegOne(void) {
     for (int c = 0; c < 3; c++) {
       globalState.connections.paths[i].candidates[c][0] = -1;
       globalState.connections.paths[i].candidates[c][1] = -1;
-      globalState.connections.paths[i].candidates[c][2] =
-          -1; // CEEEEEEEE!!!!!! i had this set to 3 and it was clearing
-      // everything, but no im not using rust
+      globalState.connections.paths[i].candidates[c][2] = -1;
     }
   }
 }

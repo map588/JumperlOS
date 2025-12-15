@@ -37,6 +37,7 @@ typedef enum {
 class WaveGen {
 public:
     WaveGen();
+    ~WaveGen();  // Destructor to free dynamically allocated buffers
     
     // Configuration
     bool begin(uint8_t i2c_address = MCP4728_I2CADDR_DEFAULT, TwoWire *wire = &Wire);
@@ -104,18 +105,20 @@ private:
     uint32_t _sample_interval_us;
     uint32_t _sample_count;
     
-    // Waveform data
-    static const size_t MAX_WAVEFORM_TABLE_SIZE = 8192;
-    volatile uint16_t _waveform_table[MAX_WAVEFORM_TABLE_SIZE];
+    // Waveform data (dynamically allocated to save RAM)
+    static const size_t MAX_WAVEFORM_TABLE_SIZE = 4096;
+    volatile uint16_t* _waveform_table;  // Dynamically allocated 8KB buffer
     volatile size_t _table_size;        // Current table size (dynamic)
     volatile size_t _table_index;
+    bool _waveform_table_allocated;     // Track allocation state
     // Sample repeat control for very low frequencies
     volatile uint32_t _repeat_factor;     // number of times to resend each sample
     volatile uint32_t _repeat_remaining;  // countdown for repeats before advancing index
     
-    // Buffer management for efficient I2C transfers
-    static const size_t MAX_BUFFER_SIZE = 8192; // 4KB buffer
-    alignas(4) uint8_t _i2c_buffer[MAX_BUFFER_SIZE];
+    // Buffer management for efficient I2C transfers (dynamically allocated to save RAM)
+    static const size_t MAX_BUFFER_SIZE = 4096; // 4KB buffer
+    uint8_t* _i2c_buffer;                // Dynamically allocated 4KB buffer
+    bool _i2c_buffer_allocated;          // Track allocation state
     size_t _buffer_size; // Actual buffer size for current frequency
     size_t _buffer_cycles; // Number of waveform cycles in buffer (legacy; used for stats only)
     size_t _buffer_samples; // Number of samples packed in current buffer

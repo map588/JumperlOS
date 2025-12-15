@@ -4,6 +4,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "FilesystemStuff.h"  // For safe file operations
+#include "FakeGpio.h"  // For fake GPIO state updates
 // #include "LittleFS.h"
 #include "Commands.h"
 // #include "MachineCommands.h"
@@ -28,14 +29,16 @@ volatile bool netsUpdated = true;
 bool debugFP = EEPROM.read(DEBUG_FILEPARSINGADDRESS);
 bool debugFPtime = EEPROM.read(TIME_FILEPARSINGADDRESS);
 
+// LEGACY: These SafeString buffers are kept for backward compatibility with old slot files
+// TODO: Eventually migrate all legacy file parsing to use States.cpp YAML format
+// and remove these buffers entirely (would save 5.1KB)
 createSafeString(nodeFileString, 1800);
+createSafeString(currentColorSlotColorsString, 1500);
+createSafeString(specialFunctionsString, 2800);
 
 // General-purpose nodeFileString backup/restore system
 static char nodeFileStringBackup[1800];
 static bool nodeFileBackupStored = false;
-
-createSafeString(currentColorSlotColorsString,
-                 1500); // Cache for current slot's net colors
 
 // Track which slots have net colors assigned (bit mask for performance)
 uint32_t slotsWithNetColors = 0;
@@ -44,7 +47,6 @@ uint32_t slotsWithNetColors = 0;
 uint32_t slotsValidated = 0;
 
 int numConnsJson = 0;
-createSafeString(specialFunctionsString, 2800);
 
 char inputBuffer[INPUTBUFFERLENGTH] = {0};
 
@@ -259,6 +261,8 @@ bool addBridgeToState(int node1, int node2, int duplicates, bool autoRefresh) {
         refreshLocalConnections(1, 1, 0);
     }
     
+    // Update fake GPIO pins if this bridge affects their routing
+    updateFakeGpioAfterConnectionChange(node1, node2);
     
     if (debugFP) {
         Jerial.print("Added bridge to state: ");
@@ -346,6 +350,9 @@ bool removeBridgeFromState(int node1, int node2, bool autoRefresh) {
     if (autoRefresh) {
         refreshLocalConnections(-1, 1, 0);
     }
+    
+    // Update fake GPIO pins if this bridge affects their routing
+    updateFakeGpioAfterConnectionChange(node1, node2);
     
     if (debugFP) {
         if (node2 == -1) {
@@ -1997,7 +2004,9 @@ int isNodeValid(int node) {
   } else if (node >= 100 && node <= 117) {
     return 1;
   } else if (node >= RP_GPIO_1 &&
-             node <= ROUTABLE_BUFFER_OUT) { // Extended range to include 126-134
+             node <= ROUTABLE_BUFFER_OUT) { // Extended range to include 126-140
+    return 1;
+  } else if (node >= FAKE_GPIO_1 && node <= FAKE_GPIO_32) { // Fake GPIO 141-172
     return 1;
   } else {
     return 0;

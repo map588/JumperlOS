@@ -198,24 +198,33 @@ int dacZero[ 4 ] = { 1650, 1650, 1650, 1650 };
 float adcSpread[ 8 ] = { 18.28, 18.28, 18.28, 18.28, 5.0, 17.28, 17.28, 17.28 };
 float adcZero[ 8 ] = { 8.0, 8.0, 8.0, 8.0, 0.0, 8.0, 8.0, 8.0 };
 
-/// 0 = output low, 1 = output high, 2 = input, 3 = input pullup, 4 = input
-/// pulldown, 5 = unknown
-uint8_t gpioState[ 10 ] = {
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
-    0xff,
+/// GPIO states: 0=output low, 1=output high, 2=input, 3=input pullup, 
+///              4=input pulldown, 5=unknown, 6=I2C, 7=bus keeper
+/// Indices 0-9: Real GPIO pins (RP2040 GPIO 20-27 + UART)
+/// Indices 10-41: Fake GPIO pins (32 slots)
+uint8_t gpioState[ 42 ] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Real GPIO
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GPIO 0-9
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GPIO 10-19
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GPIO 20-29
+    0xff, 0xff  // Fake GPIO 30-31
 };
-uint8_t gpioReading[ 10 ] = {
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3 }; // 0 = low, 1 = high 2 = floating 3 = unknown
 
-int gpioNet[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+uint8_t gpioReading[ 42 ] = {
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Real GPIO (3 = unknown)
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GPIO 0-9
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GPIO 10-19
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GPIO 20-29
+    3, 3  // Fake GPIO 30-31
+};
+
+int gpioNet[ 42 ] = {
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Real GPIO
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GPIO 0-9
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GPIO 10-19
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GPIO 20-29
+    -1, -1  // Fake GPIO 30-31
+};
 
 int revisionNumber = 0;
 
@@ -904,9 +913,16 @@ void printGPIOState( void ) {
     Serial.println( );
 }
 
-uint32_t gpioReadingColors[ 10 ] = { 0x050507, 0x050507, 0x050507, 0x050507,
-                                     0x050507, 0x050507, 0x050507, 0x050507,
-                                     0x050507, 0x050507 };
+uint32_t gpioReadingColors[ 42 ] = { 
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Real GPIO
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GPIO 0-9
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GPIO 10-19
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GPIO 20-29
+    0x050507, 0x050507  // Fake GPIO 30-31
+};
+
+// Debug flag for fake GPIO visual integration
+bool debugFakeGpio = false;  // Set to true to see detailed fake GPIO debug output
 
 uint32_t gpioIdleColors[ 10 ] = { 0x050206, 0x050307, 0x040407, 0x040407,
                                   0x040407, 0x040407, 0x040407, 0x040407,
@@ -1045,6 +1061,123 @@ void readGPIO( void ) {
     }
 }
 
+// ============================================================================
+// Fake GPIO Background Reading
+// ============================================================================
+
+// Forward declarations for fake GPIO types from JumperlessMicroPythonAPI.cpp
+#define MAX_FAKE_GPIO 32
+
+// Fake GPIO pin configuration structure (defined in JumperlessMicroPythonAPI.cpp)
+struct FakeGpioPinConfig {
+    bool active;
+    int node;
+    float v_high;
+    float v_low;
+    float threshold_high;
+    float threshold_low;
+    int mode;  // INPUT=0, OUTPUT=1
+    int chip_k_x;
+    int chip_k_y;
+    int current_state;
+    int high_voltage_node;
+    int low_voltage_node;
+    chipXYBitfield chipXYState[12];
+    bool hasStoredState;
+    int path_chips[4];
+    int path_x[4];
+    int path_y[4];
+    int path_length;
+};
+
+// External linkage to fake GPIO state from JumperlessMicroPythonAPI.cpp
+extern FakeGpioPinConfig fakeGpioPins[MAX_FAKE_GPIO];
+extern int adcCurrentlyConnectedPin;
+
+// Background reading for fake GPIO pins (indices 10-41)
+// Uses stored chipXY snapshots for INPUT pins, reads OUTPUT state directly
+// Rotates through pins to avoid blocking main loop
+void readFakeGPIO( void ) {
+    // Skip during high-priority operations
+    if ( logicAnalyzer.is_running( ) || logicAnalyzer.is_armed( ) || flashingArduino == true ) {
+        return;
+    }
+    
+    // Memory barrier for multicore safety
+    __dmb();
+    
+    // Rotate through active pins - only read a few per cycle to avoid blocking
+    // This counter determines which subset of pins we read this cycle
+    static int readCycleOffset = 0;
+    const int pinsPerCycle = 4;  // Read 4 pins per cycle for responsive updates
+    
+    int pinsRead = 0;
+    
+    // Start from offset and wrap around, reading only pinsPerCycle pins
+    for ( int cycleIdx = 0; cycleIdx < MAX_FAKE_GPIO && pinsRead < pinsPerCycle; cycleIdx++ ) {
+        int slot = ( readCycleOffset + cycleIdx ) % MAX_FAKE_GPIO;
+        
+        FakeGpioPinConfig& pin = fakeGpioPins[ slot ];
+        
+        if ( !pin.active ) continue;
+        
+        int arrayIndex = 10 + slot;  // Fake GPIO uses indices 10-41 in gpioReading arrays
+        
+        // Skip if owned by MicroPython
+        if ( arrayIndex < MAX_FAKE_GPIO + 10 && globalState.config.gpioPythonOwned[ arrayIndex ] ) {
+            continue;
+        }
+        
+        pinsRead++;  // Count this as an attempted read even if skipped
+        
+        if ( pin.mode == 0 ) {  // INPUT mode - needs ADC reading
+            // Use stored chipXY snapshot for multiplexed ADC reading
+            if ( !pin.hasStoredState ) continue;
+            
+            // Only switch hardware if different from last read (optimization)
+            if ( adcCurrentlyConnectedPin != pin.node ) {
+                // Apply this pin's complete chipXY state snapshot
+                // This automatically "undoes" the previous pin's state
+                // applyChipXYState is declared in CH446Q.h
+                applyChipXYState( pin.chipXYState );
+                adcCurrentlyConnectedPin = pin.node;
+                
+                // Brief settling time for analog switches (50us is typical)
+                delayMicroseconds( 50 );
+            }
+            
+            // Read ADC0 with fast sampling (4 samples for ~30us read time)
+            float voltage = readAdcVoltage( 0, 1 );
+            
+            // Apply thresholds with hysteresis (keep previous state in dead zone)
+            int newState = pin.current_state;  // Default: keep previous
+            if ( voltage >= pin.threshold_high ) {
+                newState = 1;  // HIGH
+            } else if ( voltage <= pin.threshold_low ) {
+                newState = 0;  // LOW
+            }
+            // else: in hysteresis zone - keep previous state
+            
+            // Update if state changed
+            if ( newState != pin.current_state ) {
+                pin.current_state = newState;
+            }
+            
+            // Update visual arrays (always update for smooth animations)
+            gpioReading[ arrayIndex ] = newState;
+            gpioReadingColors[ arrayIndex ] = ( newState == 1 ) ? 0x230205 : 0x052302;
+            
+        } else if ( pin.mode == 1 ) {  // OUTPUT mode - just update visual from current state
+            // OUTPUT state is maintained by write operations, just sync visual
+            gpioReading[ arrayIndex ] = pin.current_state;
+            gpioReadingColors[ arrayIndex ] = ( pin.current_state == 1 ) ? 0x230205 : 0x052302;
+        }
+    }
+    
+    // Advance offset for next cycle (rotate through all pins over multiple calls)
+    readCycleOffset = ( readCycleOffset + pinsPerCycle ) % MAX_FAKE_GPIO;
+}
+
 void setRailsAndDACs( int saveEEPROM ) {
 
     // Serial.println("setRailsAndDACs");
@@ -1133,13 +1266,13 @@ void setDac0voltage( float voltage, int save, int saveEEPROM,
     int dacValue = ( voltage * 4095 / dacSpread[ 0 ] ) + dacZero[ 0 ];
 
     if ( checkProbePower && probePowerDAC == 0 &&
-         ( voltage > 5.0 || voltage < -0.01 ) ) {
+         ( voltage > 3.9 || voltage < 2.80 ) ) {
         Serial.println(
             "DAC 0 connected to probe LEDs, swapping LED power to DAC 1" );
         // removeBridgeFromNodeFile(DAC0, ROUTABLE_BUFFER_IN, netSlot, 0, 0);
         probePowerDAC = 1;
         probePowerDACChanged = true;
-        routableBufferPower( 1, 0 );
+        routableBufferPower( 1, 1 );
     }
 
     if ( dacValue > 4095 ) {
@@ -1194,14 +1327,14 @@ void setDac1voltage( float voltage, int save, int saveEEPROM,
         dacValue = 0;
     }
     if ( checkProbePower && probePowerDAC == 1 &&
-         ( voltage > 5.0 || voltage < -0.01 ) ) {
+         ( voltage > 3.9 || voltage < 2.80 ) ) {
 
         Serial.println(
             "DAC 1 connected to probe LEDs, \n\rswapping LED power to DAC 0" );
         // removeBridgeFromNodeFile(DAC0, ROUTABLE_BUFFER_IN, netSlot, 0, 0);
         probePowerDAC = 0;
         probePowerDACChanged = true;
-        routableBufferPower( 1, 0 );
+        routableBufferPower( 1, 1 );
     }
 
     digitalWrite( LDAC, HIGH );
@@ -1383,8 +1516,12 @@ void dacSine( int resolution ) {
     }
 }
 
-void chooseShownReadings( void ) {
+// OPTIMIZATION: Cache readings and only rebuild when nets change
+static bool readingsValid = false;
+static int lastNumberOfNets = 0;
 
+void rebuildShownReadings() {
+    // Clear all readings
     showADCreadings[ 0 ] = 0;
     showADCreadings[ 1 ] = 0;
     showADCreadings[ 2 ] = 0;
@@ -1403,32 +1540,30 @@ void chooseShownReadings( void ) {
     int detectedPlusNet = -1;
     int detectedMinusNet = -1;
 
-    for ( int i = 0; i < numberOfPaths; i++ ) {
-
+    // Scan paths to find which net each ADC/ISENSE node is connected to
+    // We can't use nodeToNetIndex because ADC nodes might not be in nets[].nodes[] arrays
+    for ( int i = 0; i < numberOfPaths && i < MAX_BRIDGES; i++ ) {
+        // Check ADC channels
         if ( globalState.connections.paths[ i ].node1 == ADC0 || globalState.connections.paths[ i ].node2 == ADC0 ) {
             showADCreadings[ 0 ] = globalState.connections.paths[ i ].net;
         }
-
         if ( globalState.connections.paths[ i ].node1 == ADC1 || globalState.connections.paths[ i ].node2 == ADC1 ) {
             showADCreadings[ 1 ] = globalState.connections.paths[ i ].net;
         }
-
         if ( globalState.connections.paths[ i ].node1 == ADC2 || globalState.connections.paths[ i ].node2 == ADC2 ) {
             showADCreadings[ 2 ] = globalState.connections.paths[ i ].net;
         }
-
         if ( globalState.connections.paths[ i ].node1 == ADC3 || globalState.connections.paths[ i ].node2 == ADC3 ) {
             showADCreadings[ 3 ] = globalState.connections.paths[ i ].net;
         }
-
         if ( globalState.connections.paths[ i ].node1 == ADC4 || globalState.connections.paths[ i ].node2 == ADC4 ) {
             showADCreadings[ 4 ] = globalState.connections.paths[ i ].net;
         }
-
+        
+        // Check current sense channels
         if ( globalState.connections.paths[ i ].node1 == ISENSE_PLUS || globalState.connections.paths[ i ].node2 == ISENSE_PLUS ) {
             detectedPlusNet = globalState.connections.paths[ i ].net;
         }
-
         if ( globalState.connections.paths[ i ].node1 == ISENSE_MINUS || globalState.connections.paths[ i ].node2 == ISENSE_MINUS ) {
             detectedMinusNet = globalState.connections.paths[ i ].net;
         }
@@ -1449,13 +1584,33 @@ void chooseShownReadings( void ) {
     }
 
     for ( int i = 0; i < 10; i++ ) {
-
         gpio_function_t fun = gpio_get_function( gpioDef[ i ][ 0 ] );
 
         if ( fun != gpio_function_map[ i ] ) {
             gpio_function_map[ i ] = fun;
         }
     }
+    
+    // Memory barrier to ensure all writes to showADCreadings[] are visible to other cores
+    __dmb();
+}
+
+void chooseShownReadings( void ) {
+    // OPTIMIZATION: Only rebuild when nets change or paths change
+    // This saves ~30-40us per refresh when nothing has changed
+    extern int numberOfNets;
+    
+    // Always rebuild on Core 2 since we call this every frame now (see main.cpp Core 2 loop)
+    // This ensures ADC mappings are always fresh from current paths
+    // The ~20us cost is acceptable for correctness
+    rebuildShownReadings();
+    readingsValid = true;
+    lastNumberOfNets = numberOfNets;
+    
+    // Note: If we wanted to optimize further, we could cache based on:
+    // - numberOfPaths hash (to detect path changes)
+    // - lastNetCount (to detect net structure changes)
+    // But for now, always rebuilding ensures no race conditions
 }
 
 int handleHighlights( int probeReading ) {
@@ -1636,7 +1791,7 @@ void showLEDmeasurements( void ) {
     //return;
 
     for ( int i = 0; i < 8; i++ ) {
-        int samples = 16;
+        int samples = 8;
 
         float adcReading;
 
@@ -1686,6 +1841,9 @@ void showLEDmeasurements( void ) {
             // showLEDsCore2 = 2;
         }
     }
+    
+    // Memory barrier to ensure all writes to adcReadingColors[] are visible to rendering code
+    __dmb();
 }
 
 /// @brief check if any measurements or gpio outputs are connected
@@ -2595,6 +2753,12 @@ void VoltageAdjuster::updateDisplay(float value, uint32_t color, const VoltageAd
             b.print("Rail", color, 0xffffff, 3, 0, 1);
         } else if (strcmp(config.label, "Rails") == 0) {
             b.print("Rails", color, 0xffffff, 1, 0, 2);
+        } else if (strcmp(config.label, "DAC 1") == 0) {
+            b.print("DAC 1", color, 0xffffff, 1, 0, 0);
+        } else if (strcmp(config.label, "DAC 0") == 0) {
+            b.print("DAC 0", color, 0xffffff, 1, 0, 0);
+        } else {
+            b.print(config.label, color, 0xffffff, 1, 0, 2);
         }
     }
     
@@ -2626,6 +2790,8 @@ void VoltageAdjuster::updateDisplay(float value, uint32_t color, const VoltageAd
     
     // Update OLED
     oled.clearPrintShow(floatString, 2, true, true, true);
+
+    showLEDsCore2 = 2;
 }
 
 bool VoltageAdjuster::isInLiveRange(float value, const VoltageAdjustConfig& config) {
@@ -2666,6 +2832,10 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
     uint32_t color = determineColor(currentValue, config);
     updateDisplay(currentValue, color, config);
     
+    // CRITICAL: Use blocking LED update for atomic display (flag + 10 = blocking)
+    // This prevents flickering from partial updates (clear + text)
+    showLEDsCore2 = 12;  // 12 = blocking mode (menu display)
+    
     // If we have a callback and we're in live range, call it immediately
     if (config.callback && isInLiveRange(currentValue, config)) {
         config.callback(currentValue, true, config.context);
@@ -2700,13 +2870,15 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
             color = determineColor(currentValue, config);
             updateDisplay(currentValue, color, config);
             
+            // CRITICAL: Use blocking LED update for atomic display (flag + 10 = blocking)
+            // Prevents flickering from showing partial text/graphics
+            showLEDsCore2 = 12;  // 12 = blocking mode (menu display)
+            
             // Call callback for preview
             if (config.callback) {
                 bool isLive = isInLiveRange(currentValue, config);
                 config.callback(currentValue, isLive, config.context);
             }
-            
-            showLEDsCore2 = 2;
             
             // Reset encoder-based tracking since we're using probe now
             lastEncoderPosition = encoderPosition;
@@ -2720,9 +2892,9 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
         // Check for cancellation (long press)
         if (encoderButtonState == HELD || probeButton.getButtonState() == 1) {
             // Restore original value if we have a callback
-            if (config.callback) {
-                config.callback(originalValue, true, config.context);
-            }
+            // if (config.callback) {
+            //     config.callback(originalValue, true, config.context);
+            // }
             
             rotaryDivider = lastDivider;
             encoderButtonState = IDLE;
@@ -2733,19 +2905,20 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
         }
         
         // Check for confirmation (short press)
-        if ((encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || probeButton.getButtonPress() == 2) {
+        if ((encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || probeButton.getButtonState() == 2) {
             encoderButtonState = IDLE;
             //showLEDsCore2 = -1;
             // Final update with callback if not already in live range
-            if (config.callback && !isInLiveRange(currentValue, config)) {
-                config.callback(currentValue, false, config.context);
-            }
+            // if (config.callback && !isInLiveRange(currentValue, config)) {
+            //     config.callback(currentValue, false, config.context);
+            // }
             
             rotaryDivider = lastDivider;
             config.initialValue = currentValue; // Update config with new value
             Menus::getInstance().inClickMenu = 0;
-            showLEDsCore2 = -1;
             b.clear();
+            showLEDsCore2 = -1;
+            
             return AdjustResult::CONFIRMED;
         }
         
@@ -2757,9 +2930,10 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
             }
             rotaryDivider = lastDivider;
             Menus::getInstance().inClickMenu = 0;
-            showLEDsCore2 = -1;
+            
 
             b.clear();
+            showLEDsCore2 = -1;
             return AdjustResult::CANCELLED;
         }
         
@@ -2883,6 +3057,10 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
             color = determineColor(roundedValue, config);
             updateDisplay(roundedValue, color, config);
             
+            // CRITICAL: Use blocking LED update for atomic display (flag + 10 = blocking)
+            // Prevents flickering from showing partial voltage bar/text
+            showLEDsCore2 = 12;  // 12 = blocking mode (menu display)
+            
             // ALWAYS call callback for preview (both live and non-live)
             // Pass ROUNDED value to hardware/state
             // This ensures LEDs show the value even outside 0-5V range
@@ -2890,8 +3068,6 @@ AdjustResult VoltageAdjuster::adjust(VoltageAdjustConfig& config) {
                 bool isLive = isInLiveRange(roundedValue, config);
                 config.callback(roundedValue, isLive, config.context);
             }
-            
-            showLEDsCore2 = 2;
         }
     }
     

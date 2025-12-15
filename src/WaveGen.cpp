@@ -28,8 +28,12 @@ WaveGen::WaveGen() :
     _last_sample_time(0),
     _sample_interval_us(0),
     _sample_count(0),
+    _waveform_table(nullptr),  // Dynamic allocation
     _table_size(64),  // Start with small table
     _table_index(0),
+    _waveform_table_allocated(false),
+    _i2c_buffer(nullptr),  // Dynamic allocation
+    _i2c_buffer_allocated(false),
     _successful_writes(0),
     _failed_writes(0),
     _last_stats_time(0),
@@ -56,11 +60,56 @@ WaveGen::WaveGen() :
 }
 
 /*!
+ *    @brief  Destructor - free buffers if allocated
+ */
+WaveGen::~WaveGen() {
+    if (_waveform_table_allocated && _waveform_table != nullptr) {
+        delete[] _waveform_table;
+        _waveform_table = nullptr;
+        _waveform_table_allocated = false;
+    }
+    if (_i2c_buffer_allocated && _i2c_buffer != nullptr) {
+        delete[] _i2c_buffer;
+        _i2c_buffer = nullptr;
+        _i2c_buffer_allocated = false;
+    }
+}
+
+/*!
  *    @brief  Initialize the waveform generator
  */
 bool WaveGen::begin(uint8_t i2c_address, TwoWire *wire) {
     if (!_dac.begin(i2c_address, wire)) {
         return false;
+    }
+    
+    // Allocate waveform table buffer (8KB)
+    if (!_waveform_table_allocated) {
+        _waveform_table = new (std::nothrow) uint16_t[MAX_WAVEFORM_TABLE_SIZE];
+        if (_waveform_table == nullptr) {
+            Serial.println("WaveGen: Failed to allocate waveform table (8KB)");
+            return false;
+        }
+        _waveform_table_allocated = true;
+        // Initialize to zero
+        memset((void*)_waveform_table, 0, MAX_WAVEFORM_TABLE_SIZE * sizeof(uint16_t));
+    }
+    
+    // Allocate I2C buffer (4KB)
+    if (!_i2c_buffer_allocated) {
+        _i2c_buffer = new (std::nothrow) uint8_t[MAX_BUFFER_SIZE];
+        if (_i2c_buffer == nullptr) {
+            Serial.println("WaveGen: Failed to allocate I2C buffer (4KB)");
+            // Clean up waveform table
+            if (_waveform_table_allocated) {
+                delete[] _waveform_table;
+                _waveform_table = nullptr;
+                _waveform_table_allocated = false;
+            }
+            return false;
+        }
+        _i2c_buffer_allocated = true;
+        memset(_i2c_buffer, 0, MAX_BUFFER_SIZE);
     }
     
     _initialized = true;
@@ -77,6 +126,18 @@ void WaveGen::end() {
     stop();
     _dac.end();
     _initialized = false;
+    
+    // Free allocated buffers
+    if (_waveform_table_allocated && _waveform_table != nullptr) {
+        delete[] _waveform_table;
+        _waveform_table = nullptr;
+        _waveform_table_allocated = false;
+    }
+    if (_i2c_buffer_allocated && _i2c_buffer != nullptr) {
+        delete[] _i2c_buffer;
+        _i2c_buffer = nullptr;
+        _i2c_buffer_allocated = false;
+    }
 }
 
 /*!
@@ -186,7 +247,7 @@ void WaveGen::stop() {
  *    @brief  Service function - call frequently from main loop
  */
 void WaveGen::service() {
-    if (!_running || !_initialized) {
+    if (!_running || !_initialized || _waveform_table == nullptr) {
         // Serial.println("WaveGen: not running or initialized");
         // Serial.flush();
         
@@ -424,6 +485,10 @@ void WaveGen::_updateTableSize() {
  *    @brief  Build the waveform lookup table
  */
 void WaveGen::_buildWaveformTable() {
+    if (_waveform_table == nullptr) {
+        return;  // Buffer not allocated yet
+    }
+    
     for (size_t i = 0; i < _table_size; i++) {
         float t = (float)i / (float)_table_size; // 0..1
         float value = 0.0f;
@@ -603,7 +668,7 @@ void WaveGen::_calculateOptimalBuffer() {
  *    @brief  Build the I2C buffer with multiple waveform cycles
  */
 void WaveGen::_buildI2CBuffer() {
-    if (_buffer_size == 0 || _table_size == 0) {
+    if (_buffer_size == 0 || _table_size == 0 || _i2c_buffer == nullptr || _waveform_table == nullptr) {
         return;
     }
 

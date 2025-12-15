@@ -101,7 +101,7 @@ ServiceStatus MpRemoteService::service( ) {
     // Process characters one at a time using event-driven REPL
     // This is non-blocking and allows us to service other things
     int processed_count = 0;
-    while ( USBSer2.available( ) && processed_count < 1024 ) { // Process max 1024 chars per service call
+    while ( USBSer2.available( ) && processed_count < 8192 ) { // Process max 1024 chars per service call
         int c = USBSer2.read( );
         if ( c < 0 )
             break;
@@ -161,7 +161,7 @@ bool MpRemoteService::ensureMicroPythonInitialized( ) {
         // Initialize MicroPython with output going to main Serial, not USBSer2
         // This prevents initialization messages from confusing tools like mpremote/ViperIDE
         Stream* saved_stream = global_mp_stream;
-        bool result = initMicroPythonProper( &Serial, /*preserve_interrupt_char=*/true );
+        bool result = initMicroPythonProper( &USBSer2, /*preserve_interrupt_char=*/true );
         global_mp_stream = saved_stream; // Restore
         return result;
     }
