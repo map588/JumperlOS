@@ -7,6 +7,9 @@
 
 #define MINIMUM_PROBE_READING 48
 
+// Forward declarations
+class EncoderAccelerator;
+
 /**
  * @brief High-frequency probe button service (implemented in Probing.cpp)
  * 
@@ -297,6 +300,33 @@ private:
     
     // Handle probe button actions and toggle logic
     void handleProbeButtonActions();
+    
+    // Handle encoder-based node selection in probe mode
+    void handleEncoderCursorNavigation(
+        int setOrClear,
+        int node1or2,
+        const int* nodesToConnect,
+        int connectOrClearProbe,
+        unsigned long probeModeStartTime,
+        long& lastEncoderPosition,
+        float& encoderAccumulator,
+        int& encoderCursorNode,
+        int& cursorZone,
+        int& subIndex,
+        int& lastEncoderCursorNode,
+        int& lastCursorZone,
+        int& lastSubIndex,
+        unsigned long& lastEncoderMovement,
+        bool& encoderCursorVisible,
+        int& persistentEncoderCursorNode,
+        int& persistentCursorZone,
+        int& persistentSubIndex,
+        int* row,
+        int* connectedRows,
+        int& connectedRowsIndex,
+        EncoderAccelerator& encoderAccel,
+        unsigned long encoderHideTimeout
+    );
 };
 
 // Global references for clean syntax

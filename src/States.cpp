@@ -9,7 +9,9 @@
 #include "EkiloEditor.h"
 #include "Colors.h"
 #include "config.h"
+#include "FakeGpio.h"
 #include <string.h>
+#include <vector>
 #include <FatFS.h>
 #include <hardware/gpio.h>
 #include "externVars.h"  // For fs_mutex filesystem synchronization
@@ -47,7 +49,7 @@ extern volatile bool core1busy;
 extern volatile bool core2busy;
 extern int netSlot;  // Global slot number (defined in RotaryEncoder.cpp)
 extern const int gpioDef[10][3];  // GPIO pin definitions (defined in Peripherals.h)
-extern uint8_t gpioState[10];  // GPIO state for animations (defined in Peripherals.cpp)
+extern uint8_t gpioState[42];  // GPIO state for animations - 10 real + 32 fake (defined in Peripherals.cpp)
 extern bool debugFP;  // Debug flag for file parsing (defined in FileParsing.cpp)
 
 // Forward declarations for YAML parsing helpers
@@ -504,6 +506,13 @@ void ConfigState::setDefaults() {
 }
 
 // ============================================================================
+// FakeGPIO Restoration
+// ============================================================================
+
+// Global list of pending FakeGPIO restorations (populated during YAML load, applied after bridges are restored)
+std::vector<FakeGpioRestorationInfo> pendingFakeGpioRestorations;
+
+// ============================================================================
 // JumperlessState Implementation
 // ============================================================================
 
@@ -952,6 +961,9 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
     
     clear();
     
+    // Clear pending FakeGPIO restorations from previous load
+    pendingFakeGpioRestorations.clear();
+    
     while (lineStart < (int)input.length()) {
         int lineEnd = input.indexOf('\n', lineStart);
         if (lineEnd == -1) lineEnd = input.length();
@@ -990,6 +1002,9 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
         else if (line.startsWith("config:")) {
             currentSection = "config";
         }
+        else if (line.startsWith("fakeGpio:")) {
+            currentSection = "fakeGpio";
+        }
         // Parse section content
         else if (line.startsWith("- {") || line.startsWith("-{")) {
             // Try to parse line even if incomplete (missing closing brace)
@@ -1008,6 +1023,13 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
                 String tempError;
                 if (!deserializeNets(line.c_str(), tempError)) {
                     // Skip invalid lines in preview mode
+                    lineStart = lineEnd + 1;
+                    continue;
+                }
+            } else if (currentSection == "fakeGpio") {
+                String tempError;
+                if (!deserializeFakeGpio(line.c_str(), tempError)) {
+                    // Skip invalid fakeGpio lines - don't fail entire parse
                     lineStart = lineEnd + 1;
                     continue;
                 }
@@ -1536,6 +1558,9 @@ void JumperlessState::serializeConfig(String& output) const {
               ", rxFunction: " + String(config.uartRxFunction) + "}\n";
     output += "  oled: {connected: " + String(config.oledConnected ? "true" : "false") + 
               ", lockConnection: " + String(config.oledLockConnection ? "true" : "false") + "}\n";
+    
+    // Fake GPIO configurations
+    serializeFakeGpio(output);
 }
 
 bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMsg) {
@@ -1709,6 +1734,144 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
     return true;
 }
 
+void JumperlessState::serializeFakeGpio(String& output) const {
+    // Include FakeGpio.h for access to fakeGpioPins array
+    extern FakeGpioPinConfig fakeGpioPins[];
+    
+    // Count active fake GPIO pins
+    int activeCount = 0;
+    for (int i = 0; i < MAX_FAKE_GPIO; i++) {
+        if (fakeGpioPins[i].active) {
+            activeCount++;
+        }
+    }
+    
+    if (activeCount == 0) {
+        return;  // Don't output empty section
+    }
+    
+    output += "  fakeGpio:\n";
+    
+    for (int slot = 0; slot < MAX_FAKE_GPIO; slot++) {
+        if (!fakeGpioPins[slot].active) continue;
+        
+        const FakeGpioPinConfig& pin = fakeGpioPins[slot];
+        
+        output += "    - {slot: " + String(slot);
+        output += ", node: " + String(pin.node);
+        output += ", mode: " + String(pin.mode);
+        
+        if (pin.mode == 1) {  // OUTPUT
+            output += ", v_high: " + String(pin.v_high, 2);
+            output += ", v_low: " + String(pin.v_low, 2);
+        }
+        
+        output += ", th_high: " + String(pin.threshold_high, 2);
+        output += ", th_low: " + String(pin.threshold_low, 2);
+        output += "}\n";
+    }
+}
+
+bool JumperlessState::deserializeFakeGpio(const char* yamlContent, String& errorMsg) {
+    // Parse fake GPIO entry: - {slot: 0, node: 20, mode: 1, v_high: 8.0, v_low: -8.0, th_high: 2.0, th_low: 0.8}
+    String line = String(yamlContent);
+    line.trim();
+    
+    int slot = -1;
+    int node = -1;
+    int mode = -1;
+    float v_high = 0.0;
+    float v_low = 0.0;
+    float th_high = 2.0;
+    float th_low = 0.8;
+    
+    // Parse slot field
+    int slotIdx = line.indexOf("slot:");
+    if (slotIdx >= 0) {
+        int commaIdx = line.indexOf(',', slotIdx);
+        String val = line.substring(slotIdx + 5, commaIdx);
+        val.trim();
+        slot = val.toInt();
+    }
+    
+    // Parse node field
+    int nodeIdx = line.indexOf("node:");
+    if (nodeIdx >= 0) {
+        int commaIdx = line.indexOf(',', nodeIdx);
+        String val = line.substring(nodeIdx + 5, commaIdx);
+        val.trim();
+        node = val.toInt();
+    }
+    
+    // Parse mode field
+    int modeIdx = line.indexOf("mode:");
+    if (modeIdx >= 0) {
+        int commaIdx = line.indexOf(',', modeIdx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', modeIdx);
+        String val = line.substring(modeIdx + 5, commaIdx);
+        val.trim();
+        mode = val.toInt();
+    }
+    
+    // Parse v_high field (optional, for OUTPUT mode)
+    int vHighIdx = line.indexOf("v_high:");
+    if (vHighIdx >= 0) {
+        int commaIdx = line.indexOf(',', vHighIdx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', vHighIdx);
+        String val = line.substring(vHighIdx + 7, commaIdx);
+        val.trim();
+        v_high = val.toFloat();
+    }
+    
+    // Parse v_low field (optional, for OUTPUT mode)
+    int vLowIdx = line.indexOf("v_low:");
+    if (vLowIdx >= 0) {
+        int commaIdx = line.indexOf(',', vLowIdx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', vLowIdx);
+        String val = line.substring(vLowIdx + 6, commaIdx);
+        val.trim();
+        v_low = val.toFloat();
+    }
+    
+    // Parse th_high field
+    int thHighIdx = line.indexOf("th_high:");
+    if (thHighIdx >= 0) {
+        int commaIdx = line.indexOf(',', thHighIdx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', thHighIdx);
+        String val = line.substring(thHighIdx + 8, commaIdx);
+        val.trim();
+        th_high = val.toFloat();
+    }
+    
+    // Parse th_low field
+    int thLowIdx = line.indexOf("th_low:");
+    if (thLowIdx >= 0) {
+        int endIdx = line.indexOf('}', thLowIdx);
+        String val = line.substring(thLowIdx + 7, endIdx);
+        val.trim();
+        th_low = val.toFloat();
+    }
+    
+    // Store in temporary structure for later restoration
+    // We can't directly configure here because bridges might not be loaded yet
+    if (slot >= 0 && slot < MAX_FAKE_GPIO && node >= 0 && mode >= 0) {
+        // Store in config for later restoration
+        FakeGpioRestorationInfo info;
+        info.slot = slot;
+        info.node = node;
+        info.mode = mode;
+        info.v_high = v_high;
+        info.v_low = v_low;
+        info.threshold_high = th_high;
+        info.threshold_low = th_low;
+        
+        // Add to restoration list
+        pendingFakeGpioRestorations.push_back(info);
+    }
+    
+    return true;
+}
+
 // ============================================================================
 // YAML Parsing Helpers - Handle Aliases and Variations
 // ============================================================================
@@ -1749,8 +1912,8 @@ int parseNodeName(const String& nodeName) {
     
     // Search through special defines
     extern const DefineInfo specialDefines[];
-    // Count elements in specialDefines - it has 49 elements based on the defSpecialToCharShort array
-    const int numSpecialDefines = 49;
+    // Count elements in specialDefines - updated to 70 elements (added 32 FAKE_GPIO, removed 7 PAD defines, was 49)
+    const int numSpecialDefines = 70;
     for (int i = 0; i < numSpecialDefines; i++) {
         String longName = String(specialDefines[i].longName);
         String shortName = String(specialDefines[i].shortName);

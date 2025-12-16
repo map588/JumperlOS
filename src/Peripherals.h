@@ -76,9 +76,10 @@ extern uint32_t adcReadingColors[8];
 extern float adcReadingRanges[8][2];
 
 extern float adcRange[8][2];
-extern uint8_t gpioState[10];
-extern uint8_t gpioReading[10];
-extern int gpioNet[10];
+extern uint8_t gpioState[42];    // 10 real + 32 fake GPIO
+extern uint8_t gpioReading[42];  // 10 real + 32 fake GPIO
+extern int gpioNet[42];          // 10 real + 32 fake GPIO
+extern bool debugFakeGpio;       // Debug flag for fake GPIO visual integration
 
 extern float adcSpread[8];
 extern float adcZero[8];
@@ -86,7 +87,7 @@ extern float dacSpread[4];
 extern int dacZero[4];
 
 
-extern uint32_t gpioReadingColors[10];
+extern uint32_t gpioReadingColors[42];  // 10 real + 32 fake GPIO
 extern int revisionNumber;
 
 extern int baudRate;
@@ -155,6 +156,7 @@ int anyAdcConnected(int net = -1); // returns adc number
 
 void setGPIO(void);
 void readGPIO(void);
+void readFakeGPIO(void);
 void printGPIOState(void);
 
 // gpio = -1 means toggle the brightened net

@@ -26,6 +26,37 @@ extern long encoderPositionOffset;
 extern bool resetEncoderPosition;
 enum encoderDirectionStates { NONE,UP,DOWN };
 
+/**
+ * @brief Encoder button state machine
+ * 
+ * MULTI-CORE ARCHITECTURE:
+ * - Core 2: Runs rotaryEncoderButtonStuff() continuously at high speed (~10μs)
+ * - Core 1: Polls encoderButtonState in menu loops (~1000μs intervals)
+ * 
+ * TIMING PROTECTION (Critical for multi-core reliability):
+ * - RELEASED and DOUBLECLICKED states persist for minimum 15ms
+ * - lastButtonEncoderState is FROZEN during the 15ms hold period
+ * - This preserves the transition that Core 1 checks: (RELEASED && PRESSED)
+ * - Without freezing, Core 2 would update lastButtonEncoderState to RELEASED,
+ *   breaking the detection pattern before Core 1 could read it
+ * - 15ms is long enough for Core 1 critical services to catch events even when busy
+ * 
+ * DETECTION PATTERN:
+ * Core 1 code checks: (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED)
+ * Both values must remain stable for Core 1 to detect the button press.
+ * 
+ * USAGE PATTERN:
+ * After detecting events, consuming code MUST set encoderButtonState = IDLE
+ * to acknowledge. This provides immediate feedback; otherwise state auto-clears after 2ms.
+ * 
+ * State transitions:
+ * - IDLE → PRESSED (on button press)
+ * - PRESSED → HELD (if held long enough)
+ * - PRESSED → RELEASED (on release, holds 15ms with lastButtonEncoderState frozen)
+ * - RELEASED → IDLE (manual clear by Core 1, or auto after 15ms)
+ * - IDLE → DOUBLECLICKED (on quick double press, holds 15ms with freeze)
+ * - DOUBLECLICKED → IDLE (manual clear by Core 1, or auto after 15ms)
+ */
 enum encoderButtonStates { IDLE, PRESSED, HELD, RELEASED, DOUBLECLICKED};
 
 extern volatile encoderDirectionStates encoderDirectionState;
@@ -38,8 +69,16 @@ void initRotaryEncoder(void);
 void unInitRotaryEncoder(void);
 void printRotaryEncoderHelp(void);
 void rotaryEncoderStuff(void);
+void rotaryEncoderButtonStuff(void);
 bool isRotaryEncoderInitialized(void);
 void printRotaryEncoderStatus(void);
+
+/**
+ * @brief Check if encoder button is physically pressed (hardware state)
+ * @return true if button is currently pressed down, false otherwise
+ * @note This reads the actual GPIO state, independent of the state machine
+ */
+bool isEncoderButtonPhysicallyPressed(void);
 
 /**
  * @brief Helper class for rotary encoder acceleration

@@ -26,6 +26,8 @@ int16_t doNotIntersectNodes[12]; //if the net tries to share a node with a net t
 
 int8_t visible; //this isn't implemented - priority = 1 means it will move connections to take the most direct path, priority = 2 means connections will be doubled up when possible, priority = 3 means both
 
+bool virtual_net; //if true, this net contains virtual nodes (FAKE_GPIO) and should skip physical routing but still display
+
 rgbColor color; //color of the net in hex
 
 uint32_t rawColor; //color of the net in hex (for the machine)
@@ -36,7 +38,7 @@ bool machine; //whether this net was created by the machine or by the user
 
 int priority; //when duplicating paths, it will make this many copies every time it runs through
 
-int duplicatePaths[MAX_DUPLICATE];
+// int duplicatePaths[MAX_DUPLICATE];
 int numberOfDuplicates; // if the paths are redundant (for lower resistance) this is the number of duplicates
 
 uint8_t termColor; //terminal color index for 255 color mode (default is white)
@@ -46,7 +48,7 @@ uint8_t termColor; //terminal color index for 255 color mode (default is white)
 // NOTE: net[] now accessed via globalState.connections.nets[]
 
 //see the comments at the end for a more nicely formatted version that's not in struct initalizers
-enum pathType {BBtoBB, BBtoNANO, NANOtoNANO, BBtoSF, NANOtoSF, BBtoBBL, NANOtoBBL, SFtoSF, SFtoBBL, BBLtoBBL};
+enum pathType {BBtoBB, BBtoNANO, NANOtoNANO, BBtoSF, NANOtoSF, BBtoBBL, NANOtoBBL, SFtoSF, SFtoBBL, BBLtoBBL, VIRTUAL};
 
 enum nodeType {BB, NANO, SF, BBL};
 
@@ -74,7 +76,6 @@ struct pathStruct{
 };
 
 
-extern int indexByNet[MAX_BRIDGES];
 
 void initNets(void);
 

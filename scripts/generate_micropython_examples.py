@@ -67,6 +67,7 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
         'batt.py',           # Incomplete battery test
         'lipo_char.py',      # Incomplete battery test
         'listFiles.py',      # ViperIDE utility, not a demo
+        'viperide_reinit.py', # ViperIDE connection script, handled separately
     }
     
     # Scan for Python files
@@ -230,8 +231,81 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
             "",
         ])
     
+    # Add ViperIDE reinit script - this is executed on USBSer2 connection
+    # to send filesystem information to ViperIDE/mpremote tools
+    viperide_reinit_path = source_dir / 'viperide_reinit.py'
+    viperide_reinit_exists = viperide_reinit_path.exists()
+    
+    if viperide_reinit_exists:
+        print(f"Found ViperIDE reinit script at {viperide_reinit_path}")
+        with open(viperide_reinit_path, 'r', encoding='utf-8') as f:
+            viperide_content = f.read()
+        
+        lines.extend([
+            "//==============================================================================",
+            "// ViperIDE Reinit Script (Sends filesystem info on USBSer2 connection)",
+            "//==============================================================================",
+            "",
+            "#define INCLUDE_VIPERIDE_REINIT",
+            f"const char* VIPERIDE_REINIT_PY = {py_to_c_string(viperide_content)};",
+            "",
+        ])
+    else:
+        print(f"Warning: viperide_reinit.py not found at {viperide_reinit_path}")
+        lines.extend([
+            "//==============================================================================",
+            "// ViperIDE Reinit Script",
+            "//==============================================================================",
+            "",
+            "// #define INCLUDE_VIPERIDE_REINIT",
+            "// WARNING: viperide_reinit.py not found",
+            "",
+        ])
+    
+    # Add helper comment section for FilesystemStuff.cpp array entries
+    lines.extend([
+        "//==============================================================================",
+        "// FilesystemStuff.cpp Integration Guide",
+        "//==============================================================================",
+        "// Copy the following entries into the examples[] array in FilesystemStuff.cpp",
+        "// inside the initializeMicroPythonExamples() function.",
+        "//",
+        "// The array should include these entries (already sorted alphabetically):",
+        "//",
+    ])
+    
+    # Add the lib files first
+    if jumperless_module_path.exists():
+        lines.append("// #ifdef INCLUDE_JUMPERLESS_MODULE")
+        lines.append("//     { \"/python_scripts/lib/jumperless.py\", JUMPERLESS_MODULE_PY, \"jumperless.py\" },")
+        lines.append("// #endif")
+    
+    if stub_path.exists():
+        lines.append("// #ifdef INCLUDE_JUMPERLESS_STUB")
+        lines.append("//     { \"/python_scripts/lib/jumperless.pyi\", JUMPERLESS_STUB_PYI, \"jumperless.pyi\" },")
+        lines.append("// #endif")
+    
+    # Add all the example files
+    for py_file in py_files:
+        define_name = filename_to_define_name(py_file.name)
+        var_name = filename_to_var_name(py_file.name)
+        filename = py_file.name
+        
+        lines.append(f"// #ifdef {define_name}")
+        lines.append(f"//     {{ \"/python_scripts/examples/{filename}\", {var_name}, \"{filename}\" }},")
+        lines.append("// #endif")
+    
+    # Add viperide_reinit if it exists
+    if viperide_reinit_exists:
+        lines.append("// #ifdef INCLUDE_VIPERIDE_REINIT")
+        lines.append("//     { \"/python_scripts/examples/viperide_reinit.py\", VIPERIDE_REINIT_PY, \"viperide_reinit.py\" },")
+        lines.append("// #endif")
+    
+    lines.append("//")
+    
     # Close the header guard
     lines.extend([
+        "",
         "#endif // MICROPYTHON_EXAMPLES_H",
     ])
     

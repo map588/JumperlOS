@@ -44,6 +44,8 @@ typedef struct _machine_pin_obj_t {
     uint8_t id;
 } machine_pin_obj_t;
 
+
+
 // Forward declare the type used in static initialiser below
 extern const mp_obj_type_t machine_pin_type;
 

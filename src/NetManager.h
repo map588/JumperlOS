@@ -20,6 +20,12 @@ extern int newBridgeIndex;
 extern bool debugNM;
 extern bool debugNMtime;
 
+// OPTIMIZATION: Node→net lookup index for O(1) access
+// Max node number is ~200, so we can directly index
+// -1 means node is not in any net
+extern int8_t nodeToNetIndex[256];
+void buildNodeToNetIndex();  // Build the index after nets are regenerated
+
 extern const char *defNanoToCharShort[35];
 extern const char *defSpecialToCharShort[49];
 
@@ -38,7 +44,9 @@ void writeJSONtoFile();
 int printNodeOrName(int node, int longOrShort = 0); //0 = short, 1 = long
 
 void loadBridgesFromState(); //load bridges from globalState into newBridge[] array
+void loadBridgesFromStateIncremental(int startIndex); //INCREMENTAL: load only NEW bridges starting from startIndex
 void getNodesToConnect(); //read in the nodes you'd like to connect from newBridge[] array
+void getNodesToConnectIncremental(int startIndex); //INCREMENTAL: process only NEW bridges starting from startIndex
 
 int searchExistingNets(int,int); //search through existing nets for all nodes that match either one of the new nodes (so it will be added to that net)
 
@@ -104,7 +112,7 @@ const DefineInfo* findDefineInfoByValue(int defineValue);
 
 int checkIfBridgeExistsLocal(int node1, int node2 = -1);
 
-void assignTermColor(void);
+void assignTermColor(int startIndex = 0);
 
 
 #endif

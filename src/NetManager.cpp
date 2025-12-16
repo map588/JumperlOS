@@ -20,6 +20,26 @@
 
 ///#define Serial SerialWrap
 
+// OPTIMIZATION: Node→net lookup index for O(1) access
+// Static array avoids heap allocation during dual-core execution (XIP safety)
+int8_t nodeToNetIndex[256];
+
+// Build node→net index after nets are regenerated
+void buildNodeToNetIndex() {
+    // Clear index (-1 = node not in any net)
+    memset(nodeToNetIndex, -1, sizeof(nodeToNetIndex));
+    
+    // Build index from current nets
+    for (int i = 0; i < numberOfNets; i++) {
+        for (int n = 0; n < MAX_NODES && globalState.connections.nets[i].nodes[n] != 0; n++) {
+            int node = globalState.connections.nets[i].nodes[n];
+            if (node >= 0 && node < 256) {
+                nodeToNetIndex[node] = i;
+            }
+        }
+    }
+}
+
 // Helper: Get effective display color for a net (checks DisplayState custom colors first)
 static rgbColor getEffectiveNetColor(int netNum) {
     rgbColor color;
@@ -118,7 +138,39 @@ const DefineInfo specialDefines[] = {
     {"GP_7",     "RP_GPIO_7",   RP_GPIO_7},     // 137
     {"GP_8",     "RP_GPIO_8",   RP_GPIO_8},     // 138
     {"BUF_IN",   "BUFFER_IN",   ROUTABLE_BUFFER_IN}, // 139
-    {"BUF_OUT",  "BUFFER_OUT",  ROUTABLE_BUFFER_OUT} // 140
+    {"BUF_OUT",  "BUFFER_OUT",  ROUTABLE_BUFFER_OUT}, // 140
+    {"FGP_1",    "FAKE_GPIO_1", FAKE_GPIO_1},   // 150
+    {"FGP_2",    "FAKE_GPIO_2", FAKE_GPIO_2},   // 151
+    {"FGP_3",    "FAKE_GPIO_3", FAKE_GPIO_3},   // 152
+    {"FGP_4",    "FAKE_GPIO_4", FAKE_GPIO_4},   // 153
+    {"FGP_5",    "FAKE_GPIO_5", FAKE_GPIO_5},   // 154
+    {"FGP_6",    "FAKE_GPIO_6", FAKE_GPIO_6},   // 155
+    {"FGP_7",    "FAKE_GPIO_7", FAKE_GPIO_7},   // 156
+    {"FGP_8",    "FAKE_GPIO_8", FAKE_GPIO_8},   // 157
+    {"FGP_9",    "FAKE_GPIO_9", FAKE_GPIO_9},   // 158
+    {"FGP_10",   "FAKE_GPIO_10", FAKE_GPIO_10}, // 159
+    {"FGP_11",   "FAKE_GPIO_11", FAKE_GPIO_11}, // 160
+    {"FGP_12",   "FAKE_GPIO_12", FAKE_GPIO_12}, // 161
+    {"FGP_13",   "FAKE_GPIO_13", FAKE_GPIO_13}, // 162
+    {"FGP_14",   "FAKE_GPIO_14", FAKE_GPIO_14}, // 163
+    {"FGP_15",   "FAKE_GPIO_15", FAKE_GPIO_15}, // 164
+    {"FGP_16",   "FAKE_GPIO_16", FAKE_GPIO_16}, // 165
+    {"FGP_17",   "FAKE_GPIO_17", FAKE_GPIO_17}, // 166
+    {"FGP_18",   "FAKE_GPIO_18", FAKE_GPIO_18}, // 167
+    {"FGP_19",   "FAKE_GPIO_19", FAKE_GPIO_19}, // 168
+    {"FGP_20",   "FAKE_GPIO_20", FAKE_GPIO_20}, // 169
+    {"FGP_21",   "FAKE_GPIO_21", FAKE_GPIO_21}, // 170
+    {"FGP_22",   "FAKE_GPIO_22", FAKE_GPIO_22}, // 171
+    {"FGP_23",   "FAKE_GPIO_23", FAKE_GPIO_23}, // 172
+    {"FGP_24",   "FAKE_GPIO_24", FAKE_GPIO_24}, // 173
+    {"FGP_25",   "FAKE_GPIO_25", FAKE_GPIO_25}, // 174
+    {"FGP_26",   "FAKE_GPIO_26", FAKE_GPIO_26}, // 175
+    {"FGP_27",   "FAKE_GPIO_27", FAKE_GPIO_27}, // 176
+    {"FGP_28",   "FAKE_GPIO_28", FAKE_GPIO_28}, // 177
+    {"FGP_29",   "FAKE_GPIO_29", FAKE_GPIO_29}, // 178
+    {"FGP_30",   "FAKE_GPIO_30", FAKE_GPIO_30}, // 179
+    {"FGP_31",   "FAKE_GPIO_31", FAKE_GPIO_31}, // 180
+    {"FGP_32",   "FAKE_GPIO_32", FAKE_GPIO_32}  // 181
   };
 
 // Similarly, create an array for Nano defines
@@ -202,6 +254,30 @@ void loadBridgesFromState() {
   }
 }
 
+/// @brief INCREMENTAL: Load only NEW bridges starting from startIndex
+/// This avoids reprocessing all existing bridges
+void loadBridgesFromStateIncremental(int startIndex) {
+  newBridgeLength = globalState.connections.numBridges;
+  newBridgeIndex = startIndex;  // Start from previous count
+  
+  // Only copy NEW bridges (from startIndex onward)
+  for (int i = startIndex; i < newBridgeLength && i < MAX_BRIDGES; i++) {
+    newBridge[i][0] = globalState.connections.bridges[i][0];  // node1
+    newBridge[i][1] = globalState.connections.bridges[i][1];  // node2
+    newBridge[i][2] = 0;  // net (will be assigned by searchExistingNets)
+  }
+  
+  if (debugNM) {
+    Serial.print("Loaded ");
+    Serial.print(newBridgeLength - startIndex);
+    Serial.print(" NEW bridges (");
+    Serial.print(startIndex);
+    Serial.print(" -> ");
+    Serial.print(newBridgeLength);
+    Serial.println(")");
+  }
+}
+
 void getNodesToConnect() // read in the nodes you'd like to connect
   {
 
@@ -246,8 +322,58 @@ void getNodesToConnect() // read in the nodes you'd like to connect
   if (debugNM)
     Serial.println("done");
 
+  // OPTIMIZATION: Build node→net index after nets are regenerated
+  // This enables O(1) lookups for display operations
+  buildNodeToNetIndex();
+
   //  sortPathsByNet();
   }
+
+/// @brief INCREMENTAL: Process only NEW bridges starting from startIndex
+/// This extends existing nets without reprocessing everything
+void getNodesToConnectIncremental(int startIndex) {
+  timeToNM = millis();
+
+  if (debugNM) {
+    Serial.print("INCREMENTAL getNodesToConnect from index ");
+    Serial.println(startIndex);
+  }
+
+  // CRITICAL: Start from startIndex, not 0
+  for (int i = startIndex; i < newBridgeLength; i++) {
+    // Read from newBridge array (populated from globalState or file)
+    newNode1 = newBridge[i][0];
+    newNode2 = newBridge[i][1];
+
+    if (debugNM) {
+      Serial.print("Processing NEW bridge [");
+      Serial.print(i);
+      Serial.print("]: ");
+      printNodeOrName(newNode1);
+      Serial.print("-");
+      printNodeOrName(newNode2);
+      Serial.print("\n\r");
+    }
+
+    if (newNode1 <= 0 || newNode2 <= 0) {
+      globalState.connections.paths[i].net = -1;
+    } else {
+      // This will either add to existing net or create new net
+      searchExistingNets(newNode1, newNode2);
+    }
+
+    newBridgeIndex++; 
+  }
+  
+  if (debugNM) {
+    Serial.print("Incremental processing complete. Processed ");
+    Serial.print(newBridgeLength - startIndex);
+    Serial.println(" new bridges.");
+  }
+  
+  // OPTIMIZATION: Rebuild node→net index after incremental changes
+  buildNodeToNetIndex();
+}
 
 int searchExistingNets(
     int node1,
@@ -500,6 +626,8 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
 int checkIfBridgeExistsLocal(int node1, int node2) {
 
   for (int i = 1; i < MAX_NETS; i++) {
+    // Serial.print("checking net = ");
+    // Serial.println(i);
     if (globalState.connections.nets[i].number <= 0) {
       break;
       }
@@ -509,10 +637,14 @@ int checkIfBridgeExistsLocal(int node1, int node2) {
         }
       if (globalState.connections.nets[i].nodes[j] == node1) {
         if (node2 == -1) {
+          // Serial.print("found node1 in net ");
+          // Serial.println(i);
           return 1;
           }
         for (int k = 0; k < MAX_NODES; k++) {
           if (globalState.connections.nets[i].nodes[k] == node2) {
+            // Serial.print("found node2 in net ");
+            // Serial.println(i);
             return 1;
             }
 
@@ -966,11 +1098,11 @@ int floatingTermColors[10] = { 203, 215, 221, 192, 117, 75, 176,213, 180, 147 };
 int railTermColors[5] = { 48, 197, 199, 222, 116 };
 
 
-void assignTermColor(void) {
+void assignTermColor(int startIndex) {
 #ifdef TERM_COLOR_NETS
 
 
-  for (int i = 1; i < 6; i++) {
+  for (int i = startIndex; i < 6; i++) {
     globalState.connections.nets[i].termColor = railTermColors[i - 1];
     // changeTerminalColor(globalState.connections.nets[i].termColor);
     // Serial.print("globalState.connections.nets[");
@@ -980,7 +1112,7 @@ void assignTermColor(void) {
     // changeTerminalColor();
     }
 
-  for (int i = 6; i < numberOfNets; i++) {
+  for (int i = startIndex; i < numberOfNets; i++) {
     if (globalState.connections.nets[i].nodes[0] > 0) {
       globalState.connections.nets[i].termColor = colorToVT100(packRgb(netColors[i]));
       }

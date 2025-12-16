@@ -133,10 +133,11 @@ ARBITRARY = _native.ARBITRARY
 node = _native.node
 connect = _native.connect
 disconnect = _native.disconnect
+fast_connect = _native.fast_connect
+fast_disconnect = _native.fast_disconnect
 nodes_clear = _native.nodes_clear
 is_connected = _native.is_connected
 nodes_save = _native.nodes_save
-nodes_discard = _native.nodes_discard
 nodes_has_changes = _native.nodes_has_changes
 
 # ============================================================================
@@ -147,6 +148,7 @@ set_net_name = _native.set_net_name
 get_net_color = _native.get_net_color
 get_net_color_name = _native.get_net_color_name
 set_net_color = _native.set_net_color
+set_net_color_hsv = _native.set_net_color_hsv
 get_num_nets = _native.get_num_nets
 get_num_bridges = _native.get_num_bridges
 get_net_nodes = _native.get_net_nodes
@@ -157,6 +159,14 @@ get_net_info = _native.get_net_info
 net_name = _native.net_name
 net_color = _native.net_color
 net_info = _native.net_info
+
+# ============================================================================
+# Path Query Functions
+# ============================================================================
+get_num_paths = _native.get_num_paths
+get_path_info = _native.get_path_info
+get_all_paths = _native.get_all_paths
+get_path_between = _native.get_path_between
 
 # ============================================================================
 # Slot Management
@@ -205,6 +215,18 @@ check_button = _native.check_button
 button_check = _native.button_check
 
 # ============================================================================
+# Probe Switch Functions
+# ============================================================================
+get_switch_position = _native.get_switch_position
+set_switch_position = _native.set_switch_position
+check_switch_position = _native.check_switch_position
+
+# Probe Switch Constants
+SWITCH_MEASURE = _native.SWITCH_MEASURE
+SWITCH_SELECT = _native.SWITCH_SELECT
+SWITCH_UNKNOWN = _native.SWITCH_UNKNOWN
+
+# ============================================================================
 # Status/Debug Functions
 # ============================================================================
 print_bridges = _native.print_bridges
@@ -222,6 +244,13 @@ run_app = _native.run_app
 send_raw = _native.send_raw
 change_terminal_color = _native.change_terminal_color
 cycle_term_color = _native.cycle_term_color
+
+# ============================================================================
+# Service Management Functions
+# ============================================================================
+force_service = _native.force_service
+force_service_by_index = _native.force_service_by_index
+get_service_index = _native.get_service_index
 
 # ============================================================================
 # Help Functions
@@ -468,22 +497,21 @@ BOT_GND_PAD = _native.BOT_GND_PAD
 clickwheel_up = _native.clickwheel_up
 clickwheel_down = _native.clickwheel_down
 clickwheel_press = _native.clickwheel_press
+clickwheel_get_position = _native.clickwheel_get_position
+clickwheel_reset_position = _native.clickwheel_reset_position
+clickwheel_get_direction = _native.clickwheel_get_direction
+clickwheel_get_button = _native.clickwheel_get_button
+clickwheel_is_initialized = _native.clickwheel_is_initialized
 
-# ============================================================================
-# Logic Analyzer Functions
-# ============================================================================
-la_set_trigger = _native.la_set_trigger
-la_capture_single_sample = _native.la_capture_single_sample
-la_start_continuous_capture = _native.la_start_continuous_capture
-la_stop_capture = _native.la_stop_capture
-la_is_capturing = _native.la_is_capturing
-la_set_sample_rate = _native.la_set_sample_rate
-la_set_num_samples = _native.la_set_num_samples
-la_enable_channel = _native.la_enable_channel
-la_set_control_analog = _native.la_set_control_analog
-la_set_control_digital = _native.la_set_control_digital
-la_get_control_analog = _native.la_get_control_analog
-la_get_control_digital = _native.la_get_control_digital
+# Clickwheel Constants
+CLICKWHEEL_NONE = _native.CLICKWHEEL_NONE
+CLICKWHEEL_UP = _native.CLICKWHEEL_UP
+CLICKWHEEL_DOWN = _native.CLICKWHEEL_DOWN
+CLICKWHEEL_IDLE = _native.CLICKWHEEL_IDLE
+CLICKWHEEL_PRESSED = _native.CLICKWHEEL_PRESSED
+CLICKWHEEL_HELD = _native.CLICKWHEEL_HELD
+CLICKWHEEL_RELEASED = _native.CLICKWHEEL_RELEASED
+CLICKWHEEL_DOUBLECLICKED = _native.CLICKWHEEL_DOUBLECLICKED
 
 # ============================================================================
 # Filesystem Functions
@@ -498,50 +526,6 @@ fs_cwd = _native.fs_cwd
 # JFS Filesystem Module
 # ============================================================================
 jfs = _native.jfs
-
-# ============================================================================
-# Python-level helper functions
-# ============================================================================
-
-def quick_connect(*nodes):
-    """
-    Connect multiple nodes in sequence.
-    
-    Usage:
-        quick_connect(1, 2, 3, 4)  # Connects 1-2, 2-3, 3-4
-        quick_connect(D13, TOP_RAIL, A0)  # Connects D13-TOP_RAIL, TOP_RAIL-A0
-    """
-    if len(nodes) < 2:
-        raise ValueError("Need at least 2 nodes to connect")
-    
-    for i in range(len(nodes) - 1):
-        connect(nodes[i], nodes[i + 1])
-
-def disconnect_all(*nodes):
-    """
-    Disconnect all specified nodes from everything.
-    
-    Usage:
-        disconnect_all(1, 2, 3)  # Disconnects nodes 1, 2, and 3 from everything
-        disconnect_all(D13, A0, TOP_RAIL)
-    """
-    for node_val in nodes:
-        disconnect(node_val, -1)
-
-def voltage_divider(vin_node, vout_node, gnd_node=GND):
-    """
-    Set up a simple voltage divider monitoring circuit.
-    
-    Args:
-        vin_node: Input voltage node to measure
-        vout_node: Output node (typically an ADC)
-        gnd_node: Ground reference (default: GND)
-    
-    Usage:
-        voltage_divider(TOP_RAIL, ADC0)  # Monitor TOP_RAIL voltage on ADC0
-    """
-    connect(vin_node, vout_node)
-    connect(vout_node, gnd_node)
 
 
 # Export all functions and constants for "from jumperless import *"
@@ -576,13 +560,16 @@ __all__ = [
     'get_wavegen_amplitude', 'get_wavegen_offset',
     
     # Node Connection Functions
-    'node', 'connect', 'disconnect', 'nodes_clear', 'is_connected',
+    'node', 'connect', 'disconnect', 'fast_connect', 'fast_disconnect', 'nodes_clear', 'is_connected',
     'nodes_save', 'nodes_discard', 'nodes_has_changes',
     
     # Net Information Functions
-    'get_net_name', 'set_net_name', 'get_net_color', 'get_net_color_name', 'set_net_color',
+    'get_net_name', 'set_net_name', 'get_net_color', 'get_net_color_name', 'set_net_color', 'set_net_color_hsv',
     'get_num_nets', 'get_num_bridges', 'get_net_nodes', 'get_bridge', 'get_net_info',
     'net_name', 'net_color', 'net_info',
+    
+    # Path Query Functions
+    'get_num_paths', 'get_path_info', 'get_all_paths', 'get_path_between',
     
     # Slot Management
     'switch_slot', 'CURRENT_SLOT',
@@ -601,11 +588,16 @@ __all__ = [
     'get_button', 'probe_button', 'probe_button_blocking', 'probe_button_nonblocking',
     'button_read', 'read_button', 'check_button', 'button_check',
     
+    # Probe Switch Functions
+    'get_switch_position', 'set_switch_position', 'check_switch_position',
+    
     # Status Functions
     'print_bridges', 'print_paths', 'print_crossbars', 'print_nets', 'print_chip_status',
     
     # Clickwheel Functions
     'clickwheel_up', 'clickwheel_down', 'clickwheel_press',
+    'clickwheel_get_position', 'clickwheel_reset_position', 'clickwheel_get_direction',
+    'clickwheel_get_button', 'clickwheel_is_initialized',
     
     # Logic Analyzer Functions
     'la_set_trigger', 'la_capture_single_sample', 'la_start_continuous_capture',
@@ -619,6 +611,9 @@ __all__ = [
     # Misc Functions
     'arduino_reset', 'pause_core2', 'run_app', 'send_raw',
     'change_terminal_color', 'cycle_term_color',
+    
+    # Service Management Functions
+    'force_service', 'force_service_by_index', 'get_service_index',
     
     # Help Functions
     'help', 'nodes_help',
@@ -668,6 +663,14 @@ __all__ = [
     # Probe Button Constants
     'BUTTON_NONE', 'BUTTON_CONNECT', 'BUTTON_REMOVE', 'CONNECT_BUTTON', 'REMOVE_BUTTON',
     
+    # Probe Switch Constants
+    'SWITCH_MEASURE', 'SWITCH_SELECT', 'SWITCH_UNKNOWN',
+    
+    # Clickwheel Constants
+    'CLICKWHEEL_NONE', 'CLICKWHEEL_UP', 'CLICKWHEEL_DOWN', 
+    'CLICKWHEEL_IDLE', 'CLICKWHEEL_PRESSED', 'CLICKWHEEL_HELD', 
+    'CLICKWHEEL_RELEASED', 'CLICKWHEEL_DOUBLECLICKED',
+    
     # Probe Pad Constants
     'NO_PAD', 'LOGO_PAD_TOP', 'LOGO_PAD_BOTTOM', 'GPIO_PAD', 'DAC_PAD', 'ADC_PAD',
     'BUILDING_PAD_TOP', 'BUILDING_PAD_BOTTOM',
@@ -678,9 +681,6 @@ __all__ = [
     'A0_PAD', 'A1_PAD', 'A2_PAD', 'A3_PAD', 'A4_PAD', 'A5_PAD', 'A6_PAD', 'A7_PAD',
     'TOP_RAIL_PAD', 'BOTTOM_RAIL_PAD', 'BOT_RAIL_PAD',
     'TOP_RAIL_GND', 'TOP_GND_PAD', 'BOTTOM_RAIL_GND', 'BOT_RAIL_GND', 'BOTTOM_GND_PAD', 'BOT_GND_PAD',
-    
-    # Python Helper Functions
-    'quick_connect', 'disconnect_all', 'voltage_divider',
     
     # JFS Module
     'jfs',

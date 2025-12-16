@@ -224,6 +224,10 @@ int parseArbitraryFunction(const char* str) {
     return parseFromTable(arbitraryFunctionTable, arbitraryFunctionTableSize, str);
 }
 
+int parseTagParsing(const char* str) {
+    return parseFromTable(tagParsingTable, tagParsingTableSize, str);
+}
+
 // Parse font name from config - reads directly from fontList in oled.cpp
 // Returns FontFamily enum value (0-10)
 int parseFont(const char* str) {
@@ -648,6 +652,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "lock_connection") == 0) jumperlessConfig.serial_1.lock_connection = parseBool(value);
             else if (strcmp(key, "autoconnect_flashing") == 0) jumperlessConfig.serial_1.autoconnect_flashing = parseBool(value);
             else if (strcmp(key, "async_passthrough") == 0) jumperlessConfig.serial_1.async_passthrough = parseBool(value);
+            else if (strcmp(key, "tag_parsing") == 0) jumperlessConfig.serial_1.tag_parsing = parseTagParsing(value);
         } else if (strcmp(section, "serial_2") == 0) {
             if (strcmp(key, "function") == 0) jumperlessConfig.serial_2.function = parseUartFunction(value);
             else if (strcmp(key, "baud_rate") == 0) jumperlessConfig.serial_2.baud_rate = parseInt(value);
@@ -969,6 +974,8 @@ void saveConfigToFile(const char* filename) {
     file.print("lock_connection = "); file.print(jumperlessConfig.serial_1.lock_connection); file.println(";");
     file.print("autoconnect_flashing = "); file.print(jumperlessConfig.serial_1.autoconnect_flashing); file.println(";");
     file.print("async_passthrough = "); file.print(jumperlessConfig.serial_1.async_passthrough ? 1:0); file.println(";");
+    file.print("tag_parsing = "); file.print(jumperlessConfig.serial_1.tag_parsing); file.println(";");
+    file.println();
 
     file.println("[serial_2]");
     file.print("function = "); file.print(jumperlessConfig.serial_2.function); file.println(";");
@@ -977,7 +984,7 @@ void saveConfigToFile(const char* filename) {
     file.print("connect_on_boot = "); file.print(jumperlessConfig.serial_2.connect_on_boot); file.println(";");
     file.print("lock_connection = "); file.print(jumperlessConfig.serial_2.lock_connection); file.println(";");
     file.print("autoconnect_flashing = "); file.print(jumperlessConfig.serial_2.autoconnect_flashing); file.println(";");
-
+    file.println();
     // Write top_oled section
     file.println("[top_oled]");
     file.print("enabled = "); file.print(jumperlessConfig.top_oled.enabled); file.println(";");
@@ -996,6 +1003,7 @@ void saveConfigToFile(const char* filename) {
     file.print("show_in_terminal = "); file.print(jumperlessConfig.top_oled.show_in_terminal ? 1:0); file.println(";");
     file.print("font = "); file.print(jumperlessConfig.top_oled.font); file.println(";");
     file.print("startup_message = "); file.print(jumperlessConfig.top_oled.startup_message); file.println("");
+    file.println();
     file.flush();
     safeFileClose(file, true);  // Write mode, needs flush
     unpauseCore2ForFlash(was_paused);
@@ -1109,6 +1117,7 @@ bool configHasChanges() {
     if (jumperlessConfig.serial_1.lock_connection != lastSavedConfig.serial_1.lock_connection) return true;
     if (jumperlessConfig.serial_1.autoconnect_flashing != lastSavedConfig.serial_1.autoconnect_flashing) return true;
     if (jumperlessConfig.serial_1.async_passthrough != lastSavedConfig.serial_1.async_passthrough) return true;
+    if (jumperlessConfig.serial_1.tag_parsing != lastSavedConfig.serial_1.tag_parsing) return true;
     
     // Serial 2 section
     if (jumperlessConfig.serial_2.function != lastSavedConfig.serial_2.function) return true;
@@ -1617,6 +1626,9 @@ void saveConfigIncremental(const char* filename) {
                     updated = true;
                 } else if (strcmp(key, "async_passthrough") == 0) {
                     snprintf(newLine, sizeof(newLine), "async_passthrough = %d;", jumperlessConfig.serial_1.async_passthrough ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "tag_parsing") == 0) {
+                    snprintf(newLine, sizeof(newLine), "tag_parsing = %d;", jumperlessConfig.serial_1.tag_parsing);
                     updated = true;
                 }
             }
@@ -2271,6 +2283,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("autoconnect_flashing = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.autoconnect_flashing, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[serial_1] ");
         Serial.print("async_passthrough = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.async_passthrough, boolTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[serial_1] ");
+        Serial.print("tag_parsing = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.tag_parsing, tagParsingTable)); Serial.println(";");
     }
     cycleTerminalColor();
     // Print serial_2 section

@@ -395,17 +395,55 @@ def node(name_or_id: Union[str, int, Node]) -> Node:
     """Create a node object from string name or integer ID"""
     ...
 
-def connect(node1: NodeRef, node2: NodeRef, save: bool = False) -> None:
+def connect(node1: NodeRef, node2: NodeRef, duplicates: int = -1) -> None:
     """Connect two nodes
     
     Args:
         node1, node2: Nodes to connect (int, string, or Node constant)
-        save: Save to file (default: False, uses local copy)
+        duplicates: Duplicate connection behavior (default: -1)
+            -1: Just add the connection (standard behavior, no duplicate management)
+            0: Force exactly 0 duplicates (remove any existing duplicates)
+            1+: Force exactly N duplicates (add/remove connections to reach count)
+    
+    Example:
+        connect(1, 5)              # Add connection without managing duplicates
+        connect(1, 5, duplicates=0)  # Ensure no duplicate paths exist
+        connect(1, 5, duplicates=2)  # Force exactly 2 duplicate paths
     """
     ...
 
 def disconnect(node1: NodeRef, node2: NodeRef) -> None:
     """Disconnect two nodes (set node2 to -1 to disconnect all from node1)"""
+    ...
+
+def fast_connect(node1: NodeRef, node2: NodeRef, duplicates: int = -1) -> None:
+    """Connect two nodes, skipping LED computation
+    
+    This function adds connections without updating LED state. Useful when making
+    many connections at once - you can defer LED updates until all connections are done.
+    
+    Note: This is not much faster overall, it just skips LED updates for bulk operations.
+    
+    Args:
+        node1, node2: Nodes to connect (int, string, or Node constant)
+        duplicates: Same behavior as connect() (default: -1)
+    
+    Example:
+        # Make multiple connections without LED updates
+        for i in range(10):
+            fast_connect(i, i+10)
+        # LEDs update automatically after loop completes
+    """
+    ...
+
+def fast_disconnect(node1: NodeRef, node2: NodeRef) -> None:
+    """Disconnect two nodes, skipping LED computation
+    
+    Same LED-skipping behavior as fast_connect(). Useful for bulk disconnections.
+    
+    Args:
+        node1, node2: Nodes to disconnect
+    """
     ...
 
 def nodes_clear() -> None:
@@ -424,9 +462,7 @@ def nodes_save(slot: int = -1) -> int:
     """
     ...
 
-def nodes_discard() -> None:
-    """Discard unsaved changes and restore last saved state"""
-    ...
+
 
 def nodes_has_changes() -> bool:
     """Check if there are unsaved changes"""
@@ -496,6 +532,89 @@ def net_color(netNum: int) -> int:
 
 def net_info(netNum: int) -> Dict[str, Union[str, int]]:
     """Alias for get_net_info()"""
+    ...
+
+def set_net_color_hsv(netNum: int, h: float, s: float = -1, v: float = -1) -> bool:
+    """Set net color using HSV color space (auto-detects 0.0-1.0 vs 0-255 range)
+    
+    Args:
+        netNum: The net number
+        h: Hue value (0.0-1.0 or 0-255, auto-detected based on value)
+        s: Saturation (0.0-1.0 or 0-255, default: max saturation if not provided)
+        v: Value/brightness (0.0-1.0 or 0-255, default: 32 for reasonable brightness)
+    
+    Returns:
+        True on success, False on failure
+    
+    Example:
+        set_net_color_hsv(0, 0.0)           # Red at default brightness
+        set_net_color_hsv(1, 0.33)          # Green  
+        set_net_color_hsv(2, 0.66, 1.0, 1.0)  # Blue at max brightness
+    """
+    ...
+
+# ============================================================================
+# Path Query Functions
+# ============================================================================
+
+def get_num_paths(include_duplicates: bool = True) -> int:
+    """Get the number of routing paths
+    
+    Args:
+        include_duplicates: If True, count all paths. If False, count only primary paths.
+    
+    Returns:
+        Number of paths
+    
+    Example:
+        total = get_num_paths()           # All paths including duplicates
+        primary = get_num_paths(False)    # Only primary paths
+    """
+    ...
+
+def get_path_info(path_idx: int) -> Optional[Dict]:
+    """Get detailed routing path information
+    
+    Args:
+        path_idx: Path index (0 to get_num_paths()-1)
+    
+    Returns:
+        Dict with keys: node1, node2, net, chips, x, y, duplicate
+        Returns None if index is invalid
+    
+    Example:
+        path = get_path_info(0)
+        if path:
+            print(f"Path from {path['node1']} to {path['node2']}")
+    """
+    ...
+
+def get_all_paths() -> List[Dict]:
+    """Get all routing paths as a list of dicts
+    
+    Returns:
+        List of path dicts, same format as get_path_info()
+    
+    Example:
+        for path in get_all_paths():
+            print(f"{path['node1']} -> {path['node2']}")
+    """
+    ...
+
+def get_path_between(node1: int, node2: int) -> Optional[Dict]:
+    """Query the routing path between two specific nodes
+    
+    Args:
+        node1, node2: Nodes to query path between
+    
+    Returns:
+        Path dict if found, None otherwise
+    
+    Example:
+        path = get_path_between(1, 5)
+        if path:
+            print(f"Route uses chips: {path['chips']}")
+    """
     ...
 
 # ============================================================================
@@ -626,6 +745,47 @@ def button_check() -> ProbeButton:
     ...
 
 # ============================================================================
+# Probe Switch Functions  
+# ============================================================================
+
+def get_switch_position() -> int:
+    """Get current probe switch position
+    
+    Returns:
+        0 (SWITCH_MEASURE): Probe in measure mode
+        1 (SWITCH_SELECT): Probe in select mode
+        -1 (SWITCH_UNKNOWN): Position unknown
+    
+    Example:
+        if get_switch_position() == SWITCH_MEASURE:
+            voltage = measureMode()
+    """
+    ...
+
+def set_switch_position(position: int) -> None:
+    """Manually set probe switch position
+    
+    Args:
+        position: 0 (SWITCH_MEASURE), 1 (SWITCH_SELECT), or -1 (SWITCH_UNKNOWN)
+    """
+    ...
+
+def check_switch_position() -> int:
+    """Check probe switch position via current sensing and update state
+    
+    Uses hysteresis thresholds to prevent oscillation between modes.
+    
+    Returns:
+        Updated switch position (0, 1, or -1)
+    
+    Example:
+        position = check_switch_position()
+        if position == SWITCH_SELECT:
+            pad = probe_read(blocking=False)
+    """
+    ...
+
+# ============================================================================
 # Clickwheel Functions
 # ============================================================================
 
@@ -641,56 +801,140 @@ def clickwheel_press() -> None:
     """Press clickwheel button"""
     ...
 
+def clickwheel_get_position() -> int:
+    """Get raw clickwheel position counter
+    
+    Returns:
+        Current position value (accumulates as you turn)
+    
+    Example:
+        pos = clickwheel_get_position()
+        print(f"Position: {pos}")
+    """
+    ...
+
+def clickwheel_reset_position() -> None:
+    """Reset clickwheel position counter to 0"""
+    ...
+
+def clickwheel_get_direction(consume: bool = True) -> int:
+    """Get clickwheel direction event
+    
+    Args:
+        consume: If True (default), clears direction after reading (one-shot).
+                 If False, direction persists until consumed.
+    
+    Returns:
+        0 (CLICKWHEEL_NONE), 1 (CLICKWHEEL_UP), or 2 (CLICKWHEEL_DOWN)
+    
+    Note: Direction persists until consumed, so you won't miss turn events
+    
+    Example:
+        direction = clickwheel_get_direction()
+        if direction == CLICKWHEEL_UP:
+            value += 1
+    """
+    ...
+
+def clickwheel_get_button() -> int:
+    """Get clickwheel button state
+    
+    Returns:
+        0 (CLICKWHEEL_IDLE), 1 (CLICKWHEEL_PRESSED), 2 (CLICKWHEEL_HELD),
+        3 (CLICKWHEEL_RELEASED), or 4 (CLICKWHEEL_DOUBLECLICKED)
+    """
+    ...
+
+def clickwheel_is_initialized() -> bool:
+    """Check if clickwheel hardware is initialized and ready"""
+    ...
+
 # ============================================================================
-# Logic Analyzer Functions
+# Service Management Functions
 # ============================================================================
 
-def la_set_trigger(trigger_type: int, channel: int, value: float) -> bool:
-    """Set trigger configuration"""
+def force_service(name: str) -> bool:
+    """Force immediate execution of a specific system service
+    
+    Args:
+        name: Service name (e.g., "ProbeButton", "Peripherals")
+    
+    Returns:
+        True if service found and executed, False otherwise
+    
+    Example:
+        while True:
+            force_service("ProbeButton")  # Ensure button updates
+            button = check_button()
+            time.sleep(0.001)
+    """
     ...
 
-def la_capture_single_sample() -> bool:
-    """Capture a single sample"""
+def force_service_by_index(index: int) -> bool:
+    """Force service execution by index (faster than name lookup)
+    
+    Args:
+        index: Service index from get_service_index()
+    
+    Returns:
+        True if successful, False otherwise
+    
+    Example:
+        btn_idx = get_service_index("ProbeButton")
+        while True:
+            force_service_by_index(btn_idx)  # Fastest
+            button = check_button()
+    """
     ...
 
-def la_start_continuous_capture() -> bool:
-    """Start continuous capture mode"""
+def get_service_index(name: str) -> int:
+    """Get service index by name for use with force_service_by_index()
+    
+    Args:
+        name: Service name
+    
+    Returns:
+        Service index (0+), or -1 if not found
+    
+    Example:
+        idx = get_service_index("ProbeButton")
+        if idx >= 0:
+            force_service_by_index(idx)
+    """
     ...
 
-def la_stop_capture() -> bool:
-    """Stop capture"""
+# ============================================================================
+# Terminal Color Functions
+# ============================================================================
+
+def change_terminal_color(color: int = -1, flush: bool = True) -> None:
+    """Set terminal color by 256-color palette index
+    
+    Args:
+        color: Color index (0-255), or -1 for default
+        flush: Flush output immediately (default: True)
+    
+    Example:
+        change_terminal_color(196)  # Bright red
+        print("This is in red")
+        change_terminal_color(-1)   # Reset to default
+    """
     ...
 
-def la_is_capturing() -> bool:
-    """Check if currently capturing"""
-    ...
-
-def la_set_sample_rate(rate: int) -> None:
-    """Set sample rate"""
-    ...
-
-def la_set_num_samples(samples: int) -> None:
-    """Set number of samples"""
-    ...
-
-def la_enable_channel(channel_type: int, channel: int, enable: bool) -> None:
-    """Enable/disable a channel"""
-    ...
-
-def la_set_control_analog(channel: int, value: float) -> None:
-    """Set analog control channel value"""
-    ...
-
-def la_set_control_digital(channel: int, value: bool) -> None:
-    """Set digital control channel value"""
-    ...
-
-def la_get_control_analog(channel: int) -> float:
-    """Get analog control channel value"""
-    ...
-
-def la_get_control_digital(channel: int) -> bool:
-    """Get digital control channel value"""
+def cycle_term_color(reset: bool = False, step: float = 100.0, flush: bool = True) -> None:
+    """Cycle through terminal colors
+    
+    Args:
+        reset: If True, reset to start of color sequence
+        step: Color increment step (default: 100.0)
+        flush: Flush output immediately (default: True)
+    
+    Example:
+        cycle_term_color(reset=True)   # Start fresh
+        for i in range(10):
+            cycle_term_color()         # Next color
+            print(f"Line {i}")
+    """
     ...
 
 # ============================================================================
@@ -973,6 +1217,47 @@ CONNECT_BUTTON: ProbeButton
 REMOVE_BUTTON: ProbeButton
 
 # ============================================================================
+# Probe Switch Position Constants
+# ============================================================================
+
+SWITCH_MEASURE: int
+"""Probe switch in measure mode (0)"""
+
+SWITCH_SELECT: int
+"""Probe switch in select mode (1)"""
+
+SWITCH_UNKNOWN: int
+"""Probe switch position unknown (-1)"""
+
+# ============================================================================
+# Clickwheel Constants
+# ============================================================================
+
+CLICKWHEEL_NONE: int
+"""No clickwheel movement (0)"""
+
+CLICKWHEEL_UP: int
+"""Clickwheel turned clockwise (1)"""
+
+CLICKWHEEL_DOWN: int
+"""Clickwheel turned counter-clockwise (2)"""
+
+CLICKWHEEL_IDLE: int
+"""Clickwheel button idle (0)"""
+
+CLICKWHEEL_PRESSED: int
+"""Clickwheel button pressed (1)"""
+
+CLICKWHEEL_HELD: int
+"""Clickwheel button held down (2)"""
+
+CLICKWHEEL_RELEASED: int
+"""Clickwheel button released (3)"""
+
+CLICKWHEEL_DOUBLECLICKED: int
+"""Clickwheel button double-clicked (4)"""
+
+# ============================================================================
 # Probe Pad Constants
 # ============================================================================
 
@@ -1132,19 +1417,4 @@ class JFSModule:
         ...
 
 jfs: JFSModule
-
-# ============================================================================
-# Python Helper Functions
-# ============================================================================
-
-def quick_connect(*nodes: NodeRef) -> None:
-    """Connect multiple nodes in sequence
-    
-    Usage:
-        quick_connect(1, 2, 3, 4)  # Connects 1-2, 2-3, 3-4
-        quick_connect(D13, TOP_RAIL, A0)
-    """
-    ...
-
-
 

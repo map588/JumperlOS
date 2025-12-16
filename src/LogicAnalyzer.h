@@ -127,9 +127,10 @@ private:
 	uint32_t samples_remaining;         // countdown across halves
 	uint8_t current_half_idx;           // 0 or 1 for ping-pong
 
-	// Transmit buffer
+	// Transmit buffer (dynamically allocated to save RAM)
 	static constexpr uint32_t TX_BUF_SIZE = 16384;
-	uint8_t txbuf[TX_BUF_SIZE];
+	uint8_t* txbuf;  // Dynamically allocated 16KB buffer
+	bool txbuf_allocated;  // Track allocation state
 	uint16_t txidx;
 
 	// Command parser state

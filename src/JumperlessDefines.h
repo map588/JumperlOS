@@ -7,7 +7,8 @@
 
 // #define OG_JUMPERLESS 0
 
-#define MICROPY_HEAP_SIZE (100 * 1024)
+// MicroPython heap size 
+#define MICROPY_HEAP_SIZE (128 * 1024)
 
 #define TERM_SUPPORTS_RGB 0
 #define TERM_SUPPORTS_ANSI_COLORS 1
@@ -20,7 +21,7 @@
 
 extern volatile int sendAllPathsCore2;
 #define PICO_RP2350A 0
-#define INPUTBUFFERLENGTH 8000
+#define INPUTBUFFERLENGTH 4000
 
 #define PROTOTYPE_VERSION 3 //1 is the hw without the rearranged probe connections
 
@@ -398,7 +399,38 @@ extern int probeRev;
 #define GPIO_8_PIN 27
 
 
-
+#define FAKE_GPIO_1 150
+#define FAKE_GPIO_2 151
+#define FAKE_GPIO_3 152
+#define FAKE_GPIO_4 153
+#define FAKE_GPIO_5 154
+#define FAKE_GPIO_6 155
+#define FAKE_GPIO_7 156
+#define FAKE_GPIO_8 157
+#define FAKE_GPIO_9 158
+#define FAKE_GPIO_10 159
+#define FAKE_GPIO_11 160
+#define FAKE_GPIO_12 161
+#define FAKE_GPIO_13 162
+#define FAKE_GPIO_14 163
+#define FAKE_GPIO_15 164
+#define FAKE_GPIO_16 165
+#define FAKE_GPIO_17 166
+#define FAKE_GPIO_18 167
+#define FAKE_GPIO_19 168
+#define FAKE_GPIO_20 169
+#define FAKE_GPIO_21 170
+#define FAKE_GPIO_22 171
+#define FAKE_GPIO_23 172
+#define FAKE_GPIO_24 173
+#define FAKE_GPIO_25 174
+#define FAKE_GPIO_26 175
+#define FAKE_GPIO_27 176
+#define FAKE_GPIO_28 177
+#define FAKE_GPIO_29 178
+#define FAKE_GPIO_30 179
+#define FAKE_GPIO_31 180
+#define FAKE_GPIO_32 181
 
 
 

@@ -2,6 +2,8 @@
 #define COMMANDS_H
 
 #include <Arduino.h>    
+// Core 2 path sending signal
+// Values: 0 = idle/done, 1 = send paths, -1 = send paths with clean, 3 = immediate bypass (skip scheduler)
 extern volatile int sendAllPathsCore2;
 extern volatile int showLEDsCore2;
 extern volatile int showProbeLEDs;
@@ -24,6 +26,7 @@ void refresh(int flashOrLocal = 0, int ledShowOption = -1, int fillUnused = 1, i
 
 void refreshConnections(int ledShowOption = 1,int fillUnused = 1, int clean = 0);
 void refreshLocalConnections(int ledShowOption = 1, int fillUnused = 1, int clean = 0);
+void fastRefresh(int ledShowOption = 1);
 
 // Check and restore all locked connections from config
 // Call after clear, load, or any operation that might remove connections

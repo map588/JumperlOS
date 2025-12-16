@@ -1,5 +1,5 @@
 #include "Graphics.h"
-#include "Adafruit_NeoPixel.h"
+#include "JeoPixel.h"
 #include "Commands.h"
 #include "Highlighting.h"
 #include "JumperlessDefines.h"
@@ -2174,6 +2174,7 @@ void __not_in_flash_func(assignRowAnimations)(void) {
       }
     }
 
+    // Handle real GPIO (indices 0-9)
     for (int i = 0; i < 10; i++) {
       if (gpioNet[i] > numberOfNets) {
         // Jerial.print("gpioNet[");
@@ -2208,6 +2209,71 @@ void __not_in_flash_func(assignRowAnimations)(void) {
           // Regular idle animation for non-keeper modes
           assignedAnimations[gpioNet[i]] = i + 3;
           rowAnimations[i + 3].net = gpioNet[i];
+        }
+      }
+    }
+
+    // Handle fake GPIO (indices 10-41)
+    for (int fakeIdx = 10; fakeIdx < 42; fakeIdx++) {
+      if (gpioNet[fakeIdx] > numberOfNets) {
+        // Clear out-of-range nets
+        gpioNet[fakeIdx] = -1;
+        continue;
+      }
+      
+      if (gpioNet[fakeIdx] > 0) {
+        int fakeSlot = fakeIdx - 10;  // Convert to 0-31 slot number
+        
+        // if (debugFakeGpio && fakeSlot < 12) {  // Only debug first 12 to avoid spam
+        //   Serial.print("assignRowAnimations: fakeIdx=");
+        //   Serial.print(fakeIdx);
+        //   Serial.print(" net=");
+        //   Serial.print(gpioNet[fakeIdx]);
+        //   Serial.print(" state=");
+        //   Serial.print(gpioState[fakeIdx]);
+        //   Serial.print(" reading=");
+        //   Serial.println(gpioReading[fakeIdx]);
+        // }
+        
+        // Check if fake GPIO is in bus keeper mode (INPUT with state)
+        if (gpioState[fakeIdx] == 7) {
+          // Assign keeper animation based on reading
+          // Reuse real GPIO keeper animations by cycling through them
+          int keeperAnimationBase = 13 + ((fakeSlot % 10) * 2);  // Cycle through 10 keeper animations
+          
+          if (keeperAnimationBase + 1 < 50) {  // Bounds check
+            if (gpioReading[fakeIdx] == 1) {
+              // HIGH state - keeper high animation
+              assignedAnimations[gpioNet[fakeIdx]] = keeperAnimationBase;
+              rowAnimations[keeperAnimationBase].net = gpioNet[fakeIdx];
+            } else {
+              // LOW state - keeper low animation
+              assignedAnimations[gpioNet[fakeIdx]] = keeperAnimationBase + 1;
+              rowAnimations[keeperAnimationBase + 1].net = gpioNet[fakeIdx];
+            }
+            
+            // if (debugFakeGpio && fakeSlot < 12) {
+            //   Serial.print("  Assigned keeper animation ");
+            //   Serial.print(keeperAnimationBase);
+            //   Serial.print(" to net ");
+            //   Serial.println(gpioNet[fakeIdx]);
+            // }
+          }
+        } else if (gpioState[fakeIdx] == 0 || gpioState[fakeIdx] == 1) {
+          // OUTPUT mode - use idle animation with color based on state
+          // Reuse real GPIO idle animations by cycling through them
+          int idleAnimBase = 3 + (fakeSlot % 10);  // Cycle through 10 idle animations
+          if (idleAnimBase < 50) {
+            assignedAnimations[gpioNet[fakeIdx]] = idleAnimBase;
+            rowAnimations[idleAnimBase].net = gpioNet[fakeIdx];
+            
+            // if (debugFakeGpio && fakeSlot < 12) {
+            //   Serial.print("  Assigned idle animation ");
+            //   Serial.print(idleAnimBase);
+            //   Serial.print(" to net ");
+            //   Serial.println(gpioNet[fakeIdx]);
+            // }
+          }
         }
       }
     }
@@ -2289,6 +2355,12 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   // if (isCurrentSenseNet) {
   //   return;
   // }
+
+  // Check if this net is connected to an ADC - if so, use the ADC voltage-based color
+  extern int anyAdcConnected(int net);
+  extern uint32_t adcReadingColors[8];
+  int adcChannel = anyAdcConnected(actualNet);
+  bool isAdcNet = (adcChannel >= 0 && adcChannel < 8);
 
   if (rowAnimations[index].net == warningNet) {
     // Jerial.print("warningNet: ");
@@ -2427,6 +2499,20 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
       frameColors[i] =
           rowAnimations[index].frames[(rowAnimations[index].currentFrame + i) %
                                       rowAnimations[index].numberOfFrames];
+    }
+  }
+
+  // If this is an ADC net, override the animation colors with the voltage-based ADC color
+  if (isAdcNet) {
+    // Memory barrier to ensure we see the latest ADC color from showLEDmeasurements()
+    __dmb();
+    uint32_t adcColor = adcReadingColors[adcChannel];
+    
+    if (adcColor != 0) {
+      for (int i = 0; i < 5; i++) {
+        frameColors[i] = adcColor;
+        brightenedNodeColors[i] = adcColor;
+      }
     }
   }
 
@@ -3176,26 +3262,29 @@ void printString(const char *s, uint32_t color, uint32_t bg, int position,
 }
 
 void bread::clear(int topBottom) {
+  // CRITICAL: Use setPixelColorDirect to write to buffer WITHOUT marking dirty
+  // This prevents Core 2 from showing partial clears before new content is drawn
   if (topBottom == -1) {
     for (int i = 0; i < 60; i++) {
       for (int j = 0; j < 5; j++) {
-        leds.setPixelColor((i * 5) + j, 0x00, 0x00, 0x00);
+        leds.setPixelColor((i * 5) + j, 0x00);
       }
     }
   } else if (topBottom == 0) {
     for (int i = 0; i < 30; i++) {
       for (int j = 0; j < 5; j++) {
-        leds.setPixelColor((i * 5) + j, 0x00, 0x00, 0x00);
+        leds.setPixelColor((i * 5) + j, 0x00);
       }
     }
   } else if (topBottom == 1) {
     for (int i = 30; i < 60; i++) {
       for (int j = 0; j < 5; j++) {
-        leds.setPixelColor((i * 5) + j, 0x00, 0x00, 0x00);
+        leds.setPixelColor((i * 5) + j, 0x00);
       }
     }
   }
-  // leds.show();
+  // Note: Buffer is cleared but NOT marked dirty
+  // Call showLEDsCore2 = 12 (or similar) to actually display
 }
 
 void scrollFont() {
@@ -3600,6 +3689,24 @@ int serial2ClearSent = 0;
 
 // #define CSI "\033[
 
+// Global variables for screen buffer management
+static char** screenLinesBuffer = nullptr;
+static bool screenLinesAllocated = false;
+
+// Helper function to free dumpLEDs screen buffer (call when LED dumping is disabled)
+void freeDumpLEDsBuffer() {
+  if (screenLinesAllocated && screenLinesBuffer != nullptr) {
+    for (int i = 0; i < 50; i++) {  // MAX_LINES
+      if (screenLinesBuffer[i] != nullptr) {
+        delete[] screenLinesBuffer[i];
+      }
+    }
+    delete[] screenLinesBuffer;
+    screenLinesBuffer = nullptr;
+    screenLinesAllocated = false;
+  }
+}
+
 void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
               int logo, Stream *stream) {
 
@@ -3701,7 +3808,43 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 // Build screen line by line - much simpler approach
 #define MAX_LINES 50
 #define LINE_WIDTH 700 // Much wider to accommodate ANSI escape sequences
-  static char screenLines[MAX_LINES][LINE_WIDTH];
+  
+  // Dynamic allocation for screen buffer (saves 34KB when not dumping LEDs)
+  static char** screenLinesBuffer = nullptr;
+  static bool screenLinesAllocated = false;
+  
+  // Allocate buffer if not already allocated
+  if (!screenLinesAllocated) {
+    screenLinesBuffer = new (std::nothrow) char*[MAX_LINES];
+    if (screenLinesBuffer != nullptr) {
+      bool alloc_success = true;
+      for (int i = 0; i < MAX_LINES; i++) {
+        screenLinesBuffer[i] = new (std::nothrow) char[LINE_WIDTH];
+        if (screenLinesBuffer[i] == nullptr) {
+          // Allocation failed - clean up
+          for (int j = 0; j < i; j++) {
+            delete[] screenLinesBuffer[j];
+          }
+          delete[] screenLinesBuffer;
+          screenLinesBuffer = nullptr;
+          alloc_success = false;
+          break;
+        }
+      }
+      if (alloc_success) {
+        screenLinesAllocated = true;
+      }
+    }
+    
+    if (!screenLinesAllocated) {
+      Serial.println("dumpLEDs: Failed to allocate screen buffer (34KB)");
+      logoLedAccess = false;
+      dumpingToSerial = false;
+      return;
+    }
+  }
+  
+  char** screenLines = screenLinesBuffer;  // Use allocated buffer
   int currentLine = 0;
 
   // Clear all lines
@@ -4440,9 +4583,14 @@ int brightnessSetHeader[45] = {-100, -99, -97, -95, -90, -85, -78, -72, -62,
                                -32,  -37, -42, -47, -57, -70, -85, -95, -100};
 int brightnessSet = -100;
 
+#define DEBUG_ANIMATION 0
+unsigned long lastLEDsShowTime = 0;
+
+unsigned long ledsShowTime = 0;
 void drawAnimatedImage(int imageIndex, int speed) {
   showLEDsCore2 = -3;
   leds.clear();
+  lastLEDsShowTime = micros();
   //leds.show();
   // delay(100);
   if (imageIndex == 0) {
@@ -4452,17 +4600,44 @@ void drawAnimatedImage(int imageIndex, int speed) {
       drawImage(i);
       // showLEDsCore2 = 3;
       cycleCount++;
+      
+      lastLEDsShowTime = micros();
+      
       leds.show();
-      delayMicroseconds(speed + (cycleCount * 80));
+      ledsShowTime += micros() - lastLEDsShowTime;
+      delayMicroseconds(speed + (cycleCount * 500));
     }
+    #if DEBUG_ANIMATION
+    Serial.print("Time taken to show LEDs: ");
+    Serial.println(ledsShowTime);
+    Serial.print("Time per frame: ");
+    Serial.println(ledsShowTime / cycleCount);
+    Serial.flush();
+    #endif
+    ledsShowTime = 0;
+
   } else { // play the animation backwards
     cycleCount = 44;
     for (int i = 0; i < 45; i++) {
       drawImage(i);
+      lastLEDsShowTime = micros();
       leds.show();
+      ledsShowTime += micros() - lastLEDsShowTime;
       cycleCount--;
-      delayMicroseconds(speed + (cycleCount * 200));
+      if (cycleCount < 2) {
+        cycleCount = 1;
+
+      }
+      delayMicroseconds(speed + (cycleCount * 500));
     }
+    #if DEBUG_ANIMATION
+    Serial.print("Time taken to show LEDs (backward): ");
+    Serial.println(ledsShowTime);
+    Serial.print("Time per frame (backward): ");
+    Serial.println(ledsShowTime / 45);
+    Serial.flush();
+    #endif
+    ledsShowTime = 0;
   }
   // lightUpRail();
   /// leds.clear();

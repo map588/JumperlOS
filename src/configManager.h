@@ -146,8 +146,8 @@ const StringIntEntry uartFunctionTable[] = {
     {"main", 2},
     {"control", 2},
     {"port_1", 2},
-    {"gpio", 3},
-    {"auxiliary", 3},
+    {"micropython", 3},
+    {"python", 3},
     {"oled", 4},
     {"leds", 5},
     {"led", 5},
@@ -266,6 +266,21 @@ const StringIntEntry displayTypeTable[] = {
 
 
 const int displayTypeTableSize = sizeof(displayTypeTable) / sizeof(displayTypeTable[0]);
+
+
+// Table for parseTagParsing
+const StringIntEntry tagParsingTable[] = {
+    {"off", 0},
+    {"disable", 0},
+    {"enabled", 1},
+    {"enabled_passthrough", 1},
+    {"passthrough", 1},
+    {"strip_tags", 2},
+    {"parse + strip", 2},
+    {"strip + parse", 2},
+
+};
+const int tagParsingTableSize = sizeof(tagParsingTable) / sizeof(tagParsingTable[0]);
 // Table for parseArbitraryFunction
 const StringIntEntry arbitraryFunctionTable[] = {
     {"off", -1},

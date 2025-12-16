@@ -167,8 +167,13 @@ struct REPLEditor {
   void drawPrompt(Stream *stream, int level = 0);
 };
 
+// Keyboard interrupt character constants
+#define MP_INTERRUPT_CHAR_SERIAL   17  // Ctrl+Q for built-in REPL (Serial/Jerial)
+#define MP_INTERRUPT_CHAR_USBSER2   3  // Ctrl+C for mpremote/ViperIDE (USBSer2)
+
 // Core initialization and cleanup
 void setGlobalStream(Stream *stream);
+void setGlobalStreamWithInterrupt(Stream *stream);  // Sets stream AND correct interrupt char
 bool initMicroPythonProper(Stream *stream = global_mp_stream, bool preserve_interrupt_char = false);
 void deinitMicroPythonProper(void);
 
@@ -226,6 +231,7 @@ void forceGarbageCollection(void);
 extern bool mp_interrupt_requested; // Global interrupt flag for Ctrl+Q
 extern bool mp_soft_reset_requested; // Soft reset request flag
 extern "C" mp_uint_t mp_hal_set_interrupt_char(int c);
+extern "C" int getCurrentInterruptChar(void);
 
 // Terminal color control
 void changeTerminalColor(Stream *stream = global_mp_stream, int color = 69, bool bold = true);

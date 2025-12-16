@@ -2951,6 +2951,15 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #ifdef INCLUDE_TEST_NEOPIXEL
         { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py" },
 #endif
+#ifdef INCLUDE_FAKE_GPIO
+        { "/python_scripts/examples/fake_gpio.py", FAKE_GPIO_PY, "fake_gpio.py" },
+#endif
+#ifdef INCLUDE_SIMPLE_FAKE_GPIO_TEST
+        { "/python_scripts/examples/simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY, "simple_fake_gpio_test.py" },
+#endif
+#ifdef INCLUDE_VIPERIDE_REINIT
+        { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py" },
+#endif
     };
 
     int totalExamples = sizeof( examples ) / sizeof( examples[ 0 ] );

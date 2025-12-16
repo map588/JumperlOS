@@ -17,6 +17,7 @@
 #include "MpRemoteService.h"
 #include "SharedBuffer.h"  // For zero-copy transfer from Ekilo editor
 #include "externVars.h"  // For pauseCore2 synchronization
+#include "micropythonExamples.h"  // For embedded Python scripts including ViperIDE reinit
 extern "C" {
 #include "py/gc.h"
 #include "py/runtime.h"
@@ -143,25 +144,39 @@ extern "C" void mp_hal_delay_ms(mp_uint_t ms) {
   
   unsigned int start_time = millis();
   unsigned int last_service_time = start_time;
+  unsigned int last_interrupt_check = 0;  // Track last interrupt check independently
   
   while (millis() - start_time < ms) {
-    // Check for interrupt every millisecond during delays
-    mp_hal_check_interrupt();
+    unsigned int current = millis();
     
-    // If interrupt requested, return immediately to allow VM to handle it
-    if (mp_interrupt_requested || mp_soft_reset_requested) {
-        return;
+    // CRITICAL: Service USB EVERY iteration to ensure Ctrl+C bytes reach the CDC buffer
+    // Without this, USB characters get stuck in hardware buffers and interrupts don't work
+    #ifdef USE_TINYUSB
+    tud_task();
+    #endif
+    
+    // Check for interrupts at least every 1ms (but don't throttle too aggressively)
+    if (current != last_interrupt_check) {
+      // Check for interrupt on all streams
+      mp_hal_check_interrupt();
+      last_interrupt_check = current;
+      
+      // If interrupt requested, CLEAR FLAG and return immediately to allow VM to handle it
+      if (mp_interrupt_requested || mp_soft_reset_requested) {
+          mp_interrupt_requested = false;  // Clear flag now that we're breaking out
+          mp_soft_reset_requested = false;
+          return;
+      }
     }
     
     // Run essential services every 50ms during Python delays
     // This keeps current sense measurements and marching ants animation running
-    if (millis() - last_service_time >= 50) {
-      //jl_service_python();
+    if (current - last_service_time >= 50) {
       jOS.serviceCritical();
-      last_service_time = millis();
+      last_service_time = current;
     }
     
-    delay(1); // Small delay to prevent overwhelming the system
+    delayMicroseconds(100); // Very small delay to prevent overwhelming the system
   }
 }
 
@@ -198,7 +213,7 @@ extern "C" void arduino_serial_write(const char *str, int len, void *stream) {
     for (int i = 0; i < len; i++) {
       if (!is_raw_repl_stream && str[i] == '\n') {
         // Friendly REPL / main Serial: normalize to CRLF
-        //s->write('\r');
+        s->write('\r');
         s->write('\n');
       } else {
         // Raw REPL stream: send bytes verbatim (no CR injection)
@@ -211,24 +226,39 @@ extern "C" void arduino_serial_write(const char *str, int len, void *stream) {
 
 extern "C" void arduino_delay_ms(unsigned int ms) { 
   // Check for interrupt during delays
-  mp_hal_check_interrupt();
-  delay(ms); 
+  unsigned long start_time = millis();
+  while (millis() - start_time < ms) {
+    mp_hal_check_interrupt();
+    delayMicroseconds(10);
+    if (mp_interrupt_requested || mp_soft_reset_requested) {
+        return;
+    }
+  }
 }
 
 extern "C" unsigned int arduino_millis() { return millis(); }
 
 // HAL function to set the keyboard interrupt character
 extern "C" mp_uint_t mp_hal_set_interrupt_char(int c) {
+    // Track previous interrupt character to avoid spamming debug output
+    static int prev_interrupt_char = -1;
+    
     keyboard_interrupt_char = c;
     
-    // Suppress debug output when MpRemote is active (stream is USBSer2)
-    // These messages would interfere with mpremote/ViperIDE protocol
+    // Only print debug message if:
+    // - The interrupt character actually changed
+    // - We're not on USBSer2 (would interfere with mpremote/ViperIDE protocol)
+    // - Not being set to -1 (MicroPython uses -1 to temporarily disable interrupts)
     const bool is_mpremote_active = (global_mp_stream == &USBSer2);
+    const bool char_changed = (c != prev_interrupt_char);
+    const bool is_real_char = (c >= 0); // -1 means "disable interrupts" - don't spam output
 
-    if (global_mp_stream && !is_mpremote_active) {
+    if (global_mp_stream && !is_mpremote_active && char_changed && is_real_char) {
         char char_name = (c >= 1 && c <= 26) ? (char)(c + 64) : '?';
         global_mp_stream->printf("[MP] Keyboard interrupt character set to Ctrl+%c (ASCII %d)\n\r", char_name, c);
     }
+    
+    prev_interrupt_char = c;
     return 0;
 }
 
@@ -240,6 +270,28 @@ extern "C" int getCurrentInterruptChar(void) {
 void setGlobalStream(Stream *stream) {
   global_mp_stream = stream;
   global_mp_stream_ptr = (void *)stream;
+}
+
+// Set global stream AND correct interrupt character based on stream type
+// This ensures the keyboard interrupt is always appropriate for the controlling interface
+void setGlobalStreamWithInterrupt(Stream *stream) {
+  // First set the stream
+  global_mp_stream = stream;
+  global_mp_stream_ptr = (void *)stream;
+  
+  // Determine which interrupt character to use based on stream type
+  int interrupt_char;
+  if (stream == &USBSer2) {
+    // USBSer2 is used by mpremote/ViperIDE - uses Ctrl+C (3)
+    interrupt_char = MP_INTERRUPT_CHAR_USBSER2;
+  } else {
+    // Serial, Jerial, or other streams use Ctrl+Q (17)
+    interrupt_char = MP_INTERRUPT_CHAR_SERIAL;
+  }
+  
+  // Set the interrupt character in MicroPython
+  // Use the low-level HAL function to avoid circular calls and debug spam
+  mp_hal_set_interrupt_char(interrupt_char);
 }
 
 // Terminal color control function is now in Graphics.cpp
@@ -318,19 +370,21 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     if (CommandBuffer::getInstance().shouldRespondToUART() && len > 0) {
         cmdBuffer.queueForUART((const uint8_t*)str, len);
         // Add carriage return for UART if the output ends with newline
-        if (str[len-1] == '\n') {
-            cmdBuffer.queueForUART((const uint8_t*)"\r", 1);
-        }
+        // if (str[len-1] == '\n') {
+        //     cmdBuffer.queueForUART((const uint8_t*)"\r", 1);
+        // }
     }
 }
 
 // HAL functions are now implemented in lib/micropython/port/mphalport.c
 
 // Static helper function to check a stream for interrupts
-// Extracted from lambda to avoid recreation overhead on every call
+// CRITICAL: Pass expected_interrupt_char for the stream being checked, not global keyboard_interrupt_char
+// This allows Serial (Ctrl+Q=17) and USBSer2 (Ctrl+C=3) to have different interrupt characters
 static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_time, 
                                                uint32_t& last_interrupt_time, 
-                                               bool in_raw_repl) {
+                                               bool in_raw_repl,
+                                               int expected_interrupt_char) {
   if (!stream) return false;
   
   int available = stream->available();
@@ -347,7 +401,8 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
     for (int i = 0; i < max_lookahead && stream->available() > 0; i++) {
       c = stream->read(); // Consume byte
       already_consumed = true;
-      if (c == 0x03 || c == 0x04) {
+      // Check for both Ctrl+C and Ctrl+D, also check expected interrupt char
+      if (c == 0x03 || c == 0x04 || c == expected_interrupt_char) {
         found_control = true;
         break;
       }
@@ -359,7 +414,7 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
     }
   }
 
-  // Soft reset request (Ctrl+D)
+  // Soft reset request (Ctrl+D) - works on all streams
   if (c == 0x04) {
     if (!already_consumed) {
       stream->read(); // Consume only if not already consumed during lookahead
@@ -372,18 +427,26 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
     return true;
   }
 
-  // Keyboard interrupt character
-  if (c == keyboard_interrupt_char) {
+  // Keyboard interrupt character - use the stream-specific expected character
+  if (c == expected_interrupt_char) {
     if (!already_consumed) {
       stream->read(); // Consume only if not already consumed during lookahead
     }
     if (current_time - last_interrupt_time > 20) { // Debounce (20ms = responsive but not too sensitive)
-      // Schedule interrupt directly (don't set flag to avoid duplicate scheduling)
+      // CRITICAL: Set the flag FIRST to break out of mp_hal_delay_ms immediately
+      mp_interrupt_requested = true;
+      
+      // THEN schedule the interrupt in MicroPython's VM
       mp_sched_keyboard_interrupt();
       last_interrupt_time = current_time;
       
+      // Echo the interrupt character for user feedback (but not in raw REPL mode)
       if (global_mp_stream && !in_raw_repl) {
-         // ... echo ^C ...
+        if (expected_interrupt_char == MP_INTERRUPT_CHAR_SERIAL) {
+          global_mp_stream->print("^Q"); // Ctrl+Q for Serial/Jerial
+        } else if (expected_interrupt_char == MP_INTERRUPT_CHAR_USBSER2) {
+          global_mp_stream->print("^C"); // Ctrl+C for USBSer2
+        }
       }
     }
     return true;
@@ -398,58 +461,87 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
 extern "C" void mp_hal_check_interrupt(void) {
   static uint32_t last_interrupt_time = 0;
   static uint32_t last_check_time = 0;
+  static uint32_t last_gc_check_time = 0;
 
   // CRITICAL: Check interrupt flag FIRST before any throttling or expensive operations
-  // This flag can be set from ISR and needs immediate response
+  // This flag can be set from ISR or from stream detection and needs immediate response
+  // NOTE: We DON'T clear the flag here anymore - let mp_hal_delay_ms() handle it
+  // This ensures the flag persists long enough to break out of delay loops
   if (mp_interrupt_requested) {
     mp_sched_keyboard_interrupt();
-    mp_interrupt_requested = false;  // Clear flag after scheduling to avoid duplicate interrupts
+    // DON'T clear flag here - mp_hal_delay_ms will clear it after breaking out
     last_interrupt_time = millis();
     return;
   }
 
   uint32_t current_time = millis();
   
+  // CRITICAL: Service USB FIRST, BEFORE any throttling checks
+  // This ensures Ctrl+C bytes move from USB hardware → CDC buffer even when throttled
+  // Without this, interrupts during time.sleep() won't work!
+  #ifdef USE_TINYUSB
+  tud_task(); // MUST be called every time, regardless of throttling
+  #endif
+  
+  // PROACTIVE MEMORY MANAGEMENT: Check for low memory and trigger GC if needed
+  // This prevents MemoryError during long-running scripts by freeing memory before it's critically low
+  // Only check every 500ms to avoid overhead - GC is expensive (~50-100ms on embedded systems)
+  if (current_time - last_gc_check_time >= 500) {
+    last_gc_check_time = current_time;
+    
+    #if MICROPY_ENABLE_GC
+    // Get free memory without triggering GC
+    gc_info_t info;
+    gc_info(&info);
+    
+    // Trigger GC if less than 10KB free (critical threshold for script execution)
+    // This ensures we always have breathing room for allocations
+    const size_t CRITICAL_FREE_THRESHOLD = 10 * 1024;  // 10KB
+    if (info.free < CRITICAL_FREE_THRESHOLD) {
+      // Memory is getting critically low - run GC to free up space
+      // This prevents MemoryError from occurring mid-script
+      gc_collect();
+    }
+    #endif
+  }
+  
   // Throttle stream polling to avoid excessive overhead
+  // NOTE: USB servicing (tud_task) is ABOVE this check so it always runs
   if (current_time - last_check_time < interruptCheckInterval) {
     return;
   }
   last_check_time = current_time;
 
-  // Only service USB if it's actually in use (check if global_mp_stream is USBSer2)
-  // This avoids unnecessary tud_task() overhead when USB isn't active
-// #ifdef USE_TINYUSB
-//   if (global_mp_stream == &USBSer2 || mp_interrupt_check_stream == &USBSer2) {
-    tud_task(); // Service USB so incoming Ctrl-C/Ctrl-D bytes reach the CDC buffer
-//   }
-// #else
-  // If not using TinyUSB, skip tud_task() entirely
-// #endif
-
   // Cache in_raw_repl check once instead of calling getInstance() multiple times
   const bool in_raw_repl = MpRemoteService::getInstance().isInRawRepl();
   
-  // Check Serial (always available) - most common case
-  if (check_stream_for_interrupt(&Serial, current_time, last_interrupt_time, in_raw_repl)) {
+  // Check Serial (always available) - uses Ctrl+Q (17)
+  if (check_stream_for_interrupt(&Serial, current_time, last_interrupt_time, in_raw_repl, 
+                                  MP_INTERRUPT_CHAR_SERIAL)) {
     return; // Interrupt handled, early exit
   }
 
 #ifdef USE_TINYUSB
-  // Check USBSer2 if available
-  if (check_stream_for_interrupt(&USBSer2, current_time, last_interrupt_time, in_raw_repl)) {
+  // Check USBSer2 if available - uses Ctrl+C (3) for mpremote/ViperIDE
+  if (check_stream_for_interrupt(&USBSer2, current_time, last_interrupt_time, in_raw_repl, 
+                                  MP_INTERRUPT_CHAR_USBSER2)) {
     return; // Interrupt handled, early exit
   }
 #endif
 
   // Check mp_interrupt_check_stream if it's explicitly set to something else
+  // Determine which interrupt char to use based on stream identity
   if (mp_interrupt_check_stream && 
       mp_interrupt_check_stream != &Serial 
 #ifdef USE_TINYUSB
       && mp_interrupt_check_stream != &USBSer2
 #endif
       ) {
+    // Default to Serial's interrupt char for unknown streams
+    int interrupt_char = (mp_interrupt_check_stream == &USBSer2) ? 
+                         MP_INTERRUPT_CHAR_USBSER2 : MP_INTERRUPT_CHAR_SERIAL;
     check_stream_for_interrupt(mp_interrupt_check_stream, current_time, 
-                                last_interrupt_time, in_raw_repl);
+                                last_interrupt_time, in_raw_repl, interrupt_char);
   }
 }
 
@@ -507,6 +599,15 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
 
   changeTerminalColor(replColors[11], true, global_mp_stream);
   //global_mp_stream->println("[MP] interrupt char: " + String(keyboard_interrupt_char));
+  
+  // Execute ViperIDE reinit script when connecting to USBSer2 (mpremote/ViperIDE)
+  // This sends filesystem information that ViperIDE/mpremote tools expect on connection
+  // #ifdef INCLUDE_VIPERIDE_REINIT
+  // if (global_mp_stream == &USBSer2) {
+  //   mp_embed_exec_str(VIPERIDE_REINIT_PY);
+  // }
+  // #endif
+  
   return true;
 }
 
@@ -592,6 +693,11 @@ void enterMicroPythonREPL(Stream *stream) {
 }
 
 void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
+  // Save the original stream for this REPL session
+  // CRITICAL: Don't use global_mp_stream in the loop because it can be changed
+  // by MpRemoteService when ViperIDE/mpremote connects on USBSer2
+  Stream* repl_stream = stream;
+  
   // Push PYTHON_REPL context onto the stack for proper navigation
   ContextEntry ctx(ContextType::PYTHON_REPL);
   ctx.onExit = [](void*) {
@@ -628,10 +734,10 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
       } else {
         // Not a Python file - clear the shared buffer and ignore
         sharedBuf.clear();
-        changeTerminalColor(replColors[5], true, global_mp_stream);
-        global_mp_stream->print("[!] Ignoring non-.py file: ");
-        global_mp_stream->println(bufferFilename);
-        changeTerminalColor(replColors[0], false, global_mp_stream);
+        changeTerminalColor(replColors[5], true, repl_stream);
+        repl_stream->print("[!] Ignoring non-.py file: ");
+        repl_stream->println(bufferFilename);
+        changeTerminalColor(replColors[0], false, repl_stream);
       }
     } else {
       // No filename but has content - assume it's Python code
@@ -650,41 +756,44 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
     if (isPythonFile(transferPath)) {
       fileToLoad = transferPath;
     } else {
-      changeTerminalColor(replColors[5], true, global_mp_stream);
-      global_mp_stream->print("[!] Ignoring non-.py file: ");
-      global_mp_stream->println(transferPath);
-      changeTerminalColor(replColors[0], false, global_mp_stream);
+      changeTerminalColor(replColors[5], true, repl_stream);
+      repl_stream->print("[!] Ignoring non-.py file: ");
+      repl_stream->println(transferPath);
+      changeTerminalColor(replColors[0], false, repl_stream);
     }
   }
   
   // Final check on fileToLoad from filepath parameter
   if (fileToLoad.length() > 0 && !isPythonFile(fileToLoad) && !contentFromSharedBuffer) {
-    changeTerminalColor(replColors[5], true, global_mp_stream);
-    global_mp_stream->print("[!] Ignoring non-.py file: ");
-    global_mp_stream->println(fileToLoad);
-    changeTerminalColor(replColors[0], false, global_mp_stream);
+    changeTerminalColor(replColors[5], true, repl_stream);
+    repl_stream->print("[!] Ignoring non-.py file: ");
+    repl_stream->println(fileToLoad);
+    changeTerminalColor(replColors[0], false, repl_stream);
     fileToLoad = "";  // Clear it - not a valid Python file
   }
   
   ContextManager::getInstance().pushContext(ctx);
 
   // Colorful initialization like original implementation
-  changeTerminalColor(replColors[6], true, global_mp_stream);
+  changeTerminalColor(replColors[6], true, repl_stream);
 
   // Initialize MicroPython if not already done
   if (!mp_initialized) {
     if (!initMicroPythonProper()) {
-      changeTerminalColor(replColors[4], true, global_mp_stream); // error color
-      global_mp_stream->println("Failed to initialize MicroPython!");
+      changeTerminalColor(replColors[4], true, repl_stream); // error color
+      repl_stream->println("Failed to initialize MicroPython!");
       ContextManager::getInstance().popContext();  // Pop on error
       return;
     }
   }
   
+  // CRITICAL: Ensure stream and interrupt character are set correctly for THIS REPL session
+  // This must happen BEFORE any MicroPython code execution to ensure proper interrupt handling
+  setGlobalStreamWithInterrupt(repl_stream);
+  
   // Always add jumperless functions to global namespace when entering REPL
   // This makes all functions available without the jumperless. prefix
   addJumperlessPythonFunctions();
-
   // Initialize local copy of current nodefile for faster operations
   jl_init_micropython_local_copy();
 
@@ -693,8 +802,8 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
 
   // Check if REPL is already active
   if (mp_repl_active) {
-    changeTerminalColor(replColors[4], true, global_mp_stream);
-    global_mp_stream->println("[MP] REPL already active");
+    changeTerminalColor(replColors[4], true, repl_stream);
+    repl_stream->println("[MP] REPL already active");
     return;
   }
 
@@ -704,45 +813,45 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   }
 
   // Show colorful welcome messages
-  // changeTerminalColor(replColors[7], true,global_mp_stream);
-  // global_mp_stream->println("MicroPython REPL with embedded Jumperless
-  // hardware control!"); global_mp_stream->println("Type normal Python code,
-  // then press Enter to execute"); global_mp_stream->println("Use TAB for
-  // indentation (or exactly 4 spaces)"); global_mp_stream->println("Use ↑/↓
+  // changeTerminalColor(replColors[7], true,repl_stream);
+  // repl_stream->println("MicroPython REPL with embedded Jumperless
+  // hardware control!"); repl_stream->println("Type normal Python code,
+  // then press Enter to execute"); repl_stream->println("Use TAB for
+  // indentation (or exactly 4 spaces)"); repl_stream->println("Use ↑/↓
   // arrows for command history, ←/→ arrows for cursor movement");
-  // global_mp_stream->println("Navigate multiline code with ← to beginning of
-  // lines"); global_mp_stream->println("Type help_jumperless() for hardware
+  // repl_stream->println("Navigate multiline code with ← to beginning of
+  // lines"); repl_stream->println("Type help_jumperless() for hardware
   // control commands");
 
-  changeTerminalColor(replColors[0], true, global_mp_stream);
-  global_mp_stream->println("MicroPython initialized successfully");
-  global_mp_stream->flush();
+  changeTerminalColor(replColors[0], true, repl_stream);
+  repl_stream->println("MicroPython initialized successfully");
+  repl_stream->flush();
   //delay(200);
 
   showREPLreference();
 
   //! This is to break the Python App's input loop
-  global_mp_stream->println();
+  repl_stream->println();
 
-  if (global_mp_stream == &Serial || global_mp_stream == &Jerial) {
-    global_mp_stream->write(0x0E); // turn on interactive mode
+  if (repl_stream == &Serial || repl_stream == &Jerial) {
+    repl_stream->write(0x0E); // turn on interactive mode
     termInInteractiveMode = 1;
-    global_mp_stream->flush();
+    repl_stream->flush();
   }
 
   // Wait for user to press enter
-  changeTerminalColor(replColors[4], true, global_mp_stream);
-  global_mp_stream->print("\n\rPress enter to start REPL");
-  global_mp_stream->println();
-  global_mp_stream->flush();
+  changeTerminalColor(replColors[4], true, repl_stream);
+  repl_stream->print("\n\rPress enter to start REPL");
+  repl_stream->println();
+  repl_stream->flush();
 
   Serial.write("\x1b[0 q");
 
 
   extern void jl_service_python(void);
   unsigned long lastWaitServiceTime = millis();
-  while (global_mp_stream->available() == 0) {
-    // Run services while waiting for user input
+  while (repl_stream->available() == 0) {
+    // Run services while waiting for user input (including MpRemoteService)
     if (millis() - lastWaitServiceTime >= 50) {
       jl_service_python();
       
@@ -753,10 +862,10 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   }
 
 
-  global_mp_stream->read(); // consume the enter keypress
+  repl_stream->read(); // consume the enter keypress
 
   // Start the REPL with colors
-  changeTerminalColor(replColors[1], true, global_mp_stream);
+  changeTerminalColor(replColors[1], true, repl_stream);
   startMicroPythonREPL();
 
   // Blocking loop - stay in REPL until user exits
@@ -764,9 +873,12 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   unsigned long lastServiceTime = millis();
   
   while (mp_repl_active) {
-    processMicroPythonInput(global_mp_stream);
+    // CRITICAL: Use repl_stream (the original stream), not global_mp_stream
+    // because global_mp_stream can be changed by MpRemoteService when ViperIDE connects
+    processMicroPythonInput(repl_stream);
     
     // Run essential services every 50ms to keep measurements and animations running
+    // This includes MpRemoteService which handles ViperIDE/mpremote on USBSer2
     if (millis() - lastServiceTime >= 50) {
       jl_service_python();
       lastServiceTime = millis();
@@ -778,25 +890,25 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   pauseCore2 = false;
 
   // Cleanup with colors
-  changeTerminalColor(replColors[0], true, global_mp_stream);
+  changeTerminalColor(replColors[0], true, repl_stream);
 
-  global_mp_stream->println("\n\rExiting REPL...");
-  global_mp_stream->flush();
+  repl_stream->println("\n\rExiting REPL...");
+  repl_stream->flush();
   delay(10);
 
-  if (global_mp_stream == &Serial) {
-    // global_mp_stream->write(0x0F); // turn off interactive mode
-    // global_mp_stream->flush();
+  if (repl_stream == &Serial) {
+    // repl_stream->write(0x0F); // turn off interactive mode
+    // repl_stream->flush();
     //delay(100); // Give system time to switch modes
-    // global_mp_stream->write(0x0E); // turn interactive mode back on for main menu
-    // global_mp_stream->flush();
+    // repl_stream->write(0x0E); // turn interactive mode back on for main menu
+    // repl_stream->flush();
   }
-  global_mp_stream->print("\033[0m");
+  repl_stream->print("\033[0m");
   // stream->println("Returned to Arduino mode");
   
   // Clear screen before returning to parent context (file manager, etc.)
-  global_mp_stream->print("\x1b[2J\x1b[H");
-  global_mp_stream->flush();
+  repl_stream->print("\x1b[2J\x1b[H");
+  repl_stream->flush();
   
   // Pop PYTHON_REPL context - cleanup callback will be called
   ContextManager::getInstance().popContext();
@@ -808,6 +920,13 @@ void processMicroPythonInput(Stream *stream) {
     return;
   }
 
+  // CRITICAL: Before processing input from this stream, ensure the global stream
+  // and interrupt character are set correctly. This is necessary because multiple
+  // REPLs (Serial and USBSer2) can be active simultaneously, and we need to ensure
+  // the correct interrupt character is used for whichever stream has input.
+  if (stream && stream->available() > 0) {
+    setGlobalStreamWithInterrupt(stream);
+  }
 
   // Handle REPL input with proper text editor functionality and history
   if (mp_repl_active) {
@@ -4058,6 +4177,8 @@ static const FunctionTypeMap function_type_map[] = {
   // Node functions
   {"connect", OUTPUT_BOOL_CONNECTED},
   {"disconnect", OUTPUT_NONE},
+  {"fast_connect", OUTPUT_BOOL_CONNECTED},      // Fast refresh version
+  {"fast_disconnect", OUTPUT_NONE},             // Fast refresh version
   {"nodes_clear", OUTPUT_NONE},
   {"is_connected", OUTPUT_BOOL_CONNECTED},
   {"connect_nodes", OUTPUT_BOOL_CONNECTED},     // Alias
@@ -4148,7 +4269,7 @@ static const char* jumperless_functions[] = {
   "set_gpio", "get_gpio", "set_gpio_dir", "get_gpio_dir", "set_gpio_pull", "get_gpio_pull",
   "set_gpio_direction", "get_gpio_direction",
   // Node functions
-  "connect", "disconnect", "nodes_clear", "is_connected",
+  "connect", "disconnect", "fast_connect", "fast_disconnect", "nodes_clear", "is_connected",
   "connect_nodes", "disconnect_nodes", "clear_nodes", "clear_connections", "nodes_connected", "connected",
   // OLED functions
   "oled_print", "oled_clear", "oled_show", "oled_connect", "oled_disconnect",

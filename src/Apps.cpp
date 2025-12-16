@@ -56,7 +56,8 @@
 #define CMD_UPDATE 0x90
 #define OLED_CONNECTED 0
 
-JDI_MIP_Display jdi_display;
+// JDI display now allocated dynamically in jdiMIPdisplay() to save 5.1KB
+JDI_MIP_Display* jdi_display = nullptr;
 
 // Wrapper for i2cScan to match void(*)(void)
 static void i2cScanWrapper( void ) { i2cScan( ); }
@@ -1733,10 +1734,17 @@ static inline uint16_t rgbToJdi( uint8_t r, uint8_t g, uint8_t b ) {
 }
 
 void jdiMIPdisplay( void ) {
-    jdi_display.begin( );
-    jdi_display.displayOn( );
-    jdi_display.clearScreen( );
-    jdi_display.refresh( );
+    // Allocate JDI display object (5.1KB) - freed on exit
+    jdi_display = new (std::nothrow) JDI_MIP_Display();
+    if (jdi_display == nullptr) {
+        Serial.println("Failed to allocate JDI display (5.1KB)");
+        return;
+    }
+    
+    jdi_display->begin( );
+    jdi_display->displayOn( );
+    jdi_display->clearScreen( );
+    jdi_display->refresh( );
 
     cycleTerminalColor( true, 5.3, true );
     Serial.println( "\n\rThis is meant to run with a JDI LPM009M360A 72x144 display" );
@@ -1792,10 +1800,10 @@ void jdiMIPdisplay( void ) {
                     uint8_t g = ( c >> 8 ) & 0xFF;
                     uint8_t b = ( c ) & 0xFF;
                     uint16_t col = rgbToJdi( r, g, b );
-                    jdi_display.drawBufferedPixel( DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col );
+                    jdi_display->drawBufferedPixel( DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col );
                 }
             }
-            jdi_display.refresh( );
+            jdi_display->refresh( );
         }
         for ( int fi = startupFrameLEN - 1; fi >= 0; fi-- ) {
             const uint32_t* src = startupFrameArray[ fi ];
@@ -1810,15 +1818,21 @@ void jdiMIPdisplay( void ) {
                     uint8_t g = ( c >> 8 ) & 0xFF;
                     uint8_t b = ( c ) & 0xFF;
                     uint16_t col = rgbToJdi( r, g, b ); // same thresholds both passes
-                    jdi_display.drawBufferedPixel( DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col );
+                    jdi_display->drawBufferedPixel( DISPLAY_WIDTH - 1 - dx, DISPLAY_HEIGHT - 1 - dy, col );
                 }
             }
-            jdi_display.refresh( );
+            jdi_display->refresh( );
         }
 
         if ( encoderButtonState == PRESSED || Serial.available( ) > 0 )
             break;
         delay( 10 );
+    }
+    
+    // Free JDI display object
+    if (jdi_display != nullptr) {
+        delete jdi_display;
+        jdi_display = nullptr;
     }
     return;
 }
@@ -1930,8 +1944,13 @@ void DMXSerialApp( void ) {
     };
 
     // DMX universe buffer (513 bytes: 1 start code + 512 channels)
+    // Allocate on heap to reduce stack pressure
     constexpr uint16_t UNIVERSE_SIZE = 513;
-    uint8_t universe[UNIVERSE_SIZE];
+    uint8_t* universe = new (std::nothrow) uint8_t[UNIVERSE_SIZE];
+    if (universe == nullptr) {
+        Serial.println( "ERROR: Failed to allocate DMX universe buffer (513 bytes)" );
+        return;
+    }
     memset( universe, 0, UNIVERSE_SIZE );
     universe[0] = 0x00;  // DMX512 start code
 
@@ -2486,6 +2505,12 @@ void DMXSerialApp( void ) {
 exit_loop:
     // Clean shutdown
     dmxTx.end( );
+    
+    // Free DMX universe buffer
+    if (universe != nullptr) {
+        delete[] universe;
+    }
+    
     Serial.flush( );
     Serial.println( "\n✓ DMX transmitter stopped" );
     Serial.println( "Exiting DMX Light Controller" );

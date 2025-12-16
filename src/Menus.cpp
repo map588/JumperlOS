@@ -453,6 +453,8 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
             // Don't consume the button press - let Highlighting handle it
             return -1;
         }
+        // Don't set showLEDsCore2 here - buffer not ready yet
+        // It will be set in getMenuSelection() after buffer is prepared
         
         encoderButtonState = IDLE;
         inClickMenu = 1;
@@ -465,6 +467,7 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
         // Serial.setTimeout(1000);
         // Serial.flush();
 
+        
         // showLoss();
         // while(Serial.available() == 0) ;
 
@@ -684,8 +687,9 @@ int getMenuSelection( void ) {
     clearAction( );
 
     clearLEDsExceptRails( );
-    showLEDsCore2 = -2;
-    waitCore2( );
+    // Don't set showLEDsCore2 here - buffer not populated with menu text yet
+    // It will be set after buffer is updated in the menu loop (firstTime == 1 case)
+   // waitCore2( );
     // delay(100);
     if ( returnToMenuPosition != -1 && returnToMenuLevel != -1 ) {
         menuPosition = returnToMenuPosition;
@@ -700,6 +704,7 @@ int getMenuSelection( void ) {
     noInputTimer = millis( );
     while ( Serial.available( ) == 0 ) {
         jOS.serviceCritical();
+        rotaryEncoderButtonStuff();  // Update button state every iteration
 
         if ( Serial.getWriteError( ) ) {
 
@@ -760,7 +765,9 @@ int getMenuSelection( void ) {
             }
 
             // Serial.println();
-            while ( encoderButtonState == RELEASED )
+            // Clear the consumed event and wait for physical button release (debounce)
+            encoderButtonState = IDLE;
+            while ( isEncoderButtonPhysicallyPressed() )  // Wait for physical button release
                 ;
         } else if ( encoderDirectionState == UP || firstTime == 1 || force == 1 ) { // ! up
             // lastMenuLevel > menuLevel) {
@@ -905,7 +912,10 @@ int getMenuSelection( void ) {
             showLEDsCore2 = 2;
             lastMenuLevel = menuLevel;
             // previousMenuSelection[menuLevel] = menuPosition;
-            //  b.print(menuPosition);
+            // Serial.print("Menu position: ");
+            // Serial.println(menuPosition);
+            // Serial.flush();
+            // b.print(menuPosition);
 
         } else if ( encoderDirectionState == DOWN || ( lastMenuLevel < menuLevel ) ) { //! down
             encoderDirectionState = NONE;
@@ -1626,6 +1636,8 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
     int firstTime = 1;
     delayMicroseconds( 1000 );
     while ( optionSelected == -1 ) {
+        //rotaryEncoderStuff();
+        rotaryEncoderButtonStuff();
         jOS.serviceCritical();
         delayMicroseconds( 1000 );
 
@@ -2072,6 +2084,9 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
                 // Preview mode handled via SlotManager::isPreviewMode() in core2stuff
             }
 
+            // CRITICAL FIX: Signal Core 2 to display the menu buffer that was written by b.print()
+            // Without this, the menu text is written but never shown on the LEDs
+            showLEDsCore2 = 2;
             changed = 0;
         }
 
@@ -2104,6 +2119,9 @@ int yesNoMenu( unsigned long timeout ) {
     lastButtonEncoderState = IDLE;
     
     while ( optionSelected == -1 ) {
+        jOS.serviceCritical();
+        rotaryEncoderButtonStuff();  // Update button state
+        
         if ( millis( ) - startTime > timeout ) {
             inClickMenu = 0;
             return -1;
@@ -2226,7 +2244,7 @@ int selectNodeAction( int whichSelection ) {
 
     while ( nodeSelected == -1 && Serial.available( ) == 0 ) {
         delayMicroseconds( 200 );
-        rotaryEncoderStuff();
+       rotaryEncoderStuff();
         jOS.serviceCritical();
         if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance().getButtonPress() == 1) {
             b.clear( );
@@ -2522,7 +2540,7 @@ float getActionFloat( int menuPosition, int rail ) {
 
     while ( true ) {
         jOS.serviceCritical();
-        //rotaryEncoderStuff();
+        //rotaryEncoderStuff();  // Update encoder and button state
         
         // Check for cancellation (long press) - check FIRST on every iteration
         if ( encoderButtonState == HELD || ProbeButton::getInstance().getButtonState() == 1 ) {
@@ -3681,7 +3699,7 @@ int doMenuAction( int menuPosition, int selection ) {
             break;
         }
         }
-        showLEDsCore2 = 1;
+        showLEDsCore2 = -1;
 
         // State is marked dirty by setRailVoltage() - will auto-save before next reload
         // No need for configChanged - voltages are in state, not config

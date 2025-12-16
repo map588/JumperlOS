@@ -15,6 +15,7 @@
 #include "PersistentStuff.h"
 #include "RotaryEncoder.h"
 #include "hardware/pwm.h"
+#include "pico.h"
 #include "pico/stdlib.h"
 
 #include <EEPROM.h>
@@ -203,7 +204,7 @@ ServiceStatus ProbeButton::service( ) {
 /**
  * @brief Get button press event (consumes the event if consume is true)
  */
-int ProbeButton::getButtonPress( bool consume) {
+int ProbeButton::getButtonPress( bool consume ) {
     int press = buttonPress;
 
     if ( press != 0 ) {
@@ -227,12 +228,25 @@ int ProbeButton::getButtonPress( bool consume) {
 int ProbeButton::checkProbeButtonHardware( void ) {
     extern struct config jumperlessConfig;
 
-    // Wait if LEDs are being updated
-    while ( showingProbeLEDs == 1 ) {
-        // Spin wait - LEDs are fast
+    // Wait if LEDs are being updated (software flag)
+    if ( showingProbeLEDs != 0 ) {
+        return 0;
     }
 
-    core1busy = true;
+    // CRITICAL: MUST check if async DMA transfer is still in progress!
+    // The async LED system returns immediately from show(), but DMA
+    // is still transferring data to the probe LED pin. If we manipulate
+    // the GPIO while DMA is active, we get glitches/flashes/shifting.
+    // This is likely the root cause of random LED shifting!
+    // extern Adafruit_NeoPixel probeLEDs;
+    if ( probeLEDs.isDMABusy( ) ) {
+        return 0; // Try again next time - DMA still busy
+    }
+
+    // Get pin references from Probing singleton
+    Probing& p = Probing::getInstance( );
+
+    // core1busy = true;
     checkingButton = 1;
 
     int buttonState = 0;
@@ -241,9 +255,6 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     int returnState = 0;
 
     gpio_function_t lastProbeButtonFunction = gpio_get_function( PROBE_LED_PIN );
-
-    // Get pin references from Probing singleton
-    Probing& p = Probing::getInstance( );
 
     // Button reading sequence with proper timing
     gpio_set_dir( BUTTON_PIN, false );
@@ -286,7 +297,7 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     gpio_set_function( PROBE_LED_PIN, lastProbeButtonFunction );
 
     checkingButton = 0;
-    core1busy = false;
+    // core1busy = false;
 
     // Determine button state (handles probe revision)
     if ( buttonState == 1 && buttonState2 == 1 && buttonState3 == 1 ) {
@@ -294,7 +305,11 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     } else if ( buttonState == 0 && buttonState2 == 0 && buttonState3 == 0 ) {
         returnState = ( jumperlessConfig.hardware.probe_revision >= 4 ) ? 1 : 2;
     }
-
+    // Serial.println("\n\n\n\\n\n\nn\nn\n\n lastProbeLEDs: ");
+    // Serial.println(Probing::getInstance( ).lastProbeLEDs);
+    // Serial.println("\n\n\n\\n\n\nn\nn\n\n ");
+    // Serial.flush();
+    // showProbeLEDs = Probing::getInstance( ).lastProbeLEDs;
     return returnState;
 }
 
@@ -349,14 +364,14 @@ Probing::Probing( ) {
  */
 void Probing::handleProbeButtonActions( ) {
     extern unsigned long startupTimers[];
-    extern int probeToggle( int buttonState );  // Defined in Peripherals.cpp
-    extern class ProbeButton& probeButton;      // High-frequency button service
+    extern int probeToggle( int buttonState ); // Defined in Peripherals.cpp
+    extern class ProbeButton& probeButton;     // High-frequency button service
 
     // Check if we're in a blocking period FIRST - don't consume events if blocked
     if ( blockProbeButton > 0 && ( millis( ) - blockProbeButtonTimer < blockProbeButton ) ) {
         return; // Still blocked, don't process or consume button events
     }
-    
+
     // Now consume the button press event (only if not blocked)
     int buttonPress = probeButton.getButtonPress( );
 
@@ -408,14 +423,14 @@ void Probing::handleProbeButtonActions( ) {
             blockProbeButton = 800;
             blockProbeButtonTimer = millis( );
         }
-        
+
     } else {
         firstConnection = -1;
     }
 
     // Use the button press event we got at the start of the function
 
-    if ( buttonPress != 0) {
+    if ( buttonPress != 0 ) {
         // Button was pressed - stored state changed
         lastProbeButton = buttonPress;
 
@@ -638,6 +653,31 @@ static int nodeToLogoPadConfig( int node, int fallbackConfig ) {
     }
 }
 
+/// @brief Wait for Core 2 to finish displaying blocking menu graphics
+/// @param timeoutMs Maximum time to wait in milliseconds (default 100ms)
+/// @return true if Core 2 finished, false if timeout
+///
+/// This function waits for Core 2 to complete a blocking LED display by polling
+/// the showLEDsCore2 flag until it's cleared to 0. Core 2 sets showLEDsCore2=0
+/// after completing the display.
+///
+/// CRITICAL: Core 1 must NEVER call leds.show*() directly - use this pattern:
+///   1. Draw menu: b.print(...)
+///   2. Signal Core 2: showLEDsCore2 = 12
+///   3. Wait for completion: waitForBlockingDisplay()
+///   4. Enter blocking loop (menu now guaranteed visible)
+static bool waitForBlockingDisplay( uint32_t timeoutMs = 100 ) {
+    extern volatile int showLEDsCore2;
+
+    uint32_t waitStart = millis( );
+    while ( showLEDsCore2 != 0 && ( millis( ) - waitStart ) < timeoutMs ) {
+        tight_loop_contents( ); // Yield to Core 2, hint to CPU we're spinning
+    }
+
+    // Return true if Core 2 finished, false if timeout
+    return ( showLEDsCore2 == 0 );
+}
+
 // ============================================================================
 // Legacy Global Variables (not moved to class yet)
 // ============================================================================
@@ -691,6 +731,726 @@ volatile int globalEncoderCursorNode = -1;             // -1 = cursor hidden
 volatile int globalEncoderCursorInHeader = 0;          // 1 if in nano header
 volatile uint32_t globalEncoderCursorColor = 0x4500e8; // Cursor color
 
+
+
+unsigned long idleTime = millis( );
+unsigned long idleSaveTime = 3000;
+
+
+/**
+ * @brief Handle encoder-based node selection in probe mode
+ *
+ * This function manages the encoder cursor navigation through breadboard, nano header,
+ * and special function zones (rails, DAC, ADC, GPIO, UART, current sense).
+ * It handles encoder movement, cursor display, button press for selection, and timeouts.
+ *
+ * The function modifies many parameters by reference to update the probe mode state.
+ */
+void Probing::handleEncoderCursorNavigation(
+    int setOrClear,
+    int node1or2,
+    const int* nodesToConnect,
+    int connectOrClearProbe,
+    unsigned long probeModeStartTime,
+    long& lastEncoderPosition,
+    float& encoderAccumulator,
+    int& encoderCursorNode,
+    int& cursorZone,
+    int& subIndex,
+    int& lastEncoderCursorNode,
+    int& lastCursorZone,
+    int& lastSubIndex,
+    unsigned long& lastEncoderMovement,
+    bool& encoderCursorVisible,
+    int& persistentEncoderCursorNode,
+    int& persistentCursorZone,
+    int& persistentSubIndex,
+    int* row,
+    int* connectedRows,
+    int& connectedRowsIndex,
+    EncoderAccelerator& encoderAccel,
+    unsigned long encoderHideTimeout ) {
+    // Navigation zones enum (local to match probeMode context)
+    enum CursorZone { ZONE_BREADBOARD = 0,
+                      ZONE_NANO = 1,
+                      ZONE_RAILS = 2,
+                      ZONE_DAC = 3,
+                      ZONE_ADC = 4,
+                      ZONE_GPIO = 5,
+                      ZONE_UART = 6,
+                      ZONE_CURRENT = 7 };
+
+    // ======= ENCODER-BASED NODE SELECTION WITH SPECIAL FUNCTION ZONES =======
+    // Check for encoder movement
+    long currentEncoderPosition = encoderPosition;
+    long encoderDelta = -( currentEncoderPosition - lastEncoderPosition );
+
+    if ( millis( ) - probeModeStartTime < 100 ) {
+        lastEncoderPosition = encoderPosition;
+    }
+
+    // Don't clear color overrides here - they need to persist while cursor is visible in zones
+    // Overrides are cleared when changing zones or on timeout
+    if ( encoderDelta != 0 && ( millis( ) - probeModeStartTime > 100 ) ) {
+        idleTime = millis( );
+        // Encoder moved - show cursor and reset BOTH timeouts
+        lastEncoderMovement = millis( );
+        probeTimeout = millis( ); // Reset probe mode timeout to keep it active during use
+        encoderCursorVisible = true;
+
+        // Get accelerated delta
+        float accelDelta = encoderAccel.getAcceleratedDelta( encoderDelta );
+        encoderAccumulator += accelDelta;
+
+        // Convert accumulated movement to integer steps
+        int steps = (int)encoderAccumulator;
+        if ( steps != 0 ) {
+            encoderAccumulator -= steps; // Keep fractional part
+
+            // Save last position for clearing (before we move)
+            lastEncoderCursorNode = encoderCursorNode;
+            lastCursorZone = cursorZone;
+            lastSubIndex = subIndex;
+
+            // Navigate through zones
+            if ( steps < 0 ) {
+                // Moving down (counter-clockwise)
+                if ( cursorZone == ZONE_BREADBOARD ) {
+                    encoderCursorNode += steps;
+                    if ( encoderCursorNode < 0 ) {
+                        // Wrap to last special functions zone (UART)
+                        cursorZone = ZONE_CURRENT;
+                        subIndex = 1; // UART RX
+                        encoderCursorNode = -1;
+                    }
+                } else if ( cursorZone == ZONE_NANO ) {
+                    encoderCursorNode += steps;
+                    if ( encoderCursorNode < NANO_D0 ) {
+                        // Go to breadboard
+                        cursorZone = ZONE_BREADBOARD;
+                        encoderCursorNode = 59;
+                    }
+                } else {
+                    // Navigate within special function zones
+                    subIndex += steps;
+                    if ( subIndex < 0 ) {
+                        // Move to previous zone
+                        cursorZone--;
+                        if ( cursorZone < ZONE_RAILS ) {
+                            cursorZone = ZONE_NANO;
+                            encoderCursorNode = NANO_A7;
+                        } else {
+                            // Set subIndex to max for new zone
+                            switch ( cursorZone ) {
+                            case ZONE_RAILS:
+                                subIndex = 2;
+                                break; // 3 rails (TOP, BOTTOM, GND)
+                            case ZONE_DAC:
+                                subIndex = 1;
+                                break; // 2 DACs
+                            case ZONE_ADC:
+                                subIndex = 5;
+                                break; // 6 ADCs (0-4, 7)
+                            case ZONE_GPIO:
+                                subIndex = 7;
+                                break; // 8 GPIOs
+                            case ZONE_UART:
+                                subIndex = 1;
+                                break; // 2 UART (TX, RX)
+                            case ZONE_CURRENT:
+                                subIndex = 1;
+                                break; // Current +/-
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Moving up (clockwise)
+                if ( cursorZone == ZONE_BREADBOARD ) {
+                    encoderCursorNode += steps;
+                    if ( encoderCursorNode > 59 ) {
+                        // Go to nano header
+                        cursorZone = ZONE_NANO;
+                        encoderCursorNode = NANO_D0;
+                    }
+                } else if ( cursorZone == ZONE_NANO ) {
+                    encoderCursorNode += steps;
+                    if ( encoderCursorNode > NANO_A7 ) {
+                        // Go to special functions (Rails)
+                        cursorZone = ZONE_RAILS;
+                        subIndex = 0;
+                        encoderCursorNode = -1;
+                    }
+                } else {
+                    // Navigate within special function zones
+                    int maxSubIndex = 0;
+                    switch ( cursorZone ) {
+                    case ZONE_RAILS:
+                        maxSubIndex = 2;
+                        break;
+                    case ZONE_DAC:
+                        maxSubIndex = 1;
+                        break;
+                    case ZONE_ADC:
+                        maxSubIndex = 5;
+                        break;
+                    case ZONE_GPIO:
+                        maxSubIndex = 7;
+                        break;
+                    case ZONE_UART:
+                        maxSubIndex = 1;
+                        break;
+                    case ZONE_CURRENT:
+                        maxSubIndex = 1;
+                        break;
+                    }
+
+                    subIndex += steps;
+                    if ( subIndex > maxSubIndex ) {
+                        // Move to next zone
+                        cursorZone++;
+                        if ( cursorZone > ZONE_CURRENT ) {
+                            // Wrap back to breadboard
+                            cursorZone = ZONE_BREADBOARD;
+                            encoderCursorNode = 0;
+                        } else {
+                            subIndex = 0;
+                        }
+                    }
+                }
+            }
+
+            // ========== ATOMIC LED UPDATE - PAUSE CORE2 WHILE MAKING CHANGES ==========
+            // pauseCore2 = 1; // Pause Core 2 LED updates
+
+            // 1. Clear previous highlighting if zone or subIndex changed
+            bool zoneChanged = ( lastCursorZone != cursorZone );
+            bool subIndexChanged = ( cursorZone >= ZONE_RAILS && lastSubIndex != subIndex );
+
+            if ( zoneChanged || subIndexChanged ) {
+                Highlighting::getInstance( ).clearHighlighting( );
+                clearLEDsExceptRails( );
+                b.clear( );
+                showLEDsCore2 = 2;
+                clearColorOverrides( 1, 1, 0 );
+
+                // Clear inPadMenu when leaving special function zones
+                if ( lastCursorZone >= ZONE_RAILS && cursorZone < ZONE_RAILS ) {
+                    inPadMenu = 0;
+                }
+            }
+
+            // 2. Clear previous cursor position only if in same zone
+            if ( !zoneChanged ) {
+                if ( cursorZone == ZONE_BREADBOARD && lastEncoderCursorNode >= 0 && lastEncoderCursorNode != encoderCursorNode ) {
+                    b.printRawRow( 0b00000100, lastEncoderCursorNode, 0x000000, 0x000000 );
+                } else if ( cursorZone == ZONE_NANO && lastEncoderCursorNode >= 0 && lastEncoderCursorNode != encoderCursorNode ) {
+                    int pixel = getNanoHeaderPixel( lastEncoderCursorNode );
+                    if ( pixel >= 0 )
+                        leds.setPixelColor( pixel, 0x000000 );
+                }
+            }
+
+            // 3. Set cursor color based on mode
+            uint32_t cursorColor = setOrClear == 1 ? 0x250035 : 0x362404;
+            uint32_t dimColor = setOrClear == 1 ? 0x080205 : 0x080500;
+
+            ///[active/dim][setOrClear][index]
+            uint32_t cursorColors[ 2 ][ 2 ][ 8 ] = {
+                {
+                    // active
+
+                    // clear
+                    { 0x391912, 0x3a1810, 0x3b1608, 0x3d1411, 0x3f1214, 0x411015, 0x450e16, 0x480c14 },
+
+                    // set
+                    { 0x191229, 0x18102a, 0x16082b, 0x14112d, 0x12142f, 0x101531, 0x0e1635, 0x0c1438 },
+
+                },
+                {
+                    // dim
+                    // clear
+                    { 0x040302, 0x040302, 0x040202, 0x050302, 0x050401, 0x050301, 0x040302, 0x040302 },
+
+                    // set
+                    { 0x050304, 0x050204, 0x040204, 0x030205, 0x040105, 0x050104, 0x040203, 0x030305 },
+
+                } };
+
+            globalEncoderCursorColor = cursorColor;
+
+            // 4. Get actual node and display based on zone
+            int actualNode = -1;
+            char displayName[ 32 ] = "";
+
+            if ( cursorZone == ZONE_BREADBOARD ) {
+                actualNode = encoderCursorNode + 1;
+                strcpy( displayName, definesToChar( actualNode, 0 ) );
+                b.printRawRow( 0b00000100, encoderCursorNode, 0x121215, cursorColor );
+                globalEncoderCursorNode = encoderCursorNode;
+                globalEncoderCursorInHeader = 0;
+            } else if ( cursorZone == ZONE_NANO ) {
+                actualNode = encoderCursorNode;
+                strcpy( displayName, definesToChar( actualNode, 0 ) );
+                int pixel = getNanoHeaderPixel( encoderCursorNode );
+                if ( pixel >= 0 )
+                    leds.setPixelColor( pixel, cursorColor );
+                globalEncoderCursorNode = encoderCursorNode;
+                globalEncoderCursorInHeader = 1;
+            } else if ( cursorZone == ZONE_RAILS ) {
+                // Display rails: TOP_RAIL, BOTTOM_RAIL, GND - one at a time
+                const char* railNames[ 3 ] = { "  Top    Rail", " Bottom  Rail", "         GND" };
+                const char* railDisplayNames[ 3 ] = { "Top Rail", "Bottom Rail", "GND" };
+                int railBrightened[ 3 ] = { 0, 2, 1 };
+                uint32_t railColors[ 3 ] = { 0x200010, 0x150015, 0x003005 };
+                int railNodes[ 3 ] = { TOP_RAIL, BOTTOM_RAIL, GND };
+                actualNode = railNodes[ subIndex ];
+                strcpy( displayName, railDisplayNames[ subIndex ] );
+
+                // DON'T set inPadMenu for rails - we want the rail LEDs to update
+                // Rails don't have breadboard positions so no text conflict
+                inPadMenu = 1;
+
+                // Highlight the rail LEDs
+                Highlighting::getInstance( ).brightenedRail = railBrightened[ subIndex ];
+
+                // Show only the currently selected rail in the center
+                b.print( railNames[ subIndex ], scaleBrightness( railColors[ subIndex ], 0 ), 0xFFFFFF, 0, -1, -2 );
+            } else if ( cursorZone == ZONE_DAC ) {
+                // Display DAC 0 and 1
+                const int dacNodes[ 2 ] = { DAC0, DAC1 };
+                actualNode = dacNodes[ subIndex ];
+                snprintf( displayName, sizeof( displayName ), "DAC %d", subIndex );
+
+                // Prevent net LEDs from overwriting our text display
+                inPadMenu = 1;
+
+                clearLEDsExceptRails( );
+                b.print( "DAC", scaleDownBrightness( rawOtherColors[ 9 ], 4, 22 ), 0xFFFFFF, 1, 0, 3 );
+
+                // Set DAC colorOverrides using helper functions
+                if ( subIndex == 0 ) {
+                    setLogoOverride( DAC_0, -2 );
+
+                    b.print( "0", cursorColors[ 1 ][ setOrClear ][ 0 ], 0xFFFFFF, 0, 1, 3 );
+                    b.print( "1", cursorColors[ 0 ][ setOrClear ][ 4 ], 0xFFFFFF, 5, 1, 0 );
+                } else {
+
+                    setLogoOverride( DAC_1, -2 );
+                    b.print( "0", cursorColors[ 0 ][ setOrClear ][ 0 ], 0xFFFFFF, 0, 1, 3 );
+                    b.print( "1", cursorColors[ 1 ][ setOrClear ][ 4 ], 0xFFFFFF, 5, 1, 0 );
+                }
+            } else if ( cursorZone == ZONE_ADC ) {
+                // Display ADC 0-4, 7 (ADC 5,6 don't exist)
+                const int adcMap[ 6 ] = { ADC0, ADC1, ADC2, ADC3, ADC4, ADC7 };
+                const char* adcLabels[ 6 ] = { "0", "1", "2", "3", "4", "P" }; // P for probe
+                actualNode = adcMap[ subIndex ];
+                snprintf( displayName, sizeof( displayName ), "ADC %s", adcLabels[ subIndex ] );
+
+                // Prevent net LEDs from overwriting our text display
+                inPadMenu = 1;
+
+                clearLEDsExceptRails( );
+                b.print( " ADC", scaleDownBrightness( rawOtherColors[ 8 ], 4, 22 ), 0xFFFFFF, 0, 0, 3 );
+
+                for ( int i = 0; i < 6; i++ ) {
+                    uint32_t color = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
+                    b.print( adcLabels[ i ], color, 0xFFFFFF, i, 1, ( i == 0 ? -1 : i - 1 ) );
+                }
+
+                if ( subIndex % 2 == 0 ) {
+                    setLogoOverride( ADC_0, -2 );
+
+                } else {
+
+                    setLogoOverride( ADC_1, -2 );
+                }
+
+            } else if ( cursorZone == ZONE_GPIO ) {
+                // Display GPIO 1-8
+                actualNode = RP_GPIO_1 + subIndex;
+                snprintf( displayName, sizeof( displayName ), "GPIO %d", subIndex + 1 );
+
+                // Prevent net LEDs from overwriting our text display
+                inPadMenu = 1;
+
+                clearLEDsExceptRails( );
+                uint32_t inColor = ( connectOrClearProbe == 0 ) ? 0x000000 : 0x000606;
+                uint32_t outColor = ( connectOrClearProbe == 0 ) ? 0x000000 : 0x060100;
+
+                // Display GPIO 1-4 on top row using original positioning
+                const int positions[ 4 ] = { 0, 2, 4, 6 };
+                const int nudges[ 4 ] = { 1, 0, -1, -2 };
+
+                for ( int i = 0; i < 4; i++ ) {
+                    uint32_t numColor = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
+                    char numStr[ 2 ] = { (char)( '1' + i ), '\0' };
+                    b.print( numStr, numColor, 0xFFFFFF, positions[ i ], 0, nudges[ i ] );
+
+                    // Show input/output indicators for top row
+                    int rowBase = 2 + i * 7;
+                    b.printRawRow( 0b00011000, rowBase, ( i == subIndex ) ? inColor : 0x000000, 0xFFFFFF );
+                    b.printRawRow( 0b00011000, rowBase + 4, ( i == subIndex ) ? outColor : 0x000000, 0xFFFFFF );
+                }
+
+                // Display GPIO 5-8 on bottom row using original positioning
+                for ( int i = 4; i < 8; i++ ) {
+                    uint32_t numColor = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
+                    char numStr[ 2 ] = { (char)( '1' + i ), '\0' };
+                    b.print( numStr, numColor, 0xFFFFFF, positions[ i - 4 ], 1, nudges[ i - 4 ] );
+
+                    // Show input/output indicators for bottom row
+                    int rowBase = 32 + ( i - 4 ) * 7;
+                    b.printRawRow( 0b00000011, rowBase, ( i == subIndex ) ? inColor : 0x000000, 0xFFFFFF );
+                    b.printRawRow( 0b00000011, rowBase + 4, ( i == subIndex ) ? outColor : 0x000000, 0xFFFFFF );
+                }
+
+                // Clear all logo overrides first, then set only GPIO
+                clearColorOverrides( true, true, false );
+
+                // Set GPIO colorOverrides using helper functions
+                if ( subIndex % 2 == 0 ) {
+                    setLogoOverride( GPIO_0, -2 );
+
+                } else {
+
+                    setLogoOverride( GPIO_1, -2 ); //-2 sets  the override to the default highlighed color
+                }
+            } else if ( cursorZone == ZONE_UART ) {
+                // Display UART TX and RX - one at a time to prevent overlap
+                const char* uartNames[ 2 ] = { "TX", "RX" };
+                int uartNodes[ 2 ] = { RP_UART_TX, RP_UART_RX };
+                actualNode = uartNodes[ subIndex ];
+                snprintf( displayName, sizeof( displayName ), "UART %s", uartNames[ subIndex ] );
+
+                // Prevent net LEDs from overwriting our text display
+                inPadMenu = 1;
+
+                // Show UART label and only the selected TX or RX
+                b.print( " UART", sfOptionColors[ 3 ], 0xFFFFFF, 0, 0, 2 );
+                b.print( uartNames[ 0 ], subIndex == 0 ? cursorColors[ 0 ][ setOrClear ][ 0 ] : cursorColors[ 1 ][ setOrClear ][ 0 ], 0xFFFFFF, 1, 1, -2 );
+                b.print( uartNames[ 1 ], subIndex == 1 ? cursorColors[ 0 ][ setOrClear ][ 1 ] : cursorColors[ 1 ][ setOrClear ][ 1 ], 0xFFFFFF, 4, 1, 2 );
+
+                // Clear all logo overrides first, then set only UART
+                // clearColorOverrides(true, true, false);
+
+                // Set logo colorOverrides for UART using helper functions
+                if ( subIndex == 0 ) {
+                    setLogoOverride( LOGO_TOP, -2 );
+
+                } else {
+
+                    setLogoOverride( LOGO_BOTTOM, -2 );
+                }
+            } else if ( cursorZone == ZONE_CURRENT ) {
+                const char* currentNames[ 2 ] = { "I+", "I-" };
+                int currentNodes[ 2 ] = { ISENSE_PLUS, ISENSE_MINUS };
+                actualNode = currentNodes[ subIndex ];
+                snprintf( displayName, sizeof( displayName ), "Current %s", subIndex == 0 ? "+" : "-" );
+
+                // Color definitions for I+ (red) and I- (green)
+                const uint32_t plusBrightColor = 0x2A0002;  // Bright red for selected I+
+                const uint32_t plusDimColor = 0x0a0000;     // Dim red for unselected I+
+                const uint32_t minusBrightColor = 0x002A02; // Bright green for selected I-
+                const uint32_t minusDimColor = 0x000A00;    // Dim green for unselected I-
+
+                inPadMenu = 1;
+                clearLEDsExceptRails( );
+
+                b.print( "Current", sfOptionColors[ 6 ], 0xFFFFFF, 0, 0, 1 );
+                b.print( currentNames[ 0 ], subIndex == 0 ? plusBrightColor : plusDimColor, 0xFFFFFF, 1, 1, -2 );
+                b.print( currentNames[ 1 ], subIndex == 1 ? minusBrightColor : minusDimColor, 0xFFFFFF, 4, 1, 2 );
+
+                clearColorOverrides( true, true, false );
+            }
+
+            // 5. Try highlighting nets if we're on a regular node
+            int netOnNode = 0;
+            if ( actualNode > 0 && ( cursorZone == ZONE_BREADBOARD || cursorZone == ZONE_NANO ) ) {
+                netOnNode = Highlighting::getInstance( ).highlightNets( actualNode, 0, 1 );
+            }
+
+            // 6. Display name on Serial and OLED
+            if ( netOnNode <= 0 || cursorZone >= ZONE_RAILS ) {
+                if ( brightenedNode > 0 ) {
+                    Highlighting::getInstance( ).clearHighlighting( );
+                }
+
+                Serial.print( "\r                                               \r" );
+                Serial.print( ">>>> " );
+                Serial.print( displayName );
+                Serial.flush( );
+
+                oled.clearPrintShow( displayName, 2, true, true );
+            }
+
+            // 7. Save persistent cursor position
+            persistentEncoderCursorNode = encoderCursorNode;
+            persistentCursorZone = cursorZone;
+            persistentSubIndex = subIndex;
+
+            // 8. NOW update LEDs atomically - unpause and trigger update
+            // pauseCore2 = 0;    // Unpause Core 2
+            // showLEDsCore2 = 2; // Trigger single atomic update
+
+            // ========== END ATOMIC UPDATE ==========
+
+            // If we have first node and selecting second, show preview
+            if ( node1or2 == 1 && nodesToConnect[ 0 ] > 0 && setOrClear == 1 && cursorZone <= ZONE_NANO ) {
+                int previewNode = ( cursorZone == ZONE_NANO ) ? encoderCursorNode : ( encoderCursorNode + 1 );
+
+                // Visual preview: highlight both nodes without modifying state
+                if ( previewNode > 0 && previewNode != nodesToConnect[ 0 ] &&
+                     previewNode >= 1 && previewNode <= 60 ) {
+                    // Show first node
+                    b.printRawRow( 0b00000100, nodesToConnect[ 0 ] - 1, 0x121215, 0x4500e8 );
+                    // Show second node being previewed
+                    b.printRawRow( 0b00000100, previewNode - 1, 0x121215, 0x00e845 );
+                }
+            }
+
+            // showLEDsCore2 = 2;
+        }
+
+        lastEncoderPosition = currentEncoderPosition;
+    }
+
+    // Check for encoder cursor timeout (auto-hide after 5 seconds)
+    if ( encoderCursorVisible && ( millis( ) - lastEncoderMovement ) > encoderHideTimeout ) {
+        // Clear the cursor position before hiding
+        if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
+            b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
+        } else if ( cursorZone == ZONE_NANO && encoderCursorNode >= 0 ) {
+            int pixel = getNanoHeaderPixel( encoderCursorNode );
+            if ( pixel >= 0 )
+                leds.setPixelColor( pixel, 0x000000 );
+        } else if ( cursorZone >= ZONE_RAILS ) {
+            // Clear special function zone display
+            clearLEDsExceptRails( );
+            // Clear inPadMenu flag
+            inPadMenu = 0;
+        }
+
+        // Clear net highlighting and all color overrides
+        Highlighting::getInstance( ).clearHighlighting( 0 );
+        clearColorOverrides( true, true, false );
+
+        encoderCursorVisible = false;
+        lastEncoderCursorNode = -1;
+        lastCursorZone = -1;
+        globalEncoderCursorNode = -1; // Clear global
+        globalEncoderCursorInHeader = 0;
+        showLEDsCore2 = 2;
+    }
+    rotaryEncoderButtonStuff();
+
+    // Check if button pressed while cursor is hidden - re-show cursor instead of exiting
+    if ( !encoderCursorVisible && ( encoderButtonState == RELEASED ) ) {
+        // Button pressed after timeout - re-show cursor and consume the button press
+        encoderCursorVisible = true;
+        lastEncoderMovement = millis( ); // Reset cursor timeout
+        probeTimeout = millis( );        // Reset probe mode timeout to keep it active
+        encoderButtonState = IDLE;
+        lastButtonEncoderState = IDLE; // Set to IDLE to prevent menu trigger on release
+                                       // Trigger cursor redraw on next iteration
+        showLEDsCore2 = 2;
+    }
+
+    // Check for encoder button press to select node
+    // Only process encoder button if cursor is visible (otherwise it might interfere with normal operation)
+
+    if ( encoderCursorVisible && ( ( encoderButtonState == RELEASED ) || ( ProbeButton::getInstance( ).getButtonState( ) == ( setOrClear == 1 ? 2 : 1 ) ) && ( millis( ) - probeModeStartTime > 500 ) ) ) {
+        // IMMEDIATELY reset button state to prevent it from triggering click menu
+        // Serial.println("Encoder button press to select node - processing");
+        // Serial.flush();
+        encoderButtonState = IDLE;
+        lastButtonEncoderState = IDLE; // Set to IDLE (not PRESSED) to prevent menu trigger on release
+        blockProbeButton = 8000;
+        blockProbeButtonTimer = millis( );
+        probeTimeout = millis( ); // Reset probe mode timeout when user selects node
+        ProbeButton::getInstance( ).clearButtonState( );
+
+        // Serial.println("Encoder button press to select node - processing");
+        // Serial.flush();
+
+        // Get the actual node number based on current zone
+        int selectedNode = -1;
+
+        if ( cursorZone == ZONE_BREADBOARD ) {
+            selectedNode = encoderCursorNode + 1;
+        } else if ( cursorZone == ZONE_NANO ) {
+            selectedNode = encoderCursorNode;
+        } else if ( cursorZone == ZONE_RAILS ) {
+            const int railNodes[ 3 ] = { TOP_RAIL, BOTTOM_RAIL, GND };
+            selectedNode = railNodes[ subIndex ];
+        } else if ( cursorZone == ZONE_DAC ) {
+            const int dacNodes[ 2 ] = { DAC0, DAC1 };
+            selectedNode = dacNodes[ subIndex ];
+
+            // For DAC, launch voltage adjuster
+            VoltageAdjustConfig config;
+            config.minVoltage = -8.0;
+            config.maxVoltage = 8.0;
+            config.enableSnap = false;
+            config.liveUpdateInRange = true;
+            config.liveUpdateMin = 0.0;
+            config.liveUpdateMax = 5.0;
+
+            if ( subIndex == 0 ) {
+                // DAC 0
+                config.initialValue = globalState.power.dac0;
+                config.label = "DAC 0";
+                config.callback = []( float newValue, bool isLive, void* context ) {
+                    setDac0voltage( newValue, 1, 0, false );
+                    globalState.power.dac0 = newValue;
+                };
+            } else {
+                // DAC 1
+                config.initialValue = globalState.power.dac1;
+                config.label = "DAC 1";
+                config.callback = []( float newValue, bool isLive, void* context ) {
+                    setDac1voltage( newValue, 1, 0, false );
+                    globalState.power.dac1 = newValue;
+                };
+            }
+
+            AdjustResult result = VoltageAdjuster::adjust( config );
+            if ( result == AdjustResult::CONFIRMED ) {
+                saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                              globalState.power.dac0, globalState.power.dac1 );
+            }
+
+            // Clear and continue without selecting node
+            encoderCursorVisible = false;
+            lastEncoderCursorNode = -1;
+            globalEncoderCursorNode = -1;
+            setLogoOverride( DAC_0, -2 );
+            setLogoOverride( DAC_1, -2 );
+            // clearLEDsExceptRails( );
+            showLEDsCore2 = -1;
+            return; // Early return for DAC adjustment
+        } else if ( cursorZone == ZONE_ADC ) {
+            const int adcMap[ 6 ] = { ADC0, ADC1, ADC2, ADC3, ADC4, ADC7 };
+            selectedNode = adcMap[ subIndex ];
+        } else if ( cursorZone == ZONE_GPIO ) {
+            selectedNode = RP_GPIO_1 + subIndex;
+
+            // For GPIO, prompt for input/output selection if connecting
+            if ( connectOrClearProbe == 1 ) {
+                int gpioIndex = subIndex + 1; // GPIO 1-8
+
+                // Clear the special function display first
+                // clearLEDsExceptRails( );
+                b.clear( );
+
+                // Show input/output selection menu
+                int ioSelection = chooseGPIOinputOutput( gpioIndex );
+
+                // If user cancelled, don't select the node
+                if ( ioSelection == -1 ) {
+                    // User cancelled - clear and don't select node
+                    selectedNode = -1;
+                }
+            }
+        } else if ( cursorZone == ZONE_UART ) {
+            const int uartNodes[ 2 ] = { RP_UART_TX, RP_UART_RX };
+            selectedNode = uartNodes[ subIndex ];
+        } else if ( cursorZone == ZONE_CURRENT ) {
+            const int currentNodes[ 2 ] = { ISENSE_PLUS, ISENSE_MINUS };
+            selectedNode = currentNodes[ subIndex ];
+        }
+
+        // Treat encoder selection like a probe touch
+        if ( selectedNode > 0 ) {
+            row[ 0 ] = selectedNode;
+            connectedRows[ 0 ] = selectedNode;
+            connectedRowsIndex = 1;
+        }
+
+        // Clear net highlighting and color overrides
+        Highlighting::getInstance( ).clearHighlighting( 0 );
+
+        // Clear all colorOverrides using helper function
+        clearColorOverrides( true, true, false );
+
+        // Clear inPadMenu flag
+        inPadMenu = 0;
+
+        // Reset encoder cursor for next selection
+        encoderCursorVisible = false;
+        lastEncoderCursorNode = -1;
+        lastCursorZone = -1;
+        globalEncoderCursorNode = -1; // Clear global (hides cursor)
+        globalEncoderCursorInHeader = 0;
+        lastEncoderMovement = millis( ); // Reset timeout
+
+        if (cursorZone != ZONE_BREADBOARD) {
+            probeButton.clearButtonState( );
+            blockProbeButton = 100;
+            blockProbeButtonTimer = millis( );
+            showLEDsCore2 = -1;
+        }
+
+        // If we selected from special function zone, reset to row 15 breadboard for next selection
+        if ( cursorZone >= ZONE_RAILS ) {
+            persistentEncoderCursorNode = 14; // Row 15 (0-indexed)
+            persistentCursorZone = ZONE_BREADBOARD;
+            persistentSubIndex = 0;
+            // Also reset the local working variables immediately
+            encoderCursorNode = 14;
+            cursorZone = ZONE_BREADBOARD;
+            subIndex = 0;
+        } else {
+            // Normal breadboard/nano selection - persist position
+            persistentEncoderCursorNode = encoderCursorNode;
+            persistentCursorZone = cursorZone;
+            persistentSubIndex = subIndex;
+        }
+
+        // Clear breadboard display and continue to normal probe processing
+        // clearLEDsExceptRails( );
+
+        //showLEDsCore2 = -1;
+
+        // Continue to normal probe processing below
+    } else {
+        row[ 0 ] = -1; // No encoder selection this iteration - allow probe to work
+    }
+
+    // Check for encoder button HELD to exit probe mode
+    if ( encoderButtonState == HELD ) {
+        // User held encoder button - exit probe mode
+        encoderButtonState = IDLE;
+        lastButtonEncoderState = IDLE;
+
+        // Clear cursor LED before exiting based on zone
+        if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
+            b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
+        } else if ( cursorZone == ZONE_NANO && encoderCursorNode >= 0 ) {
+            int pixel = getNanoHeaderPixel( encoderCursorNode );
+            if ( pixel >= 0 )
+                leds.setPixelColor( pixel, 0x000000 );
+        } else if ( cursorZone >= ZONE_RAILS ) {
+            clearLEDsExceptRails( );
+        }
+
+        globalEncoderCursorNode = -1; // Clear globals on exit
+        globalEncoderCursorInHeader = 0;
+
+        // Clear all highlighting and color overrides
+        Highlighting::getInstance( ).clearHighlighting( 0 );
+        clearColorOverrides( true, true, false );
+
+        // Clear inPadMenu flag
+        inPadMenu = 0;
+
+        showLEDsCore2 = 2; // Update LEDs to show cleared state
+        // Note: Caller should detect the HELD state and break from main loop
+    }
+
+    // ======= END ENCODER SELECTION =======
+}
+
 int Probing::probeMode( int setOrClear, int firstConnection ) {
 
     // clearColorOverrides(1, 1, 0);
@@ -713,6 +1473,8 @@ int Probing::probeMode( int setOrClear, int firstConnection ) {
     int deleteMissesIndex = 0;
 
     int connectionsThisSession = 0; // Track total connections made this probe mode session
+
+    routableBufferPower( 1, 1 );
 
 restartProbing:
 
@@ -751,7 +1513,6 @@ restartProbingNoPrint:
     }
 
     clearColorOverrides( 1, 1, 0 );
-    routableBufferPower( 1, 1 );
 
     probeHighlight = -1;
 
@@ -828,9 +1589,17 @@ restartProbingNoPrint:
     blockProbeButtonTimer = millis( );
 
     unsigned long probeModeStartTime = millis( );
+    unsigned long lastLoopTime = millis( );
+
+
 
     //! this is the main loop for probing
-    while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 6200 ) {
+    while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 80000 ) {
+
+        // Serial.println("Full loop took " + String(millis() - lastLoopTime) + "ms");
+        // Serial.flush();
+        // lastLoopTime = millis();
+
         delayMicroseconds( 200 ); // Reduced from 500 for faster encoder response
 
         // Keep critical services (like ProbeButton) running during blocking probeMode
@@ -840,665 +1609,35 @@ restartProbingNoPrint:
         connectedRowsIndex = 0;
 
         // ======= ENCODER-BASED NODE SELECTION WITH SPECIAL FUNCTION ZONES =======
-        // Check for encoder movement
-        long currentEncoderPosition = encoderPosition;
-        long encoderDelta = -( currentEncoderPosition - lastEncoderPosition );
-
-        if ( millis( ) - probeModeStartTime < 100 ) {
-            lastEncoderPosition = encoderPosition;
-        }
-
-        // Don't clear color overrides here - they need to persist while cursor is visible in zones
-        // Overrides are cleared when changing zones or on timeout
-        if ( encoderDelta != 0 && ( millis( ) - probeModeStartTime > 100 ) ) {
-            // Encoder moved - show cursor and reset timeout
-            lastEncoderMovement = millis( );
-            encoderCursorVisible = true;
-
-            // Get accelerated delta
-            float accelDelta = encoderAccel.getAcceleratedDelta( encoderDelta );
-            encoderAccumulator += accelDelta;
-
-            // Convert accumulated movement to integer steps
-            int steps = (int)encoderAccumulator;
-            if ( steps != 0 ) {
-                encoderAccumulator -= steps; // Keep fractional part
-
-                // Save last position for clearing (before we move)
-                lastEncoderCursorNode = encoderCursorNode;
-                lastCursorZone = cursorZone;
-                lastSubIndex = subIndex;
-
-                // Navigate through zones
-                if ( steps < 0 ) {
-                    // Moving down (counter-clockwise)
-                    if ( cursorZone == ZONE_BREADBOARD ) {
-                        encoderCursorNode += steps;
-                        if ( encoderCursorNode < 0 ) {
-                            // Wrap to last special functions zone (UART)
-                            cursorZone = ZONE_CURRENT;
-                            subIndex = 1; // UART RX
-                            encoderCursorNode = -1;
-                        }
-                    } else if ( cursorZone == ZONE_NANO ) {
-                        encoderCursorNode += steps;
-                        if ( encoderCursorNode < NANO_D0 ) {
-                            // Go to breadboard
-                            cursorZone = ZONE_BREADBOARD;
-                            encoderCursorNode = 59;
-                        }
-                    } else {
-                        // Navigate within special function zones
-                        subIndex += steps;
-                        if ( subIndex < 0 ) {
-                            // Move to previous zone
-                            cursorZone--;
-                            if ( cursorZone < ZONE_RAILS ) {
-                                cursorZone = ZONE_NANO;
-                                encoderCursorNode = NANO_A7;
-                            } else {
-                                // Set subIndex to max for new zone
-                                switch ( cursorZone ) {
-                                case ZONE_RAILS:
-                                    subIndex = 2;
-                                    break; // 3 rails (TOP, BOTTOM, GND)
-                                case ZONE_DAC:
-                                    subIndex = 1;
-                                    break; // 2 DACs
-                                case ZONE_ADC:
-                                    subIndex = 5;
-                                    break; // 6 ADCs (0-4, 7)
-                                case ZONE_GPIO:
-                                    subIndex = 7;
-                                    break; // 8 GPIOs
-                                case ZONE_UART:
-                                    subIndex = 1;
-                                    break; // 2 UART (TX, RX)
-                                case ZONE_CURRENT:
-                                    subIndex = 1;
-                                    break; // Current +/-
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Moving up (clockwise)
-                    if ( cursorZone == ZONE_BREADBOARD ) {
-                        encoderCursorNode += steps;
-                        if ( encoderCursorNode > 59 ) {
-                            // Go to nano header
-                            cursorZone = ZONE_NANO;
-                            encoderCursorNode = NANO_D0;
-                        }
-                    } else if ( cursorZone == ZONE_NANO ) {
-                        encoderCursorNode += steps;
-                        if ( encoderCursorNode > NANO_A7 ) {
-                            // Go to special functions (Rails)
-                            cursorZone = ZONE_RAILS;
-                            subIndex = 0;
-                            encoderCursorNode = -1;
-                        }
-                    } else {
-                        // Navigate within special function zones
-                        int maxSubIndex = 0;
-                        switch ( cursorZone ) {
-                        case ZONE_RAILS:
-                            maxSubIndex = 2;
-                            break;
-                        case ZONE_DAC:
-                            maxSubIndex = 1;
-                            break;
-                        case ZONE_ADC:
-                            maxSubIndex = 5;
-                            break;
-                        case ZONE_GPIO:
-                            maxSubIndex = 7;
-                            break;
-                        case ZONE_UART:
-                            maxSubIndex = 1;
-                            break;
-                        case ZONE_CURRENT:
-                            maxSubIndex = 1;
-                            break;
-                        }
-
-                        subIndex += steps;
-                        if ( subIndex > maxSubIndex ) {
-                            // Move to next zone
-                            cursorZone++;
-                            if ( cursorZone > ZONE_CURRENT ) {
-                                // Wrap back to breadboard
-                                cursorZone = ZONE_BREADBOARD;
-                                encoderCursorNode = 0;
-                            } else {
-                                subIndex = 0;
-                            }
-                        }
-                    }
-                }
-
-                // ========== ATOMIC LED UPDATE - PAUSE CORE2 WHILE MAKING CHANGES ==========
-                pauseCore2 = 1; // Pause Core 2 LED updates
-
-                // 1. Clear previous highlighting if zone or subIndex changed
-                bool zoneChanged = ( lastCursorZone != cursorZone );
-                bool subIndexChanged = ( cursorZone >= ZONE_RAILS && lastSubIndex != subIndex );
-
-                if ( zoneChanged || subIndexChanged ) {
-                    Highlighting::getInstance( ).clearHighlighting( );
-                    clearLEDsExceptRails( );
-                    b.clear( );
-                    showLEDsCore2 = 2;
-                    clearColorOverrides( 1, 1, 0 );
-
-                    // Clear inPadMenu when leaving special function zones
-                    if ( lastCursorZone >= ZONE_RAILS && cursorZone < ZONE_RAILS ) {
-                        inPadMenu = 0;
-                    }
-                }
-
-                // 2. Clear previous cursor position only if in same zone
-                if ( !zoneChanged ) {
-                    if ( cursorZone == ZONE_BREADBOARD && lastEncoderCursorNode >= 0 && lastEncoderCursorNode != encoderCursorNode ) {
-                        b.printRawRow( 0b00000100, lastEncoderCursorNode, 0x000000, 0x000000 );
-                    } else if ( cursorZone == ZONE_NANO && lastEncoderCursorNode >= 0 && lastEncoderCursorNode != encoderCursorNode ) {
-                        int pixel = getNanoHeaderPixel( lastEncoderCursorNode );
-                        if ( pixel >= 0 )
-                            leds.setPixelColor( pixel, 0x000000 );
-                    }
-                }
-
-                // 3. Set cursor color based on mode
-                uint32_t cursorColor = setOrClear == 1 ? 0x250035 : 0x362404;
-                uint32_t dimColor = setOrClear == 1 ? 0x080205 : 0x080500;
-
-                ///[active/dim][setOrClear][index]
-                uint32_t cursorColors[ 2 ][ 2 ][ 8 ] = {
-                    {
-                        // active
-
-                        // clear
-                        { 0x391912, 0x3a1810, 0x3b1608, 0x3d1411, 0x3f1214, 0x411015, 0x450e16, 0x480c14 },
-
-                        // set
-                        { 0x191229, 0x18102a, 0x16082b, 0x14112d, 0x12142f, 0x101531, 0x0e1635, 0x0c1438 },
-
-                    },
-                    {
-                        // dim
-                        // clear
-                        { 0x040302, 0x040302, 0x040202, 0x050302, 0x050401, 0x050301, 0x040302, 0x040302 },
-                        
-
-                        // set
-                        { 0x050304, 0x050204, 0x040204, 0x030205, 0x040105, 0x050104, 0x040203, 0x030305 },
-
-                    } };
-
-                globalEncoderCursorColor = cursorColor;
-
-                // 4. Get actual node and display based on zone
-                int actualNode = -1;
-                char displayName[ 32 ] = "";
-
-                if ( cursorZone == ZONE_BREADBOARD ) {
-                    actualNode = encoderCursorNode + 1;
-                    strcpy( displayName, definesToChar( actualNode, 0 ) );
-                    b.printRawRow( 0b00000100, encoderCursorNode, 0x121215, cursorColor );
-                    globalEncoderCursorNode = encoderCursorNode;
-                    globalEncoderCursorInHeader = 0;
-                } else if ( cursorZone == ZONE_NANO ) {
-                    actualNode = encoderCursorNode;
-                    strcpy( displayName, definesToChar( actualNode, 0 ) );
-                    int pixel = getNanoHeaderPixel( encoderCursorNode );
-                    if ( pixel >= 0 )
-                        leds.setPixelColor( pixel, cursorColor );
-                    globalEncoderCursorNode = encoderCursorNode;
-                    globalEncoderCursorInHeader = 1;
-                } else if ( cursorZone == ZONE_RAILS ) {
-                    // Display rails: TOP_RAIL, BOTTOM_RAIL, GND - one at a time
-                    const char* railNames[ 3 ] = { "  Top    Rail", " Bottom  Rail", "         GND" };
-                    const char* railDisplayNames[ 3 ] = { "Top Rail", "Bottom Rail", "GND" };
-                    int railBrightened[ 3 ] = { 0, 2, 1 };
-                    uint32_t railColors[ 3 ] = { 0x200010, 0x150015, 0x003005 };
-                    int railNodes[ 3 ] = { TOP_RAIL, BOTTOM_RAIL, GND };
-                    actualNode = railNodes[ subIndex ];
-                    strcpy( displayName, railDisplayNames[ subIndex ] );
-
-                    // DON'T set inPadMenu for rails - we want the rail LEDs to update
-                    // Rails don't have breadboard positions so no text conflict
-                    inPadMenu = 1;
-
-                    // Highlight the rail LEDs
-                    Highlighting::getInstance( ).brightenedRail = railBrightened[ subIndex ];
-
-                    // Show only the currently selected rail in the center
-                    b.print( railNames[ subIndex ], scaleBrightness( railColors[ subIndex ], 0 ), 0xFFFFFF, 0, -1, -2 );
-                } else if ( cursorZone == ZONE_DAC ) {
-                    // Display DAC 0 and 1
-                    const int dacNodes[ 2 ] = { DAC0, DAC1 };
-                    actualNode = dacNodes[ subIndex ];
-                    snprintf( displayName, sizeof( displayName ), "DAC %d", subIndex );
-
-                    // Prevent net LEDs from overwriting our text display
-                    inPadMenu = 1;
-
-                    clearLEDsExceptRails( );
-                    b.print( "DAC", scaleDownBrightness( rawOtherColors[ 9 ], 4, 22 ), 0xFFFFFF, 1, 0, 3 );
-
-                    // Set DAC colorOverrides using helper functions
-                    if ( subIndex == 0 ) {
-                        setLogoOverride( DAC_0, -2 );
-
-                        b.print( "0", cursorColors[ 1 ][ setOrClear ][ 0], 0xFFFFFF, 0, 1, 3 );
-                        b.print( "1", cursorColors[ 0 ][ setOrClear ][ 4 ], 0xFFFFFF, 5, 1, 0 );
-                    } else {
-
-                        setLogoOverride( DAC_1, -2 );
-                        b.print( "0", cursorColors[ 0 ][ setOrClear ][ 0 ], 0xFFFFFF, 0, 1, 3 );
-                        b.print( "1", cursorColors[ 1 ][ setOrClear ][ 4 ], 0xFFFFFF, 5, 1, 0 );
-                    }
-                } else if ( cursorZone == ZONE_ADC ) {
-                    // Display ADC 0-4, 7 (ADC 5,6 don't exist)
-                    const int adcMap[ 6 ] = { ADC0, ADC1, ADC2, ADC3, ADC4, ADC7 };
-                    const char* adcLabels[ 6 ] = { "0", "1", "2", "3", "4", "P" }; // P for probe
-                    actualNode = adcMap[ subIndex ];
-                    snprintf( displayName, sizeof( displayName ), "ADC %s", adcLabels[ subIndex ] );
-
-                    // Prevent net LEDs from overwriting our text display
-                    inPadMenu = 1;
-
-                    clearLEDsExceptRails( );
-                    b.print( " ADC", scaleDownBrightness( rawOtherColors[ 8 ], 4, 22 ), 0xFFFFFF, 0, 0, 3 );
-
-                    for ( int i = 0; i < 6; i++ ) {
-                        uint32_t color = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
-                        b.print( adcLabels[ i ], color, 0xFFFFFF, i, 1, ( i == 0 ? -1 : i - 1 ) );
-                    }
-
-                    if ( subIndex % 2 == 0 ) {
-                        setLogoOverride( ADC_0, -2 );
-
-                    } else {
-
-                        setLogoOverride( ADC_1, -2 );
-                    }
-
-                } else if ( cursorZone == ZONE_GPIO ) {
-                    // Display GPIO 1-8
-                    actualNode = RP_GPIO_1 + subIndex;
-                    snprintf( displayName, sizeof( displayName ), "GPIO %d", subIndex + 1 );
-
-                    // Prevent net LEDs from overwriting our text display
-                    inPadMenu = 1;
-
-                    clearLEDsExceptRails( );
-                    uint32_t inColor = ( connectOrClearProbe == 0 ) ? 0x000000 : 0x000606;
-                    uint32_t outColor = ( connectOrClearProbe == 0 ) ? 0x000000 : 0x060100;
-
-                    // Display GPIO 1-4 on top row using original positioning
-                    const int positions[ 4 ] = { 0, 2, 4, 6 };
-                    const int nudges[ 4 ] = { 1, 0, -1, -2 };
-
-                    for ( int i = 0; i < 4; i++ ) {
-                        uint32_t numColor = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
-                        char numStr[ 2 ] = { (char)( '1' + i ), '\0' };
-                        b.print( numStr, numColor, 0xFFFFFF, positions[ i ], 0, nudges[ i ] );
-
-                        // Show input/output indicators for top row
-                        int rowBase = 2 + i * 7;
-                        b.printRawRow( 0b00011000, rowBase, ( i == subIndex ) ? inColor : 0x000000, 0xFFFFFF );
-                        b.printRawRow( 0b00011000, rowBase + 4, ( i == subIndex ) ? outColor : 0x000000, 0xFFFFFF );
-                    }
-
-                    // Display GPIO 5-8 on bottom row using original positioning
-                    for ( int i = 4; i < 8; i++ ) {
-                        uint32_t numColor = ( i == subIndex ) ? cursorColors[ 0 ][ setOrClear ][ i ] : cursorColors[ 1 ][ setOrClear ][ i ];
-                        char numStr[ 2 ] = { (char)( '1' + i ), '\0' };
-                        b.print( numStr, numColor, 0xFFFFFF, positions[ i - 4 ], 1, nudges[ i - 4 ] );
-
-                        // Show input/output indicators for bottom row
-                        int rowBase = 32 + ( i - 4 ) * 7;
-                        b.printRawRow( 0b00000011, rowBase, ( i == subIndex ) ? inColor : 0x000000, 0xFFFFFF );
-                        b.printRawRow( 0b00000011, rowBase + 4, ( i == subIndex ) ? outColor : 0x000000, 0xFFFFFF );
-                    }
-
-                    // Clear all logo overrides first, then set only GPIO
-                    clearColorOverrides( true, true, false );
-
-                    // Set GPIO colorOverrides using helper functions
-                    if ( subIndex % 2 == 0 ) {
-                        setLogoOverride( GPIO_0, -2 );
-
-                    } else {
-
-                        setLogoOverride( GPIO_1, -2 ); //-2 sets  the override to the default highlighed color
-                    }
-                } else if ( cursorZone == ZONE_UART ) {
-                    // Display UART TX and RX - one at a time to prevent overlap
-                    const char* uartNames[ 2 ] = { "TX", "RX" };
-                    int uartNodes[ 2 ] = { RP_UART_TX, RP_UART_RX };
-                    actualNode = uartNodes[ subIndex ];
-                    snprintf( displayName, sizeof( displayName ), "UART %s", uartNames[ subIndex ] );
-
-                    // Prevent net LEDs from overwriting our text display
-                    inPadMenu = 1;
-
-                    // Show UART label and only the selected TX or RX
-                    b.print( " UART", sfOptionColors[ 3 ], 0xFFFFFF, 0, 0, 2 );
-                    b.print( uartNames[ 0 ], subIndex == 0 ? cursorColors[ 0 ][ setOrClear ][ 0 ] : cursorColors[ 1 ][ setOrClear ][ 0 ], 0xFFFFFF, 1, 1, -2 );
-                    b.print( uartNames[ 1 ], subIndex == 1 ? cursorColors[ 0 ][ setOrClear ][ 1 ] : cursorColors[ 1 ][ setOrClear ][ 1 ], 0xFFFFFF, 4, 1, 2 );
-
-                    // Clear all logo overrides first, then set only UART
-                    // clearColorOverrides(true, true, false);
-
-                    // Set logo colorOverrides for UART using helper functions
-                    if ( subIndex == 0 ) {
-                        setLogoOverride( LOGO_TOP, -2 );
-
-                    } else {
-
-                        setLogoOverride( LOGO_BOTTOM, -2 );
-                    }
-                } else if ( cursorZone == ZONE_CURRENT ) {
-                    const char* currentNames[ 2 ] = { "I+", "I-" };
-                    int currentNodes[ 2 ] = { ISENSE_PLUS, ISENSE_MINUS };
-                    actualNode = currentNodes[ subIndex ];
-                    snprintf( displayName, sizeof( displayName ), "Current %s", subIndex == 0 ? "+" : "-" );
-
-                    // Color definitions for I+ (red) and I- (green)
-                    const uint32_t plusBrightColor = 0x2A0002;  // Bright red for selected I+
-                    const uint32_t plusDimColor = 0x0a0000;     // Dim red for unselected I+
-                    const uint32_t minusBrightColor = 0x002A02; // Bright green for selected I-
-                    const uint32_t minusDimColor = 0x000A00;    // Dim green for unselected I-
-
-                    inPadMenu = 1;
-                    clearLEDsExceptRails( );
-
-                    b.print( "Current", sfOptionColors[ 6 ], 0xFFFFFF, 0, 0, 1 );
-                    b.print( currentNames[ 0 ], subIndex == 0 ? plusBrightColor : plusDimColor, 0xFFFFFF, 1, 1, -2 );
-                    b.print( currentNames[ 1 ], subIndex == 1 ? minusBrightColor : minusDimColor, 0xFFFFFF, 4, 1, 2 );
-
-                    clearColorOverrides( true, true, false );
-                }
-
-                // 5. Try highlighting nets if we're on a regular node
-                int netOnNode = 0;
-                if ( actualNode > 0 && ( cursorZone == ZONE_BREADBOARD || cursorZone == ZONE_NANO ) ) {
-                    netOnNode = Highlighting::getInstance( ).highlightNets( actualNode, 0, 1 );
-                }
-
-                // 6. Display name on Serial and OLED
-                if ( netOnNode <= 0 || cursorZone >= ZONE_RAILS ) {
-                    if ( brightenedNode > 0 ) {
-                        Highlighting::getInstance( ).clearHighlighting( );
-                    }
-
-                    Serial.print( "\r                                               \r" );
-                    Serial.print( ">>>> " );
-                    Serial.print( displayName );
-                    Serial.flush( );
-
-                    oled.clearPrintShow( displayName, 2, true, true );
-                }
-
-                // 7. Save persistent cursor position
-                persistentEncoderCursorNode = encoderCursorNode;
-                persistentCursorZone = cursorZone;
-                persistentSubIndex = subIndex;
-
-                // 8. NOW update LEDs atomically - unpause and trigger update
-                pauseCore2 = 0;    // Unpause Core 2
-                showLEDsCore2 = 2; // Trigger single atomic update
-
-                // ========== END ATOMIC UPDATE ==========
-
-                // If we have first node and selecting second, show preview
-                if ( node1or2 == 1 && nodesToConnect[ 0 ] > 0 && setOrClear == 1 && cursorZone <= ZONE_NANO ) {
-                    int previewNode = ( cursorZone == ZONE_NANO ) ? encoderCursorNode : ( encoderCursorNode + 1 );
-
-                    // Visual preview: highlight both nodes without modifying state
-                    if ( previewNode > 0 && previewNode != nodesToConnect[ 0 ] &&
-                         previewNode >= 1 && previewNode <= 60 ) {
-                        // Show first node
-                        b.printRawRow( 0b00000100, nodesToConnect[ 0 ] - 1, 0x121215, 0x4500e8 );
-                        // Show second node being previewed
-                        b.printRawRow( 0b00000100, previewNode - 1, 0x121215, 0x00e845 );
-                    }
-                }
-
-                showLEDsCore2 = 2;
-            }
-
-            lastEncoderPosition = currentEncoderPosition;
-        }
-
-        // Check for encoder cursor timeout (auto-hide after 5 seconds)
-        if ( encoderCursorVisible && ( millis( ) - lastEncoderMovement ) > encoderHideTimeout ) {
-            // Clear the cursor position before hiding
-            if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
-                b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
-            } else if ( cursorZone == ZONE_NANO && encoderCursorNode >= 0 ) {
-                int pixel = getNanoHeaderPixel( encoderCursorNode );
-                if ( pixel >= 0 )
-                    leds.setPixelColor( pixel, 0x000000 );
-            } else if ( cursorZone >= ZONE_RAILS ) {
-                // Clear special function zone display
-                clearLEDsExceptRails( );
-                // Clear inPadMenu flag
-                inPadMenu = 0;
-            }
-
-            // Clear net highlighting and all color overrides
-            Highlighting::getInstance( ).clearHighlighting( 0 );
-            clearColorOverrides( true, true, false );
-
-            encoderCursorVisible = false;
-            lastEncoderCursorNode = -1;
-            lastCursorZone = -1;
-            globalEncoderCursorNode = -1; // Clear global
-            globalEncoderCursorInHeader = 0;
-            showLEDsCore2 = 2;
-        }
-
-        // Check for encoder button press to select node
-        // Only process encoder button if cursor is visible (otherwise it might interfere with normal operation)
-        if ( encoderCursorVisible && ( ( encoderButtonState == PRESSED && lastButtonEncoderState == IDLE ) || ( ProbeButton::getInstance( ).getButtonState( ) == ( setOrClear == 1 ? 2 : 1 ) ) && ( millis( ) - probeModeStartTime > 500 ) ) ) {
-            // IMMEDIATELY reset button state to prevent it from triggering click menu
-
-            // Serial.println(encoderButtonState);
-            // Serial.println(lastButtonEncoderState);
-            // Serial.println(ProbeButton::getInstance().getButtonState());
-            // Serial.println(encoderCursorVisible);
-            // Serial.println(blockProbeButton);
-            // Serial.println(blockProbeButtonTimer);
-            // Serial.println(millis());
-            // Serial.flush();
-
-            encoderButtonState = IDLE;
-            lastButtonEncoderState = PRESSED;
-            blockProbeButton = 1000;
-            blockProbeButtonTimer = millis( );
-            ProbeButton::getInstance( ).clearButtonState( );
-
-            // Get the actual node number based on current zone
-            int selectedNode = -1;
-
-            if ( cursorZone == ZONE_BREADBOARD ) {
-                selectedNode = encoderCursorNode + 1;
-            } else if ( cursorZone == ZONE_NANO ) {
-                selectedNode = encoderCursorNode;
-            } else if ( cursorZone == ZONE_RAILS ) {
-                const int railNodes[ 3 ] = { TOP_RAIL, BOTTOM_RAIL, GND };
-                selectedNode = railNodes[ subIndex ];
-            } else if ( cursorZone == ZONE_DAC ) {
-                const int dacNodes[ 2 ] = { DAC0, DAC1 };
-                selectedNode = dacNodes[ subIndex ];
-
-                // For DAC, launch voltage adjuster
-                VoltageAdjustConfig config;
-                config.minVoltage = -8.0;
-                config.maxVoltage = 8.0;
-                config.enableSnap = false;
-                config.liveUpdateInRange = true;
-                config.liveUpdateMin = 0.0;
-                config.liveUpdateMax = 5.0;
-
-                if ( subIndex == 0 ) {
-                    // DAC 0
-                    config.initialValue = globalState.power.dac0;
-                    config.label = "DAC 0";
-                    config.callback = []( float newValue, bool isLive, void* context ) {
-                        setDac0voltage( newValue, 1, 0, false );
-                        globalState.power.dac0 = newValue;
-                    };
-                } else {
-                    // DAC 1
-                    config.initialValue = globalState.power.dac1;
-                    config.label = "DAC 1";
-                    config.callback = []( float newValue, bool isLive, void* context ) {
-                        setDac1voltage( newValue, 1, 0, false );
-                        globalState.power.dac1 = newValue;
-                    };
-                }
-
-                AdjustResult result = VoltageAdjuster::adjust( config );
-                if ( result == AdjustResult::CONFIRMED ) {
-                    saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
-                                  globalState.power.dac0, globalState.power.dac1 );
-                }
-
-                // Clear and continue without selecting node
-                encoderCursorVisible = false;
-                lastEncoderCursorNode = -1;
-                globalEncoderCursorNode = -1;
-                setLogoOverride( DAC_0, -2 );
-                setLogoOverride( DAC_1, -2 );
-                clearLEDsExceptRails( );
-                showLEDsCore2 = -1;
-                continue;
-            } else if ( cursorZone == ZONE_ADC ) {
-                const int adcMap[ 6 ] = { ADC0, ADC1, ADC2, ADC3, ADC4, ADC7 };
-                selectedNode = adcMap[ subIndex ];
-            } else if ( cursorZone == ZONE_GPIO ) {
-                selectedNode = RP_GPIO_1 + subIndex;
-
-                // For GPIO, prompt for input/output selection if connecting
-                if ( connectOrClearProbe == 1 ) {
-                    int gpioIndex = subIndex + 1; // GPIO 1-8
-
-                    // Clear the special function display first
-                    clearLEDsExceptRails( );
-                    b.clear( );
-
-                    // Show input/output selection menu
-                    int ioSelection = chooseGPIOinputOutput( gpioIndex );
-
-                    // If user cancelled, don't select the node
-                    if ( ioSelection == -1 ) {
-                        // User cancelled - clear and don't select node
-                        selectedNode = -1;
-                    }
-                }
-            } else if ( cursorZone == ZONE_UART ) {
-                const int uartNodes[ 2 ] = { RP_UART_TX, RP_UART_RX };
-                selectedNode = uartNodes[ subIndex ];
-            } else if ( cursorZone == ZONE_CURRENT ) {
-                const int currentNodes[ 2 ] = { ISENSE_PLUS, ISENSE_MINUS };
-                selectedNode = currentNodes[ subIndex ];
-            }
-
-            // Treat encoder selection like a probe touch
-            if ( selectedNode > 0 ) {
-                row[ 0 ] = selectedNode;
-                connectedRows[ 0 ] = selectedNode;
-                connectedRowsIndex = 1;
-            }
-
-            // Clear net highlighting and color overrides
-            Highlighting::getInstance( ).clearHighlighting( 0 );
-
-            // Clear all colorOverrides using helper function
-            clearColorOverrides( true, true, false );
-
-            // Clear inPadMenu flag
-            inPadMenu = 0;
-
-            // Reset encoder cursor for next selection
-            encoderCursorVisible = false;
-            lastEncoderCursorNode = -1;
-            lastCursorZone = -1;
-            globalEncoderCursorNode = -1; // Clear global (hides cursor)
-            globalEncoderCursorInHeader = 0;
-            lastEncoderMovement = millis( ); // Reset timeout
-
-            // If we selected from special function zone, reset to row 15 breadboard for next selection
-            if ( cursorZone >= ZONE_RAILS ) {
-                persistentEncoderCursorNode = 14; // Row 15 (0-indexed)
-                persistentCursorZone = ZONE_BREADBOARD;
-                persistentSubIndex = 0;
-                // Also reset the local working variables immediately
-                encoderCursorNode = 14;
-                cursorZone = ZONE_BREADBOARD;
-                subIndex = 0;
-            } else {
-                // Normal breadboard/nano selection - persist position
-                persistentEncoderCursorNode = encoderCursorNode;
-                persistentCursorZone = cursorZone;
-                persistentSubIndex = subIndex;
-            }
-
-            // Clear breadboard display and continue to normal probe processing
-            clearLEDsExceptRails( );
-            showLEDsCore2 = -1;
-
-            // Continue to normal probe processing below
-        } else {
-            row[ 0 ] = -1; // No encoder selection this iteration
-        }
-
-        // Check for encoder button HELD to exit probe mode
+        handleEncoderCursorNavigation(
+            setOrClear,
+            node1or2,
+            nodesToConnect,
+            connectOrClearProbe,
+            probeModeStartTime,
+            lastEncoderPosition,
+            encoderAccumulator,
+            encoderCursorNode,
+            cursorZone,
+            subIndex,
+            lastEncoderCursorNode,
+            lastCursorZone,
+            lastSubIndex,
+            lastEncoderMovement,
+            encoderCursorVisible,
+            persistentEncoderCursorNode,
+            persistentCursorZone,
+            persistentSubIndex,
+            row,
+            connectedRows,
+            connectedRowsIndex,
+            encoderAccel,
+            encoderHideTimeout );
+
+        // Check for encoder button HELD to exit probe mode (handled by function, check result here)
         if ( encoderButtonState == HELD ) {
-            // User held encoder button - exit probe mode
-            encoderButtonState = IDLE;
-            lastButtonEncoderState = IDLE;
-
-            // Clear cursor LED before exiting based on zone
-            if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
-                b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
-            } else if ( cursorZone == ZONE_NANO && encoderCursorNode >= 0 ) {
-                int pixel = getNanoHeaderPixel( encoderCursorNode );
-                if ( pixel >= 0 )
-                    leds.setPixelColor( pixel, 0x000000 );
-            } else if ( cursorZone >= ZONE_RAILS ) {
-                clearLEDsExceptRails( );
-            }
-
-            globalEncoderCursorNode = -1; // Clear globals on exit
-            globalEncoderCursorInHeader = 0;
-
-            // Clear all highlighting and color overrides
-            Highlighting::getInstance( ).clearHighlighting( 0 );
-            clearColorOverrides( true, true, false );
-
-            // Clear inPadMenu flag
-            inPadMenu = 0;
-
-            showLEDsCore2 = 2; // Update LEDs to show cleared state
             break;
         }
-
-        // CRITICAL: Always clear encoder button state when cursor not visible
-        // This prevents the encoder button from triggering the click menu
-        if ( !encoderCursorVisible ) {
-            if ( encoderButtonState == PRESSED || encoderButtonState == RELEASED ) {
-                encoderButtonState = IDLE;
-            }
-            if ( lastButtonEncoderState == PRESSED || lastButtonEncoderState == RELEASED ) {
-                lastButtonEncoderState = IDLE;
-            }
-        }
-
         // ======= END ENCODER SELECTION =======
 
         if ( firstConnection > 0 ) {
@@ -1515,9 +1654,34 @@ restartProbingNoPrint:
             row[ 0 ] = readProbe( );
         }
 
+        //! save local node file if idle for 3 seconds`
+        if ( millis( ) - idleTime > idleSaveTime ) { // save local node file if idle for 3 seconds
+            idleTime = millis( );
+            // delay( 100 );
+            // Serial.println("Saving local node file");
+            // Serial.println("idleTime = " + String(idleTime));
+            // Serial.println("numberOfLocalChanges = " + String(numberOfLocalChanges));
+            // Serial.println("connectionsThisSession = " + String(connectionsThisSession));
+            // Serial.println("setOrClear = " + String(setOrClear));
+            // Serial.println("node1or2 = " + String(node1or2));
+            // Serial.println("nodesToConnect[0] = " + String(nodesToConnect[0]));
+            // Serial.println("nodesToConnect[1] = " + String(nodesToConnect[1]));
+            // Serial.println("connectedRows[0] = " + String(connectedRows[0]));
+            // Serial.println("connectedRows[1] = " + String(connectedRows[1]));
+            // Serial.flush();
+            // saveLocalNodeFile( netSlot );
+            if ( numberOfLocalChanges > 0 ) {
+                SlotManager::getInstance( ).service();
+                // refreshConnections( 0, 1, 0 );
+                numberOfLocalChanges = 0;
+            }
+        }
+
         // Handle encoder returns from readProbe() - these are handled by cursor logic above
         if ( row[ 0 ] == -19 || row[ 0 ] == -17 || row[ 0 ] == -10 ) {
             // Encoder movement/button - already handled by cursor logic
+            // Clear encoder state so readProbe() can read physical probe next time
+            encoderDirectionState = NONE;
             // Reset row[0] and continue loop
             row[ 0 ] = -1;
             continue;
@@ -1545,14 +1709,14 @@ restartProbingNoPrint:
                     // Serial.print("\n\r");
                     // Serial.print("saving local node file\n\r");
 
-                    // refreshConnections();
-                    // numberOfLocalChanges = 0;
+                // refreshConnections();
+                // numberOfLocalChanges = 0;
                 }
             }
             // showLEDsCore2 = -1;
 
         } else {
-            if ( millis( ) - fadeTimer > 10 ) {
+            if ( millis( ) - fadeTimer > 12 ) {
                 fadeTimer = millis( );
 
                 if ( fadeIndex < 12 ) {
@@ -1583,15 +1747,19 @@ restartProbingNoPrint:
 
                     //  Serial.println(fadeOffset);
                     //  Serial.flush();
+                    //  Serial.println("fadeOffset = " + String(fadeOffset));
+                    //  Serial.flush();
                     // b.printRawRow(0b00001010, deleteMisses[i] - 1, deleteFadeSides[fadeOffset], 0xfffffe);
                     b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, deleteFade[ fadeOffset ],
                                    0xfffffe );
-                    showLEDsCore2 = 2;
+                   // showLEDsCore2 = 2;
                 }
 
                 if ( deleteMissesIndex == 0 && fadeClear == 0 ) {
                     fadeClear = 1;
-                    showLEDsCore2 = -1;
+                    // Serial.println( "fadeClear = 1" );
+                    // Serial.flush( );
+                    // showLEDsCore2 = -1;
                     if ( numberOfLocalChanges > 0 ) {
                         // saveLocalNodeFile( netSlot );
                         // Serial.print("\n\r");
@@ -1605,7 +1773,7 @@ restartProbingNoPrint:
         }
 
         if ( ( row[ 0 ] == -18 || row[ 0 ] == -16 ) ) { // ! Button press detected
-            // (millis() - probingTimer > 500)) { //&&
+                                                        // (millis() - probingTimer > 500)) { //&&
 
             // Serial.println("row[0] = " + String(row[0]));
             // Serial.println("setOrClear = " + String(setOrClear));
@@ -1618,7 +1786,8 @@ restartProbingNoPrint:
             // Serial.println("connectedRowsIndex = " + String(connectedRowsIndex));
             // Serial.println("--------------------------------\n\r1\n\r2\n\r3\n\r4\n\r5\n\r");
             // Serial.flush( );
-
+            // blockProbeButton = 8000;
+            // blockProbeButtonTimer = millis( );
             if ( row[ 0 ] == -18 ) { // clear button
                 // Serial.println("-18 clear button\n\r");
 
@@ -1628,6 +1797,8 @@ restartProbingNoPrint:
                     nodesToConnect[ 1 ] = -1;
                     node1or2 = 0;
                     // clearLEDsExceptRails();
+                    blockProbeButton = 8000;
+                    blockProbeButtonTimer = millis( );
                     probeHighlight = -1;
                     showLEDsCore2 = -1;
                     // connectionsThisSession = 0;
@@ -1719,7 +1890,7 @@ restartProbingNoPrint:
 
                     for ( int i = deleteMissesIndex - 1; i >= 0; i-- ) {
 
-                        b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, 0, 0xfffffe );
+                        // b.printRawRow( 0b00000100, deleteMisses[ i ] - 1, 0, 0xfffffe );
                         //   Serial.print(i);
                         //   Serial.print("   ");
                         //   Serial.print(deleteMisses[i]);
@@ -1754,7 +1925,7 @@ restartProbingNoPrint:
             nodesToConnect[ 0 ] = -1;
             nodesToConnect[ 1 ] = -1;
             probeHighlight = -1;
-            showLEDsCore2 = -1;
+            // showLEDsCore2 = -1;
             break;
         } else {
             // probingTimer = millis();
@@ -1771,6 +1942,10 @@ restartProbingNoPrint:
             lastProbedRows[ 0 ] = row[ 0 ];
             if ( connectedRowsIndex == 1 ) {
                 nodesToConnect[ node1or2 ] = connectedRows[ 0 ];
+
+                // Serial.print("nodesToConnect[node1or2] = ");
+                // Serial.println(nodesToConnect[node1or2]);
+                // Serial.flush();
 
                 // oled.clear();
                 // oled.print(definesToChar(nodesToConnect[0]));
@@ -1824,22 +1999,22 @@ restartProbingNoPrint:
                     b.printRawRow( 0b0010001, nodesToConnect[ node1or2 ] - 1, 0x000121e,
                                    0xfffffe );
                     showLEDsCore2 = 2;
-                    delay( 30 );
+                    delay( 40 );
                     b.printRawRow( 0b00001010, nodesToConnect[ node1or2 ] - 1, 0x0f0498,
                                    0xfffffe );
                     showLEDsCore2 = 2;
-                    delay( 30 );
+                    delay( 40 );
 
                     b.printRawRow( 0b00000100, nodesToConnect[ node1or2 ] - 1, 0x4000e8,
                                    0xfffffe );
                     showLEDsCore2 = 2;
-                    delay( 50 );
-                    showLEDsCore2 = 2;
+                     delay( 60 );
+                     showLEDsCore2 = 2;
                 }
 
                 node1or2++;
                 probingTimer = millis( );
-                showLEDsCore2 = 1;
+                //showLEDsCore2 = 1;
                 doubleSelectTimeout = millis( );
                 doubleSelectCountdown = 200;
                 // delay(500);
@@ -1854,8 +2029,8 @@ restartProbingNoPrint:
 
                 if ( setOrClear == 1 && ( nodesToConnect[ 0 ] != nodesToConnect[ 1 ] ) &&
                      nodesToConnect[ 0 ] > 0 && nodesToConnect[ 1 ] > 0 ) {
-                    b.printRawRow( 0b00011111, nodesToConnect[ 0 ] - 1, 0x0, 0x00000000 );
-                    b.printRawRow( 0b00011111, nodesToConnect[ 1 ] - 1, 0x0, 0x00000000 );
+                    // b.printRawRow( 0b00011111, nodesToConnect[ 0 ] - 1, 0x0, 0x00000000 );
+                    // b.printRawRow( 0b00011111, nodesToConnect[ 1 ] - 1, 0x0, 0x00000000 );
                     Serial.print( "\r              \r" );
 
                     // Serial.println("fuck");
@@ -1916,13 +2091,13 @@ restartProbingNoPrint:
                         Serial.flush( );
                     } else {
 
-                        Serial.print( "   \tconnected\n\r" );
+                        Serial.print( "     \tconnected\n\r" );
                         Serial.flush( );
                     }
 
                     if ( firstConnection == -3 ) {
                         // Add to RAM state - DON'T save yet, let auto-save handle it
-                        addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ] );
+                        addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ], -1, true );
                         numberOfLocalChanges++;
                         // refreshConnections(1, 1, 0);
                         // showLEDsCore2 = -1;
@@ -1932,7 +2107,7 @@ restartProbingNoPrint:
                     } else {
 
                         // Add to RAM state (local changes accumulated in RAM)
-                        addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ] );
+                        addBridgeToState( nodesToConnect[ 0 ], nodesToConnect[ 1 ], -1, true );
                         numberOfLocalChanges++;
                         connectionsThisSession++;
                     }
@@ -1968,7 +2143,7 @@ restartProbingNoPrint:
                     }
 
                     doubleSelectTimeout = millis( );
-                    doubleSelectCountdown = 200;
+                    doubleSelectCountdown = 400;
 
                 } else if ( setOrClear == 0 ) {
 
@@ -2023,7 +2198,7 @@ restartProbingNoPrint:
                     //  Serial.println();
                     // Remove from RAM state - let auto-save handle persistence
                     // This removes ALL connections containing nodesToConnect[0]
-                    bool removed = removeBridgeFromState( nodesToConnect[ 0 ], -1 );
+                    bool removed = removeBridgeFromState( nodesToConnect[ 0 ], -1, true );
 
                     // The number of removed connections is tracked in lastRemovedNodesIndex
                     int rowsRemoved = removed ? lastRemovedNodesIndex : 0;
@@ -2070,36 +2245,11 @@ restartProbingNoPrint:
                         sprintf( node1Name, "%s cleared", definesToChar( nodesToConnect[ 0 ] ) );
 
                         oled.clearPrintShow( node1Name, 2, true, true, true );
-                        // oled.clearPrintShow("cleared  ", 1, false, true, true);
-                        // oled.setTextSize(2);
 
-                        // Serial.println(numberOfLocalChanges);
-                        // clearLEDsExceptMiddle(1,60);
-
-                        // NOTE: refreshLocalConnections() is already called inside removeBridgeFromState()
-                        // No need to call it again here - that was causing double refresh delay!
-
-                        // delay(10);
-                        // waitCore2( );
-                        showLEDsCore2 = -1;
-
-                        // showLEDsCore2 = -1;
-
-                        // else {
-
-                        // showLEDsCore2 = -1;
-                        // }
-                        //  refreshLocalConnections(1);
-                        //   deleteMissesIndex = 0;
-                        //   for (int i = 0; i < 20; i++) {
-                        //     deleteMisses[i] = -1;
-                        //   }
-                        //   delay(20);
-                        //  showLEDsCore2 = -1;
                         fadeClear = 0;
                         fadeTimer = 0;
                     } else {
-                        oled.clear( );
+                        // oled.clear( );
                         oled.clearPrintShow( node1Name, 2, true, true, true );
                     }
                 }
@@ -2149,68 +2299,13 @@ restartProbingNoPrint:
 
         probeTimeout = millis( );
 
-        // NOTE: Old encoder exit code - now handled by cursor system above
-        // These should never trigger since encoder returns are filtered out
-        // But kept for safety in case cursor is disabled
-        if ( encoderDirectionState == UP ) {
-            // Clear any cursor before exiting based on zone
-            if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
-                b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
-            } else if ( cursorZone == ZONE_NANO && encoderCursorNode >= 0 ) {
-                int pixel = getNanoHeaderPixel( encoderCursorNode );
-                if ( pixel >= 0 )
-                    leds.setPixelColor( pixel, 0x000000 );
-            } else if ( cursorZone >= ZONE_RAILS ) {
-                clearLEDsExceptRails( );
-            }
-
-            globalEncoderCursorNode = -1;
-            globalEncoderCursorInHeader = 0;
-
-            // Clear all color overrides using helper function
-            clearColorOverrides( true, true, false );
-
-            // Clear inPadMenu flag
-            inPadMenu = 0;
-
-            node1or2 = 0;
-            nodesToConnect[ 0 ] = -1;
-            nodesToConnect[ 1 ] = -1;
-            row[ 0 ] = -1;
-            break;
-        }
-
-        if ( encoderDirectionState == DOWN ) {
-            // Clear any cursor before exiting based on zone
-            if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
-                b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
-            } else if ( cursorZone == ZONE_NANO && encoderCursorNode >= 0 ) {
-                int pixel = getNanoHeaderPixel( encoderCursorNode );
-                if ( pixel >= 0 )
-                    leds.setPixelColor( pixel, 0x000000 );
-            } else if ( cursorZone >= ZONE_RAILS ) {
-                clearLEDsExceptRails( );
-            }
-
-            globalEncoderCursorNode = -1;
-            globalEncoderCursorInHeader = 0;
-
-            clearColorOverrides( 1, 1, 0 );
-            // Clear inPadMenu flag
-            inPadMenu = 0;
-
-            node1or2 = 0;
-            nodesToConnect[ 0 ] = -1;
-            nodesToConnect[ 1 ] = -1;
-            row[ 0 ] = -1;
-            break;
-        }
-
         if ( firstConnection == -2 ) {
             firstConnection = -1;
             break;
         }
-    }
+    } //! end main probing loop
+
+
     // Serial.println("fuck you");
     //  digitalWrite(RESETPIN, LOW);
     node1or2 = 0;
@@ -2221,7 +2316,7 @@ restartProbingNoPrint:
     connectedRows[ 0 ] = -1;
     probeActive = false;
     probeHighlight = -1;
-    showProbeLEDs = 4;
+    //showProbeLEDs = 4;
     brightenNet( -1 );
     // showLEDsCore2 = 1;
     //  Serial.print("millis() - timer[0] = ");
@@ -2311,6 +2406,27 @@ restartProbingNoPrint:
 
     // Disable text layer when exiting probe mode
 
+// Serial.print("switchPosition = ");
+// Serial.println(switchPosition);
+// Serial.print("showProbeLEDs = ");
+// Serial.println(showProbeLEDs);
+// Serial.print("lastProbeLEDs = ");
+// Serial.println(lastProbeLEDs);
+// Serial.flush();
+    if (switchPosition == 1) {
+        showProbeLEDs = 4;
+    } else {
+        showProbeLEDs = 3;
+    }
+
+//     Serial.print("switchPosition = ");
+// Serial.println(switchPosition);
+// Serial.print("showProbeLEDs = ");
+// Serial.println(showProbeLEDs);
+// Serial.print("lastProbeLEDs = ");
+// Serial.println(lastProbeLEDs);
+// Serial.flush();
+
     return 1;
 }
 
@@ -2364,9 +2480,14 @@ float Probing::measureMode( int updateSpeed ) {
 unsigned long blinkTimer = 0;
 
 int Probing::selectSFprobeMenu( int function ) {
+    // Serial.println("selectSFprobeMenu");
+    // Serial.flush();
 
     if ( checkingPads == 1 ) {
-        // inPadMenu = 0;
+        inPadMenu = 0;
+
+        // Serial.println("inPadMenu = 0");
+        // Serial.flush();
         return function;
     }
 
@@ -2376,6 +2497,10 @@ int Probing::selectSFprobeMenu( int function ) {
 
     case ADC_PAD: {
         inPadMenu = 1;
+
+        // Serial.println("ADC_PAD");
+        // Serial.flush();
+
         function = chooseADC( );
         blockProbing = 800;
         blockProbingTimer = millis( );
@@ -2388,6 +2513,8 @@ int Probing::selectSFprobeMenu( int function ) {
     }
     case DAC_PAD: {
         inPadMenu = 1;
+        // Serial.println("DAC_PAD");
+        //  Serial.flush();
         function = chooseDAC( );
         blockProbing = 800;
         blockProbingTimer = millis( );
@@ -2399,11 +2526,15 @@ int Probing::selectSFprobeMenu( int function ) {
         break;
     }
     case GPIO_PAD: {
+        inPadMenu = 1;
 
+        // Serial.println("GPIO_PAD");
+        // Serial.flush();
         function = chooseGPIO( );
         blockProbing = 800;
         blockProbingTimer = millis( );
         // delay(10);
+        inPadMenu = 0;
         clearColorOverrides( 1, 1, 0 );
         setLogoOverride( GPIO_0, -2 );
         setLogoOverride( GPIO_1, -2 );
@@ -2433,6 +2564,12 @@ int Probing::selectSFprobeMenu( int function ) {
             b.printRawRow( 0b00011100, 53, 0x400014, 0xffffff );
             b.printRawRow( 0b00011000, 54, 0x400014, 0xffffff );
             b.printRawRow( 0b00010000, 55, 0x400014, 0xffffff );
+
+            // CRITICAL: Signal Core 2 to display menu with blocking PIO transfer
+            // Prevents deadlock where async DMA drops frame and menu isn't visible
+            showLEDsCore2 = 2; // 12 = blocking mode, value 2 (normal display)
+            // waitForBlockingDisplay();  // Wait for Core 2 to finish displaying
+
             function = resolveLogoPadAssignment( jumperlessConfig.logo_pads.top_guy, RP_UART_TX );
             clearColorOverrides( 1, 1, 0 );
             setLogoOverride( LOGO_TOP, -2 );
@@ -2460,6 +2597,12 @@ int Probing::selectSFprobeMenu( int function ) {
             b.printRawRow( 0b00000001, 54, 0x050500, 0xfffffe );
             b.printRawRow( 0b00000001, 55, 0x050500, 0xfffffe );
             b.printRawRow( 0b00000001, 59, 0x050500, 0xfffffe );
+
+            // CRITICAL: Signal Core 2 to display menu with blocking PIO transfer
+            // Prevents deadlock where async DMA drops frame and menu isn't visible
+            showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display)
+            waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
+
             function = resolveLogoPadAssignment( jumperlessConfig.logo_pads.bottom_guy, RP_UART_RX );
             clearColorOverrides( 1, 1, 0 );
             setLogoOverride( LOGO_BOTTOM, -2 );
@@ -2480,8 +2623,6 @@ int Probing::selectSFprobeMenu( int function ) {
 
         // b.clear();
         clearLEDsExceptRails( );
-        blockProbing = 800;
-        blockProbingTimer = millis( );
 
         // lastReadRaw = 0;
         // b.print("Attach", sfOptionColors[0], 0xFFFFFF, 0, 0, -1);
@@ -2494,15 +2635,15 @@ int Probing::selectSFprobeMenu( int function ) {
 
         // function = attachPadsToSettings(function);
 
-        if (node1or2 == 0) {
+        if ( node1or2 == 0 ) {
             node1or2 = 1;
             nodesToConnect[ 0 ] = function;
             nodesToConnect[ 1 ] = -1;
             connectedRowsIndex = 1;
         } else {
             nodesToConnect[ 1 ] = function;
-            
-            //connectedRowsIndex = 0;
+
+            // connectedRowsIndex = 0;
         }
 
         // Serial.print("function!!!!!: ");
@@ -2520,10 +2661,10 @@ int Probing::selectSFprobeMenu( int function ) {
     }
 
     case 0: {
-        Serial.print( "function: " );
-        printNodeOrName( function, 1 );
-        Serial.print( function );
-        Serial.println( );
+        // Serial.print( "function: " );
+        // printNodeOrName( function, 1 );
+        // Serial.print( function );
+        // Serial.println( );
         function = -1;
         break;
     }
@@ -2533,14 +2674,38 @@ int Probing::selectSFprobeMenu( int function ) {
         break;
     }
     default: {
+        connectedRows[ 0 ] = function;
+        connectedRowsIndex = 1;
+        // lightUpRail( );
+        // delay(500);
+        // showLEDsCore2 = -1;
+        // delayWithButton(900);
+        sfProbeMenu = 0;
+        inPadMenu = 0;
+
+        return function;
+
         // inPadMenu = 0;
     }
     }
+
+    // Serial.println("\n\n\n\\n\n\nn\nn\n\n\button state: ");
+    // Serial.println(ProbeButton::getInstance().getButtonState( ));
+    // Serial.println("\n\n\n\\n\n\nn\nn\n\n ");
+    // Serial.flush();
+
+    // this should only happen if it was a special function pad
+    ProbeButton::getInstance( ).clearButtonState( );
+    blockProbeButton = 1800;
+    blockProbeButtonTimer = millis( );
+    blockProbing = 800;
+    blockProbingTimer = millis( );
+
     connectedRows[ 0 ] = function;
     connectedRowsIndex = 1;
-    lightUpRail( );
+    // lightUpRail( );
     // delay(500);
-    // showLEDsCore2 = 1;
+    showLEDsCore2 = -1;
     // delayWithButton(900);
     sfProbeMenu = 0;
     inPadMenu = 0;
@@ -2568,6 +2733,11 @@ int Probing::attachPadsToSettings( int pad ) {
     b.print( "DAC", sfOptionColors[ 0 ], 0xFFFFFF, 0, 0, -1 );
     b.print( "ADC", sfOptionColors[ 1 ], 0xFFFFFF, 4, 0, 0 );
     b.print( "GPIO", sfOptionColors[ 2 ], 0xFFFFFF, 8, 1, 1 );
+
+    // CRITICAL: Signal Core 2 to display menu with blocking PIO transfer BEFORE blocking loop
+    // Prevents deadlock where async DMA drops frame and user can't see menu options
+    showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display)
+    waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
 
     int selected = -1;
 
@@ -2677,12 +2847,12 @@ int Probing::attachPadsToSettings( int pad ) {
         }
     }
     // inPadMenu = 0;
-    Serial.print( "pad: " );
-    Serial.println( pad );
-    Serial.print( "functionSetting: " );
-    Serial.println( functionSetting );
-    Serial.print( "settingOption: " );
-    Serial.println( settingOption );
+    // Serial.print( "pad: " );
+    // Serial.println( pad );
+    // Serial.print( "functionSetting: " );
+    // Serial.println( functionSetting );
+    // Serial.print( "settingOption: " );
+    // Serial.println( settingOption );
     switch ( functionSetting ) {
     case 2: {
         switch ( gpioChosen ) {
@@ -2788,127 +2958,195 @@ int Probing::delayWithButton( int delayTime ) {
 }
 
 int Probing::chooseDAC( int justPickOne ) {
+    // Serial.println("chooseDAC");
+    // Serial.flush();
+    // Set to true to skip menu and go directly to DAC 1
+    // Set to false to show the DAC 0/1 selection menu
+    static const bool skipToDAC1 = false;
+
     int function = -1;
-    // b.clear();
-    clearLEDsExceptRails( );
-    showLEDsCore2 = 2;
-
-    // lastReadRaw = 0;
-    b.print( "DAC", scaleDownBrightness( rawOtherColors[ 9 ], 4, 22 ), 0xFFFFFF, 1, 0,
-             3 );
-
-    b.print( "0", sfOptionColors[ 0 ], 0xFFFFFF, 0, 1, 3 );
-    // b.print("5v", sfOptionColors[0], 0xFFFFFF, 0, 0, -2);
-    //  b.printRawRow(0b00011000, 31, sfOptionColors[7], 0xffffff);
-    //  b.printRawRow(0b00000100, 32, sfOptionColors[7], 0xffffff);
-    //  b.printRawRow(0b00000100, 33, sfOptionColors[7], 0xffffff);
-    //  b.printRawRow(0b00010101, 34, sfOptionColors[7], 0xffffff);
-    //  b.printRawRow(0b00001110, 35, sfOptionColors[7], 0xffffff);
-    //  b.printRawRow(0b00000100, 36, sfOptionColors[7], 0xffffff);
-    //  b.printRawRow(0b00011100, 32,sfOptionColors[0], 0xffffff);
-    //   b.printRawRow(0b00011100, 33,sfOptionColors[0], 0xffffff);
-
-    b.print( "1", sfOptionColors[ 2 ], 0xFFFFFF, 5, 1, 0 );
-    // b.print("8v", sfOptionColors[2], 0xFFFFFF, 5, 0, 1);
-    // b.printRawRow(0b00011000, 58, sfOptionColors[4], 0xffffff);
-    // b.printRawRow(0b00000100, 57, sfOptionColors[4], 0xffffff);
-    // b.printRawRow(0b00000100, 56, sfOptionColors[4], 0xffffff);
-    // b.printRawRow(0b00010101, 55, sfOptionColors[4], 0xffffff);
-    // b.printRawRow(0b00001110, 54, sfOptionColors[4], 0xffffff);
-    // b.printRawRow(0b00000100, 53, sfOptionColors[4], 0xffffff);
-
     sfProbeMenu = 2;
 
-    int selected = -1;
-    function = 0;
-    while ( selected == -1 ) {
+    // CRITICAL FIX: Clear LEDs and buffer BEFORE setting display flag
+    clearLEDsExceptRails( );
+    b.clear( );
 
-        jOS.serviceCritical( );
+    // Serial.println("clearLEDsExceptRails");
+    // Serial.flush();
 
-        if ( ProbeButton::getInstance( ).getButtonState( ) != 0 ) {
-            selected = DAC1;
-            function = DAC1;
-            break;
+    if ( connectOrClearProbe == 0 ) {
+        justPickOne = 1;
+    }
+
+    if ( skipToDAC1 && justPickOne == 0 ) {
+        // Direct to DAC 1 mode - skip menu
+        function = 107;
+        // lastReadRaw = 0;
+        b.print( "DAC 1", scaleDownBrightness( rawOtherColors[ 9 ], 4, 22 ), 0xFFFFFF, 1, 0,
+                 3 );
+
+        // Serial.println("b.print");
+        // Serial.flush();
+        // b.print( "1", sfOptionColors[ 2 ], 0xFFFFFF, 5, 1, 0 );
+        // b.print("8v", sfOptionColors[2], 0xFFFFFF, 5, 0, 1);
+        // b.printRawRow(0b00011000, 58, sfOptionColors[4], 0xffffff);
+        // b.printRawRow(0b00000100, 57, sfOptionColors[4], 0xffffff);
+        // b.printRawRow(0b00000100, 56, sfOptionColors[4], 0xffffff);
+        // b.printRawRow(0b00010101, 55, sfOptionColors[4], 0xffffff);
+        // b.printRawRow(0b00001110, 54, sfOptionColors[4], 0xffffff);
+        // b.printRawRow(0b00000100, 53, sfOptionColors[4], 0xffffff);
+
+        if ( justPickOne == 1 ) {
+            return function;
         }
-        int reading = justReadProbe( );
-        if ( reading != -1 ) {
-            switch ( reading ) {
-            case 31 ... 43: {
-                selected = DAC0;
-                function = DAC0;
-                if ( justPickOne == 1 ) {
-                    return function;
-                }
 
-                // Use new unified voltage adjuster with probe support
-                VoltageAdjustConfig config;
-                config.minVoltage = -8.0;
-                config.maxVoltage = 8.0;
-                config.initialValue = globalState.power.dac0;
-                config.label = "DAC 0";
-                config.enableSnap = false;
-                config.liveUpdateInRange = true;
-                config.liveUpdateMin = 0.0;
-                config.liveUpdateMax = 5.0;
-                config.callback = []( float newValue, bool isLive, void* context ) {
-                    setDac0voltage( newValue, 1, 0, false );
-                    globalState.power.dac0 = newValue;
-                };
+        // Use new unified voltage adjuster with probe support
+        VoltageAdjustConfig config;
+        config.minVoltage = -8.0;
+        config.maxVoltage = 8.0;
+        config.initialValue = globalState.power.dac1;
+        config.label = "DAC 1";
+        config.enableSnap = false;
+        config.liveUpdateInRange = true;
+        config.liveUpdateMin = 0.0;
+        config.liveUpdateMax = 5.0;
+        config.callback = []( float newValue, bool isLive, void* context ) {
+            setDac1voltage( newValue, 1, 0, false );
+            globalState.power.dac1 = newValue;
+        };
 
-                AdjustResult result = VoltageAdjuster::adjust( config );
-                if ( result == AdjustResult::CONFIRMED ) {
-                    // Save to persistent storage
-                    saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
-                                  globalState.power.dac0, globalState.power.dac1 );
-                }
+        probeButton.clearButtonState( );
+        AdjustResult result = VoltageAdjuster::adjust( config );
+        if ( result == AdjustResult::CONFIRMED ) {
+            // Save to persistent storage
+            saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                          globalState.power.dac0, globalState.power.dac1 );
+        }
 
-                // showNets();
-                showLEDsCore2 = -1;
-                delay( 100 );
+        blockProbeButton = 2000;
+        blockProbeButtonTimer = millis( );
+        showLEDsCore2 = -1;
+        probeButton.clearButtonState( );
+        delay( 100 );
 
+    } else {
+        // Original menu mode - show DAC 0/1 selection
+        // CRITICAL FIX: Write to buffer FIRST, then signal Core 2
+        b.print( "DAC", scaleDownBrightness( rawOtherColors[ 9 ], 4, 22 ), 0xFFFFFF, 1, 0, 3 );
+        b.print( "0", sfOptionColors[ 0 ], 0xFFFFFF, 0, 1, 3 );
+        b.print( "1", sfOptionColors[ 2 ], 0xFFFFFF, 5, 1, 0 );
+
+        // CRITICAL FIX: Signal Core 2 to display menu with blocking PIO transfer
+        // Core 1 must NEVER call leds.showBlocking() - use flag to signal Core 2
+        // Without this, async DMA may drop the frame and menu won't display,
+        // causing a deadlock where code waits for input on invisible menu
+        showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display) - NO CLEAR
+        waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
+
+        // Serial.println("waitForBlockingDisplay");
+        // Serial.flush();
+
+        int selected = -1;
+        function = 0;
+        while ( selected == -1 ) {
+
+            jOS.serviceCritical( );
+
+            if ( ProbeButton::getInstance( ).getButtonState( ) != 0 ) {
+                // selected = DAC1;
+                // function = DAC1;
                 break;
             }
-            case 48 ... 60: {
-                selected = 107;
-                function = 107;
-                if ( justPickOne == 1 ) {
-                    return function;
-                    // break;
+            // Serial.println("justReadProbe");
+            // Serial.flush();
+            delayMicroseconds( 100 );
+
+            int reading = justReadProbe( );
+            if ( reading != -1 ) {
+                switch ( reading ) {
+                case 31 ... 43: {
+                    selected = DAC0;
+                    function = DAC0;
+                    if ( justPickOne == 1 ) {
+                        return function;
+                    }
+
+                    // Use new unified voltage adjuster with probe support
+                    VoltageAdjustConfig config;
+                    config.minVoltage = -8.0;
+                    config.maxVoltage = 8.0;
+                    config.initialValue = globalState.power.dac0;
+                    config.label = "DAC 0";
+                    config.enableSnap = false;
+                    config.liveUpdateInRange = false;
+                    config.liveUpdateMin = 3.3;
+                    config.liveUpdateMax = 3.31;
+                    config.callback = []( float newValue, bool isLive, void* context ) {
+                        setDac0voltage( newValue, 1, 0, true );
+                        globalState.power.dac0 = newValue;
+                    };
+
+                    probeButton.clearButtonState( );
+                    blockProbing = 300;
+                    blockProbingTimer = millis( );
+
+                    AdjustResult result = VoltageAdjuster::adjust( config );
+                    if ( result == AdjustResult::CONFIRMED ) {
+                        // Save to persistent storage
+                        saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                                      globalState.power.dac0, globalState.power.dac1 );
+                    }
+                    probeButton.clearButtonState( );
+                    blockProbeButton = 2000;
+                    blockProbeButtonTimer = millis( );
+                    showLEDsCore2 = -1;
+
+                    delay( 100 );
+                    break;
                 }
+                case 48 ... 60: {
+                    selected = 107;
+                    function = 107;
+                    if ( justPickOne == 1 ) {
+                        return function;
+                    }
 
-                // Use new unified voltage adjuster with probe support
-                VoltageAdjustConfig config;
-                config.minVoltage = -8.0;
-                config.maxVoltage = 8.0;
-                config.initialValue = globalState.power.dac1;
-                config.label = "DAC 1";
-                config.enableSnap = false;
-                config.liveUpdateInRange = true;
-                config.liveUpdateMin = 0.0;
-                config.liveUpdateMax = 5.0;
-                config.callback = []( float newValue, bool isLive, void* context ) {
-                    setDac1voltage( newValue, 1, 0, false );
-                    globalState.power.dac1 = newValue;
-                };
+                    // Use new unified voltage adjuster with probe support
+                    VoltageAdjustConfig config;
+                    config.minVoltage = -8.0;
+                    config.maxVoltage = 8.0;
+                    config.initialValue = globalState.power.dac1;
+                    config.label = "DAC 1";
+                    config.enableSnap = false;
+                    config.liveUpdateInRange = true;
+                    config.liveUpdateMin = 0.0;
+                    config.liveUpdateMax = 5.0;
+                    config.callback = []( float newValue, bool isLive, void* context ) {
+                        setDac1voltage( newValue, 1, 0, true );
+                        globalState.power.dac1 = newValue;
+                    };
 
-                AdjustResult result = VoltageAdjuster::adjust( config );
-                if ( result == AdjustResult::CONFIRMED ) {
-                    // Save to persistent storage
-                    saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
-                                  globalState.power.dac0, globalState.power.dac1 );
+                    probeButton.clearButtonState( );
+                    AdjustResult result = VoltageAdjuster::adjust( config );
+                    if ( result == AdjustResult::CONFIRMED ) {
+                        // Save to persistent storage
+                        saveVoltages( globalState.power.topRail, globalState.power.bottomRail,
+                                      globalState.power.dac0, globalState.power.dac1 );
+                    }
+                    probeButton.clearButtonState( );
+                    blockProbeButton = 2000;
+                    blockProbeButtonTimer = millis( );
+                    showLEDsCore2 = -1;
+
+                    delay( 100 );
+                    break;
                 }
-
-                // showNets();
-                blockProbeButton = 2000;
-                blockProbeButtonTimer = millis( );
-                showLEDsCore2 = -1;
-                probeButton.clearButtonState( );
-                delay( 100 );
-                break;
-            }
+                }
             }
         }
     }
+    // Serial.println("return function");
+    // Serial.flush();
 
     return function;
 }
@@ -2951,8 +3189,14 @@ int Probing::chooseIsense( void ) {
     b.print( "I-", minusColor, 0xFFFFFF, 4, 1, 2 );
     oled.clearPrintShow( "Current\n I +     I -", 2, 100 );
 
-    showLEDsCore2 = 2;
     lastSelectedOption = selectedOption;
+
+    // CRITICAL FIX: Signal Core 2 to display menu with blocking PIO transfer
+    // Core 1 must NEVER call leds.showBlocking() - use flag to signal Core 2
+    // Without this, async DMA may drop the frame and menu won't display,
+    // causing a deadlock where code waits for input on invisible menu
+    showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display)
+    waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
 
     int selected = -1;
     while ( selected == -1 ) {
@@ -3066,29 +3310,14 @@ int Probing::chooseIsense( void ) {
 
 int Probing::chooseADC( void ) {
     int function = -1;
-    // b.clear();
 
-    // probeActive = false;
+    // CRITICAL FIX: Clear LEDs and buffer FIRST
     clearLEDsExceptRails( );
+    b.clear( );
 
-    // lastReadRaw = 0;
-    // inPadMenu = 0;
-    // showLEDsCore2 = 2;
-
-    // waitCore2();
-
-    // inPadMenu = 1;
-
-    // sfProbeMenu = 1;
-    // delay(100);
-    // clearLEDsExceptRails();
-
-    // core1busy = 1;
+    // Write menu to buffer BEFORE signaling Core 2
     b.print( " ADC", scaleDownBrightness( rawOtherColors[ 8 ], 4, 22 ), 0xFFFFFF, 0, 0,
              3 );
-
-    //  delay(1000);
-    //  function = 111;
     b.print( "0", sfOptionColors[ 0 ], 0xFFFFFF, 0, 1, -1 );
     b.print( "1", sfOptionColors[ 1 ], 0xFFFFFF, 1, 1, 0 );
     b.print( "2", sfOptionColors[ 2 ], 0xFFFFFF, 2, 1, 1 );
@@ -3096,7 +3325,13 @@ int Probing::chooseADC( void ) {
     b.print( "4", sfOptionColors[ 4 ], 0xFFFFFF, 4, 1, 3 );
     b.print( "P", sfOptionColors[ 5 ], 0xFFFFFF, 5, 1, 4 );
 
-    showLEDsCore2 = 2;
+    // CRITICAL FIX: Signal Core 2 to display menu with blocking PIO transfer
+    // Core 1 must NEVER call leds.showBlocking() - use flag to signal Core 2
+    // Without this, async DMA may drop the frame and menu won't display,
+    // causing a deadlock where code waits for input on invisible menu
+    showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display)
+    waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
+
     // Serial.print("inPadMenu: ");
     // Serial.println(inPadMenu);
     // Serial.print("sfProbeMenu: ");
@@ -3105,7 +3340,8 @@ int Probing::chooseADC( void ) {
     // Serial.println(probeActive);
     // while (true);
     int selected = -1;
-    while ( selected == -1 && longShortPress( 500 ) != 1 ) {
+    while ( selected == -1 && ProbeButton::getInstance( ).getButtonState( ) == 0 ) {
+        jOS.serviceCritical( );
         int reading = justReadProbe( );
         // Serial.print("reading: ");
         // Serial.println(reading);
@@ -3180,7 +3416,7 @@ int Probing::chooseADC( void ) {
 
     clearLEDsExceptRails( );
     // showNets();
-    // showLEDsCore2 = 1;
+    showLEDsCore2 = 1;
     return function;
 }
 
@@ -3219,10 +3455,16 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
     b.print( "Input", inputColor, 0xFFFFFF, 1, 0, 3 );
     b.print( gpioNumStr, sfOptionColors[ gpioChosen - 1 ], 0xFFFFFF, 0, 0, -2 );
     b.print( "Output", outputColor, 0xFFFFFF, 0, 1, 3 );
-    showLEDsCore2 = 2;
     lastSelectedOption = selectedOption;
 
-    while ( settingOption == -1 ) {
+    // CRITICAL FIX: Signal Core 2 to display menu with blocking PIO transfer
+    // Core 1 must NEVER call leds.showBlocking() - use flag to signal Core 2
+    // Without this, async DMA may drop the frame and menu won't display,
+    // causing a deadlock where code waits for input on invisible menu
+    showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display)
+    waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
+
+    while ( settingOption == -1 && ProbeButton::getInstance( ).getButtonState( ) == 0 ) {
         // Keep critical services running
         jOS.serviceCritical( );
 
@@ -3260,7 +3502,7 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
         }
 
         // Check for encoder button press
-        if ( encoderButtonState == PRESSED && lastButtonEncoderState == IDLE ) {
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
             encoderButtonState = IDLE;
             lastButtonEncoderState = IDLE;
             settingOption = selectedOption;
@@ -3331,13 +3573,11 @@ int Probing::chooseGPIOinputOutput( int gpioChosen ) {
 
 int Probing::chooseGPIO( int skipInputOutput ) {
     int function = -1;
+    sfProbeMenu = 3;
 
+    // CRITICAL FIX: Clear LEDs and buffer FIRST, BEFORE signaling Core 2
     b.clear( );
     clearLEDsExceptRails( );
-    showLEDsCore2 = 2;
-    sfProbeMenu = 3;
-    // lastReadRaw = 0;
-    // b.print("3v", 0x0f0002, 0xFFFFFF, 0, 0, -2);
 
     uint32_t inColor = 0x000606;
     uint32_t outColor = 0x060100;
@@ -3360,6 +3600,7 @@ int Probing::chooseGPIO( int skipInputOutput ) {
     Serial.println( "     ╰───────────────────────╯" );
     Serial.println( "      └─┴─┘ └─┴─┘ └─┴─┘ └─┴─┘" );
 
+    // Write all menu content to buffer BEFORE signaling Core 2
     b.printRawRow( 0b00011000, 2, inColor, 0xFFFFFF );
     b.print( "1", sfOptionColors[ 0 ], 0xFFFFFF, 0, 0, 1 );
     b.printRawRow( 0b00011000, 6, outColor, 0xFFFFFF );
@@ -3377,7 +3618,6 @@ int Probing::chooseGPIO( int skipInputOutput ) {
     b.printRawRow( 0b00011000, 27, outColor, 0xFFFFFF );
     b.printRawRow( 0b00011000, 28, outColor, 0xFFFFFF );
 
-    // b.print("5v", 0x0f0200, 0xFFFFFF, 0, 1, -2);
     b.printRawRow( 0b00000011, 32, inColor, 0xFFFFFF );
     b.print( "5", sfOptionColors[ 4 ], 0xFFFFFF, 0, 1, 1 );
     b.printRawRow( 0b00000011, 36, outColor, 0xFFFFFF );
@@ -3396,6 +3636,13 @@ int Probing::chooseGPIO( int skipInputOutput ) {
     b.printRawRow( 0b00000011, 57, outColor, 0xFFFFFF );
     b.printRawRow( 0b00000011, 58, outColor, 0xFFFFFF );
 
+    // CRITICAL FIX: Signal Core 2 to display menu with blocking PIO transfer
+    // Core 1 must NEVER call leds.showBlocking() - use flag to signal Core 2
+    // Without this, async DMA may drop the frame and menu won't display,
+    // causing a deadlock where code waits for input on invisible menu
+    showLEDsCore2 = 12;        // 12 = blocking mode, value 2 (normal display)
+    waitForBlockingDisplay( ); // Wait for Core 2 to finish displaying
+
     int selected = -1;
     // delayWithButton(300);
     //  return 0;
@@ -3403,6 +3650,7 @@ int Probing::chooseGPIO( int skipInputOutput ) {
     // Loop until GPIO selected or button pressed to exit
     // Use state-based check - doesn't consume events
     while ( selected == -1 && checkProbeButtonState( ) == 0 ) {
+        jOS.serviceCritical( );
         int reading = justReadProbe( );
         if ( reading != -1 ) {
             switch ( reading ) {
@@ -3572,7 +3820,9 @@ int Probing::chooseGPIO( int skipInputOutput ) {
     }
     // clearLEDsExceptRails();
     //  showNets();
-
+    ProbeButton::getInstance( ).clearButtonState( );
+    blockProbeButton = 500;
+    blockProbeButtonTimer = millis( );
     showLEDsCore2 = -1;
     // updateGPIOConfigFromState();
 
@@ -3625,8 +3875,8 @@ float Probing::voltageSelect( int fiveOrEight ) {
                 encodeEdit = 1;
                 // Serial.println(voltageProbe);
 
-            } else if ( encoderButtonState == PRESSED &&
-                            lastButtonEncoderState == IDLE ||
+            } else if ( encoderButtonState == RELEASED &&
+                            lastButtonEncoderState == PRESSED ||
                         reading == -10 ) {
                 encodeEdit = 1;
                 encoderButtonState = IDLE;
@@ -3741,8 +3991,8 @@ float Probing::voltageSelect( int fiveOrEight ) {
                 encodeEdit = 1;
                 // Serial.println(voltageProbe);
 
-            } else if ( encoderButtonState == PRESSED &&
-                            lastButtonEncoderState == IDLE ||
+            } else if ( encoderButtonState == RELEASED &&
+                            lastButtonEncoderState == PRESSED ||
                         reading == -10 ) {
                 encodeEdit = 1;
                 encoderButtonState = IDLE;
@@ -3821,6 +4071,11 @@ float Probing::voltageSelect( int fiveOrEight ) {
     return 0.0;
 }
 
+// Track when LED was last updated to allow current to stabilize
+// Must be declared before checkSwitchPosition() which uses it
+unsigned long lastProbeLEDUpdateTime = 0;
+const unsigned long LED_SETTLE_TIME_MS = 15; // Wait 15ms after LED update before reading current
+
 int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 
     // Debounce/glitch filter and timing: only sample at a fixed interval.
@@ -3835,26 +4090,43 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
     // Use the global interval if available; otherwise default to 50ms.
     // unsigned long switchPositionCheckInterval = 200;
 
-
     if ( checkingButton == 1 ) {
-        Serial.println( "checkingButton" );
+        // Serial.println( "checkingButton" );
         return switchPosition;
+    }
+
+    // CRITICAL: Also check if async DMA transfer is still in progress!
+    // Reading probe current via INA219 while DMA is transferring to the LED pin
+    // can cause flickers and interference. Wait for DMA to complete.
+    // if ( probeLEDs.isDMABusy( ) ) {
+    //     return switchPosition; // Try again next time - DMA still busy
+    // }
+
+    // CRITICAL: Also wait for LED current to stabilize after any LED update!
+    // When LED color/brightness changes, current draw changes and INA219 needs time to settle.
+    // This prevents spurious switch position changes from transient current readings.
+    if ( ( millis( ) - lastProbeLEDUpdateTime ) < LED_SETTLE_TIME_MS ) {
+        return switchPosition; // Try again next time - LED current still settling
     }
 
     // Timing gate: exit early if interval hasn't elapsed.
     unsigned long now_ms = millis( );
-    if ( ( now_ms - last_check_millis ) < ProbeSwitch::getInstance().interval_ms ) {
+    if ( ( now_ms - last_check_millis ) < ProbeSwitch::getInstance( ).interval_ms ) {
         return switchPosition;
     }
     last_check_millis = now_ms;
-
+    if ( probePowerDAC == 1 ) {
+        // Serial.println( "probePowerDAC == 1" );
+        // Serial.flush();
+        return 1;
+    }
     checkingButton = 0;
     // digitalWrite(10, LOW);
 
     if ( probePowerDAC == 0 ) {
-        setDac0voltage( 3.33, 0, 0, false );
+        // setDac0voltage( 3.33, 0, 0, false );
     } else if ( probePowerDAC == 1 ) {
-        setDac1voltage( 3.33, 0, 0, false );
+        // setDac1voltage( 3.33, 0, 0, false );
     }
 
     float current_mA = checkProbeCurrent( ); // - currentReadingOffset1_mA;
@@ -3873,27 +4145,29 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
     // Serial.print(switchPosition);
     // Serial.print("  Current: ");
     // Serial.println(current_mA);
-
+    bool changed = false;
     if ( switchPosition == 0 ) {
         // Currently in MEASURE mode - only switch to SELECT if current exceeds HIGH threshold
         if ( current_mA > jumperlessConfig.calibration.probe_switch_threshold_high ) {
             switchPosition = 1;
             //  Serial.println("Switching to SELECT mode (HIGH threshold exceeded)");
+            changed = true;
         }
     } else {
         // Currently in SELECT mode - only switch to MEASURE if current falls below LOW threshold
         if ( current_mA < jumperlessConfig.calibration.probe_switch_threshold_low ) {
             switchPosition = 0;
             // Serial.println("Switching to MEASURE mode (LOW threshold crossed)");
+            changed = true;
         }
     }
 
     // Serial.print("Switch position (after): ");
     // Serial.println(switchPosition);
 
-    if ( switchPosition == 0 ) {
+    if ( switchPosition == 0 && changed == true ) {
         showProbeLEDs = 3; // measure
-    } else {
+    } else if ( switchPosition == 1 && changed == true ) {
         showProbeLEDs = 4; // select idle
     }
 
@@ -3983,6 +4257,9 @@ float Probing::checkProbeCurrent( void ) {
 float Probing::checkProbeCurrentZero( void ) {
     // return 0.0f;
 
+    // Serial.println("\n\n\n\\n\n\nn\nn\n\n checkingProbeCurrentZero \n\n\n\n\n\n");
+    // Serial.flush();
+
     showProbeLEDs = 10;
     probeLEDs.setPixelColor( 0, 0x000000 );
     probeLEDs.show( );
@@ -4026,7 +4303,7 @@ float Probing::checkProbeCurrentZero( void ) {
     // saveConfig();
 
     if ( bridgeExists == true ) {
-        addBridgeToState( DAC0, ROUTABLE_BUFFER_IN );
+        addBridgeToState( DAC0, ROUTABLE_BUFFER_IN, 0 );
     }
 
     showProbeLEDs = 4;
@@ -4094,7 +4371,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false; // Already refreshed by state functions
             }
@@ -4102,7 +4379,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false; // Already refreshed by state functions
             }
@@ -4116,7 +4393,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
         // No need to distinguish flash vs local - state system handles it
         if ( probePowerDAC == 0 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -4144,20 +4421,23 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
 
     } else {
 
-        if ( bufferPowerConnected == true ) {
-            if ( checkIfBridgeExistsLocal( ROUTABLE_BUFFER_IN, DAC0 ) == 1 ) {
-
-                if ( probePowerDAC == 0 ) {
-                    if ( bufferPowerConnected == true ) {
-                        removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                        // State function already handles both RAM and refresh
-                    }
-                } else if ( probePowerDAC == 1 ) {
-                    if ( bufferPowerConnected == true ) {
-                        removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                        // State function already handles both RAM and refresh
-                    }
+        // if ( bufferPowerConnected == true || true) {
+            // Serial.println("removing bridge");
+            if ( probePowerDAC == 0 ) {
+                if ( checkIfBridgeExistsLocal( ROUTABLE_BUFFER_IN, DAC0 ) == 1 ) {
+                    // Serial.println("bridge exists");
+                    bufferPowerConnected = true;
+                    removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 , 1);
+                    bufferPowerConnected = false;
                 }
+            } else if ( probePowerDAC == 1 ) {
+                if ( checkIfBridgeExistsLocal( ROUTABLE_BUFFER_IN, DAC1 ) == 1 ) {
+                    // Serial.println("bridge exists");
+                    bufferPowerConnected = true;
+                    removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 , 1);
+                    bufferPowerConnected = false;
+                }
+            }
 
                 // if (probePowerDAC == 0) {
                 //   setDac0voltage(0.0, 1);
@@ -4166,9 +4446,9 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
                 // }
 
                 // Extra refresh to ensure everything is synced
-                refreshConnections( 0, 0, 0 );
-            }
-        }
+                //refreshConnections( 0, 0, 0 );
+            // }
+        // }
         bufferPowerConnected = false;
     }
 
@@ -4395,7 +4675,7 @@ void Probing::checkPads( void ) {
     case BUILDING_PAD_TOP:
         Serial.print( "Building top" );
         clearColorOverrides( 1, 1, 0 ); //! highlighted net
-        if ( brightenedNet != -1 ) {
+        if ( brightenedNet != -1 && false) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
             changedNetColors[ brightenedNet ].color = colorPicker( hsv.h, jumperlessConfig.display.led_brightness );
             changedNetColors[ brightenedNet ].node1 = brightenedNode;
@@ -4408,7 +4688,7 @@ void Probing::checkPads( void ) {
             clearHighlighting( );
             checkChangedNetColors( -1 );
             // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
-            showLEDsCore2 = 1; // Trigger LED update on core 2
+            showLEDsCore2 = -1; // Trigger LED update on core 2
             // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
@@ -4418,7 +4698,7 @@ void Probing::checkPads( void ) {
     case BUILDING_PAD_BOTTOM:
         Serial.print( "Building bottom" );
         clearColorOverrides( 1, 1, 0 );
-        if ( brightenedNet != -1 ) {
+        if ( brightenedNet != -1 && false) {
             hsvColor hsv = RgbToHsv( netColors[ brightenedNet ] );
             changedNetColors[ brightenedNet ].color = colorPicker( hsv.h, jumperlessConfig.display.led_brightness );
             changedNetColors[ brightenedNet ].node1 = brightenedNode;
@@ -4431,7 +4711,7 @@ void Probing::checkPads( void ) {
             clearHighlighting( );
             checkChangedNetColors( -1 );
             // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
-            showLEDsCore2 = 1; // Trigger LED update on core 2
+            showLEDsCore2 = -1; // Trigger LED update on core 2
             // saveChangedNetColorsToFile( netSlot, 0 ); // DEPRECATED: Colors now saved via YAML state
 
         } else {
@@ -4683,6 +4963,8 @@ int Probing::readProbe( ) {
     // }
     // Check if probing is blocked and if the block timer has expired
     if ( blockProbing > 0 && ( millis( ) - blockProbingTimer < blockProbing ) ) {
+        // Serial.println("Probing blocked");
+        // Serial.flush();
         return -1; // Still blocked
     }
     // Block expired, clear it
@@ -4690,7 +4972,7 @@ int Probing::readProbe( ) {
         blockProbing = 0;
     }
 
-    int probeRead = readProbeRaw( );
+    int probeRead = -1; // readProbeRaw();
     // delay(100);
     // Serial.println(probeRead);
     // Serial.println(debugLEDs);
@@ -4713,8 +4995,7 @@ int Probing::readProbe( ) {
                 // Serial.flush();
                 return -17;
             }
-        } else if ( encoderButtonState == PRESSED &&
-                    lastButtonEncoderState == IDLE ) {
+        } else if ( encoderButtonState != IDLE ) {
             // Serial.println("encoder pressed");
             // Serial.flush();
             return -10;
@@ -4738,7 +5019,9 @@ int Probing::readProbe( ) {
 
         if ( millis( ) - lastProbeTime > 50 ) {
             lastProbeTime = millis( );
+            // // Serial.println("probe timeout");
             // Serial.println("probe timeout");
+            // Serial.flush();
             return -1;
         }
     }
@@ -4767,21 +5050,22 @@ int Probing::readProbe( ) {
         }
         probeRead = probeReading / numberOfGoodReadings;
         // padRead = 1;
-        // Serial.print("probeRead: ");
-        // Serial.println(probeRead);
-        // Serial.flush();
+        // Serial.print( "probeRead: " );
+        // Serial.println( probeRead );
+        // Serial.flush( );
     }
 
     int rowProbed = map( probeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 );
     // Serial.print("\n\n\rprobeRead: ");
     // Serial.println(probeRead);
+    // Serial.flush();
     // rowProbed = convertPadsToRows( rowProbed );
 
     if ( rowProbed <= 0 || rowProbed >= sizeof( probeRowMap ) ) {
-        if ( debugProbing == 1 ) {
-            // Serial.print("out of bounds of probeRowMap[");
-            // Serial.println(rowProbed);
-        }
+        // if ( debugProbing == 1 ) {
+        Serial.print( "out of bounds of probeRowMap[" );
+        Serial.println( rowProbed );
+        //}
         return -1;
     }
     if ( debugProbing == 1 ) {
@@ -4809,16 +5093,40 @@ int hsvProbe = 0;
 int hsvProbe2 = 0;
 unsigned long probeRainbowTimer = 0;
 
+unsigned long lastProbeLEDsTime = 0;
+unsigned long probeLEDsDelay = 20;
+
 void Probing::probeLEDhandler( void ) {
 
     // core2busy = true;
     //  pinMode(2, OUTPUT);
     //  pinMode(9, INPUT);
-    showingProbeLEDs = 1;
-    // if (showProbeLEDs != 0) {
-    //         Serial.print("showProbeLEDs = ");
-    // Serial.println(showProbeLEDs);
+    unsigned long currentTime = millis( );
+    // if ( currentTime - lastProbeLEDsTime < probeLEDsDelay ) {
+    //     return;
     // }
+    lastProbeLEDsTime = currentTime;
+
+    while(checkingButton == 1 || ProbeButton::getInstance().getButtonState() != 0) {
+       tight_loop_contents();
+       if (millis() - currentTime > 100) {
+        return;
+       }
+    }
+
+    showingProbeLEDs = 1;
+    // if (lastProbeLEDs != showProbeLEDs) {
+    // Serial.print("showProbeLEDs = ");
+    // Serial.println(showProbeLEDs);
+    // Serial.print("lastProbeLEDs = ");
+    // Serial.println(lastProbeLEDs);
+    // Serial.flush();
+    // // }
+
+    // if ( showProbeLEDs != 0 ) {
+        lastProbeLEDs = showProbeLEDs;
+    // }
+
     switch ( showProbeLEDs ) {
     case 1:
         if ( connectOrClearProbe == 1 && node1or2 == 1 ) {
@@ -4829,7 +5137,7 @@ void Probing::probeLEDhandler( void ) {
         // probeLEDs[0].setColorCode(0x000011);
         //  Serial.println(showProbeLEDs);
         //   probeLEDs.show();
-        // showProbeLEDs = 0;
+         showProbeLEDs = 0;
         break;
     case 2: {
 
@@ -4894,8 +5202,10 @@ void Probing::probeLEDhandler( void ) {
 
         probeLEDs.setPixelColor( 0, 0x170c17 ); // select idle
         // probeLEDs[0].setColorCode(0x110011);
-        //  probeLEDs.show();
-        //  Serial.println(showProbeLEDs);
+        delay(20);
+        // probeLEDs.showBlocking();
+        //  Serial.println("\n\n\rselect idle\n\n\r");
+        //  Serial.flush();
         break;
     case 5:
         probeLEDs.setPixelColor( 0, 0x111111 ); // all
@@ -4927,12 +5237,14 @@ void Probing::probeLEDhandler( void ) {
         probeLEDs.setPixelColor( 0, 0xffffff ); // max
         showProbeLEDs = 9;
         while ( showProbeLEDs == 9 ) {
-            probeLEDs.show( );
+            probeLEDs.showBlocking( ); // Use blocking for immediate display
             delayMicroseconds( 100 );
             // Serial.println("max");
+            // Serial.flush();
         }
         showProbeLEDs = 0;
         // Serial.println("max");
+        // Serial.flush();
         break;
 
     case 10:
@@ -4942,9 +5254,25 @@ void Probing::probeLEDhandler( void ) {
     default:
         break;
     }
-    lastProbeLEDs = showProbeLEDs;
 
-    probeLEDs.show( );
+    showProbeLEDs = 0;
+
+    // Only update settle timer when LED MODE changes (not during fade brightness changes)
+    // Case 2 is the remove fade - same mode, just brightness changes
+    // We only care about mode changes that affect current draw significantly
+    bool modeChanged = ( showProbeLEDs != 0 && lastProbeLEDs != showProbeLEDs );
+
+    // CRITICAL: Probe LEDs always use blocking PIO transfers
+    // This eliminates any DMA-related interference with INA219 current readings
+    // and ensures immediate display for switch position detection
+    probeLEDs.showBlocking( );
+
+    // Track when LED MODE was changed so we can wait for current to stabilize
+    // Don't update for every fade step - that would block current reading continuously
+    if ( modeChanged && showProbeLEDs != 2 ) { // Don't count fade updates (case 2)
+        lastProbeLEDUpdateTime = millis( );
+    }
+
     showingProbeLEDs = 0;
 }
 
@@ -5094,7 +5422,7 @@ int Probing::longShortPress( int pressLength ) {
     // Rewritten to use state-based API (doesn't consume button events)
     // Returns: -1 = no press, 1 = short remove press, 2 = short connect press,
     //          3 = long remove press, 4 = long connect press
-return -1;
+    return -1;
     unsigned long clickTimer = millis( );
 
     // Wait for initial button press (check state, don't consume event)

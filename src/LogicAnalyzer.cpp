@@ -53,7 +53,7 @@ LogicAnalyzer::LogicAnalyzer()
 	  dma_dig_0(-1), dma_dig_1(-1), dma_ana_0(-1), dma_ana_1(-1),
 	  dig_half0(nullptr), dig_half1(nullptr), ana_half0(nullptr), ana_half1(nullptr),
 	  samples_per_half(0), digital_bytes_per_half(0), analog_words_per_half(0),
-    txidx(0), cmdidx(0) {
+	  txbuf(nullptr), txbuf_allocated(false), txidx(0), cmdidx(0) {
 }
 
 LogicAnalyzer* LogicAnalyzer::active_instance = nullptr;
@@ -77,6 +77,18 @@ bool LogicAnalyzer::init() {
         pio_loaded = true;
         JULSEDEBUG_DIG("LA PIO init: loaded slow program at PIO0 offset=%d, SM%d\n\r", pio_slow_offset, lasm);
     }
+    
+    // Allocate transmit buffer (16KB)
+    if (!txbuf_allocated) {
+        txbuf = new (std::nothrow) uint8_t[TX_BUF_SIZE];
+        if (txbuf == nullptr) {
+            JULSEDEBUG_ERR("LA: Failed to allocate TX buffer (16KB)\n\r");
+            return false;
+        }
+        txbuf_allocated = true;
+        memset(txbuf, 0, TX_BUF_SIZE);
+    }
+    
 	return true;
 }
 
@@ -865,11 +877,15 @@ void LogicAnalyzer::deinit() {
 	if (dig_half1) { delete [] dig_half1; dig_half1 = nullptr; }
 	if (ana_half0) { delete [] ana_half0; ana_half0 = nullptr; }
 	if (ana_half1) { delete [] ana_half1; ana_half1 = nullptr; }
+	
+	// Free transmit buffer
+	if (txbuf_allocated && txbuf != nullptr) {
+		delete[] txbuf;
+		txbuf = nullptr;
+		txbuf_allocated = false;
+	}
+	
 	armed = false; initialized = false; running = false; txidx = 0;
-
-
-
-
 }
 
 uint8_t LogicAnalyzer::pack_digital_8(uint8_t pio_bits) {
@@ -877,6 +893,7 @@ uint8_t LogicAnalyzer::pack_digital_8(uint8_t pio_bits) {
 }
 
 void LogicAnalyzer::encode_and_queue_digital(uint8_t digi) {
+	if (txbuf == nullptr) return;  // Buffer not allocated
 	// ASCII 7-bit packing across 2 bytes for 8 bits
 	uint8_t b0 = (digi & 0x7F) + 0x30; if (b0 < 0x80) b0 |= 0x80;
 	uint8_t b1 = ((digi >> 7) & 0x01) + 0x30; if (b1 < 0x80) b1 |= 0x80;
@@ -885,6 +902,7 @@ void LogicAnalyzer::encode_and_queue_digital(uint8_t digi) {
 }
 
 void LogicAnalyzer::encode_and_queue_analog(uint16_t v12) {
+	if (txbuf == nullptr) return;  // Buffer not allocated
 	uint8_t b0 = (v12 & 0x7F) + 0x30;
 	uint8_t b1 = ((v12 >> 7) & 0x7F) + 0x30;
 	if (txidx + 2 > TX_BUF_SIZE) send_flush();
@@ -927,7 +945,7 @@ bool LogicAnalyzer::usb_write_blocking(const uint8_t* data, int len) {
 }
 
 void LogicAnalyzer::send_flush() {
-	if (txidx == 0) return;
+	if (txidx == 0 || txbuf == nullptr) return;
 	usb_write_blocking(txbuf, txidx);
 	txidx = 0;
 }

@@ -2,8 +2,10 @@
 #include "MpRemoteService.h"
 #include "ArduinoStuff.h"  // For USBSer2
 #include "Python_Proper.h" // For MicroPython execution
+#include "externVars.h"
 #include <cstring>
-
+#include "Probing.h"
+#include "Commands.h"
 #ifdef USE_TINYUSB
 #include "tusb.h" // For tud_task() function
 #endif
@@ -30,6 +32,29 @@ extern Stream* mp_interrupt_check_stream;
 extern bool mp_interrupt_requested;
 extern bool mp_soft_reset_requested;
 
+// Global flag to indicate if we're in raw REPL mode
+// Used by jl_after_python_exec_hook to prevent closing file handles between commands
+// CRITICAL: In raw REPL, file handles must persist across multiple commands
+bool jl_in_raw_repl_mode = false;
+
+// Callback function pointers for script execution notifications
+// Called from jl_before/after_python_exec_hook when scripts begin/complete executing
+extern "C" {
+    typedef void (*script_callback_t)(void);
+    script_callback_t jl_on_script_begin_callback = nullptr;
+    script_callback_t jl_on_script_complete_callback = nullptr;
+    
+    // C-compatible wrappers to call the MpRemoteService callbacks
+    static void jl_mp_remote_script_begin_wrapper() {
+        // Serial.println("[DEBUG] begin_wrapper called");
+        MpRemoteService::getInstance().onScriptExecutionBegin();
+    }
+    
+    static void jl_mp_remote_script_complete_wrapper() {
+        MpRemoteService::getInstance().onScriptExecutionComplete();
+    }
+}
+
 // Singleton instance
 MpRemoteService* MpRemoteService::instance = nullptr;
 
@@ -54,6 +79,10 @@ MpRemoteService::MpRemoteService( ) {
         memset( m_stderr_buffer, 0, OUTPUT_BUFFER_SIZE );
     if ( m_line_buffer )
         memset( m_line_buffer, 0, LINE_BUFFER_SIZE );
+    
+    // Register callbacks for script execution begin/complete notifications
+    jl_on_script_begin_callback = jl_mp_remote_script_begin_wrapper;
+    jl_on_script_complete_callback = jl_mp_remote_script_complete_wrapper;
 }
 
 MpRemoteService& MpRemoteService::getInstance( ) {
@@ -65,6 +94,7 @@ MpRemoteService& MpRemoteService::getInstance( ) {
 
 ServiceStatus MpRemoteService::service( ) {
     if ( !m_enabled ) {
+        jl_in_raw_repl_mode = false; // Ensure flag is cleared when service is disabled
         return ServiceStatus::IDLE;
     }
 
@@ -74,22 +104,22 @@ ServiceStatus MpRemoteService::service( ) {
     bool current_dtr = USBSer2; // CDC bool returns true if connected and DTR asserted
 
     // When DTR goes from low to high (new connection), initialize event REPL
-    if ( current_dtr && !prev_dtr ) {
+    if ( !repl_initialized) {
         if ( m_debug ) {
             Serial.println( "[MpRemote] DTR asserted - new connection detected" );
         }
         // Ensure MicroPython is initialized
         ensureMicroPythonInitialized( );
 
-        // CRITICAL: Redirect MicroPython I/O to USBSer2 BEFORE initializing REPL
-        // so the banner and prompt go to the correct stream
-        global_mp_stream = &USBSer2;
-        global_mp_stream_ptr = (void*)&USBSer2;
+        // CRITICAL: Redirect MicroPython I/O to USBSer2 AND set correct interrupt (Ctrl+C)
+        // This MUST happen before initializing REPL so banner goes to correct stream
+        // and interrupt handling is correct for mpremote/ViperIDE
+        setGlobalStreamWithInterrupt(&USBSer2);
 
         // Initialize event-driven REPL (will print banner to USBSer2)
         pyexec_event_repl_init( );
         repl_initialized = true;
-        m_in_raw_repl = false;
+        // m_in_raw_repl = false;
     }
     prev_dtr = current_dtr;
 
@@ -98,17 +128,27 @@ ServiceStatus MpRemoteService::service( ) {
         return m_in_raw_repl ? ServiceStatus::BUSY : ServiceStatus::IDLE;
     }
 
+    // CRITICAL: Before processing USBSer2 input, ensure stream and interrupt are set correctly
+    // This must happen per-input-batch, not just at initialization, because multiple
+    // REPLs (Serial and USBSer2) can be active simultaneously
+    setGlobalStreamWithInterrupt(&USBSer2);
+
     // Process characters one at a time using event-driven REPL
     // This is non-blocking and allows us to service other things
     int processed_count = 0;
-    while ( USBSer2.available( ) && processed_count < 1024 ) { // Process max 1024 chars per service call
+    while ( USBSer2.available( ) && processed_count < 8192 ) { // Process max 1024 chars per service call
         int c = USBSer2.read( );
         if ( c < 0 )
             break;
 
         // Debug output removed for production
         if ( m_debug || printReceivedPython ) {
-            Serial.write( c );
+            if (c < 0x20) {
+                Serial.printf( "[MpRemote] Rx: \\x%02X\r\n", c );
+            } else {
+                Serial.write( c );
+            }
+            Serial.flush();
         }
 
         // Feed character to event-driven REPL
@@ -119,6 +159,9 @@ ServiceStatus MpRemoteService::service( ) {
         // Check current REPL mode
         extern pyexec_mode_kind_t pyexec_mode_kind;
         m_in_raw_repl = ( pyexec_mode_kind == PYEXEC_MODE_RAW_REPL );
+        
+        // Update global flag for jl_after_python_exec_hook
+        jl_in_raw_repl_mode = m_in_raw_repl;
 
         if ( result & PYEXEC_FORCED_EXIT ) {
             if ( m_debug ) {
@@ -152,6 +195,42 @@ ServiceStatus MpRemoteService::service( ) {
     return m_in_raw_repl ? ServiceStatus::BUSY : ServiceStatus::IDLE;
 }
 
+
+volatile int probePowerDAConMpRemoteService = probePowerDAC;
+volatile int switchPositionOnMpRemoteService = switchPosition;
+
+void MpRemoteService::onScriptExecutionBegin() {
+    // Default implementation - can be overridden for custom behavior
+    // This is called before each Python script begins execution in raw REPL mode
+    
+    // if ( m_debug ) {
+        // Serial.println( "[MpRemote] Script execution beginning" );
+    
+    probePowerDAConMpRemoteService = probePowerDAC;
+    switchPositionOnMpRemoteService = switchPosition;
+    routableBufferPower( 0, 1, 1 );
+    // refreshConnections( 0, 1, 0 );
+    // Example: You could add pre-execution setup here:
+    // - Start execution timer
+    // - Log script start event
+    // - Set up monitoring/profiling
+    // - Update UI status
+}
+
+void MpRemoteService::onScriptExecutionComplete() {
+    // Default implementation - can be overridden for custom behavior
+    // This is called after each Python script completes execution in raw REPL mode
+    
+    // Serial.println( "[MpRemote] Script execution completed" );
+    pauseCore2 = 0;
+    probePowerDAC = probePowerDAConMpRemoteService;
+    switchPosition = switchPositionOnMpRemoteService;
+    routableBufferPower( 1, 1, 0 );
+    // refreshConnections( 0, 1, 0 );
+    // Example: You could add cleanup, logging, or state management here
+    // This fires after GC has run but before returning to the REPL prompt
+}
+
 void MpRemoteService::sendRawReplPrompt( ) {
     writeResponse( "raw REPL; CTRL-B to exit\r\n>" );
 }
@@ -161,7 +240,7 @@ bool MpRemoteService::ensureMicroPythonInitialized( ) {
         // Initialize MicroPython with output going to main Serial, not USBSer2
         // This prevents initialization messages from confusing tools like mpremote/ViperIDE
         Stream* saved_stream = global_mp_stream;
-        bool result = initMicroPythonProper( &Serial, /*preserve_interrupt_char=*/true );
+        bool result = initMicroPythonProper( &USBSer2, /*preserve_interrupt_char=*/true );
         global_mp_stream = saved_stream; // Restore
         return result;
     }

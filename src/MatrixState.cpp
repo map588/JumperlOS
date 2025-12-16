@@ -48,7 +48,7 @@ CHIP_K, CHIP_L };                                           //60
 
 
 
-int indexByNet[MAX_BRIDGES] = {0};
+
 
 //#include <pico/rand.h>
 
@@ -445,6 +445,9 @@ bool isConnectable(int node) {
         }
       }
     }
+  } 
+  if (node >= FAKE_GPIO_1 && node <= FAKE_GPIO_32) {
+    return true;
   }
   return false;
   }
@@ -635,7 +638,7 @@ void initNets(void) {
   
   // Initialize remaining nets
   for (int i = 6; i < MAX_NETS; i++) {
-    globalState.connections.nets[i] = {0, " ", {}, {{}}, 0, {}, {}, 0, 0, 0, 0, false};
+    globalState.connections.nets[i] = {0, " ", {}, {{}}, 0, {}, {}, 0, false, {0, 0, 0}, 0, 0, false};
     globalState.connections.nets[i].priority = 1;
     globalState.connections.nets[i].termColor = 15; // white
   }

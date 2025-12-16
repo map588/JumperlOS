@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <string.h>
+#include <vector>
 #include "JumperlessDefines.h"
 #include "JumperlOS.h"
 #include "MatrixState.h"
@@ -58,6 +59,17 @@ config:
 // Forward declarations
 class JumperlessState;
 class SlotManager;
+
+// FakeGPIO restoration info (for loading from YAML)
+struct FakeGpioRestorationInfo {
+    int slot;
+    int node;
+    int mode;
+    float v_high;
+    float v_low;
+    float threshold_high;
+    float threshold_low;
+};
 
 // Source of truth for state reconciliation
 enum SourceOfTruth {
@@ -315,7 +327,12 @@ private:
     bool deserializePower(const char* yamlContent, String& errorMsg);
     void serializeConfig(String& output) const;
     bool deserializeConfig(const char* yamlContent, String& errorMsg);
+    void serializeFakeGpio(String& output) const;
+    bool deserializeFakeGpio(const char* yamlContent, String& errorMsg);
 };
+
+// Global list of pending FakeGPIO restorations (populated during YAML load, applied after bridges are restored)
+extern std::vector<FakeGpioRestorationInfo> pendingFakeGpioRestorations;
 
 /**
  * @brief Manages slot files and active state

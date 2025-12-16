@@ -47,7 +47,83 @@ public:
     
     ServiceStatus service() override;
     const char* getName() const override { return "MpRemote"; }
-    ServicePriority getPriority() const override { return ServicePriority::HIGH; }
+    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    
+    /**
+     * @brief Callback triggered when a Python script begins execution in raw REPL mode
+     * 
+     * This virtual method is called automatically when a Python script is about to
+     * start executing in raw REPL mode (used by ViperIDE/mpremote). It's invoked from
+     * jl_before_python_exec_hook before script compilation and execution begins.
+     * 
+     * Timing: Called BEFORE:
+     * - Script compilation starts
+     * - Any Python code executes
+     * - Output is generated
+     * 
+     * Use cases:
+     * - Starting execution timers
+     * - Logging script start events
+     * - Setting up monitoring or profiling
+     * - Updating UI status to "executing"
+     * - Initializing per-script state
+     * 
+     * Example usage (create derived class):
+     * @code
+     * class CustomMpRemoteService : public MpRemoteService {
+     *     void onScriptExecutionBegin() override {
+     *         execution_start_time = millis();
+     *         Serial.println("Script starting...");
+     *     }
+     * };
+     * @endcode
+     * 
+     * @note This is NOT called for:
+     * - Interactive (friendly) REPL commands
+     * - Scripts run outside the raw REPL
+     * - Each individual line in multiline mode
+     * 
+     * @note Pair this with onScriptExecutionComplete() for timing measurements
+     */
+    virtual void onScriptExecutionBegin();
+    
+    /**
+     * @brief Callback triggered when a Python script completes execution in raw REPL mode
+     * 
+     * This virtual method is called automatically after each Python script finishes
+     * executing in raw REPL mode (used by ViperIDE/mpremote). It's invoked from
+     * jl_after_python_exec_hook after garbage collection but before returning to
+     * the REPL prompt.
+     * 
+     * Timing: Called AFTER:
+     * - Script execution completes
+     * - Garbage collection runs
+     * - File handles are preserved (not closed in raw REPL mode)
+     * 
+     * Use cases:
+     * - Logging script execution events
+     * - Updating UI or status indicators
+     * - Performing cleanup that doesn't interfere with file handles
+     * - Collecting statistics or metrics
+     * 
+     * Example usage (create derived class):
+     * @code
+     * class CustomMpRemoteService : public MpRemoteService {
+     *     void onScriptExecutionComplete() override {
+     *         Serial.println("Script finished!");
+     *         // Your custom logic here
+     *     }
+     * };
+     * @endcode
+     * 
+     * @note This is NOT called for:
+     * - Interactive (friendly) REPL commands
+     * - Scripts run outside the raw REPL
+     * - Each individual line in multiline mode
+     * 
+     * @warning Do NOT close file handles here - raw REPL mode needs them to persist!
+     */
+    virtual void onScriptExecutionComplete();
     
     /**
      * @brief Enable or disable the service
@@ -90,6 +166,7 @@ private:
     bool m_in_raw_repl = false;
     bool m_soft_reset_pending = false;
     bool m_debug = false;  // Enable debug by default for troubleshooting
+    bool m_code_executing = false;  // Track if code is currently executing in raw REPL
     
     // Code buffer for receiving code
     static const size_t CODE_BUFFER_SIZE = 8192;  // 8KB buffer for code
