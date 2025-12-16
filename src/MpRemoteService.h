@@ -47,7 +47,7 @@ public:
     
     ServiceStatus service() override;
     const char* getName() const override { return "MpRemote"; }
-    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    ServicePriority getPriority() const override { return ServicePriority::HIGH; }
     
     /**
      * @brief Enable or disable the service

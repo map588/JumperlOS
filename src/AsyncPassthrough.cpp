@@ -296,7 +296,7 @@ static volatile uint32_t s_uart_garbage_resyncs = 0;      // Resyncs triggered b
 // Valid bytes: printable ASCII (0x20-0x7E), newline, carriage return, tab
 static inline bool is_garbage_byte(uint8_t c) {
     // Printable ASCII range
-    if (c >= 0x20 && c <= 0x7E) return false;
+    if (c >= 0x00 && c <= 0x7E) return false;
     // Common control characters we expect
     if (c == '\n' || c == '\r' || c == '\t') return false;
     // Null can appear in binary protocols
@@ -463,16 +463,17 @@ static void async_uart_irq_handler( void ) {
             }
         }
         
-        // GARBAGE DETECTION: Check if byte is outside expected ASCII range
-        // ONLY when tag parsing is enabled (ASCII mode)
-        // When tag parsing is disabled (e.g., during Arduino flashing), we're in
-        // binary mode and must pass through ALL bytes including STK500 protocol
-        if ( asyncPassthroughTagParsingEnabled && is_garbage_byte(c) ) {
-            s_uart_garbage_count++;
-            s_uart_garbage_total++;
-            // Don't push garbage bytes to the ring buffer
-            continue;
-        }
+        // GARBAGE DETECTION: Disabled - was too aggressive and blocked valid data
+        // The original intent was to filter framing errors, but it prevented
+        // valid high-bit characters and ViperIDE responses from passing through.
+        // Framing error detection via hardware flags (above) is sufficient.
+        // 
+        // if ( asyncPassthroughTagParsingEnabled && is_garbage_byte(c) ) {
+        //     s_uart_garbage_count++;
+        //     s_uart_garbage_total++;
+        //     // Don't push garbage bytes to the ring buffer
+        //     continue;
+        // }
         
         // Good byte received - reset consecutive error/garbage counters
         if ( !has_hw_error ) {
@@ -488,17 +489,18 @@ static void async_uart_irq_handler( void ) {
         }
     }
     
-    // Check if we've accumulated too many consecutive framing errors OR garbage bytes
-    // Either indicates persistent misalignment that needs a resync
-    // ONLY check garbage threshold when in ASCII mode (tag parsing enabled)
+    // Check if we've accumulated too many consecutive framing errors
+    // This indicates persistent misalignment that needs a resync
+    // NOTE: Garbage byte resync disabled - was too aggressive
     bool needs_resync = false;
     if ( s_uart_framing_error_count >= FRAMING_ERROR_RESYNC_THRESHOLD ) {
         needs_resync = true;
     }
-    if ( asyncPassthroughTagParsingEnabled && s_uart_garbage_count >= GARBAGE_RESYNC_THRESHOLD ) {
-        s_uart_garbage_resyncs++;
-        needs_resync = true;
-    }
+    // Garbage resync disabled - was preventing valid high-bit characters
+    // if ( asyncPassthroughTagParsingEnabled && s_uart_garbage_count >= GARBAGE_RESYNC_THRESHOLD ) {
+    //     s_uart_garbage_resyncs++;
+    //     needs_resync = true;
+    // }
     if ( needs_resync ) {
         uart_force_receiver_resync();
     }
@@ -510,6 +512,90 @@ static void async_uart_irq_handler( void ) {
     }
     
     s_uart_flush_pending = true;
+}
+
+// ----------------------------------------------------------------------------
+// Runtime command parsing - Parse "tag parsing = on/off" from UART
+// ----------------------------------------------------------------------------
+#define RUNTIME_CMD_RING_SIZE 32
+static char s_runtime_cmd_ring[RUNTIME_CMD_RING_SIZE];
+static uint8_t s_runtime_cmd_write_idx = 0;
+
+// Parse runtime control commands from UART (e.g., "tag parsing = on")
+// Uses a ring buffer that keeps only the last 32 characters
+// Searches for "tag parsing =" anywhere in the buffer, allowing comment prefixes:
+//   # tag parsing = off      (Python)
+//   // tag parsing = on       (C/C++)
+//   ; tag parsing = off       (Assembly/INI)
+//   print("tag parsing = on") (anywhere in text)
+// Returns: false always (never consumes, just monitors passively)
+static inline bool process_runtime_command(uint8_t c) {
+    // Add character to ring buffer (always, even if not a command)
+    s_runtime_cmd_ring[s_runtime_cmd_write_idx] = c;
+    s_runtime_cmd_write_idx = (s_runtime_cmd_write_idx + 1) % RUNTIME_CMD_RING_SIZE;
+    
+    // Check for command on newline
+    if (c == '\n' || c == '\r') {
+        // Build a linear string from ring buffer (last RUNTIME_CMD_RING_SIZE chars)
+        char temp_buffer[RUNTIME_CMD_RING_SIZE + 1];
+        for (int i = 0; i < RUNTIME_CMD_RING_SIZE; i++) {
+            temp_buffer[i] = s_runtime_cmd_ring[(s_runtime_cmd_write_idx + i) % RUNTIME_CMD_RING_SIZE];
+        }
+        temp_buffer[RUNTIME_CMD_RING_SIZE] = '\0';
+        
+        // Look for "tag parsing" pattern in the buffer (case insensitive)
+        // Convert to lowercase for matching
+        char lower[RUNTIME_CMD_RING_SIZE + 1];
+        for (int i = 0; i < RUNTIME_CMD_RING_SIZE; i++) {
+            lower[i] = tolower(temp_buffer[i]);
+        }
+        lower[RUNTIME_CMD_RING_SIZE] = '\0';
+        
+        // Search for various forms anywhere in buffer: "tag parsing =", "tag_parsing =", "tagparsing ="
+        // This allows comment prefixes like: # tag parsing = off
+        char* cmd_pos = nullptr;
+        if ((cmd_pos = strstr(lower, "tag parsing =")) != nullptr ||
+            (cmd_pos = strstr(lower, "tag_parsing =")) != nullptr ||
+            (cmd_pos = strstr(lower, "tagparsing =")) != nullptr) {
+            
+            // Found command pattern! Extract the value after '='
+            char* equals = strchr(cmd_pos, '=');
+            if (equals != nullptr && (equals - lower) < RUNTIME_CMD_RING_SIZE - 1) {
+                char* value = equals + 1;
+                
+                // Trim leading whitespace
+                while (*value == ' ' || *value == '\t') value++;
+                
+                // Check value (already lowercase)
+                bool new_state = false;
+                bool valid_command = false;
+                
+                if (strncmp(value, "on", 2) == 0 || strncmp(value, "1", 1) == 0 ||
+                    strncmp(value, "enable", 6) == 0 || strncmp(value, "true", 4) == 0) {
+                    new_state = true;
+                    valid_command = true;
+                } else if (strncmp(value, "off", 3) == 0 || strncmp(value, "0", 1) == 0 ||
+                          strncmp(value, "disable", 7) == 0 || strncmp(value, "false", 5) == 0) {
+                    new_state = false;
+                    valid_command = true;
+                }
+                
+                if (valid_command) {
+                    // Update RUNTIME state only (not config file)
+                    asyncPassthroughTagParsingEnabled = new_state;
+                    
+                    // Send confirmation back over UART
+                    char response[64];
+                    snprintf(response, sizeof(response), "\r\nTag parsing %s\r\n", 
+                            new_state ? "enabled" : "disabled");
+                    uart_write_blocking(ASYNC_PASSTHROUGH_UART, (const uint8_t*)response, strlen(response));
+                }
+            }
+        }
+    }
+    
+    // Never consume - always forward all characters
+    return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -593,14 +679,18 @@ static inline bool is_command_tag( const char* tag ) {
 
 // Process a single byte through the command tag state machine
 // Returns true if byte should be forwarded, false if consumed by tag processing
+// NOTE: In mode 1 (passthrough + parsing), this ALWAYS returns true to forward all chars
+//       while still processing tags for commands. Mode 2 (future) will consume tag chars.
 static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, const char* direction ) {
+    bool should_strip_tags = (jumperlessConfig.serial_1.tag_parsing == 2);  // Mode 2 = strip tags
+    
     switch ( parser->state ) {
         case TAG_SEARCHING:
             if ( c == '<' ) {
                 parser->state = TAG_DETECTING;
                 parser->tag_buffer_idx = 0;
                 memset( parser->tag_buffer, 0, sizeof(parser->tag_buffer) );
-                return false; // Consume the '<'
+                return !should_strip_tags; // Mode 1: forward, Mode 2: consume
             }
             return true; // Forward normal byte
             
@@ -644,7 +734,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                                 // In practice this shouldn't happen if main loop processes fast enough
                                 parser->state = TAG_SEARCHING;
                                 parser->command_buffer_idx = 0;
-                                return false;
+                                return !should_strip_tags;
                             }
                         }
                         
@@ -661,7 +751,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                         parser->state = TAG_SEARCHING;
                         parser->command_buffer_idx = 0;  // Just reset index
                     }
-                    return false; // Consumed
+                    return !should_strip_tags; // Mode 1: forward, Mode 2: consume
                     
                 } else if ( is_command_tag( parser->tag_buffer ) ) {
                     // Valid opening command tag
@@ -677,7 +767,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                         parser->seen_first_char = false;
                     }
                     
-                    return false; // Consumed
+                    return !should_strip_tags; // Mode 1: forward, Mode 2: consume
                     
                 } else {
                     // Not a command tag, forward the whole thing
@@ -687,7 +777,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                 
             } else if ( parser->tag_buffer_idx < sizeof(parser->tag_buffer) - 1 ) {
                 parser->tag_buffer[parser->tag_buffer_idx++] = c;
-                return false; // Consuming tag name
+                return !should_strip_tags; // Mode 1: forward, Mode 2: consume tag name
                 
             } else {
                 // Tag buffer overflow, treat as normal text
@@ -702,7 +792,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                 parser->state = TAG_DETECTING;
                 parser->tag_buffer_idx = 0;
                 memset( parser->tag_buffer, 0, sizeof(parser->tag_buffer) );
-                return false; // Start detecting closing tag
+                return !should_strip_tags; // Mode 1: forward, Mode 2: consume
                 
             } else {
                 // For <p> tags, add '>' prefix only if not already present
@@ -728,7 +818,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                 }
                 // If buffer is full, just drop characters (command too long)
                 
-                return false; // Consumed (accumulated)
+                return !should_strip_tags; // Mode 1: forward, Mode 2: consume
             }
             break;
     }
@@ -763,9 +853,12 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
             //     }
             //     tud_cdc_n_write_flush( 1 );
             // }
-            
             // Process each byte through tag detector (USB→UART)
             for ( size_t i = 0; i < rd; i++ ) {
+                // Monitor for runtime control commands (e.g., "tag parsing = on")
+                // This passively monitors last 32 chars for commands, never consumes
+                process_runtime_command(buf[i]);
+                
                 if ( asyncPassthroughTagParsingEnabled ) {
                     // Tag parsing enabled - check for command tags
                     if ( process_command_tag_byte( buf[i], &usb_to_uart_parser, "USB→UART" ) ) {
@@ -813,7 +906,7 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
         uint32_t forwardCount = 0;
         
         while ( ring_pop_byte( &c ) && forwardCount < MAX_FORWARD_BYTES ) {
-            Serial.write( c );
+            // Serial.write( c );
             s_forward_last_byte_us = micros();
             wrote++;
             processed++;
@@ -838,28 +931,37 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     
     // Process UART->USB data through tag parser (for Arduino-sent commands)
     // Limit to MAX_BYTES_PER_CALL to prevent blocking
-    while ( avail > 0 && ring_pop_byte( &c ) && processed < MAX_BYTES_PER_CALL ) {
-        // ALWAYS passthrough raw data to USBSer1 (CDC 1) for debugging
-        // This shows the complete data stream including tags
-        if ( tud_cdc_n_connected( 1 ) ) {
+    // CRITICAL: Don't check avail in loop condition - drain ring buffer regardless of USB buffer state!
+    // We check per-write if there's space, but must keep draining ring to prevent overflow
+    while ( ring_pop_byte( &c ) && processed < MAX_BYTES_PER_CALL ) {
+        // Monitor for runtime control commands (e.g., "tag parsing = on")
+        // This passively monitors last 32 chars for commands, never consumes
+        process_runtime_command(c);
+        
+        // Passthrough all data to CDC 1 (ViperIDE)
+        if ( tud_cdc_n_connected( 1 ) && tud_cdc_n_write_available( 1 ) > 0 ) {
             tud_cdc_n_write_char( 1, c );
+            wrote++;
         }
-        wrote++;
-        avail--;
+        
+        // Process command tags if enabled
         if ( asyncPassthroughTagParsingEnabled ) {
             // Tag parsing enabled - check for command tags
             if ( process_command_tag_byte( c, &uart_to_usb_parser, "UART→USB" ) ) {
-                // Byte should be forwarded to USB Serial (CDC 0) for display
-                // tud_cdc_n_write_char( itf, c );
-                // wrote++;
-                // avail--;
+                // Byte should be forwarded to CDC 0 (main serial - for ViperIDE, etc.)
+                // In mode 1 (passthrough + parsing), this returns true for ALL chars
+                // In mode 2 (strip tags), this returns false for tag-related chars
+                // Check availability per-write to avoid blocking
+                // if ( tud_cdc_n_connected( 1 ) && tud_cdc_n_write_available( 1 ) > 0 ) {
+                //     tud_cdc_n_write_char( 1, c );
+                // }
             }
-            // If consumed by tag parser, don't forward to CDC 0
         } else {
-            // Tag parsing disabled - pass through all bytes directly (for upload)
-            // tud_cdc_n_write_char( itf, c );
-            // wrote++;
-            // avail--;
+            // Tag parsing disabled - pass through all bytes directly to CDC 0
+            // Check availability per-write to avoid blocking
+            // if ( tud_cdc_n_connected( 1 ) && tud_cdc_n_write_available( 1) > 0 ) {
+            //     tud_cdc_n_write_char( 1, c );
+            // }
         }
         processed++;
     }
@@ -1060,6 +1162,10 @@ void begin( unsigned long baud ) {
     s_line_coding.parity = 0;
     s_line_coding.stop_bits = 0; // 1 stop
     set_micros_per_byte( &s_line_coding );
+    
+    // Initialize tag parsing state from config
+    // 0 = disabled, 1 = enabled, 2 = strip tags (future)
+    asyncPassthroughTagParsingEnabled = (jumperlessConfig.serial_1.tag_parsing > 0);
 
     // // Register default forward prefixes
     // registerForwardPrefix( "jcommand:" );
@@ -1752,3 +1858,4 @@ extern "C" void jl_asyncpassthrough_override_line_coding( uint32_t baud, uint8_t
 }
 
 #endif // ASYNC_PASSTHROUGH_ENABLED
+

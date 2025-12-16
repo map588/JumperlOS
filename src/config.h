@@ -127,6 +127,7 @@ struct config {
             int lock_connection = 0;
             int autoconnect_flashing = 1;
             bool async_passthrough = true;
+            int tag_parsing = 1; // 0 = disabled, 1 = passthrough + tag parsing, 2 = parsing + strip tags
         } serial_1;
 
         

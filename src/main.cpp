@@ -117,9 +117,9 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.6.1.0"; //! remember to update this
+const char firmwareVersion[] = "5.6.2.0"; //! remember to update this
 
-bool newConfigOptions = false; //! set to true with new config options //!
+bool newConfigOptions = true; //! set to true with new config options //!
 
 // julseview julseview;
 LogicAnalyzer logicAnalyzer;

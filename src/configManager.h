@@ -266,6 +266,21 @@ const StringIntEntry displayTypeTable[] = {
 
 
 const int displayTypeTableSize = sizeof(displayTypeTable) / sizeof(displayTypeTable[0]);
+
+
+// Table for parseTagParsing
+const StringIntEntry tagParsingTable[] = {
+    {"off", 0},
+    {"disable", 0},
+    {"enabled", 1},
+    {"enabled_passthrough", 1},
+    {"passthrough", 1},
+    {"strip_tags", 2},
+    {"parse + strip", 2},
+    {"strip + parse", 2},
+
+};
+const int tagParsingTableSize = sizeof(tagParsingTable) / sizeof(tagParsingTable[0]);
 // Table for parseArbitraryFunction
 const StringIntEntry arbitraryFunctionTable[] = {
     {"off", -1},

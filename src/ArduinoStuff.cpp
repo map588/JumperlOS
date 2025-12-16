@@ -369,7 +369,9 @@ int secondSerialHandler( void ) {
     // Just check if a pulse was detected and handle Arduino reset
     if ( AsyncPassthrough::wasDTRPulseDetected() ) {
         // Tag parsing already disabled by AsyncPassthrough::checkDTRState()
-        // 3000ms timeout gives bootloader time to sync with avrdude
+        // // 3000ms timeout gives bootloader time to sync with avrdude
+        // Serial.println("DTR pulse detected - flashing Arduino");
+        // Serial.flush();
         flashArduino( 3000 );
         AsyncPassthrough::clearDTRPulse();
     }
@@ -423,10 +425,11 @@ void flashArduino( unsigned long timeoutTime ) {
     int arduinoWasConnected = arduinoConnected;
     
     // Auto-connect UART if not already connected and config allows
-    if ( arduinoConnected == 0 && jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
-        if ( debugArduino > 0 ) {
+    // if ( arduinoConnected == 0 && jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
+        if (jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
+        // if ( debugArduino > 0 ) {
             Serial.println( "Arduino not connected - connecting UART automatically" );
-        }
+        // }
         connectArduino( 1, 1 );
         arduinoConnected = checkIfArduinoIsConnected( );
     }
