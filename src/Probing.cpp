@@ -4303,7 +4303,7 @@ float Probing::checkProbeCurrentZero( void ) {
     // saveConfig();
 
     if ( bridgeExists == true ) {
-        addBridgeToState( DAC0, ROUTABLE_BUFFER_IN );
+        addBridgeToState( DAC0, ROUTABLE_BUFFER_IN, 0 );
     }
 
     showProbeLEDs = 4;
@@ -4371,7 +4371,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false; // Already refreshed by state functions
             }
@@ -4379,7 +4379,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false; // Already refreshed by state functions
             }
@@ -4393,7 +4393,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
         // No need to distinguish flash vs local - state system handles it
         if ( probePowerDAC == 0 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -4421,20 +4421,23 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
 
     } else {
 
-        if ( bufferPowerConnected == true ) {
-            if ( checkIfBridgeExistsLocal( ROUTABLE_BUFFER_IN, DAC0 ) == 1 ) {
-
-                if ( probePowerDAC == 0 ) {
-                    if ( bufferPowerConnected == true ) {
-                        removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                        // State function already handles both RAM and refresh
-                    }
-                } else if ( probePowerDAC == 1 ) {
-                    if ( bufferPowerConnected == true ) {
-                        removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                        // State function already handles both RAM and refresh
-                    }
+        // if ( bufferPowerConnected == true || true) {
+            // Serial.println("removing bridge");
+            if ( probePowerDAC == 0 ) {
+                if ( checkIfBridgeExistsLocal( ROUTABLE_BUFFER_IN, DAC0 ) == 1 ) {
+                    // Serial.println("bridge exists");
+                    bufferPowerConnected = true;
+                    removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 , 1);
+                    bufferPowerConnected = false;
                 }
+            } else if ( probePowerDAC == 1 ) {
+                if ( checkIfBridgeExistsLocal( ROUTABLE_BUFFER_IN, DAC1 ) == 1 ) {
+                    // Serial.println("bridge exists");
+                    bufferPowerConnected = true;
+                    removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 , 1);
+                    bufferPowerConnected = false;
+                }
+            }
 
                 // if (probePowerDAC == 0) {
                 //   setDac0voltage(0.0, 1);
@@ -4443,9 +4446,9 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
                 // }
 
                 // Extra refresh to ensure everything is synced
-                refreshConnections( 0, 0, 0 );
-            }
-        }
+                //refreshConnections( 0, 0, 0 );
+            // }
+        // }
         bufferPowerConnected = false;
     }
 

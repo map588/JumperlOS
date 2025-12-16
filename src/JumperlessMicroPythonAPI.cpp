@@ -64,6 +64,7 @@ extern "C" {
 int justReadProbe( bool allowDuplicates );
 extern "C" void jl_vfs_mount_root( void );   // VFS mounting
 extern void setupFilesystemAndPaths( void ); // Filesystem setup
+// jl_close_all_jfs_files is defined later in the extern "C" block
 
 // Include JumperlOS for service management
 #include "JumperlOS.h"
@@ -814,6 +815,9 @@ int jl_get_num_nets( void ) {
     return numberOfNets;
 }
 
+
+
+
 // Get the number of bridges
 int jl_get_num_bridges( void ) {
     return globalState.connections.numBridges;
@@ -873,6 +877,23 @@ int jl_get_bridge( int bridgeIdx, int* node1, int* node2, int* duplicates ) {
 
 extern "C" { // reopen extern "C" for MicroPython API wrappers
 
+// Forward declaration for jl_close_all_jfs_files (defined later in this block)
+void jl_close_all_jfs_files( void );
+
+// Debug helper functions for C code to print to Serial
+void arduino_serial_print(const char* str) {
+    if (str) Serial.print(str);
+}
+
+void arduino_serial_print_int(int value) {
+    Serial.print(value);
+}
+
+void arduino_serial_print_ptr(void* ptr) {
+    Serial.print("0x");
+    Serial.print((unsigned long)ptr, HEX);
+}
+
 // ============================================================================
 // Fake GPIO C API Wrappers - Forward calls to FakeGpio.cpp
 // ============================================================================
@@ -926,6 +947,29 @@ int jl_fake_gpio_reconnect(int node1, int node2) {
     return fakeGpioReconnect(node1, node2);
 }
 
+
+int jl_get_num_paths( int include_duplicates ) {
+    // In the current routing pipeline, globalState.connections.numPaths is synchronized to the
+    // "primary" path count (non-duplicates). Duplicate paths may exist in paths[] beyond numPaths.
+    //
+    // Desired behavior:
+    // - include_duplicates == 0: return numPaths (exclude duplicates)
+    // - include_duplicates != 0: count all valid entries in paths[] (include duplicates)
+    if ( !include_duplicates ) {
+        return globalState.connections.numPaths;
+    }
+
+    // Count all populated paths. Unused entries are cleared to node1=node2=0.
+    int count = 0;
+    return numberOfPaths;
+    // for ( int i = 0; i < MAX_BRIDGES; i++ ) {
+    //     if ( globalState.connections.paths[ i ].node1 == 0 || globalState.connections.paths[ i ].node2 == 0|| globalState.connections.paths[ i ].x[0] < 0 && globalState.connections.paths[ i ].y[0] < 0) {
+    //         break;
+    //     }
+    //     count++;
+    // }
+    // return count;
+}
 
 
 // Get path info for a specific bridge/path index
@@ -1201,6 +1245,10 @@ extern "C" void jl_soft_reboot( void ) {
     Stream* saved_interrupt_stream = mp_interrupt_check_stream;
     bool was_in_raw_repl = MpRemoteService::getInstance( ).isInRawRepl( );
 
+    // CRITICAL: Close all open file handles before deinitializing VM
+    // This ensures files are properly flushed and closed before Python objects are freed
+    jl_close_all_jfs_files( );
+
     // Deinitialize VM completely - this frees all Python objects
     mp_embed_deinit( );
 
@@ -1223,11 +1271,13 @@ extern "C" void jl_soft_reboot( void ) {
     setupFilesystemAndPaths( );
 
     // Restore keyboard interrupt setting based on REPL mode
+    // Raw REPL (mpremote/ViperIDE on USBSer2) uses Ctrl+C
+    // Friendly REPL (built-in on Serial/Jerial) uses Ctrl+Q
     if ( was_in_raw_repl ) {
-        // Raw REPL uses Ctrl+C (3)
+        // Raw REPL uses Ctrl+C (MP_INTERRUPT_CHAR_USBSER2)
         mp_embed_exec_str( "import micropython; micropython.kbd_intr(3)" );
     } else {
-        // Friendly REPL uses Ctrl+Q (17)
+        // Friendly REPL uses Ctrl+Q (MP_INTERRUPT_CHAR_SERIAL)
         mp_embed_exec_str( "import micropython; micropython.kbd_intr(17)" );
     }
 

@@ -59,15 +59,19 @@ static const char* jumperless_functions[] = {
     "connect", "disconnect", "fast_connect", "fast_disconnect", "is_connected", "nodes_clear", "node",
     "nodes_save", "nodes_discard", "nodes_has_changes", "switch_slot",
     // Net information API
-    "get_net_name", "set_net_name", "get_net_color", "get_net_color_name", "set_net_color",
+    "get_net_name", "set_net_name", "get_net_color", "get_net_color_name", "set_net_color", "set_net_color_hsv",
     "get_num_nets", "get_num_bridges", "get_net_nodes", "get_bridge", "get_net_info",
     "net_name", "net_color", "net_info",
+    // Path query functions
+    "get_num_paths", "get_path_info", "get_all_paths", "get_path_between",
     // Context
     "context_toggle", "context_get",
     // OLED
     "oled_print", "oled_clear", "oled_show", "oled_connect", "oled_disconnect",
     // Clickwheel
     "clickwheel_up", "clickwheel_down", "clickwheel_press",
+    "clickwheel_get_position", "clickwheel_reset_position", "clickwheel_get_direction",
+    "clickwheel_get_button", "clickwheel_is_initialized",
     // Status/debug
     "print_bridges", "print_paths", "print_crossbars", "print_nets", "print_chip_status",
     // Probe
@@ -75,9 +79,14 @@ static const char* jumperless_functions[] = {
     "get_button", "probe_button", "probe_button_blocking", "probe_button_nonblocking",
     "probe_wait", "wait_probe", "probe_touch", "wait_touch", "button_read", "read_button",
     "check_button", "button_check",
+    // Probe switch
+    "get_switch_position", "set_switch_position", "check_switch_position",
     // Misc
     "arduino_reset", "probe_tap", "run_app", "format_output",
     "help", "nodes_help", "help_nodes", "pause_core2", "send_raw",
+    "change_terminal_color", "cycle_term_color",
+    // Service management
+    "force_service", "force_service_by_index", "get_service_index",
     // PWM
     "pwm", "pwm_set_duty_cycle", "pwm_set_frequency", "pwm_stop",
     "set_pwm", "set_pwm_duty_cycle", "set_pwm_frequency", "stop_pwm",
@@ -135,6 +144,12 @@ static const char* jumperless_types[] = {
     "LOGO_PAD_TOP", "LOGO_PAD_BOTTOM", "RESET_PAD", "AREF_PAD", "NO_PAD",
     // Probe buttons
     "CONNECT_BUTTON", "REMOVE_BUTTON", "BUTTON_NONE", "CONNECT", "REMOVE", "NONE",
+    // Probe switch states
+    "SWITCH_MEASURE", "SWITCH_SELECT", "SWITCH_UNKNOWN",
+    // Clickwheel states
+    "CLICKWHEEL_NONE", "CLICKWHEEL_UP", "CLICKWHEEL_DOWN",
+    "CLICKWHEEL_IDLE", "CLICKWHEEL_PRESSED", "CLICKWHEEL_HELD",
+    "CLICKWHEEL_RELEASED", "CLICKWHEEL_DOUBLECLICKED",
     // Waveforms
     "SINE", "TRIANGLE", "SAWTOOTH", "SQUARE", "RAMP", "ARBITRARY",
     // Slot

@@ -101,6 +101,7 @@ const char* jl_get_net_nodes( int netNum );
 int jl_get_bridge( int bridgeIdx, int* node1, int* node2, int* duplicates );
 
 // Fake GPIO path query functions
+int jl_get_num_paths( int include_duplicates );
 const char* jl_get_path_info( int pathIdx );
 const char* jl_get_all_path_info( void );
 const char* jl_get_path_between( int node1, int node2 );
@@ -2266,13 +2267,12 @@ static MP_DEFINE_CONST_FUN_OBJ_1( jl_pwm_stop_obj, jl_pwm_stop_func );
 static mp_obj_t jl_nodes_connect_func( size_t n_args, const mp_obj_t* args ) {
     int node1 = get_node_value( args[ 0 ] );
     int node2 = get_node_value( args[ 1 ] );
-    int save = ( n_args > 2 ) ? mp_obj_is_true( args[ 2 ] ) ? 1 : 0 : 0; // Default save=False (use local copy)
-    int duplicates = ( n_args > 3 ) ? mp_obj_get_int( args[ 3 ] ) : -1; // Default -1 = allow duplicates
+    int duplicates = ( n_args > 2 ) ? mp_obj_get_int( args[ 2 ] ) : -1; // Default -1 = use global config
 
-    jl_nodes_connect( node1, node2, save, duplicates );
+    jl_nodes_connect( node1, node2, 0, duplicates );  // save=0 (always use RAM state)
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_nodes_connect_obj, 2, 4, jl_nodes_connect_func );
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_nodes_connect_obj, 2, 3, jl_nodes_connect_func );
 
 static mp_obj_t jl_nodes_disconnect_func( mp_obj_t node1_obj, mp_obj_t node2_obj ) {
     int node1 = get_node_value( node1_obj );
@@ -2616,6 +2616,14 @@ static mp_obj_t jl_get_path_info_func( mp_obj_t idx_obj ) {
     return dict;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_get_path_info_obj, jl_get_path_info_func );
+
+// get_num_paths(include_duplicates=True) - Returns the number of paths
+// By default includes duplicates; pass False to count only non-duplicate ("primary") paths.
+static mp_obj_t jl_get_num_paths_func( size_t n_args, const mp_obj_t* args ) {
+    int include_duplicates = ( n_args > 0 ) ? ( mp_obj_is_true( args[ 0 ] ) ? 1 : 0 ) : 1; // Default True
+    return mp_obj_new_int( jl_get_num_paths( include_duplicates ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_get_num_paths_obj, 0, 1, jl_get_num_paths_func );
 
 // get_all_paths() - Returns list of all path dicts
 static mp_obj_t jl_get_all_paths_func( void ) {
@@ -4021,7 +4029,8 @@ void jl_help_section( const char* section ) {
         mp_printf( &mp_plat_print, "   get_num_bridges()                - Get number of bridges\n" );
         mp_printf( &mp_plat_print, "   get_net_nodes(netNum)            - Get comma-separated node list\n" );
         mp_printf( &mp_plat_print, "   get_bridge(bridgeIdx)            - Get bridge info tuple\n" );
-        mp_printf( &mp_plat_print, "   get_net_info(netNum)             - Get full net info as dict\n\n" );
+        mp_printf( &mp_plat_print, "   get_net_info(netNum)             - Get full net info as dict\n" );
+        mp_printf( &mp_plat_print, "   get_num_paths(include_duplicates=True) - Get number of paths (optionally exclude duplicates)\n\n" );
         mp_printf( &mp_plat_print, "  Colors: red, orange, yellow, green, cyan, blue, purple, pink, etc.\n" );
         mp_printf( &mp_plat_print, "  HSV: h=0.0-1.0 or 0-255 (auto), s=0-1/0-255 (default max), v=0-1/0-255 (default 32)\n\n" );
     }
@@ -5779,6 +5788,7 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_get_bridge ), MP_ROM_PTR( &jl_get_bridge_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_net_info ), MP_ROM_PTR( &jl_get_net_info_obj ) },
     // Fake GPIO path query functions
+    { MP_ROM_QSTR( MP_QSTR_get_num_paths ), MP_ROM_PTR( &jl_get_num_paths_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_path_info ), MP_ROM_PTR( &jl_get_path_info_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_all_paths ), MP_ROM_PTR( &jl_get_all_paths_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_path_between ), MP_ROM_PTR( &jl_get_path_between_obj ) },

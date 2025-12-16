@@ -23,6 +23,16 @@
 // Forward declaration of Arduino delay function
 void delay(unsigned long ms);
 
+// Forward declarations for Jumperless functions
+extern bool jl_in_raw_repl_mode;
+void jl_close_all_jfs_files(void);
+
+// Callback function pointers for script execution notifications
+// Set by MpRemoteService to receive notifications when scripts start/finish executing
+typedef void (*script_callback_t)(void);
+extern script_callback_t jl_on_script_begin_callback;
+extern script_callback_t jl_on_script_complete_callback;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -116,6 +126,33 @@ void mp_embed_repl(void) {
     // This function exists primarily for API compatibility
 }
 
+// CRITICAL: Hook called before Python script execution begins
+// This function is called by MicroPython's parse_compile_execute() before each
+// script starts executing. It's defined as MICROPY_BOARD_BEFORE_PYTHON_EXEC in mpconfigport.h
+//
+// Purpose:
+// 1. Notify MpRemoteService that a script is about to execute
+// 2. Allow pre-execution setup or logging
+// 3. Track script execution timing
+//
+// Parameters:
+//   parse_input_kind - Type of input (MP_PARSE_FILE_INPUT=1, MP_PARSE_SINGLE_INPUT=2, etc.)
+//   exec_flags - Execution flags (EXEC_FLAG_PRINT_EOF, etc.)
+//
+// Note: Using int/unsigned int in declaration (mpconfigport.h) to avoid header ordering issues
+void jl_before_python_exec_hook(int parse_input_kind, unsigned int exec_flags) {
+    (void)exec_flags;  // Unused for now
+    
+    // Only notify for file input (complete scripts), not for REPL single-line inputs
+    // MP_PARSE_FILE_INPUT = 1, MP_PARSE_SINGLE_INPUT = 2
+    if (parse_input_kind == 1 /* MP_PARSE_FILE_INPUT */) {
+        // Notify MpRemoteService that script execution is beginning (if in raw REPL)
+        if (jl_in_raw_repl_mode && jl_on_script_begin_callback) {
+            jl_on_script_begin_callback();
+        }
+    }
+}
+
 // CRITICAL: Hook called after every Python script execution
 // This function is called by MicroPython's parse_compile_execute() after each
 // script completes (successfully or with exception). It's defined as
@@ -152,10 +189,27 @@ void jl_after_python_exec_hook(int parse_input_kind, unsigned int exec_flags, vo
         gc_collect();
         #endif
         
-        // Close any file handles that scripts left open
-        // This prevents resource leaks from poorly written scripts
-        extern void jl_close_all_jfs_files(void);
-        jl_close_all_jfs_files();
+        // CRITICAL: Do NOT close files when in raw REPL mode!
+        // Raw REPL (used by ViperIDE/mpremote) sends multiple commands that need
+        // file handles to persist across commands. For example:
+        //   Command 1: f=open('file.txt','w')
+        //   Command 2: f.write('data')
+        //   Command 3: f.close()
+        // If we close files after Command 1, Command 2 will fail with EIO.
+        //
+        // Only close leaked files after:
+        // - Interactive REPL script execution (handled in Python_Proper.cpp)
+        // - Soft reset (handled in jl_soft_reboot)
+        // - Python exit (handled by jl_exit_python)
+        if (!jl_in_raw_repl_mode) {
+            jl_close_all_jfs_files();
+        }
+        
+        // Notify MpRemoteService that script execution completed (if in raw REPL)
+        // This allows the service to perform post-execution tasks like logging or cleanup
+        if (jl_in_raw_repl_mode && jl_on_script_complete_callback) {
+            jl_on_script_complete_callback();
+        }
     }
 }
 

@@ -174,7 +174,7 @@ namespace AsyncPassthrough {
      * 
      * @param break_duration_us - how long to hold the line LOW (default ~100us = ~11 bit times at 115200)
      */
-    void sendBreakToRemote(uint32_t break_duration_us = 100);
+    void sendBreakToRemote(uint32_t break_duration_us = 500);
     
     /**
      * Full bidirectional resync: resyncs both local receiver AND sends break to remote

@@ -873,9 +873,9 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
             
             // Write accumulated bytes to UART (non-blocking)
             if ( forward_idx > 0 ) {
-                delayMicroseconds( 350 );
+                // delayMicroseconds( 350 );
                 uart_write_blocking( ASYNC_PASSTHROUGH_UART, forward_buf, forward_idx );
-                //delayMicroseconds( 350 );
+                delayMicroseconds( 350 );
             }
         }
     }
@@ -1055,6 +1055,8 @@ void begin( unsigned long baud ) {
     // Each cycle: drain FIFO, disable RX, send break, wait, drain again
     for (int resync_attempt = 0; resync_attempt < 3; resync_attempt++) {
         
+        // Serial.println("Resync attempt " + String(resync_attempt));
+        // Serial.flush();
         // Step 1: Drain any garbage from RX FIFO (don't process, just discard)
         int drained = 0;
         while ( !(hw->fr & UART_UARTFR_RXFE_BITS) && drained < 1000 ) {
@@ -1103,7 +1105,7 @@ void begin( unsigned long baud ) {
     }
     
     // Final wait to ensure line is truly idle
-    busy_wait_us( 2000 );  // 2ms final stabilization
+    busy_wait_us( 500 );  // 2ms final stabilization
     
     // One more drain in case anything came in during final wait
     while ( !(hw->fr & UART_UARTFR_RXFE_BITS) ) {

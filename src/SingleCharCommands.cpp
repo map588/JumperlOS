@@ -1098,6 +1098,7 @@ CommandResult cmd_showNetlist( char c, const String& line ) {
 
 CommandResult cmd_showBridgeArray( char c, const String& line ) {
     int showDupes = 1;
+    delay(2);
     if ( Jerial.available( ) > 0 ) {
         char in = Jerial.read( );
         if ( in == '0' ) {
@@ -1150,11 +1151,10 @@ CommandResult cmd_queryActiveSlot( char c, const String& line ) {
 
 // Python commands
 CommandResult cmd_pythonREPL( char c, const String& line ) {
-    // Set Python output streams to Jerial for the interactive REPL
+    // Set Python output streams to Jerial for the interactive REPL with correct interrupt char
     // global_mp_stream is already declared in Python_Proper.h (included above)
-    extern void* global_mp_stream_ptr; // C-compatible pointer (extern "C" in Python_Proper.cpp)
-    global_mp_stream = &Jerial;
-    global_mp_stream_ptr = (void*)&Jerial;
+    extern void setGlobalStreamWithInterrupt(Stream *stream);  // From Python_Proper.cpp
+    setGlobalStreamWithInterrupt(&Jerial);
 
     changeTerminalColor(208, true, &Jerial);
     Jerial.print( "\n\n\rThere's now a better way to do this! ");

@@ -1675,72 +1675,95 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
     // Serial.println("\n\r");
   }
 
+  // ============================================================================
+  // NEW PER-BRIDGE DUPLICATE PATH GENERATION
+  // ============================================================================
+  // Instead of duplicating all bridges in a net uniformly, we now create
+  // duplicate paths for each bridge individually based on its bridges[i][2] value.
+  // This allows fine-grained control: j.connect(2,23,1,3) creates 3 duplicates
+  // for that specific bridge, while other bridges in the same net can have different counts.
+  
   int duplindex = 0;
-  // first figure out which paths need duplicates
-  // Set duplicates once per net, not once per path to avoid exponential
-  // duplication
-  bool netProcessed[MAX_NETS] = {false};
-  for (int i = 0; i < numberOfPaths; i++) {
-    if (globalState.connections.paths[i].net > 0 &&
-        !netProcessed[globalState.connections.paths[i].net]) { // Only process each net once
-      netProcessed[globalState.connections.paths[i].net] = true;
-      if (globalState.connections.paths[i].net <= 3) {
-        globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = duplicatePathsPower;
-
-      } else if (globalState.connections.paths[i].net == 4 || globalState.connections.paths[i].net == 5) {
-        globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = duplicatePathsDac;
-
-      } else {
-        // Check if this is a special net that shouldn't be duplicated
-        bool shouldSkipDuplicates = false;
-        
-        // Don't duplicate real GPIO nets (indices 0-9)
-        for (int g = 0; g < 10; g++) {
-          if (gpioNet[g] == globalState.connections.paths[i].net) {
-            shouldSkipDuplicates = true;
-            break;
-          }
-        }
-        
-        // Don't duplicate fake GPIO nets (indices 10-41)
-        if (!shouldSkipDuplicates) {
-          for (int g = 10; g < 42; g++) {
-            if (gpioNet[g] == globalState.connections.paths[i].net) {
-              shouldSkipDuplicates = true;
-              break;
-            }
-          }
-        }
-        
-        // Don't duplicate virtual paths (they use chipXY snapshots, not physical routing)
-        if (!shouldSkipDuplicates && globalState.connections.paths[i].pathType == VIRTUAL) {
-          shouldSkipDuplicates = true;
-        }
-        
-        // Don't duplicate nets containing ADC nodes (high-impedance inputs don't benefit from parallel paths)
-        if (!shouldSkipDuplicates) {
-          int node1 = globalState.connections.paths[i].node1;
-          int node2 = globalState.connections.paths[i].node2;
-          if ((node1 >= ADC0 && node1 <= ADC4) || node1 == ADC7 ||
-              (node2 >= ADC0 && node2 <= ADC4) || node2 == ADC7) {
-            shouldSkipDuplicates = true;
-          }
-        }
-        
-        if (shouldSkipDuplicates) {
-          globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates = 0;
-        } else {
-          globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates =
-              jumperlessConfig.routing.stack_paths;
+  
+  // Process each bridge and create duplicate paths based on its individual duplicate count
+  for (int bridgeIdx = 0; bridgeIdx < globalState.connections.numBridges; bridgeIdx++) {
+    int node1 = globalState.connections.bridges[bridgeIdx][0];
+    int node2 = globalState.connections.bridges[bridgeIdx][1];
+    int bridgeDuplicates = globalState.connections.bridges[bridgeIdx][2];
+    
+    // Find the path index for this bridge
+    int pathIdx = -1;
+    for (int p = 0; p < numberOfPaths; p++) {
+      if ((globalState.connections.paths[p].node1 == node1 && globalState.connections.paths[p].node2 == node2) ||
+          (globalState.connections.paths[p].node1 == node2 && globalState.connections.paths[p].node2 == node1)) {
+        if (globalState.connections.paths[p].duplicate == 0) {  // Find the main path, not a duplicate
+          pathIdx = p;
+          break;
         }
       }
     }
-
-    // Serial.print("globalState.connections.nets[");
+    
+    if (pathIdx < 0) continue;  // Bridge not yet converted to path
+    
+    int netNum = globalState.connections.paths[pathIdx].net;
+    if (netNum <= 0) continue;  // Invalid net
+    
+    // Check if this bridge should skip duplicates based on special conditions
+    bool shouldSkipDuplicates = false;
+    
+    // Don't duplicate power rails (nets 1-3) unless explicitly set
+    if (netNum >= 1 && netNum <= 3) {
+      // Use duplicatePathsPower parameter for power rails if not explicitly set
+      if (bridgeDuplicates < 0) {
+        bridgeDuplicates = duplicatePathsPower;
+      }
+    }
+    // Don't duplicate DAC nets (nets 4-5) unless explicitly set
+    else if (netNum == 4 || netNum == 5) {
+      // Use duplicatePathsDac parameter for DAC nets if not explicitly set
+      if (bridgeDuplicates < 0) {
+        bridgeDuplicates = duplicatePathsDac;
+      }
+    }
+    // Regular nets - check THIS BRIDGE's nodes for special cases that should skip duplicates
+    else {
+      // Don't duplicate bridges connecting to real GPIO pins (RP_GPIO_1 through RP_GPIO_8, RP_UART_TX, RP_UART_RX)
+      if ((node1 >= RP_GPIO_1 && node1 <= RP_GPIO_8) || node1 == RP_UART_TX || node1 == RP_UART_RX ||
+          (node2 >= RP_GPIO_1 && node2 <= RP_GPIO_8) || node2 == RP_UART_TX || node2 == RP_UART_RX) {
+        shouldSkipDuplicates = true;
+      }
+      
+      // Don't duplicate bridges connecting to fake GPIO pins (FAKE_GPIO_1 through FAKE_GPIO_32)
+      if (!shouldSkipDuplicates) {
+        if ((node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32) ||
+            (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32)) {
+          shouldSkipDuplicates = true;
+        }
+      }
+      
+      // Don't duplicate virtual paths (they use chipXY snapshots, not physical routing)
+      if (!shouldSkipDuplicates && globalState.connections.paths[pathIdx].pathType == VIRTUAL) {
+        shouldSkipDuplicates = true;
+      }
+      
+      // Don't duplicate bridges connecting to ADC nodes (high-impedance inputs don't benefit from parallel paths)
+      if (!shouldSkipDuplicates) {
+        if ((node1 >= ADC0 && node1 <= ADC4) || node1 == ADC7 ||
+            (node2 >= ADC0 && node2 <= ADC4) || node2 == ADC7) {
+          shouldSkipDuplicates = true;
+        }
+      }
+      
+      // Use default duplicate count if not explicitly set
+      if (bridgeDuplicates < 0) {
+        bridgeDuplicates = shouldSkipDuplicates ? 0 : jumperlessConfig.routing.stack_paths;
+      }
+    }
+     // Serial.print("globalState.connections.nets[");
     // Serial.print(globalState.connections.paths[i].net);
     // Serial.print("] numberOfDuplicates: ");
     // Serial.println(globalState.connections.nets[globalState.connections.paths[i].net].numberOfDuplicates);
-  }
+  //}
 
   // get the nodes in the net and cycle them, so if the bridges are A-B, B-C,
   // the duplicate paths will start with A-C
@@ -1759,220 +1782,240 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
 
   // int16_t tempNodes[MAX_NETS][MAX_NODES] = {0};
 
-  for (int i = 1; i < numberOfNets; i++) {
-    if (globalState.connections.nets[i].numberOfDuplicates == 0) {
-      // Serial.print("globalState.connections.nets[");
-      // Serial.print(i);
-      // Serial.println("] numberOfDuplicates is 0");
-      continue;
+  // for (int i = 1; i < numberOfNets; i++) {
+  //   if (globalState.connections.nets[i].numberOfDuplicates == 0) {
+  //     // Serial.print("globalState.connections.nets[");
+  //     // Serial.print(i);
+  //     // Serial.println("] numberOfDuplicates is 0");
+  //     continue;
+  //   }
+
+  //   // int16_t tempNodes[MAX_NODES];
+  //   //  Serial.print("globalState.connections.nets[");
+  //   //  Serial.print(i);
+  //   //  Serial.print("]  nodes[");
+
+  //   for (int j = 0; j < nodeCount[i]; j++) {
+  //     // tempNodes[j] = globalState.connections.nets[i].nodes[j];
+  //     //   Serial.print(tempNodes[j]);
+  //     // Serial.print(globalState.connections.nets[i].nodes[j]);
+  //     // Serial.print(", ");
+  //   }
+  //   // Serial.println("]\t\t");
+
+  //   int targetBridgeCount = globalState.connections.nets[i].numberOfDuplicates;
+  //   int skip = 1;
+
+  //   int unique = 0;
+
+  //   int testCounter0 = 0;
+  //   int testCounter1 = 1; // nodeCount[i] / 2;
+  //   int testBridge[2] = {-1, -1};
+
+  //   int bridge0 = 0;
+  //   int bridge1 = 1;
+
+  //   for (int j = 0; j < targetBridgeCount; j++) {
+  //     if (nodeCount[i] >= 3) {
+  //       for (int l = 0; l < MAX_DUPLICATE; l++) {
+  //         if (unique == -1) {
+  //           bridge1++;
+  //           if (bridge1 >= nodeCount[i]) {
+  //             bridge0++;
+  //             if (bridge0 >= nodeCount[i]) {
+  //               bridge0 = 0;
+  //             }
+  //             bridge1 = bridge0 + 1;
+  //           }
+  //           unique = 0;
+  //         }
+  //         if (globalState.connections.nets[i].nodes[bridge0] == 0 || globalState.connections.nets[i].nodes[bridge1] == 0) {
+  //           break;
+  //         }
+  //         if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].nodes[bridge1]) {
+  //           unique = -1;
+  //           continue;
+  //         }
+  //         if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].bridges[l][0] &&
+  //             globalState.connections.nets[i].nodes[bridge1] == globalState.connections.nets[i].bridges[l][1]) {
+  //           unique = -1;
+  //           continue;
+  //         }
+  //         if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].bridges[l][1] &&
+  //             globalState.connections.nets[i].nodes[bridge1] == globalState.connections.nets[i].bridges[l][0]) {
+  //           unique = -1;
+  //           continue;
+  //         }
+  //         unique = 1;
+  //         // Serial.print(globalState.connections.nets[i].nodes[bridge0]);
+  //         // Serial.print("-");
+  //         // Serial.print(globalState.connections.nets[i].nodes[bridge1]);
+  //         // Serial.println("]\t\t");
+  //         // Serial.print("globalState.connections.nets[");
+
+  //         break;
+  //       }
+  //     }
+  //     newBridges[i][j][0] = globalState.connections.nets[i].nodes[bridge0];
+  //     newBridges[i][j][1] = globalState.connections.nets[i].nodes[bridge1];
+
+  //     globalState.connections.nets[i].bridges[j][0] = newBridges[i][j][0];
+  //     globalState.connections.nets[i].bridges[j][1] = newBridges[i][j][1];
+
+  //     bridge1++;
+
+  //     if (bridge1 >= nodeCount[i]) {
+  //       bridge0++;
+  //       if (bridge0 >= nodeCount[i]) {
+  //         bridge0 = 0;
+  //       }
+  //       bridge1 = bridge0 + 1;
+  //     }
+
+  //     if (newBridges[i][j][0] == newBridges[i][j][1] ||
+  //         newBridges[i][j][0] == 0 || newBridges[i][j][1] == 0) {
+  //       // Serial.print("skipping ");
+  //       // Serial.println(j);
+  //       j--;
+  //       continue;
+  //     } else {
+  //       duplicatePathIndex++;
+  //     }
+  //   }
+  // }
+  // // int maxxed = 0;
+  // int priorities[MAX_NETS] = {0};
+  // int maxp = 0;
+
+  // for (int j = 0; j < MAX_DUPLICATE; j++) {
+  //   for (int i = 0; i < numberOfNets; i++) {
+  //     priorities[i] = globalState.connections.nets[i].priority;
+  //     if (i < 6 && globalState.connections.nets[i].priority > maxp) {
+  //       maxp = globalState.connections.nets[i].priority;
+  //     }
+  //   }
+  //   for (int k = 0; k < maxp; k++) {
+  //     for (int i = 0; i < 6; i++) {
+  //       // for (int p = 0; p < globalState.connections.nets[i].priority; p++) {
+
+  //       if (globalState.connections.nets[i].numberOfDuplicates == 0) {
+  //         continue;
+  //       }
+
+  //       // if (newBridges[i][j][0] >= 110 && newBridges[i][j][0] <= 115 ||
+  //       //     newBridges[i][j][1] >= 110 && newBridges[i][j][1] <= 115) {
+  //       //   continue;
+  //       // }
+
+  //       if (priorities[i] < 0) { ///!
+  //         continue;
+  //       }
+
+  //       if (priorities[i] > 0) {
+  //         priorities[i]--;
+  //       }
+
+  //       //! make it add the the priority so the connections are mixed
+  //       if (probePowerDAC == 0) {
+  //         if (newBridges[i][j][0] == ROUTABLE_BUFFER_IN &&
+  //                 newBridges[i][j][1] == DAC0 ||
+  //             newBridges[i][j][0] == DAC0 &&
+  //                 newBridges[i][j][1] == ROUTABLE_BUFFER_IN) {
+  //           continue;
+  //         }
+  //       } else if (probePowerDAC == 1) {
+  //         if (newBridges[i][j][0] == ROUTABLE_BUFFER_IN &&
+  //                 newBridges[i][j][1] == DAC1 ||
+  //             newBridges[i][j][0] == DAC1 &&
+  //                 newBridges[i][j][1] == ROUTABLE_BUFFER_IN) {
+  //           continue;
+  //         }
+  //       }
+  //       if (newBridges[i][j][0] != 0 || newBridges[i][j][1] != 0) {
+  //         globalState.connections.paths[numberOfPaths].net = i;
+  //         globalState.connections.paths[numberOfPaths].node1 = newBridges[i][j][0];
+  //         globalState.connections.paths[numberOfPaths].node2 = newBridges[i][j][1];
+  //         globalState.connections.paths[numberOfPaths].altPathNeeded = false;
+  //         globalState.connections.paths[numberOfPaths].sameChip = false;
+  //         globalState.connections.paths[numberOfPaths].skip = false;
+  //         globalState.connections.paths[numberOfPaths].duplicate = 1;
+  //         numberOfPaths++;
+  //         if (numberOfPaths >= MAX_BRIDGES) {
+  //           // maxxed = 1;
+  //           return;
+  //           break;
+  //         }
+  //       }
+  //       // }
+  //       // Serial.print("\n\r");
+  //     }
+  //   }
+
+  //   // for (int i = 0; i < 6; i++) {
+  //   //   priorities[i] = globalState.connections.nets[i].priority;
+  //   // }
+  //   for (int i = 5; i < numberOfNets; i++) {
+  //     if (globalState.connections.nets[i].numberOfDuplicates == 0) {
+  //       continue;
+  //     }
+
+  //     if (newBridges[i][j][0] >= 110 && newBridges[i][j][0] <= 115 ||
+  //         newBridges[i][j][1] >= 110 && newBridges[i][j][1] <= 115) {
+  //       continue;
+  //     }
+
+  //     if (priorities[i] <= 0) {
+  //       continue;
+  //     }
+    // Override to 0 if this bridge type should never be duplicated
+    if (shouldSkipDuplicates && bridgeDuplicates < 0) {
+      bridgeDuplicates = 0;
     }
-
-    // int16_t tempNodes[MAX_NODES];
-    //  Serial.print("globalState.connections.nets[");
-    //  Serial.print(i);
-    //  Serial.print("]  nodes[");
-
-    for (int j = 0; j < nodeCount[i]; j++) {
-      // tempNodes[j] = globalState.connections.nets[i].nodes[j];
-      //   Serial.print(tempNodes[j]);
-      // Serial.print(globalState.connections.nets[i].nodes[j]);
-      // Serial.print(", ");
-    }
-    // Serial.println("]\t\t");
-
-    int targetBridgeCount = globalState.connections.nets[i].numberOfDuplicates;
-    int skip = 1;
-
-    int unique = 0;
-
-    int testCounter0 = 0;
-    int testCounter1 = 1; // nodeCount[i] / 2;
-    int testBridge[2] = {-1, -1};
-
-    int bridge0 = 0;
-    int bridge1 = 1;
-
-    for (int j = 0; j < targetBridgeCount; j++) {
-      if (nodeCount[i] >= 3) {
-        for (int l = 0; l < MAX_DUPLICATE; l++) {
-          if (unique == -1) {
-            bridge1++;
-            if (bridge1 >= nodeCount[i]) {
-              bridge0++;
-              if (bridge0 >= nodeCount[i]) {
-                bridge0 = 0;
-              }
-              bridge1 = bridge0 + 1;
-            }
-            unique = 0;
-          }
-          if (globalState.connections.nets[i].nodes[bridge0] == 0 || globalState.connections.nets[i].nodes[bridge1] == 0) {
-            break;
-          }
-          if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].nodes[bridge1]) {
-            unique = -1;
-            continue;
-          }
-          if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].bridges[l][0] &&
-              globalState.connections.nets[i].nodes[bridge1] == globalState.connections.nets[i].bridges[l][1]) {
-            unique = -1;
-            continue;
-          }
-          if (globalState.connections.nets[i].nodes[bridge0] == globalState.connections.nets[i].bridges[l][1] &&
-              globalState.connections.nets[i].nodes[bridge1] == globalState.connections.nets[i].bridges[l][0]) {
-            unique = -1;
-            continue;
-          }
-          unique = 1;
-          // Serial.print(globalState.connections.nets[i].nodes[bridge0]);
-          // Serial.print("-");
-          // Serial.print(globalState.connections.nets[i].nodes[bridge1]);
-          // Serial.println("]\t\t");
-          // Serial.print("globalState.connections.nets[");
-
-          break;
-        }
+    
+    // Create the duplicate paths for this specific bridge
+    for (int dupIdx = 0; dupIdx < bridgeDuplicates; dupIdx++) {
+      if (numberOfPaths >= MAX_BRIDGES) {
+        Serial.println("Warning: MAX_BRIDGES reached during duplicate path generation");
+        return;  // Can't add more paths
       }
-      newBridges[i][j][0] = globalState.connections.nets[i].nodes[bridge0];
-      newBridges[i][j][1] = globalState.connections.nets[i].nodes[bridge1];
-
-      globalState.connections.nets[i].bridges[j][0] = newBridges[i][j][0];
-      globalState.connections.nets[i].bridges[j][1] = newBridges[i][j][1];
-
-      bridge1++;
-
-      if (bridge1 >= nodeCount[i]) {
-        bridge0++;
-        if (bridge0 >= nodeCount[i]) {
-          bridge0 = 0;
-        }
-        bridge1 = bridge0 + 1;
-      }
-
-      if (newBridges[i][j][0] == newBridges[i][j][1] ||
-          newBridges[i][j][0] == 0 || newBridges[i][j][1] == 0) {
-        // Serial.print("skipping ");
-        // Serial.println(j);
-        j--;
-        continue;
-      } else {
-        duplicatePathIndex++;
-      }
-    }
-  }
-  // int maxxed = 0;
-  int priorities[MAX_NETS] = {0};
-  int maxp = 0;
-
-  for (int j = 0; j < MAX_DUPLICATE; j++) {
-    for (int i = 0; i < numberOfNets; i++) {
-      priorities[i] = globalState.connections.nets[i].priority;
-      if (i < 6 && globalState.connections.nets[i].priority > maxp) {
-        maxp = globalState.connections.nets[i].priority;
-      }
-    }
-    for (int k = 0; k < maxp; k++) {
-      for (int i = 0; i < 6; i++) {
-        // for (int p = 0; p < globalState.connections.nets[i].priority; p++) {
-
-        if (globalState.connections.nets[i].numberOfDuplicates == 0) {
-          continue;
-        }
-
-        // if (newBridges[i][j][0] >= 110 && newBridges[i][j][0] <= 115 ||
-        //     newBridges[i][j][1] >= 110 && newBridges[i][j][1] <= 115) {
-        //   continue;
-        // }
-
-        if (priorities[i] < 0) { ///!
-          continue;
-        }
-
-        if (priorities[i] > 0) {
-          priorities[i]--;
-        }
-
-        //! make it add the the priority so the connections are mixed
-        if (probePowerDAC == 0) {
-          if (newBridges[i][j][0] == ROUTABLE_BUFFER_IN &&
-                  newBridges[i][j][1] == DAC0 ||
-              newBridges[i][j][0] == DAC0 &&
-                  newBridges[i][j][1] == ROUTABLE_BUFFER_IN) {
-            continue;
-          }
-        } else if (probePowerDAC == 1) {
-          if (newBridges[i][j][0] == ROUTABLE_BUFFER_IN &&
-                  newBridges[i][j][1] == DAC1 ||
-              newBridges[i][j][0] == DAC1 &&
-                  newBridges[i][j][1] == ROUTABLE_BUFFER_IN) {
-            continue;
-          }
-        }
-        if (newBridges[i][j][0] != 0 || newBridges[i][j][1] != 0) {
-          globalState.connections.paths[numberOfPaths].net = i;
-          globalState.connections.paths[numberOfPaths].node1 = newBridges[i][j][0];
-          globalState.connections.paths[numberOfPaths].node2 = newBridges[i][j][1];
-          globalState.connections.paths[numberOfPaths].altPathNeeded = false;
-          globalState.connections.paths[numberOfPaths].sameChip = false;
-          globalState.connections.paths[numberOfPaths].skip = false;
-          globalState.connections.paths[numberOfPaths].duplicate = 1;
-          numberOfPaths++;
-          if (numberOfPaths >= MAX_BRIDGES) {
-            // maxxed = 1;
-            return;
-            break;
-          }
-        }
-        // }
-        // Serial.print("\n\r");
-      }
-    }
-
-    // for (int i = 0; i < 6; i++) {
-    //   priorities[i] = globalState.connections.nets[i].priority;
-    // }
-    for (int i = 5; i < numberOfNets; i++) {
-      if (globalState.connections.nets[i].numberOfDuplicates == 0) {
-        continue;
-      }
-
-      if (newBridges[i][j][0] >= 110 && newBridges[i][j][0] <= 115 ||
-          newBridges[i][j][1] >= 110 && newBridges[i][j][1] <= 115) {
-        continue;
-      }
-
-      if (priorities[i] <= 0) {
-        continue;
-      }
-
-      if (priorities[i] > 0) {
-        priorities[i]--;
-      }
-
-      if (newBridges[i][j][0] != 0 && newBridges[i][j][1] != 0) {
-        ///
-        globalState.connections.nets[i].bridges[bridgeCount[i]][0] = newBridges[i][j][0];
-        globalState.connections.nets[i].bridges[bridgeCount[i]][1] = newBridges[i][j][1];
-        bridgeCount[i]++; ///!why is this incrementing bridgeCount[0]?
-
-        globalState.connections.paths[numberOfPaths].net = i;
-        globalState.connections.paths[numberOfPaths].node1 = newBridges[i][j][0];
-        globalState.connections.paths[numberOfPaths].node2 = newBridges[i][j][1];
-        globalState.connections.paths[numberOfPaths].altPathNeeded = false;
-        globalState.connections.paths[numberOfPaths].sameChip = false;
-        globalState.connections.paths[numberOfPaths].skip = false;
-        globalState.connections.paths[numberOfPaths].duplicate = 1;
-        numberOfPaths++;
-        if (numberOfPaths >= MAX_BRIDGES) {
-          // maxxed = 1;
-          return;
-          break;
-        }
-      }
-      // }
-      // Serial.print("\n\r");
+      
+      // Create a duplicate path with the same nodes and net
+      globalState.connections.paths[numberOfPaths].net = netNum;
+      globalState.connections.paths[numberOfPaths].node1 = node1;
+      globalState.connections.paths[numberOfPaths].node2 = node2;
+      globalState.connections.paths[numberOfPaths].altPathNeeded = false;
+      globalState.connections.paths[numberOfPaths].sameChip = false;
+      globalState.connections.paths[numberOfPaths].skip = false;
+      globalState.connections.paths[numberOfPaths].duplicate = 1;  // Mark as duplicate path
+      numberOfPaths++;
+      duplindex++;
     }
   }
+  
+  if (debugNTCC5) {
+    Serial.print("Created ");
+    Serial.print(duplindex);
+    Serial.println(" duplicate paths from bridge duplicate counts");
+  }
+
+  // ============================================================================
+  // OLD NET-BASED DUPLICATE PATH GENERATION (DISABLED)
+  // ============================================================================
+  // This legacy code created additional bridges between node pairs in multi-node nets
+  // (e.g., A-B, B-C would create A-C as a redundant path).
+  // This is now DISABLED in favor of the per-bridge duplicate system above.
+  // The old system is preserved here (commented) for reference in case it's needed
+  // for special cases like power rail redundancy.
+  
+  // If you need net-wide mesh topology duplicates (A-B, B-C -> A-C), uncomment this section
+  // and set globalState.connections.nets[i].numberOfDuplicates to enable it per-net.
+  
+  // int priorities[MAX_NETS] = {0};
+  // int maxp = 0;
+  // 
+  // for (int j = 0; j < MAX_DUPLICATE; j++) {
+  //   ... (old combinatorial bridge generation logic)
+  // }
   // Serial.print("done filling unused paths\n\r");
 }
 

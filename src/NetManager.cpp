@@ -626,6 +626,8 @@ void combineNets(int foundNode1Net, int foundNode2Net) {
 int checkIfBridgeExistsLocal(int node1, int node2) {
 
   for (int i = 1; i < MAX_NETS; i++) {
+    // Serial.print("checking net = ");
+    // Serial.println(i);
     if (globalState.connections.nets[i].number <= 0) {
       break;
       }
@@ -635,10 +637,14 @@ int checkIfBridgeExistsLocal(int node1, int node2) {
         }
       if (globalState.connections.nets[i].nodes[j] == node1) {
         if (node2 == -1) {
+          // Serial.print("found node1 in net ");
+          // Serial.println(i);
           return 1;
           }
         for (int k = 0; k < MAX_NODES; k++) {
           if (globalState.connections.nets[i].nodes[k] == node2) {
+            // Serial.print("found node2 in net ");
+            // Serial.println(i);
             return 1;
             }
 
