@@ -51,6 +51,7 @@ void requestConfigSave() {
     configSavePending = true;
 }
 
+
 ServiceStatus ConfigSaveService::service() {
     // Check both explicit request AND configChanged flag
     // This allows saves from anywhere in the UI, not just main menu
@@ -63,11 +64,11 @@ ServiceStatus ConfigSaveService::service() {
         return ServiceStatus::IDLE;
     }
     
-    // Clear flags first to avoid re-entry
-    configSavePending = false;
-    configChanged = false;
-    
     if (debugConfigSaveTiming) {
+        Serial.print("[ConfigSaveService] Triggered - configChanged=");
+        Serial.print(configChanged ? "true" : "false");
+        Serial.print(" configSavePending=");
+        Serial.println(configSavePending ? "true" : "false");
         Serial.println("[ConfigSaveService] Starting background save...");
         Serial.flush();
     }
@@ -75,8 +76,12 @@ ServiceStatus ConfigSaveService::service() {
     // Do the actual save
     saveConfig();
     
+    // Clear flags after successful save
+    configSavePending = false;
+    configChanged = false;
+    
     if (debugConfigSaveTiming) {
-        Serial.println("[ConfigSaveService] Background save complete");
+        Serial.println("[ConfigSaveService] Background save complete - flags cleared");
         Serial.flush();
     }
     
@@ -333,6 +338,7 @@ void updateOledPinsForConnectionType(int connectionType) {
             jumperlessConfig.top_oled.gpio_scl = RP_GPIO_27;
             jumperlessConfig.top_oled.sda_row = NANO_D2;
             jumperlessConfig.top_oled.scl_row = NANO_D3;
+            oledUsingHardwiredPins = false;
             break;
         case 1: // RP6/RP7 (hardwired GPIO 6/7)
             jumperlessConfig.top_oled.sda_pin = 6;
@@ -342,6 +348,7 @@ void updateOledPinsForConnectionType(int connectionType) {
             // No row needed for hardwired connection
             jumperlessConfig.top_oled.sda_row = -1;
             jumperlessConfig.top_oled.scl_row = -1;
+            oledUsingHardwiredPins = true;
             break;
         case 2: // Internal I2C0 (hardwired GPIO 4/5)
             jumperlessConfig.top_oled.sda_pin = 4;
@@ -351,6 +358,7 @@ void updateOledPinsForConnectionType(int connectionType) {
             // No row needed for hardwired connection
             jumperlessConfig.top_oled.sda_row = -1;
             jumperlessConfig.top_oled.scl_row = -1;
+            oledUsingHardwiredPins = true;
             break;
         case 3: // Custom - don't change pins, user sets them manually
             // Keep existing values
@@ -1786,12 +1794,30 @@ void saveConfigIncremental(const char* filename) {
         Serial.println(" us");
     }
     
-    // If new content is shorter, we need to truncate
-    // FatFS truncate: seek to end position and call truncate
+    // If new content is shorter, clear remaining bytes to prevent garbage data
+    // CRITICAL: This prevents config corruption when values shrink (e.g., long font name → short)
+    // Writing spaces makes the file human-readable if opened mid-write
     if (writeSize < bytesRead) {
-        file.seek(writeSize);
-        // Note: Arduino File doesn't have truncate(), but the extra bytes 
-        // won't matter since we track by content not file size
+        size_t remainingBytes = bytesRead - writeSize;
+        // Write spaces to clear old data - much faster than "w" mode truncate
+        static const char spaces[64] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', 
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                                        ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
+        while (remainingBytes > 0) {
+            size_t chunkSize = (remainingBytes > sizeof(spaces)) ? sizeof(spaces) : remainingBytes;
+            file.write((const uint8_t*)spaces, chunkSize);
+            remainingBytes -= chunkSize;
+        }
+        if (debugConfigSaveTiming) {
+            Serial.print("[ConfigSave]   cleared ");
+            Serial.print(bytesRead - writeSize);
+            Serial.println(" trailing bytes with spaces");
+        }
     }
     
     // Skip explicit flush() - it does BOTH f_sync AND _fs->sync (full filesystem sync)

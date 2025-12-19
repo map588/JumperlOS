@@ -49,6 +49,7 @@ extern SafeString nodeFileString;
 
 #include "JulseView.h"
 #include "MpRemoteService.h"
+#include "Jerial.h"  // For OLEDOut stream
 
 // MicroPython includes for soft reset
 extern "C" {
@@ -1549,20 +1550,34 @@ bool jl_la_get_control_digital( int channel ) {
 }
 
 // OLED Functions
+static int default_oled_text_size = 2; // Default to size 2
+
 int jl_oled_print( const char* text, int size ) {
-    // mp_hal_check_interrupt();
+    // If size is -1, use default
+    if ( size == -1 ) {
+        size = default_oled_text_size;
+    }
+    
     if ( oled.isConnected( ) ) {
-        oled.clearPrintShow( text, 2, true, true, true );
+        if ( size == 0 ) {
+            // Small multiline scrolling text
+            oled.showMultiLineSmallText( text, false, true );
+        } else {
+            // Regular centered text
+            oled.clearPrintShow( text, size, true, true, true );
+        }
         return 1;
     } else {
         return 0;
     }
 }
 
-int jl_oled_clear( void ) {
+int jl_oled_clear( int show ) {
     if ( oled.isConnected( ) ) {
         oled.clear( 1000 );
-        oled.show( 1000 );
+        if ( show ) {
+            oled.show( 1000 );
+        }
         return 1;
     } else {
         return 0;
@@ -1585,6 +1600,139 @@ int jl_oled_connect( void ) {
 int jl_oled_disconnect( void ) {
     oled.disconnect( );
     return 1;
+}
+
+// Text Size Control
+int jl_oled_set_text_size( int size ) {
+    if ( size < 0 || size > 2 ) return 0;
+    default_oled_text_size = size;
+    return 1;
+}
+
+int jl_oled_get_text_size( void ) {
+    return default_oled_text_size;
+}
+
+// Print Redirection - declared in Python_Proper.cpp
+extern bool oled_copy_print_enabled;
+
+int jl_oled_copy_print( int enable ) {
+    oled_copy_print_enabled = ( enable != 0 );
+    if ( enable && oled.isConnected( ) ) {
+        // Clear OLEDOut buffer and prepare for small text scrolling
+        // This properly resets the showMultiLineSmallText static buffer
+        OLEDOut.clear( );
+    }
+    return 1;
+}
+
+// Font System
+const char* jl_oled_get_fonts( int* count ) {
+    // Returns comma-separated font family names
+    static const char* fontNames = "Eurostile,Jokerman,Comic Sans,Courier New,"
+                                   "New Science,New Science Ext,Andale Mono,"
+                                   "Free Mono,Iosevka Regular,Berkeley Mono,Pragmatism";
+    *count = 11;
+    return fontNames;
+}
+
+int jl_oled_set_font( const char* fontName ) {
+    if ( !oled.isConnected( ) ) return -1;
+    int fontIndex = oled.setFont( String( fontName ), 0 );
+    // Return 1 for success (fontIndex >= 0), 0 for failure (fontIndex == -1)
+    return ( fontIndex >= 0 ) ? 1 : 0;
+}
+
+const char* jl_oled_get_current_font( void ) {
+    // Get current font family name
+    if ( !oled.isConnected( ) ) return "";
+    String fontName = oled.getFontName( oled.currentFontFamily );
+    static char fontNameBuffer[ 64 ];
+    strncpy( fontNameBuffer, fontName.c_str( ), sizeof( fontNameBuffer ) - 1 );
+    fontNameBuffer[ sizeof( fontNameBuffer ) - 1 ] = '\0';
+    return fontNameBuffer;
+}
+
+// Bitmap Functions
+int jl_oled_load_bitmap( const char* filepath ) {
+    return loadBitmapFromFile( filepath ) ? 1 : 0;
+}
+
+int jl_oled_display_bitmap( int x, int y, int width, int height, 
+                            const uint8_t* data, size_t data_len ) {
+    if ( !oled.isConnected( ) ) return 0;
+    
+    if ( data != NULL && data_len > 0 ) {
+        // Display provided bitmap data
+        oled.displayBitmap( x, y, data, width, height );
+    } else if ( customBitmapLoaded ) {
+        // Display previously loaded bitmap
+        oled.displayBitmap( x, y, customBitmapBuffer, 
+                           customBitmapWidth, customBitmapHeight );
+    } else {
+        return 0; // No bitmap available
+    }
+    
+    oled.show( );
+    return 1;
+}
+
+int jl_oled_show_bitmap_file( const char* filepath, int x, int y ) {
+    if ( jl_oled_load_bitmap( filepath ) ) {
+        return jl_oled_display_bitmap( x, y, 0, 0, NULL, 0 );
+    }
+    return 0;
+}
+
+// Framebuffer Access
+const uint8_t* jl_oled_get_framebuffer( int* width, int* height, int* buffer_size ) {
+    if ( !oled.isConnected( ) ) return NULL;
+    
+    Adafruit_SSD1306& display = getDisplay( );
+    *width = display.width( );
+    *height = display.height( );
+    *buffer_size = ( *width * *height ) / 8;
+    
+    return display.getBuffer( );
+}
+
+int jl_oled_set_framebuffer( const uint8_t* data, size_t len ) {
+    if ( !oled.isConnected( ) ) return 0;
+    
+    Adafruit_SSD1306& display = getDisplay( );
+    int expected_size = ( display.width( ) * display.height( ) ) / 8;
+    
+    if ( (int)len != expected_size ) return 0;
+    
+    uint8_t* buffer = display.getBuffer( );
+    memcpy( buffer, data, len );
+    display.display( );
+    
+    return 1;
+}
+
+void jl_oled_get_framebuffer_size( int* width, int* height, int* buffer_bytes ) {
+    if ( oled.isConnected( ) ) {
+        Adafruit_SSD1306& display = getDisplay( );
+        *width = display.width( );
+        *height = display.height( );
+        *buffer_bytes = ( *width * *height ) / 8;
+    } else {
+        *width = 0;
+        *height = 0;
+        *buffer_bytes = 0;
+    }
+}
+
+int jl_oled_set_pixel( int x, int y, int color ) {
+    if ( !oled.isConnected( ) ) return 0;
+    getDisplay( ).drawPixel( x, y, color );
+    return 1;
+}
+
+int jl_oled_get_pixel( int x, int y ) {
+    if ( !oled.isConnected( ) ) return -1;
+    return getDisplay( ).getPixel( x, y );
 }
 
 // Arduino Functions
@@ -1795,7 +1943,16 @@ extern "C" int jl_get_service_index( const char* service_name ) {
 
 // Probe Switch Functions
 extern "C" int jl_get_switch_position( void ) {
-    return Probing::getInstance( ).switchPosition;
+    // int connected = bufferPowerConnected;
+    // if (connected == false) {
+    //     routableBufferPower( 1, 0, 1 );
+    //     // delay( 10 );
+    // }   
+    int result = Probing::getInstance( ).switchPosition;
+    // if (connected == false) {
+    //         routableBufferPower( 0, 0, 1 );
+    //     }
+    return result;
 }
 
 extern "C" void jl_set_switch_position( int position ) {
@@ -1806,7 +1963,17 @@ extern "C" void jl_set_switch_position( int position ) {
 }
 
 extern "C" int jl_check_switch_position( void ) {
-    return Probing::getInstance( ).checkSwitchPosition( );
+    // int connected = bufferPowerConnected;
+    // if (connected == false) {
+    //     routableBufferPower( 1, 0, 0 );
+    //     delay( 10 );
+    // }
+    int result = Probing::getInstance( ).checkSwitchPosition( );
+    // if (connected == false) {
+    //     routableBufferPower( 0, 0, 0 );
+       
+    // }
+    return result;
 }
 
 // Clickwheel (Rotary Encoder) Functions

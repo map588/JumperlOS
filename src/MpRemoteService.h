@@ -216,5 +216,8 @@ private:
 // Global reference for clean syntax
 extern MpRemoteService& mpRemoteService;
 
+// Global flag indicating whether we're in raw REPL mode (for stream routing)
+extern bool jl_in_raw_repl_mode;
+
 #endif // MPREMOTE_SERVICE_H
 

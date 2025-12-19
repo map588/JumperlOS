@@ -33,6 +33,8 @@ bool disableTerminalColors = false;
 extern void jl_pause_core2(bool pause);
 extern void changeTerminalColor(int termColor, bool flush, Stream *stream);
 extern void cycleTermColor(bool reset,  float step, bool flush);
+// Flag from MpRemoteService indicating if we're in raw REPL mode
+extern bool jl_in_raw_repl_mode;
 
 /* clang-format off */
 
@@ -468,11 +470,15 @@ void changeTerminalColor(int termColor, bool flush, Stream *stream) {
 extern "C" {
 
 void changeTerminalColorC(int color, bool flush) {
-  changeTerminalColor(color, flush, &Serial);
+  // Route to USBSer2 if in raw REPL mode (mpremote/ViperIDE), otherwise Serial (onboard REPL)
+  auto* targetStream = jl_in_raw_repl_mode ? &USBSer2 : &Serial;
+  changeTerminalColor(color, flush, targetStream);
 }
 
 void cycleTermColor(bool reset,  float step, bool flush) {
-  cycleTerminalColor(reset, step, flush, &Serial, 0, 0);
+  // Route to USBSer2 if in raw REPL mode (mpremote/ViperIDE), otherwise Serial (onboard REPL)
+  auto* targetStream = jl_in_raw_repl_mode ? &USBSer2 : &Serial;
+  cycleTerminalColor(reset, step, flush, targetStream, 0, 0);
 }
 }
 

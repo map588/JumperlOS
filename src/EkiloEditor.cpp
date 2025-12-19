@@ -2203,7 +2203,7 @@ void ekilo_calculate_oled_scrolling() {
 }
 
 // Update OLED with 3 lines around cursor
-// Optimized to avoid String allocations that fragment heap
+// Now uses generalized oled.showSmallTextBuffer() for consistency
 void ekilo_update_oled_context() {
     if (!oled.isConnected()) {
         return;
@@ -2215,113 +2215,123 @@ void ekilo_update_oled_context() {
         return;  // Skip OLED update when memory is critically low
     }
     
-    // Clear framebuffer first to prevent text overlapping (like FileManager does)
-    oled.clearFramebuffer();
-    
-    // Use small font mode like FileManager for consistent text rendering
-    oled.setSmallFont(SMALL_FONT_ANDALE_MONO);
-    
     // Calculate horizontal scrolling for current line
     if (E.numrows > 0) {
         ekilo_calculate_oled_scrolling();
     }
     
-    // Calculate current file row position
+    // Handle menu mode separately (different UI)
+    if (E.in_menu_mode) {
+        // Clear display and show menu options
+        oled.clearFramebuffer();
+        oled.setSmallFont(SMALL_FONT_ANDALE_MONO);
+        
+        // Menu button setup
+        const char* saveText = "Save";
+        const char* cancelText = "Cancel";
+        const int saveLen = 4;
+        const int cancelLen = 6;
+        
+        // Calculate positions for side-by-side layout
+        int charWidth = oled.getCharacterWidth();
+        int saveWidth = saveLen * charWidth;
+        int cancelWidth = cancelLen * charWidth;
+        int buttonHeight = 12;
+        int buttonPadding = 4;
+        int gapBetweenButtons = 8;
+        
+        // Center buttons horizontally
+        int totalWidth = (saveWidth + buttonPadding * 2) + gapBetweenButtons + (cancelWidth + buttonPadding * 2);
+        int startX = (128 - totalWidth) / 2;
+        int buttonY = 10;
+        
+        int saveButtonX = startX;
+        int cancelButtonX = startX + (saveWidth + buttonPadding * 2) + gapBetweenButtons;
+        
+        // Draw Save button
+        if (E.menu_selection == 0) {
+            oled.fillRect(saveButtonX, buttonY, saveWidth + buttonPadding * 2, buttonHeight, SSD1306_WHITE);
+            oled.setTextColor(SSD1306_BLACK);
+            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText);
+            oled.setTextColor(SSD1306_WHITE);
+        } else {
+            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText);
+        }
+        
+        // Draw Cancel button
+        if (E.menu_selection == 1) {
+            oled.fillRect(cancelButtonX, buttonY, cancelWidth + buttonPadding * 2, buttonHeight, SSD1306_WHITE);
+            oled.setTextColor(SSD1306_BLACK);
+            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText);
+            oled.setTextColor(SSD1306_WHITE);
+        } else {
+            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText);
+        }
+        
+        oled.flushFramebuffer();
+        return;
+    }
+    
+    // Normal editing mode - build text buffer with 3 lines around cursor
     int currentRow = E.cy;
+    int startRow = max(0, currentRow - 1);
+    int endRow = min(E.numrows - 1, currentRow + 1);
     
-    // Determine which 3 lines to show (1 before, 2 after, adjusting for edges)
-    int startRow = currentRow - 1;
-    int endRow = currentRow + 1;
-    
-    // Adjust for edges
-    if (startRow < 0) {
-        startRow = 0;
+    // Adjust for edges to always show 3 lines when possible
+    if (startRow == 0 && E.numrows > 2) {
         endRow = min(2, E.numrows - 1);
-    } else if (endRow >= E.numrows) {
+    } else if (endRow >= E.numrows - 1 && E.numrows > 2) {
         endRow = E.numrows - 1;
         startRow = max(0, endRow - 2);
     }
     
-    // Use stack buffers instead of String to avoid heap fragmentation
-    // Max visible chars on OLED is ~21 at small font, so 32 is plenty
-    char lineBufs[3][32];
-    int lineCount = 0;
-    int cursorLineInDisplay = -1;
+    // Build text buffer with lines (use newline separators)
+    char textBuffer[256];  // Stack buffer for text
+    int bufPos = 0;
+    int displayLineCount = 0;
+    int cursorDisplayLine = -1;
     
-    // Define constants for drawing
-    const int lineY = 8;        // Start Y position with proper baseline
-    const int lineHeight = 12;  // Line spacing for small font
-    
-    // Handle empty file case
     if (E.numrows == 0) {
-        strncpy(lineBufs[0], "[Empty File]", 31);
-        lineBufs[0][31] = '\0';
-        lineCount = 1;
-        cursorLineInDisplay = 0;
+        strcpy(textBuffer, "[Empty File]");
+        cursorDisplayLine = 0;
+        displayLineCount = 1;
     } else {
-        int charWidth = oled.getCharacterWidth();
-        const int maxVisibleChars = charWidth > 0 ? min(128 / charWidth, 31) : 21;
-        
-        for (int i = startRow; i <= endRow && i < E.numrows && lineCount < 3; i++) {
-            // Track which line is current
+        for (int i = startRow; i <= endRow && i < E.numrows && bufPos < sizeof(textBuffer) - 2; i++) {
             if (i == currentRow) {
-                cursorLineInDisplay = lineCount;
+                cursorDisplayLine = displayLineCount;
             }
             
-            // Copy line content with horizontal scrolling - directly to stack buffer
+            // Copy line content
             if (E.row[i].chars && E.row[i].size > 0) {
-                int startPos = E.oled_horizontal_offset;
-                int availableLen = E.row[i].size - startPos;
-                
-                if (availableLen > 0) {
-                    int copyLen = min(availableLen, maxVisibleChars);
-                    memcpy(lineBufs[lineCount], E.row[i].chars + startPos, copyLen);
-                    lineBufs[lineCount][copyLen] = '\0';
-                } else {
-                    lineBufs[lineCount][0] = '\0';  // Past end of line
-                }
-            } else {
-                lineBufs[lineCount][0] = '\0';  // Empty line
+                int copyLen = min(E.row[i].size, (int)(sizeof(textBuffer) - bufPos - 2));
+                memcpy(textBuffer + bufPos, E.row[i].chars, copyLen);
+                bufPos += copyLen;
             }
             
-            lineCount++;
+            // Add newline separator
+            textBuffer[bufPos++] = '\n';
+            displayLineCount++;
         }
+        textBuffer[bufPos] = '\0';
     }
     
-    // Draw each line (using stack buffers - no heap allocation)
-    for (int i = 0; i < lineCount; i++) {
-        oled.drawText(0, lineY + (i * lineHeight), lineBufs[i]);
-    }
+    // Configure display with generalized function
+    oled::SmallTextDisplayConfig config = {};
+    config.text = textBuffer;
+    config.font = SMALL_FONT_ANDALE_MONO;
+    config.clear_before = true;
+    config.show_after = false;  // We'll flush after adding char selection indicator
+    config.enable_cursor = true;
+    config.cursor_line = cursorDisplayLine;
+    config.cursor_col = E.cx;
+    config.start_line = 0;
+    config.max_lines = 3;
+    config.horizontal_offset = E.oled_horizontal_offset;
+    config.highlight_cursor_line = false;
+    config.status_text = nullptr;
     
-    // Add cursor position indicator if current line is visible
-    if (cursorLineInDisplay >= 0 && E.numrows > 0) {
-        // Calculate cursor position within the visible text of current line
-        int visibleCursorPos = E.cx - E.oled_horizontal_offset;
-        
-        // Show cursor if it's visible on screen (including beyond end of line)
-        int charWidth = oled.getCharacterWidth();
-        const int maxVisibleChars = charWidth > 0 ? (128 / charWidth) : 21;
-        
-        if (visibleCursorPos >= 0 && visibleCursorPos < maxVisibleChars) {
-            // Get the character at cursor position
-            char cursorChar = ' '; // Default to space
-            
-            int lineLen = strlen(lineBufs[cursorLineInDisplay]);
-            if (visibleCursorPos < lineLen) {
-                cursorChar = lineBufs[cursorLineInDisplay][visibleCursorPos];
-                if (cursorChar == '\0' || cursorChar == '\n') {
-                    cursorChar = ' '; // Show space for end of line
-                }
-            }
-            // If cursor is beyond the line, cursorChar remains space
-            
-            int cursorX = visibleCursorPos * charWidth;
-            int cursorY = lineY + (cursorLineInDisplay * lineHeight);
-            
-            // Draw highlighted character instead of underline
-            oled.drawHighlightedChar(cursorX, cursorY, cursorChar);
-        }
-    }
+    // Display the text buffer
+    oled.showSmallTextBuffer(config);
     
     // Show character selection mode if active
     if (E.char_selection_mode) {
@@ -2344,8 +2354,8 @@ void ekilo_update_oled_context() {
         
         // Position in top-right corner
         int textWidth = strlen(selectionText) * largeCharWidth;
-        int x = 128 - textWidth - 2; // 2 pixel margin
-        int y = 12; // Adjusted for larger font baseline
+        int x = 128 - textWidth - 2;
+        int y = 12;
         
         // Draw background box
         oled.fillRect(x - 1, y - 11, textWidth + 2, 14, SSD1306_WHITE);
@@ -2353,66 +2363,7 @@ void ekilo_update_oled_context() {
         // Draw text in black on white background
         oled.setTextColor(SSD1306_BLACK);
         oled.drawText(x, y, selectionText);
-        oled.setTextColor(SSD1306_WHITE); // Restore default
-        
-        // Restore small font for rest of display
-        oled.setSmallFont(SMALL_FONT_ANDALE_MONO);
-    }
-    
-    // Draw save/exit menu 2 lines below file content
-    int menuY = lineY + (lineCount * lineHeight) + 6; // 6 pixel gap between file and menu
-    
-    // Save and cancel options with proper UI styling
-    // Use const char* instead of String to avoid heap allocation
-    const char* saveText = "Save";
-    const char* cancelText = "Cancel";
-    const int saveLen = 4;   // strlen("Save")
-    const int cancelLen = 6; // strlen("Cancel")
-    
-    // Always show menu buttons, but only highlight when in menu mode
-    if (E.in_menu_mode) {
-        // Clear display and just show menu options
-        oled.clearFramebuffer();
-        
-        // Calculate positions for side-by-side layout in center of screen
-        int charWidth = oled.getCharacterWidth();
-        int saveWidth = saveLen * charWidth;
-        int cancelWidth = cancelLen * charWidth;
-        int buttonHeight = 12;
-        int buttonPadding = 4;
-        int gapBetweenButtons = 8;
-        
-        // Total width needed: saveButton + gap + cancelButton
-        int totalWidth = (saveWidth + buttonPadding * 2) + gapBetweenButtons + (cancelWidth + buttonPadding * 2);
-        int startX = (128 - totalWidth) / 2; // Center horizontally
-        int buttonY = 10; // Center vertically on 32px tall screen
-        
-        int saveButtonX = startX;
-        int cancelButtonX = startX + (saveWidth + buttonPadding * 2) + gapBetweenButtons;
-        
-        // Draw Save button
-        if (E.menu_selection == 0) { // Save selected
-            oled.fillRect(saveButtonX, buttonY, saveWidth + buttonPadding * 2, buttonHeight, SSD1306_WHITE);
-            oled.setTextColor(SSD1306_BLACK);
-            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText);
-            oled.setTextColor(SSD1306_WHITE);
-        } else {
-            oled.drawText(saveButtonX + buttonPadding, buttonY + 8, saveText);
-        }
-        
-        // Draw Cancel button
-        if (E.menu_selection == 1) { // Cancel selected
-            oled.fillRect(cancelButtonX, buttonY, cancelWidth + buttonPadding * 2, buttonHeight, SSD1306_WHITE);
-            oled.setTextColor(SSD1306_BLACK);
-            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText);
-            oled.setTextColor(SSD1306_WHITE);
-        } else {
-            oled.drawText(cancelButtonX + buttonPadding, buttonY + 8, cancelText);
-        }
-    } else {
-        // Show dimmed menu options when not in menu mode
-        oled.drawText(2, menuY, saveText);
-        oled.drawText(2, menuY + 12, cancelText);
+        oled.setTextColor(SSD1306_WHITE);
     }
     
     // Flush to display

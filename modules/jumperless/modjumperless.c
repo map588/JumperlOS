@@ -181,11 +181,24 @@ int jl_fs_total_bytes( void );
 int jl_fs_used_bytes( void );
 int jl_nodes_clear( void );
 int jl_oled_print( const char* text, int size );
-int jl_oled_clear( void );
-
+int jl_oled_clear( int show );
 int jl_oled_show( void );
 int jl_oled_connect( void );
 int jl_oled_disconnect( void );
+int jl_oled_set_text_size( int size );
+int jl_oled_get_text_size( void );
+int jl_oled_copy_print( int enable );
+const char* jl_oled_get_fonts( int* count );
+int jl_oled_set_font( const char* fontName );
+const char* jl_oled_get_current_font( void );
+int jl_oled_load_bitmap( const char* filepath );
+int jl_oled_display_bitmap( int x, int y, int width, int height, const uint8_t* data, size_t data_len );
+int jl_oled_show_bitmap_file( const char* filepath, int x, int y );
+const uint8_t* jl_oled_get_framebuffer( int* width, int* height, int* buffer_size );
+int jl_oled_set_framebuffer( const uint8_t* data, size_t len );
+void jl_oled_get_framebuffer_size( int* width, int* height, int* buffer_bytes );
+int jl_oled_set_pixel( int x, int y, int color );
+int jl_oled_get_pixel( int x, int y );
 void jl_arduino_reset( void );
 void jl_probe_tap( int node );
 int jl_probe_read_blocking( void );
@@ -3087,18 +3100,24 @@ static mp_obj_t jl_oled_print_func( size_t n_args, const mp_obj_t* args ) {
         text = "???"; // This is a fallback if we can't convert
     }
 
-    int size = ( n_args > 1 ) ? mp_obj_get_int( args[ 1 ] ) : 2; // Default size=2
+    // If size argument provided, use it; otherwise use -1 to signal "use default"
+    int size = ( n_args > 1 ) ? mp_obj_get_int( args[ 1 ] ) : -1;
 
     jl_oled_print( text, size );
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_print_obj, 1, 2, jl_oled_print_func );
 
-static mp_obj_t jl_oled_clear_func( void ) {
-    jl_oled_clear( );
+static mp_obj_t jl_oled_clear_func( size_t n_args, const mp_obj_t* args ) {
+    // Default show=True if not provided
+    int show = 1;
+    if ( n_args >= 1 ) {
+        show = mp_obj_is_true( args[ 0 ] ) ? 1 : 0;
+    }
+    jl_oled_clear( show );
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_clear_obj, jl_oled_clear_func );
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_clear_obj, 0, 1, jl_oled_clear_func );
 
 static mp_obj_t jl_oled_show_func( void ) {
     jl_oled_show( );
@@ -3117,6 +3136,166 @@ static mp_obj_t jl_oled_disconnect_func( void ) {
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_disconnect_obj, jl_oled_disconnect_func );
+
+// OLED Text Size Control
+static mp_obj_t jl_oled_set_text_size_func( mp_obj_t size_obj ) {
+    int size = mp_obj_get_int( size_obj );
+    int result = jl_oled_set_text_size( size );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_set_text_size_obj, jl_oled_set_text_size_func );
+
+static mp_obj_t jl_oled_get_text_size_func( void ) {
+    return mp_obj_new_int( jl_oled_get_text_size( ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_get_text_size_obj, jl_oled_get_text_size_func );
+
+// OLED Print Redirection
+static mp_obj_t jl_oled_copy_print_func( mp_obj_t enable_obj ) {
+    int enable = mp_obj_is_true( enable_obj ) ? 1 : 0;
+    jl_oled_copy_print( enable );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_copy_print_obj, jl_oled_copy_print_func );
+
+// OLED Font System
+static mp_obj_t jl_oled_get_fonts_func( void ) {
+    int count = 0;
+    const char* fonts = jl_oled_get_fonts( &count );
+    
+    // Parse comma-separated string into list
+    mp_obj_t font_list = mp_obj_new_list( 0, NULL );
+    
+    const char* start = fonts;
+    const char* end = fonts;
+    
+    while ( *end != '\0' ) {
+        if ( *end == ',' ) {
+            // Extract font name
+            size_t len = end - start;
+            mp_obj_t font_name = mp_obj_new_str( start, len );
+            mp_obj_list_append( font_list, font_name );
+            start = end + 1;
+        }
+        end++;
+    }
+    
+    // Add last font name
+    if ( start < end ) {
+        size_t len = end - start;
+        mp_obj_t font_name = mp_obj_new_str( start, len );
+        mp_obj_list_append( font_list, font_name );
+    }
+    
+    return font_list;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_get_fonts_obj, jl_oled_get_fonts_func );
+
+static mp_obj_t jl_oled_set_font_func( mp_obj_t font_obj ) {
+    const char* font_name = mp_obj_str_get_str( font_obj );
+    int result = jl_oled_set_font( font_name );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_set_font_obj, jl_oled_set_font_func );
+
+static mp_obj_t jl_oled_get_current_font_func( void ) {
+    const char* font_name = jl_oled_get_current_font( );
+    return mp_obj_new_str( font_name, strlen( font_name ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_get_current_font_obj, jl_oled_get_current_font_func );
+
+// OLED Bitmap Functions
+static mp_obj_t jl_oled_load_bitmap_func( mp_obj_t filepath_obj ) {
+    const char* filepath = mp_obj_str_get_str( filepath_obj );
+    int result = jl_oled_load_bitmap( filepath );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_load_bitmap_obj, jl_oled_load_bitmap_func );
+
+static mp_obj_t jl_oled_display_bitmap_func( size_t n_args, const mp_obj_t* args ) {
+    int x = mp_obj_get_int( args[ 0 ] );
+    int y = mp_obj_get_int( args[ 1 ] );
+    int width = mp_obj_get_int( args[ 2 ] );
+    int height = mp_obj_get_int( args[ 3 ] );
+    
+    const uint8_t* data = NULL;
+    size_t data_len = 0;
+    
+    if ( n_args >= 5 && args[ 4 ] != mp_const_none ) {
+        mp_buffer_info_t bufinfo;
+        mp_get_buffer_raise( args[ 4 ], &bufinfo, MP_BUFFER_READ );
+        data = (const uint8_t*)bufinfo.buf;
+        data_len = bufinfo.len;
+    }
+    
+    int result = jl_oled_display_bitmap( x, y, width, height, data, data_len );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_display_bitmap_obj, 4, 5, jl_oled_display_bitmap_func );
+
+static mp_obj_t jl_oled_show_bitmap_file_func( size_t n_args, const mp_obj_t* args ) {
+    const char* filepath = mp_obj_str_get_str( args[ 0 ] );
+    int x = mp_obj_get_int( args[ 1 ] );
+    int y = mp_obj_get_int( args[ 2 ] );
+    
+    int result = jl_oled_show_bitmap_file( filepath, x, y );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_show_bitmap_file_obj, 3, 3, jl_oled_show_bitmap_file_func );
+
+// OLED Framebuffer Access
+static mp_obj_t jl_oled_get_framebuffer_func( void ) {
+    int width, height, buffer_size;
+    const uint8_t* buffer = jl_oled_get_framebuffer( &width, &height, &buffer_size );
+    
+    if ( buffer == NULL ) {
+        return mp_const_none;
+    }
+    
+    return mp_obj_new_bytes( buffer, buffer_size );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_get_framebuffer_obj, jl_oled_get_framebuffer_func );
+
+static mp_obj_t jl_oled_set_framebuffer_func( mp_obj_t data_obj ) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise( data_obj, &bufinfo, MP_BUFFER_READ );
+    
+    int result = jl_oled_set_framebuffer( (const uint8_t*)bufinfo.buf, bufinfo.len );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_set_framebuffer_obj, jl_oled_set_framebuffer_func );
+
+static mp_obj_t jl_oled_get_framebuffer_size_func( void ) {
+    int width, height, buffer_bytes;
+    jl_oled_get_framebuffer_size( &width, &height, &buffer_bytes );
+    
+    mp_obj_t tuple[ 3 ];
+    tuple[ 0 ] = mp_obj_new_int( width );
+    tuple[ 1 ] = mp_obj_new_int( height );
+    tuple[ 2 ] = mp_obj_new_int( buffer_bytes );
+    
+    return mp_obj_new_tuple( 3, tuple );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_get_framebuffer_size_obj, jl_oled_get_framebuffer_size_func );
+
+static mp_obj_t jl_oled_set_pixel_func( size_t n_args, const mp_obj_t* args ) {
+    int x = mp_obj_get_int( args[ 0 ] );
+    int y = mp_obj_get_int( args[ 1 ] );
+    int color = mp_obj_get_int( args[ 2 ] );
+    
+    int result = jl_oled_set_pixel( x, y, color );
+    return mp_obj_new_bool( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_set_pixel_obj, 3, 3, jl_oled_set_pixel_func );
+
+static mp_obj_t jl_oled_get_pixel_func( size_t n_args, const mp_obj_t* args ) {
+    int x = mp_obj_get_int( args[ 0 ] );
+    int y = mp_obj_get_int( args[ 1 ] );
+    
+    int result = jl_oled_get_pixel( x, y );
+    return mp_obj_new_int( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_get_pixel_obj, 2, 2, jl_oled_get_pixel_func );
 
 // Arduino Functions
 static mp_obj_t jl_arduino_reset_func( void ) {
@@ -5823,6 +6002,20 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_oled_show ), MP_ROM_PTR( &jl_oled_show_obj ) },
     { MP_ROM_QSTR( MP_QSTR_oled_connect ), MP_ROM_PTR( &jl_oled_connect_obj ) },
     { MP_ROM_QSTR( MP_QSTR_oled_disconnect ), MP_ROM_PTR( &jl_oled_disconnect_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_set_text_size ), MP_ROM_PTR( &jl_oled_set_text_size_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_get_text_size ), MP_ROM_PTR( &jl_oled_get_text_size_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_copy_print ), MP_ROM_PTR( &jl_oled_copy_print_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_get_fonts ), MP_ROM_PTR( &jl_oled_get_fonts_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_set_font ), MP_ROM_PTR( &jl_oled_set_font_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_get_current_font ), MP_ROM_PTR( &jl_oled_get_current_font_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_load_bitmap ), MP_ROM_PTR( &jl_oled_load_bitmap_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_display_bitmap ), MP_ROM_PTR( &jl_oled_display_bitmap_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_show_bitmap_file ), MP_ROM_PTR( &jl_oled_show_bitmap_file_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_get_framebuffer ), MP_ROM_PTR( &jl_oled_get_framebuffer_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_set_framebuffer ), MP_ROM_PTR( &jl_oled_set_framebuffer_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_get_framebuffer_size ), MP_ROM_PTR( &jl_oled_get_framebuffer_size_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_set_pixel ), MP_ROM_PTR( &jl_oled_set_pixel_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_get_pixel ), MP_ROM_PTR( &jl_oled_get_pixel_obj ) },
 
     // Misc functions
     { MP_ROM_QSTR( MP_QSTR_arduino_reset ), MP_ROM_PTR( &jl_arduino_reset_obj ) },

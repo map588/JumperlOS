@@ -192,6 +192,17 @@ void probeCalibApp( void ) {
     Serial.println( "Hold the clickwheel when you're done\n\n\r" );
     cycleTerminalColor( );
 
+oled.showMultiLineSmallText("Tap rows with the probe and rotate the clickweel until they're lighting up the correct row", true, true);
+// oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
+// oled.showMultiLineSmallText("Hold the clickwheel when you're done\n\r", false, true);
+oled.flushFramebuffer( );
+
+
+// OLEDOut.println("Test 1: PASS");
+// OLEDOut.println("Test 2: PASS");
+// OLEDOut.println("All tests OK!");
+
+
     bool done = false;
 
     b.clear( );

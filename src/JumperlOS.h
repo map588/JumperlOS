@@ -256,7 +256,7 @@ public:
     uint8_t getCoreId() const { return coreId; }
     
 private:
-    static const uint8_t MAX_SERVICES = 16;
+    static const uint8_t MAX_SERVICES = 24;  // Increased from 16 to accommodate ConfigSaveService and future services
     
     struct ServiceEntry {
         Service* service;

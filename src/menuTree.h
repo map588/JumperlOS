@@ -126,8 +126,8 @@ String menuLines[] = {
 
 
        "Display\31Options",
-       "-$Demo$",
-       "--*On**Off*",
+      //  "-$Demo$",
+      //  "--*On**Off*",
        "-$Colors$",
        "--*Rainbow**Shuffle*",
        "-$Jumpers$",

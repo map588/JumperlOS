@@ -17,9 +17,13 @@
 #define INCLUDE_INTERACTION_DEMO
 #define INCLUDE_LED_BRIGHTNESS_CONTROL
 #define INCLUDE_NODE_CONNECTIONS
+#define INCLUDE_OLED_DEMO
+#define INCLUDE_OSCILLOSCOPE
+#define INCLUDE_OUTPUT_TEST
 #define INCLUDE_SIMPLE_FAKE_GPIO_TEST
 #define INCLUDE_STYLOPHONE
 #define INCLUDE_TEST_NEOPIXEL
+#define INCLUDE_TEST_OLED_FEATURES
 #define INCLUDE_UART_BASICS
 #define INCLUDE_UART_LOOPBACK
 #define INCLUDE_VOLTAGE_MONITOR
@@ -47,9 +51,13 @@
 #undef INCLUDE_INTERACTION_DEMO
 #undef INCLUDE_LED_BRIGHTNESS_CONTROL
 #undef INCLUDE_NODE_CONNECTIONS
+#undef INCLUDE_OLED_DEMO
+#undef INCLUDE_OSCILLOSCOPE
+#undef INCLUDE_OUTPUT_TEST
 #undef INCLUDE_SIMPLE_FAKE_GPIO_TEST
 #undef INCLUDE_STYLOPHONE
 #undef INCLUDE_TEST_NEOPIXEL
+#undef INCLUDE_TEST_OLED_FEATURES
 #undef INCLUDE_UART_BASICS
 #undef INCLUDE_UART_LOOPBACK
 #undef INCLUDE_VOLTAGE_MONITOR
@@ -978,14 +986,14 @@ last_node_2 = 0
 
 bridgeSpread = 4
 
-sleepTime = 0.01
+sleepTime_us = 1000 # controls how fast things move
 
 hue = 230
 
-j.clickwheel_reset_position()
-last_pos = j.clickwheel_get_position()
-switchPosition = j.get_switch_position()
+j.clickwheel_reset_position() # the clickwheel is read by PIO and keeps an internal count, let's reset it to 0
+last_pos = j.clickwheel_get_position() # should be 0 unless you're really fast
 
+switchPosition = j.get_switch_position() 
 
 while True:
     
@@ -1002,7 +1010,7 @@ while True:
     if (tappedNode != j.NO_PAD):
         # print(tappedNode)
         if (tappedNode <= 60):
-            node_1 = int(tappedNode)
+            node_1 = int(tappedNode) # read_probe returns a PAD type so let's convert it to int so it can become a NODE
             node_2 = int(tappedNode + bridgeSpread)
 
 # Encoder stuff
@@ -1043,24 +1051,28 @@ while True:
         # print("node 2 =" + str(node_2))
 
         j.disconnect(last_node_1, last_node_2)
+        
+        j.pause_core2(True) # we'll pause core 2 so the color of this net is set atomically
+        
         j.connect(node_1, node_2)
-
+        
     last_node_1 = node_1
     last_node_2 = node_2
 
 # Net info stuff
     lastNet = j.get_num_nets() - 1
     j.set_net_color_hsv(lastNet,hue)
-    
+    j.pause_core2(False) # unpause so the LEDs can update with the new net color (if the nets are unchanged this does nothing)
+
 # Probe button stuff 
-    if (sleepTime < 0.05):
+    if (sleepTime_us < 50000):
         j.force_service("ProbeButton") # this is needed if there's not enough time in the time.sleep to check the button
 
     button = j.check_button()
     
     if (button == j.BUTTON_CONNECT):
         # print("CONNECT")
-        hue += 8
+        hue += 3
         if (hue > 255):
             hue = 0
         # print(hue)
@@ -1072,7 +1084,7 @@ while True:
         # print (hue)
 
     
-    time.sleep(sleepTime)
+    time.sleep_us(sleepTime_us)
 
 )";
 #endif
@@ -1175,6 +1187,858 @@ print("Node Connections complete!")
 j.nodes_clear()
 
 )";
+#endif
+
+#ifdef INCLUDE_OLED_DEMO
+const char* OLED_DEMO_PY = R"(from jumperless import oled_connect, oled_print
+import time
+
+oled_connect()
+
+word = "JUMPERLESS"
+text = ""
+
+for ch in word:
+    text += ch
+    
+    oled_print(text + "")
+    
+    time.sleep(0.25)
+
+
+oled_print(text)
+)";
+#endif
+
+#ifdef INCLUDE_OSCILLOSCOPE
+const char* OSCILLOSCOPE_PY = R"===("""
+Jumperless Oscilloscope Demo
+=============================
+
+Controls:
+- Probe Touch: Connect ADC0 to touched breadboard node (1-60)
+- Clickwheel Rotate: Adjust current setting
+- Clickwheel Click: Cycle modes (TIME → V/DIV → LEVEL → TRIG → AUTO)
+- Probe Button (front): Reset to defaults
+- Probe Button (back): Exit
+
+Display:
+- Grid with 8x8 divisions
+- Status bar: [T] V L M A  value  voltage  @node
+- Adjustment overlay (appears for 1 second when changing settings)
+- Trigger level indicator (arrow on right, full line when adjusting)
+
+Modes:
+1. TIME - Timebase adjustment (50us to 1000ms)
+2. V/DIV - Volts per division (0.1V to 5V, disables auto-range)
+3. LEVEL - Trigger level (0.0V to 3.3V)
+4. TRIG - Trigger mode (FREE/RISE/FALL)
+5. AUTO - Auto-ranging toggle (ON/OFF)
+
+API Demonstrations:
+- probe_read(False) - Non-blocking probe touch detection
+- probe_button(False, True) - Non-blocking button with consume
+- clickwheel_get_direction(True) - Rotary encoder with one-shot detection
+- clickwheel_get_button() - Button state detection
+- connect()/disconnect() - Dynamic node routing
+- adc_get() - High-speed analog input sampling
+- oled_set_pixel()/oled_show() - Efficient display with single update
+- time.ticks_ms()/ticks_diff() - Precise timing for overlays
+
+"""
+
+import jumperless as j
+import time
+
+# ============================================================================
+# CONFIGURATION AND STATE
+# ============================================================================
+
+# Display parameters
+WIDTH, HEIGHT, _ = j.oled_get_framebuffer_size()
+PLOT_HEIGHT = HEIGHT - 8  # Leave room for status bar
+PLOT_WIDTH = WIDTH
+
+# Oscilloscope settings
+class OscopeState:
+    def __init__(self):
+        # Sampling settings
+        self.timebase_ms = 20.0      # Time per screen in milliseconds
+        self.v_per_div = 1.0         # Volts per division (8 divisions vertical)
+        self.auto_range = True       # Auto-adjust v_per_div to fit signal
+        
+        # Trigger settings
+        self.trigger_mode = 0        # 0=Free-run, 1=Rising, 2=Falling
+        self.trigger_level = 1.65    # Trigger voltage level
+        self.trigger_timeout_ms = 50 # Max wait for trigger (reduced for speed)
+        
+        # Display settings
+        self.current_mode = 0        # 0=Timebase, 1=V/div, 2=Trig Level, 3=Trig Mode, 4=Auto
+        self.mode_names = ["TIME", "V/DIV", "LEVEL", "TRIG", "AUTO"]
+        self.trigger_names = ["FREE", "RISE", "FALL"]
+        
+        # Overlay settings (for showing adjustments)
+        self.show_overlay = False    # Whether to show adjustment overlay
+        self.overlay_timer = 0       # Timestamp when overlay was triggered
+        self.overlay_duration_ms = 3000  # How long to show overlay
+        
+        # Statistics printing
+        self.last_stats_print = 0    # Last time we printed stats
+        self.stats_interval_ms = 25000  # Print stats every 2 seconds
+        
+        # Connection state
+        self.connected_node = 11     # Default connection (row 11)
+        self.last_node = None        # Track connection changes
+        
+        # Sample buffer
+        self.samples = [0.0] * PLOT_WIDTH
+        self.min_v = 0.0
+        self.max_v = 3.3
+        self.avg_v = 1.65
+        
+        # Pre-calculated values for speed
+        self.center_y = PLOT_HEIGHT // 2
+
+# Initialize state
+state = OscopeState()
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def init_connections():
+    """Initialize ADC connection to default node."""
+    print(f"Connecting ADC0 to node {state.connected_node}")
+    j.connect(j.ADC0, state.connected_node)
+
+def voltage_to_pixel(voltage):
+    """Convert voltage to Y pixel coordinate (inverted for display).
+    Returns pixel position, or -1 if off-screen (for clipping optimization)."""
+    # Center is at PLOT_HEIGHT/2, each division is PLOT_HEIGHT/8
+    pixels_per_volt = PLOT_HEIGHT / (state.v_per_div * 8)
+    center_voltage = (state.max_v + state.min_v) / 2
+    y = int(state.center_y - (voltage - center_voltage) * pixels_per_volt)
+    
+    # Return -1 if completely off-screen (for clipping detection)
+    if y < -2 or y >= PLOT_HEIGHT + 2:
+        return -1
+    
+    # Clamp to valid range
+    return max(0, min(PLOT_HEIGHT - 1, y))
+
+def draw_grid():
+    """Draw oscilloscope grid with center line and divisions (optimized)."""
+    center_y = state.center_y
+    
+    # Vertical divisions (every 16 pixels for 128 width = 8 divisions)
+    # Draw dots at intersections for speed
+    for x in range(0, PLOT_WIDTH, 16):
+        for y in range(0, PLOT_HEIGHT, 3):
+            j.oled_set_pixel(x, y, 1)
+    
+    # Horizontal center line (dotted) - most important reference
+    for x in range(0, PLOT_WIDTH, 4):
+        j.oled_set_pixel(x, center_y, 1)
+    
+    # Horizontal quarter divisions
+    y_quarter = PLOT_HEIGHT // 4
+    y_3quarter = 3 * PLOT_HEIGHT // 4
+    for x in range(0, PLOT_WIDTH, 4):
+        j.oled_set_pixel(x, y_quarter, 1)
+        j.oled_set_pixel(x, y_3quarter, 1)
+
+def draw_char(char, x, y):
+    """Draw a simple 3x5 character using basic patterns."""
+    # Mini font patterns (3x5 pixels) - implementing digits and letters we need
+    patterns = {
+        'A': [[1,1,1], [1,0,1], [1,1,1], [1,0,1], [1,0,1]],
+        'U': [[1,0,1], [1,0,1], [1,0,1], [1,0,1], [1,1,1]],
+        'T': [[1,1,1], [0,1,0], [0,1,0], [0,1,0], [0,1,0]],
+        'V': [[1,0,1], [1,0,1], [1,0,1], [0,1,0], [0,1,0]],
+        'L': [[1,0,0], [1,0,0], [1,0,0], [1,0,0], [1,1,1]],
+        'M': [[1,0,1], [1,1,1], [1,0,1], [1,0,1], [1,0,1]],
+        'F': [[1,1,1], [1,0,0], [1,1,0], [1,0,0], [1,0,0]],
+        'R': [[1,1,0], [1,0,1], [1,1,0], [1,0,1], [1,0,1]],
+        'O': [[1,1,1], [1,0,1], [1,0,1], [1,0,1], [1,1,1]],
+        'N': [[1,0,1], [1,1,1], [1,1,1], [1,0,1], [1,0,1]],
+        '0': [[1,1,1], [1,0,1], [1,0,1], [1,0,1], [1,1,1]],
+        '1': [[0,1,0], [1,1,0], [0,1,0], [0,1,0], [1,1,1]],
+        '2': [[1,1,1], [0,0,1], [1,1,1], [1,0,0], [1,1,1]],
+        '3': [[1,1,1], [0,0,1], [1,1,1], [0,0,1], [1,1,1]],
+        '4': [[1,0,1], [1,0,1], [1,1,1], [0,0,1], [0,0,1]],
+        '5': [[1,1,1], [1,0,0], [1,1,1], [0,0,1], [1,1,1]],
+        '6': [[1,1,1], [1,0,0], [1,1,1], [1,0,1], [1,1,1]],
+        '7': [[1,1,1], [0,0,1], [0,0,1], [0,0,1], [0,0,1]],
+        '8': [[1,1,1], [1,0,1], [1,1,1], [1,0,1], [1,1,1]],
+        '9': [[1,1,1], [1,0,1], [1,1,1], [0,0,1], [1,1,1]],
+        '.': [[0,0,0], [0,0,0], [0,0,0], [0,0,0], [0,1,0]],
+        ':': [[0,0,0], [0,1,0], [0,0,0], [0,1,0], [0,0,0]],
+        ' ': [[0,0,0], [0,0,0], [0,0,0], [0,0,0], [0,0,0]],
+        '-': [[0,0,0], [0,0,0], [1,1,1], [0,0,0], [0,0,0]],
+        '@': [[1,1,1], [1,0,1], [1,1,1], [1,1,1], [1,1,1]],
+        '[': [[0,1,1], [0,1,0], [0,1,0], [0,1,0], [0,1,1]],
+        ']': [[1,1,0], [0,1,0], [0,1,0], [0,1,0], [1,1,0]],
+
+        
+    }
+    
+    pattern = patterns.get(char.upper(), patterns[' '])
+    for row in range(5):
+        for col in range(3):
+            if pattern[row][col]:
+                j.oled_set_pixel(x + col, y + row, 1)
+
+def draw_text(text, x, y):
+    """Draw text string using mini font."""
+    x_offset = 0
+    for char in text:
+        draw_char(char, x + x_offset, y)
+        x_offset += 4  # 3 pixels + 1 space
+
+def draw_status_bar():
+    """Draw status bar at bottom with current settings."""
+    y_start = PLOT_HEIGHT
+    
+    # Clear status area
+    for y in range(y_start, HEIGHT):
+        for x in range(WIDTH):
+            j.oled_set_pixel(x, y, 0)
+    
+    # Draw separator line
+    for x in range(WIDTH):
+        j.oled_set_pixel(x, y_start, 1)
+    
+    text_y = y_start + 2
+    
+    # Show mode indicators with highlighting
+    # Format: [T] V L M A  val  1.65V @11
+    modes = ["T", "V", "L", "M", "A"]
+    for i, mode_char in enumerate(modes):
+        x_pos = i * 11  # Tighter spacing for 5 modes
+        
+        # Highlight current mode with brackets
+        if i == state.current_mode:
+            draw_char('[', x_pos, text_y)
+            draw_char(mode_char, x_pos + 4, text_y)
+            draw_char(']', x_pos + 8, text_y)
+        else:
+            draw_char(mode_char, x_pos + 4, text_y)
+    
+    # Show current value for active mode
+    value_text = ""
+    if state.current_mode == 0:  # Timebase
+        if state.timebase_ms >= 1:
+            value_text = f"{int(state.timebase_ms)}m"
+        else:
+            value_text = f"{int(state.timebase_ms * 1000)}u"
+    elif state.current_mode == 1:  # V/div
+        auto_indicator = "A" if state.auto_range else ""
+        value_text = f"{state.v_per_div:.1f}{auto_indicator}"
+    elif state.current_mode == 2:  # Trigger level
+        value_text = f"{state.trigger_level:.1f}"
+    elif state.current_mode == 3:  # Trigger mode
+        value_text = state.trigger_names[state.trigger_mode][:2]
+    elif state.current_mode == 4:  # Auto-range
+        value_text = "ON" if state.auto_range else "OF"
+    
+    # Draw value next to modes
+    draw_text(value_text, 68, text_y)
+    
+    # Show voltage reading
+    v_text = f"{state.avg_v:.1f}V"
+    draw_text(v_text, 92, text_y)
+    
+    # Show node number
+    node_text = f"@{state.connected_node}"
+    draw_text(node_text, 112, text_y)
+
+def apply_autoranging():
+    """Automatically adjust v_per_div to fit signal on screen."""
+    if not state.auto_range:
+        return
+    
+    # Calculate signal range (with 10% margin)
+    signal_range = (state.max_v - state.min_v) * 1.1
+    
+    # Avoid division by zero
+    if signal_range < 0.01:
+        signal_range = 0.5
+    
+    # Calculate ideal v_per_div (8 divisions vertically)
+    ideal_v_per_div = signal_range / 8
+    
+    # Snap to standard values
+    v_steps = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+    for v in v_steps:
+        if ideal_v_per_div <= v:
+            state.v_per_div = v
+            return
+    
+    # Default to largest
+    state.v_per_div = 5.0
+
+def capture_waveform():
+    """Capture waveform data with triggering support (optimized)."""
+    delay_us = int(state.timebase_ms * 1000 / PLOT_WIDTH)
+    
+    # Fast trigger detection if not in free-run mode
+    if state.trigger_mode != 0:
+        start_time = time.ticks_ms()
+        last_voltage = j.adc_get(0)
+        trig_level = state.trigger_level
+        
+        while time.ticks_diff(time.ticks_ms(), start_time) < state.trigger_timeout_ms:
+            voltage = j.adc_get(0)
+            
+            # Optimized trigger check (avoid branching)
+            if state.trigger_mode == 1:  # Rising edge
+                if last_voltage < trig_level <= voltage:
+                    break
+            else:  # Falling edge (mode 2)
+                if last_voltage > trig_level >= voltage:
+                    break
+            
+            last_voltage = voltage
+            time.sleep_us(50)  # Reduced from 100us for faster trigger response
+    
+    # Fast sample capture with statistics tracking
+    min_v = 3.3
+    max_v = 0.0
+    sum_v = 0.0
+    samples = state.samples  # Local reference for speed
+    
+    # Optimized sampling loop
+    if delay_us > 10:  # Only delay if necessary
+        for i in range(PLOT_WIDTH):
+            voltage = j.adc_get(0)
+            samples[i] = voltage
+            
+            # Track statistics (branchless min/max)
+            if voltage < min_v:
+                min_v = voltage
+            if voltage > max_v:
+                max_v = voltage
+            sum_v += voltage
+            
+            time.sleep_us(delay_us)
+    else:
+        # No delay - maximum speed sampling
+        for i in range(PLOT_WIDTH):
+            voltage = j.adc_get(0)
+            samples[i] = voltage
+            if voltage < min_v:
+                min_v = voltage
+            if voltage > max_v:
+                max_v = voltage
+            sum_v += voltage
+    
+    # Update statistics
+    state.min_v = min_v
+    state.max_v = max_v
+    state.avg_v = sum_v / PLOT_WIDTH
+    
+    # Apply autoranging after capture
+    apply_autoranging()
+
+def draw_waveform():
+    """Draw the captured waveform on the display with proper clipping."""
+    for x in range(PLOT_WIDTH - 1):
+        # Convert voltages to pixel coordinates
+        y1 = voltage_to_pixel(state.samples[x])
+        y2 = voltage_to_pixel(state.samples[x + 1])
+        
+        # Skip if both points are off-screen (clipping optimization)
+        if y1 == -1 and y2 == -1:
+            continue
+        
+        # If one point is off-screen, clamp it
+        if y1 == -1:
+            y1 = 0 if state.samples[x] < state.min_v else PLOT_HEIGHT - 1
+        if y2 == -1:
+            y2 = 0 if state.samples[x + 1] < state.min_v else PLOT_HEIGHT - 1
+        
+        # Draw vertical line segment between points (faster than Bresenham for vertical lines)
+        if y1 == y2:
+            # Horizontal segment - single pixel
+            j.oled_set_pixel(x, y1, 1)
+        else:
+            # Vertical segment
+            y_min = min(y1, y2)
+            y_max = max(y1, y2)
+            for y in range(y_min, y_max + 1):
+                j.oled_set_pixel(x, y, 1)
+
+def draw_trigger_indicator():
+    """Draw trigger level indicator on display."""
+    if state.trigger_mode != 0:  # Not free-run
+        y = voltage_to_pixel(state.trigger_level)
+        if 0 <= y < PLOT_HEIGHT:
+            # Draw trigger marker on right edge (dashed line)
+            for x in range(PLOT_WIDTH - 5, PLOT_WIDTH):
+                if x % 2 == 0:
+                    j.oled_set_pixel(x, y, 1)
+            
+            # Draw arrow pointing to trigger level on right edge
+            # Arrow: >
+            j.oled_set_pixel(PLOT_WIDTH - 2, y, 1)
+            if y > 0:
+                j.oled_set_pixel(PLOT_WIDTH - 3, y - 1, 1)
+            if y < PLOT_HEIGHT - 1:
+                j.oled_set_pixel(PLOT_WIDTH - 3, y + 1, 1)
+    
+    # If adjusting trigger level, draw full-width line for reference
+    if state.current_mode == 2 and state.show_overlay:
+        y = voltage_to_pixel(state.trigger_level)
+        if 0 <= y < PLOT_HEIGHT:
+            for x in range(0, PLOT_WIDTH, 2):  # Dashed line across screen
+                j.oled_set_pixel(x, y, 1)
+
+
+def print_statistics():
+    """Periodically print signal statistics to terminal."""
+    now = time.ticks_ms()
+    if time.ticks_diff(now, state.last_stats_print) >= state.stats_interval_ms:
+        state.last_stats_print = now
+        
+        # Calculate signal characteristics
+        peak_to_peak = state.max_v - state.min_v
+        
+        
+        # Print stats with nice formatting
+        print("\r                                                                                       \r", end='')
+        print(f"Signal Stats @Row{state.connected_node}: ", end='')
+        print(f"Avg={state.avg_v:.3f}V  Min={state.min_v:.3f}V  Max={state.max_v:.3f}V  ", end='')
+        print(f"Vpp={peak_to_peak:.3f}V  ", end='')
+        
+
+
+def update_display():
+    """Complete display update - grid, waveform, status."""
+    # Note: oled_clear(False) = don't call show() after clear (prevents flashing)
+    j.oled_clear(False)
+    draw_grid()
+    draw_trigger_indicator()
+    draw_waveform()
+    draw_status_bar()
+    
+    # Show adjustment overlay if active and within duration
+    if state.show_overlay:
+        elapsed = time.ticks_diff(time.ticks_ms(), state.overlay_timer)
+        if elapsed < state.overlay_duration_ms:
+            draw_adjustment_overlay()
+        else:
+            state.show_overlay = False  # Hide overlay after timeout
+    
+    j.oled_show()  # Single update for efficiency
+
+# ============================================================================
+# CONTROL HANDLERS
+# ============================================================================
+
+def handle_probe_touch():
+    """Handle non-blocking probe touch to reconnect ADC."""
+    # Note: Use positional args - MicroPython C modules don't support keyword args
+    pad = j.probe_read(False)  # Non-blocking read (False = blocking=False)
+    
+    if pad != j.NO_PAD:
+        # Check if it's a valid breadboard node (1-60)
+        pad_num = int(pad)
+        if 1 <= pad_num <= 60:
+            # Disconnect from old node and connect to new
+            if state.last_node is not None:
+                j.disconnect(j.ADC0, state.last_node)
+                print(f"\nProbe touched: Row {pad_num} (disconnected from row {state.last_node})")
+            else:
+                print(f"\nProbe touched: Row {pad_num}")
+            
+            state.connected_node = pad_num
+            j.connect(j.ADC0, state.connected_node)
+            state.last_node = state.connected_node
+            
+            print(f"ADC0 -> Row {state.connected_node} (measuring voltage)")
+            time.sleep(0.01)  # Brief delay to show connection
+
+def handle_clickwheel():
+    """Handle clickwheel rotation and button for settings adjustment."""
+    # Check for mode change (button click)
+    button = j.clickwheel_get_button()
+    if button == j.CLICKWHEEL_PRESSED:
+        # Cycle through modes (5 modes now: Time, V/div, Level, Trig, Auto)
+        state.current_mode = (state.current_mode + 1) % 5
+        
+        # Print mode change with description and current value
+        mode_descriptions = {
+            0: "TIME - Adjust timebase (sweep speed)",
+            1: "V/DIV - Adjust volts per division (vertical scale)",
+            2: "LEVEL - Adjust trigger level threshold",
+            3: "TRIG - Select trigger mode (free/rise/fall)",
+            4: "AUTO - Toggle automatic voltage ranging"
+        }
+        print(f"\nMode: {state.mode_names[state.current_mode]} - {mode_descriptions[state.current_mode]}")
+        
+        # Print current value for new mode
+        if state.current_mode == 0:  # Timebase
+            if state.timebase_ms >= 1:
+                print(f"   Current: {state.timebase_ms:.0f}ms/screen")
+            else:
+                print(f"   Current: {state.timebase_ms*1000:.0f}us/screen")
+        elif state.current_mode == 1:  # V/div
+            auto_status = " (Auto-range: ON)" if state.auto_range else ""
+            print(f"   Current: {state.v_per_div:.1f}V/div{auto_status}")
+        elif state.current_mode == 2:  # Trigger level
+            print(f"   Current: {state.trigger_level:.2f}V")
+        elif state.current_mode == 3:  # Trigger mode
+            mode_names = ["Free-run (no trigger)", "Rising edge trigger", "Falling edge trigger"]
+            print(f"   Current: {mode_names[state.trigger_mode]}")
+        elif state.current_mode == 4:  # Auto-range
+            status = "ENABLED" if state.auto_range else "DISABLED"
+            print(f"   Current: {status}")
+        
+        # Show overlay when mode changes
+        state.show_overlay = True
+        state.overlay_timer = time.ticks_ms()
+        
+        time.sleep(0.01)  # Debounce
+    
+    # Check for value adjustment (rotation)
+    # Note: Use positional args (True = consume=True for one-shot detection)
+    direction = j.clickwheel_get_direction(True)
+    
+    if direction == j.CLICKWHEEL_UP:
+        adjust_setting(1)
+    elif direction == j.CLICKWHEEL_DOWN:
+        adjust_setting(-1)
+
+def draw_adjustment_overlay():
+    """Draw a large overlay showing current adjustment."""
+    # Clear center area for overlay
+    for y in range(8, 20):
+        for x in range(20, 108):
+            j.oled_set_pixel(x, y, 0)
+    
+    # Draw border
+    for x in range(20, 108):
+        j.oled_set_pixel(x, 8, 1)
+        j.oled_set_pixel(x, 19, 1)
+    for y in range(8, 20):
+        j.oled_set_pixel(20, y, 1)
+        j.oled_set_pixel(107, y, 1)
+    
+    # Build overlay text based on mode
+    if state.current_mode == 0:  # Timebase
+        if state.timebase_ms >= 1:
+            text = f"TIME: {int(state.timebase_ms)}ms"
+        else:
+            text = f"TIME: {int(state.timebase_ms * 1000)}us"
+    elif state.current_mode == 1:  # V/div
+        text = f"V/DIV: {state.v_per_div:.1f}V"
+    elif state.current_mode == 2:  # Trigger level
+        text = f"LEVEL: {state.trigger_level:.2f}V"
+    elif state.current_mode == 3:  # Trigger mode
+        text = f"TRIG: {state.trigger_names[state.trigger_mode]}"
+    elif state.current_mode == 4:  # Auto-range
+        text = f"AUTO: {'ON' if state.auto_range else 'OFF'}"
+    
+    # Draw text centered in overlay (starting at x=24, y=11)
+    draw_text(text, 24, 11)
+
+def adjust_setting(delta):
+    """Adjust current setting based on active mode."""
+    if state.current_mode == 0:  # Timebase
+        # Adjust timebase (exponential steps)
+        time_steps = [0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+        try:
+            current_idx = time_steps.index(state.timebase_ms)
+        except ValueError:
+            current_idx = 4  # Default to 2ms
+        
+        old_value = state.timebase_ms
+        current_idx = max(0, min(len(time_steps) - 1, current_idx + delta))
+        state.timebase_ms = time_steps[current_idx]
+        
+        # Print to terminal with clear update
+        print("\r" + " "*80 + "\r", end='')  # Clear line
+        if state.timebase_ms >= 1:
+            print(f"Timebase: {state.timebase_ms:.0f}ms/screen", end='')
+        else:
+            print(f"Timebase: {state.timebase_ms*1000:.0f}us/screen", end='')
+        
+        # Show direction indicator
+        if state.timebase_ms > old_value:
+            print("  [SLOWER]", end='')
+        elif state.timebase_ms < old_value:
+            print("  [FASTER]", end='')
+        
+    elif state.current_mode == 1:  # V/div
+        # Disable auto-range when manually adjusting
+        was_auto = state.auto_range
+        state.auto_range = False
+        
+        # Adjust voltage per division
+        v_steps = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
+        try:
+            current_idx = v_steps.index(state.v_per_div)
+        except ValueError:
+            current_idx = 3  # Default to 1.0V
+        
+        old_value = state.v_per_div
+        current_idx = max(0, min(len(v_steps) - 1, current_idx + delta))
+        state.v_per_div = v_steps[current_idx]
+        
+        # Print to terminal with clear update
+        print("\r" + " "*80 + "\r", end='')  # Clear line
+        print(f"V/div: {state.v_per_div:.1f}V/div", end='')
+        
+        # Show direction and auto-range status
+        if state.v_per_div > old_value:
+            print("  [ZOOM OUT]", end='')
+        elif state.v_per_div < old_value:
+            print("  [ZOOM IN]", end='')
+        
+        if was_auto:
+            print("  (auto-range disabled)", end='')
+        
+    elif state.current_mode == 2:  # Trigger level
+        # Adjust trigger level in 0.1V steps
+        old_value = state.trigger_level
+        state.trigger_level += delta * 0.1
+        state.trigger_level = max(0.0, min(3.3, state.trigger_level))
+        
+        # Print to terminal with clear update
+        print("\r" + " "*80 + "\r", end='')  # Clear line
+        print(f"Trigger Level: {state.trigger_level:.2f}V", end='')
+        
+        # Show direction and percentage
+        percentage = (state.trigger_level / 3.3) * 100
+        print(f"  ({percentage:.0f}% of 3.3V)", end='')
+        
+        if state.trigger_level > old_value:
+            print("  [UP]", end='')
+        elif state.trigger_level < old_value:
+            print("  [DOWN]", end='')
+        
+    elif state.current_mode == 3:  # Trigger mode
+        # Cycle through trigger modes
+        old_mode = state.trigger_mode
+        state.trigger_mode = (state.trigger_mode + delta) % 3
+        
+        # Print to terminal with descriptive names and clear update
+        print("\r" + " "*80 + "\r", end='')  # Clear line
+        mode_descriptions = ["Free-run (no trigger)", "Rising edge trigger", "Falling edge trigger"]
+        mode_symbols = ["FREE", "RISE ↑", "FALL ↓"]
+        print(f"Trigger Mode: {mode_descriptions[state.trigger_mode]}", end='')
+        
+        if old_mode != state.trigger_mode:
+            print(f"  [{mode_symbols[state.trigger_mode]}]", end='')
+        
+    elif state.current_mode == 4:  # Auto-range
+        # Toggle auto-range on/off
+        state.auto_range = not state.auto_range
+        
+        # Print to terminal with clear update
+        print("\r" + " "*80 + "\r", end='')  # Clear line
+        status = "ENABLED" if state.auto_range else "DISABLED"
+        print(f"Auto-range: {status}", end='')
+        
+        # Show what it does
+        if state.auto_range:
+            print("  (V/div will auto-adjust to fit signal)", end='')
+        else:
+            print(f"  (V/div locked at {state.v_per_div:.1f}V/div)", end='')
+    
+    # Mark that we need to show the overlay
+    state.show_overlay = True
+    state.overlay_timer = time.ticks_ms()
+
+def handle_probe_button():
+    """Handle probe button for reset and exit."""
+    # Note: Use positional args (False=non-blocking, True=consume)
+    button = j.probe_button(False, True)
+    
+    if button == j.CONNECT_BUTTON:
+        # Reset to defaults
+        print("\n" + "="*50)
+        print("RESET TO DEFAULTS")
+        print("="*50)
+        state.timebase_ms = 20.0
+        state.v_per_div = 1.0
+        state.trigger_level = 1.65
+        state.trigger_mode = 0
+        state.auto_range = True
+        state.current_mode = 0
+        print("   Timebase: 20ms/screen")
+        print("   V/div: 1.0V/div")
+        print("   Trigger Level: 1.65V")
+        print("   Trigger Mode: Free-run")
+        print("   Auto-range: ENABLED")
+        print("   Mode: TIME")
+        time.sleep(0.3)
+        return False
+    
+    elif button == j.REMOVE_BUTTON:
+        # Exit oscilloscope
+        print("\n" + "="*50)
+        print("Exiting oscilloscope")
+        print("="*50)
+        return True
+    
+    return False
+
+# ============================================================================
+# MAIN OSCILLOSCOPE LOOP
+# ============================================================================
+
+def main():
+    """Main oscilloscope loop."""
+    print("\n" + "="*60)
+    print("JUMPERLESS OSCILLOSCOPE - Full API Demo")
+    print("="*60)
+    
+    print("\nCONTROLS:")
+    print("  Touch probe -> Connect ADC0 to breadboard row (1-60)")
+    print("  Rotate wheel -> Adjust current setting")
+    print("  Click wheel -> Cycle modes (TIME->V/DIV->LEVEL->TRIG->AUTO)")
+    print("  Front button -> Reset to defaults")
+    print("  Rear button -> Exit")
+    
+    print("\nMODES:")
+    print("  TIME  - Timebase (50us to 1000ms per screen)")
+    print("  V/DIV - Volts per division (0.1V to 5V)")
+    print("  LEVEL - Trigger level (0V to 3.3V)")
+    print("  TRIG  - Trigger mode (FREE/RISE/FALL)")
+    print("  AUTO  - Auto-ranging toggle (ON/OFF)")
+    
+    print("\nCURRENT SETTINGS:")
+    print(f"  Timebase: {state.timebase_ms}ms/screen")
+    print(f"  V/div: {state.v_per_div}V/div")
+    print(f"  Trigger: {state.trigger_names[state.trigger_mode]} @ {state.trigger_level}V")
+    print(f"  Auto-range: {'ENABLED' if state.auto_range else 'DISABLED'}")
+    print(f"  Connected: ADC0 -> Row {state.connected_node}")
+    
+    print("\nStarting oscilloscope...")
+    print("-"*60 + "\n")
+    
+    # Initialize
+    j.oled_connect()
+    init_connections()
+    state.last_node = state.connected_node
+    state.last_stats_print = time.ticks_ms()  # Initialize stats timer
+    
+    # Main loop
+    try:
+        while True:
+            # Handle user inputs (non-blocking)
+            handle_probe_touch()      # Check for probe touch
+            handle_clickwheel()        # Check for clickwheel input
+            if handle_probe_button():  # Check for exit
+                break
+            
+            # Capture and display waveform
+            capture_waveform()         # Sample ADC with triggering
+            update_display()           # Draw to OLED efficiently
+            
+            # Print statistics periodically
+            print_statistics()         # Show signal measurements in terminal
+            
+            # Small delay to prevent overwhelming the system
+            time.sleep_us(10)
+    
+    finally:
+        # Cleanup 
+        j.oled_clear()
+        j.oled_print("Oscilloscope\nExited", 1)
+        print("\n\nCleanup complete")
+
+# ============================================================================
+# RUN
+# ============================================================================
+
+if __name__ == "__main__":
+    main())===";
+#endif
+
+#ifdef INCLUDE_OUTPUT_TEST
+const char* OUTPUT_TEST_PY = R"(
+import jumperless as j
+import time
+
+
+fakeGPIOtime = 0
+regularConnectTime = 0
+fastConnectTime = 0
+
+j. nodes_clear()
+j. set_dac(j. TOP_RAIL, 8.0)
+j. set_dac(j.BOTTOM_RAIL, -8.0)
+
+pin = j.FakeGpioPin(10, j.OUTPUT, j.TOP_RAIL, j.BOTTOM_RAIL)
+pin2 = j.FakeGpioPin(19, j.OUTPUT, j.TOP_RAIL, j.BOTTOM_RAIL)
+
+j. pause_core2 (True)
+time.sleep (0.1)
+
+startTime = time.ticks_us ()
+
+for i in range (5000):
+    
+    pin.value(1) # Same thing as pin. on()
+    pin2.off()
+    pin. value (0)
+    pin2.on()
+
+    
+j.pause_core2(False)
+endTime = time.ticks_us()
+fakeGPIOtime = (endTime - startTime)
+
+
+
+j. nodes_clear()
+time.sleep(0.5)
+
+# j. pause_core2 (True)
+
+time.sleep (0.1)
+startTime = time.ticks_us ()
+
+for i in range (50):
+    j.connect(21, j.TOP_RAIL)
+    j.disconnect(21, j.TOP_RAIL)
+
+j.pause_core2(False)
+endTime = time.ticks_us()
+regularConnectTime = (endTime - startTime)
+
+j. nodes_clear()
+
+# j. pause_core2 (True)
+time.sleep (0.1)
+startTime = time.ticks_us ()
+
+for i in range (50):
+    j.fast_connect(21, j.TOP_RAIL)
+    j.fast_disconnect(21, j.TOP_RAIL)
+
+j.pause_core2(False)
+endTime = time.ticks_us()
+fastConnectTime = (endTime - startTime)
+
+
+
+print (f"Took {fakeGPIOtime} us for 5000 toggles with fake gpio")
+
+freq = (5000 / (fakeGPIOtime)) * 1000
+print(f"Frequency = {freq} kHz")
+
+print (f"Took {regularConnectTime} us for 50 toggles with fake gpio")
+
+freq = (50 / (regularConnectTime)) * 1000
+print(f"Frequency = {freq} kHz")
+
+print (f"Took {fastConnectTime} us for 50 toggles with fake gpio")
+
+freq = (50 / (fastConnectTime)) * 1000
+print(f"Frequency = {freq} kHz"))";
 #endif
 
 #ifdef INCLUDE_SIMPLE_FAKE_GPIO_TEST
@@ -1521,6 +2385,218 @@ except KeyboardInterrupt:
 )";
 #endif
 
+#ifdef INCLUDE_TEST_OLED_FEATURES
+const char* TEST_OLED_FEATURES_PY = R"===("""
+Test script for new OLED MicroPython features
+Run this on the Jumperless device to test all new OLED functions
+"""
+import jumperless as j
+import time
+
+def test_text_size_control():
+    """Test text size control functions"""
+    print("\n=== Testing Text Size Control ===")
+    
+    # Test setting text size
+    print("Setting text size to 0 (small)...")
+    j.oled_set_text_size(0)
+    assert j.oled_get_text_size() == 0, "Text size should be 0"
+    j.oled_print("Small text mode")
+    time.sleep(2)
+    
+    print("Setting text size to 1 (normal)...")
+    j.oled_set_text_size(1)
+    assert j.oled_get_text_size() == 1, "Text size should be 1"
+    j.oled_print("Normal text")
+    time.sleep(2)
+    
+    print("Setting text size to 2 (large)...")
+    j.oled_set_text_size(2)
+    assert j.oled_get_text_size() == 2, "Text size should be 2"
+    j.oled_print("Large text")
+    time.sleep(2)
+    
+    print("✓ Text size control works!")
+
+def test_print_redirection():
+    """Test print() redirection to OLED"""
+    print("\n=== Testing Print Redirection ===")
+    
+    # Enable print copying
+    print("Enabling print copy to OLED...")
+    j.oled_copy_print(True)
+    
+    # Test printing
+    print("Line 1 on OLED")
+    time.sleep(1)
+    print("Line 2 on OLED")
+    time.sleep(1)
+    print("Line 3 on OLED")
+    time.sleep(2)
+    
+    # Disable print copying
+    print("Disabling print copy...")
+    j.oled_copy_print(False)
+    print("This should NOT appear on OLED")
+    time.sleep(2)
+    
+    print("✓ Print redirection works!")
+
+def test_font_system():
+    """Test font enumeration and selection"""
+    print("\n=== Testing Font System ===")
+    
+    # Get available fonts
+    fonts = j.oled_get_fonts()
+    print(f"Available fonts: {fonts}")
+    assert len(fonts) > 0, "Should have fonts available"
+    
+    # Test setting fonts
+    for font in fonts[:3]:  # Test first 3 fonts
+        print(f"Setting font to: {font}")
+        result = j.oled_set_font(font)
+        assert result, f"Should be able to set font {font}"
+        
+        current = j.oled_get_current_font()
+        print(f"Current font: {current}")
+        
+        j.oled_print(f"Font: {font}", 2)
+        time.sleep(1.5)
+    
+    print("✓ Font system works!")
+
+def test_bitmap_functions():
+    """Test bitmap loading and display"""
+    print("\n=== Testing Bitmap Functions ===")
+    
+    # Test loading a bitmap file (if it exists)
+    test_file = "/jogo32h.bin"
+    
+    print(f"Attempting to load bitmap: {test_file}")
+    result = j.oled_load_bitmap(test_file)
+    
+    if result:
+        print("✓ Bitmap loaded successfully")
+        
+        # Display the loaded bitmap
+        print("Displaying bitmap at (0, 0)...")
+        j.oled_display_bitmap(0, 0, 0, 0)  # Use loaded bitmap
+        time.sleep(2)
+        
+        # Try convenience function
+        print("Using convenience function...")
+        j.oled_show_bitmap_file(test_file, 0, 0)
+        time.sleep(2)
+    else:
+        print(f"⚠ Bitmap file not found: {test_file}")
+        print("  (This is OK if the file doesn't exist)")
+    
+    print("✓ Bitmap functions work!")
+
+def test_framebuffer_access():
+    """Test framebuffer manipulation"""
+    print("\n=== Testing Framebuffer Access ===")
+    
+    # Get framebuffer size
+    width, height, buffer_size = j.oled_get_framebuffer_size()
+    print(f"Framebuffer: {width}x{height}, {buffer_size} bytes")
+    
+    # Get current framebuffer
+    fb = j.oled_get_framebuffer()
+    print(f"Got framebuffer: {len(fb)} bytes")
+    assert len(fb) == buffer_size, "Framebuffer size should match"
+    
+    # Test pixel manipulation
+    print("Drawing test pattern...")
+    j.oled_clear()
+    
+    # Draw a border
+    for x in range(width):
+        j.oled_set_pixel(x, 0, 1)  # Top
+        j.oled_set_pixel(x, height-1, 1)  # Bottom
+    
+    for y in range(height):
+        j.oled_set_pixel(0, y, 1)  # Left
+        j.oled_set_pixel(width-1, y, 1)  # Right
+    
+    # Draw diagonal lines
+    for i in range(min(width, height)):
+        j.oled_set_pixel(i, i, 1)
+        j.oled_set_pixel(width-1-i, i, 1)
+    
+    j.oled_show()
+    time.sleep(2)
+    
+    # Test reading pixels
+    print("Testing pixel reading...")
+    assert j.oled_get_pixel(0, 0) == 1, "Corner pixel should be set"
+    assert j.oled_get_pixel(width//2, height//2) == 0, "Center should be clear"
+    
+    # Test framebuffer set/get round-trip
+    print("Testing framebuffer round-trip...")
+    fb_copy = bytearray(fb)
+    result = j.oled_set_framebuffer(fb_copy)
+    assert result, "Should be able to set framebuffer"
+    
+    print("✓ Framebuffer access works!")
+
+def test_small_text_scrolling():
+    """Test small text scrolling mode"""
+    print("\n=== Testing Small Text Scrolling ===")
+    
+    j.oled_set_text_size(0)  # Small scrolling mode
+    j.oled_clear()
+    
+    # Print multiple lines to test scrolling
+    for i in range(10):
+        j.oled_print(f"Scroll line {i+1}")
+        time.sleep(0.3)
+    
+    time.sleep(2)
+    print("✓ Small text scrolling works!")
+
+def run_all_tests():
+    """Run all OLED feature tests"""
+    print("=" * 50)
+    print("OLED MicroPython Features Test Suite")
+    print("=" * 50)
+    
+    try:
+        # Ensure OLED is connected
+        j.oled_connect()
+        time.sleep(0.5)
+        
+        # Run tests
+        test_text_size_control()
+        test_print_redirection()
+        test_font_system()
+        test_bitmap_functions()
+        test_framebuffer_access()
+        test_small_text_scrolling()
+        
+        # Final success message
+        j.oled_clear()
+        j.oled_set_text_size(2)
+        j.oled_print("All tests passed!")
+        
+        print("\n" + "=" * 50)
+        print("✓ ALL TESTS PASSED!")
+        print("=" * 50)
+        
+    except Exception as e:
+        print(f"\n✗ TEST FAILED: {e}")
+        j.oled_clear()
+        j.oled_set_text_size(1)
+        j.oled_print("Test failed!")
+        raise
+
+# Run tests if executed directly
+if __name__ == "__main__":
+    run_all_tests()
+
+)===";
+#endif
+
 #ifdef INCLUDE_UART_BASICS
 const char* UART_BASICS_PY = R"("""
 Basic UART operations.
@@ -1753,10 +2829,11 @@ ARBITRARY = _native.ARBITRARY
 node = _native.node
 connect = _native.connect
 disconnect = _native.disconnect
+fast_connect = _native.fast_connect
+fast_disconnect = _native.fast_disconnect
 nodes_clear = _native.nodes_clear
 is_connected = _native.is_connected
 nodes_save = _native.nodes_save
-nodes_discard = _native.nodes_discard
 nodes_has_changes = _native.nodes_has_changes
 
 # ============================================================================
@@ -1767,6 +2844,7 @@ set_net_name = _native.set_net_name
 get_net_color = _native.get_net_color
 get_net_color_name = _native.get_net_color_name
 set_net_color = _native.set_net_color
+set_net_color_hsv = _native.set_net_color_hsv
 get_num_nets = _native.get_num_nets
 get_num_bridges = _native.get_num_bridges
 get_net_nodes = _native.get_net_nodes
@@ -1777,6 +2855,14 @@ get_net_info = _native.get_net_info
 net_name = _native.net_name
 net_color = _native.net_color
 net_info = _native.net_info
+
+# ============================================================================
+# Path Query Functions
+# ============================================================================
+get_num_paths = _native.get_num_paths
+get_path_info = _native.get_path_info
+get_all_paths = _native.get_all_paths
+get_path_between = _native.get_path_between
 
 # ============================================================================
 # Slot Management
@@ -1798,6 +2884,30 @@ oled_clear = _native.oled_clear
 oled_show = _native.oled_show
 oled_connect = _native.oled_connect
 oled_disconnect = _native.oled_disconnect
+
+# OLED Text Size Control
+oled_set_text_size = _native.oled_set_text_size
+oled_get_text_size = _native.oled_get_text_size
+
+# OLED Print Redirection
+oled_copy_print = _native.oled_copy_print
+
+# OLED Font System
+oled_get_fonts = _native.oled_get_fonts
+oled_set_font = _native.oled_set_font
+oled_get_current_font = _native.oled_get_current_font
+
+# OLED Bitmap Functions
+oled_load_bitmap = _native.oled_load_bitmap
+oled_display_bitmap = _native.oled_display_bitmap
+oled_show_bitmap_file = _native.oled_show_bitmap_file
+
+# OLED Framebuffer Access
+oled_get_framebuffer = _native.oled_get_framebuffer
+oled_set_framebuffer = _native.oled_set_framebuffer
+oled_get_framebuffer_size = _native.oled_get_framebuffer_size
+oled_set_pixel = _native.oled_set_pixel
+oled_get_pixel = _native.oled_get_pixel
 
 # ============================================================================
 # Probe Functions
@@ -1825,6 +2935,18 @@ check_button = _native.check_button
 button_check = _native.button_check
 
 # ============================================================================
+# Probe Switch Functions
+# ============================================================================
+get_switch_position = _native.get_switch_position
+set_switch_position = _native.set_switch_position
+check_switch_position = _native.check_switch_position
+
+# Probe Switch Constants
+SWITCH_MEASURE = _native.SWITCH_MEASURE
+SWITCH_SELECT = _native.SWITCH_SELECT
+SWITCH_UNKNOWN = _native.SWITCH_UNKNOWN
+
+# ============================================================================
 # Status/Debug Functions
 # ============================================================================
 print_bridges = _native.print_bridges
@@ -1842,6 +2964,13 @@ run_app = _native.run_app
 send_raw = _native.send_raw
 change_terminal_color = _native.change_terminal_color
 cycle_term_color = _native.cycle_term_color
+
+# ============================================================================
+# Service Management Functions
+# ============================================================================
+force_service = _native.force_service
+force_service_by_index = _native.force_service_by_index
+get_service_index = _native.get_service_index
 
 # ============================================================================
 # Help Functions
@@ -2088,6 +3217,21 @@ BOT_GND_PAD = _native.BOT_GND_PAD
 clickwheel_up = _native.clickwheel_up
 clickwheel_down = _native.clickwheel_down
 clickwheel_press = _native.clickwheel_press
+clickwheel_get_position = _native.clickwheel_get_position
+clickwheel_reset_position = _native.clickwheel_reset_position
+clickwheel_get_direction = _native.clickwheel_get_direction
+clickwheel_get_button = _native.clickwheel_get_button
+clickwheel_is_initialized = _native.clickwheel_is_initialized
+
+# Clickwheel Constants
+CLICKWHEEL_NONE = _native.CLICKWHEEL_NONE
+CLICKWHEEL_UP = _native.CLICKWHEEL_UP
+CLICKWHEEL_DOWN = _native.CLICKWHEEL_DOWN
+CLICKWHEEL_IDLE = _native.CLICKWHEEL_IDLE
+CLICKWHEEL_PRESSED = _native.CLICKWHEEL_PRESSED
+CLICKWHEEL_HELD = _native.CLICKWHEEL_HELD
+CLICKWHEEL_RELEASED = _native.CLICKWHEEL_RELEASED
+CLICKWHEEL_DOUBLECLICKED = _native.CLICKWHEEL_DOUBLECLICKED
 
 # ============================================================================
 # Filesystem Functions
@@ -2136,13 +3280,16 @@ __all__ = [
     'get_wavegen_amplitude', 'get_wavegen_offset',
     
     # Node Connection Functions
-    'node', 'connect', 'disconnect', 'nodes_clear', 'is_connected',
+    'node', 'connect', 'disconnect', 'fast_connect', 'fast_disconnect', 'nodes_clear', 'is_connected',
     'nodes_save', 'nodes_discard', 'nodes_has_changes',
     
     # Net Information Functions
-    'get_net_name', 'set_net_name', 'get_net_color', 'get_net_color_name', 'set_net_color',
+    'get_net_name', 'set_net_name', 'get_net_color', 'get_net_color_name', 'set_net_color', 'set_net_color_hsv',
     'get_num_nets', 'get_num_bridges', 'get_net_nodes', 'get_bridge', 'get_net_info',
     'net_name', 'net_color', 'net_info',
+    
+    # Path Query Functions
+    'get_num_paths', 'get_path_info', 'get_all_paths', 'get_path_between',
     
     # Slot Management
     'switch_slot', 'CURRENT_SLOT',
@@ -2161,11 +3308,16 @@ __all__ = [
     'get_button', 'probe_button', 'probe_button_blocking', 'probe_button_nonblocking',
     'button_read', 'read_button', 'check_button', 'button_check',
     
+    # Probe Switch Functions
+    'get_switch_position', 'set_switch_position', 'check_switch_position',
+    
     # Status Functions
     'print_bridges', 'print_paths', 'print_crossbars', 'print_nets', 'print_chip_status',
     
     # Clickwheel Functions
     'clickwheel_up', 'clickwheel_down', 'clickwheel_press',
+    'clickwheel_get_position', 'clickwheel_reset_position', 'clickwheel_get_direction',
+    'clickwheel_get_button', 'clickwheel_is_initialized',
     
     # Logic Analyzer Functions
     'la_set_trigger', 'la_capture_single_sample', 'la_start_continuous_capture',
@@ -2179,6 +3331,9 @@ __all__ = [
     # Misc Functions
     'arduino_reset', 'pause_core2', 'run_app', 'send_raw',
     'change_terminal_color', 'cycle_term_color',
+    
+    # Service Management Functions
+    'force_service', 'force_service_by_index', 'get_service_index',
     
     # Help Functions
     'help', 'nodes_help',
@@ -2228,6 +3383,14 @@ __all__ = [
     # Probe Button Constants
     'BUTTON_NONE', 'BUTTON_CONNECT', 'BUTTON_REMOVE', 'CONNECT_BUTTON', 'REMOVE_BUTTON',
     
+    # Probe Switch Constants
+    'SWITCH_MEASURE', 'SWITCH_SELECT', 'SWITCH_UNKNOWN',
+    
+    # Clickwheel Constants
+    'CLICKWHEEL_NONE', 'CLICKWHEEL_UP', 'CLICKWHEEL_DOWN', 
+    'CLICKWHEEL_IDLE', 'CLICKWHEEL_PRESSED', 'CLICKWHEEL_HELD', 
+    'CLICKWHEEL_RELEASED', 'CLICKWHEEL_DOUBLECLICKED',
+    
     # Probe Pad Constants
     'NO_PAD', 'LOGO_PAD_TOP', 'LOGO_PAD_BOTTOM', 'GPIO_PAD', 'DAC_PAD', 'ADC_PAD',
     'BUILDING_PAD_TOP', 'BUILDING_PAD_BOTTOM',
@@ -2238,9 +3401,6 @@ __all__ = [
     'A0_PAD', 'A1_PAD', 'A2_PAD', 'A3_PAD', 'A4_PAD', 'A5_PAD', 'A6_PAD', 'A7_PAD',
     'TOP_RAIL_PAD', 'BOTTOM_RAIL_PAD', 'BOT_RAIL_PAD',
     'TOP_RAIL_GND', 'TOP_GND_PAD', 'BOTTOM_RAIL_GND', 'BOT_RAIL_GND', 'BOTTOM_GND_PAD', 'BOT_GND_PAD',
-    
-    # Python Helper Functions
-    'quick_connect', 'disconnect_all', 'voltage_divider',
     
     # JFS Module
     'jfs',
@@ -2651,17 +3811,55 @@ def node(name_or_id: Union[str, int, Node]) -> Node:
     """Create a node object from string name or integer ID"""
     ...
 
-def connect(node1: NodeRef, node2: NodeRef, save: bool = False) -> None:
+def connect(node1: NodeRef, node2: NodeRef, duplicates: int = -1) -> None:
     """Connect two nodes
     
     Args:
         node1, node2: Nodes to connect (int, string, or Node constant)
-        save: Save to file (default: False, uses local copy)
+        duplicates: Duplicate connection behavior (default: -1)
+            -1: Just add the connection (standard behavior, no duplicate management)
+            0: Force exactly 0 duplicates (remove any existing duplicates)
+            1+: Force exactly N duplicates (add/remove connections to reach count)
+    
+    Example:
+        connect(1, 5)              # Add connection without managing duplicates
+        connect(1, 5, duplicates=0)  # Ensure no duplicate paths exist
+        connect(1, 5, duplicates=2)  # Force exactly 2 duplicate paths
     """
     ...
 
 def disconnect(node1: NodeRef, node2: NodeRef) -> None:
     """Disconnect two nodes (set node2 to -1 to disconnect all from node1)"""
+    ...
+
+def fast_connect(node1: NodeRef, node2: NodeRef, duplicates: int = -1) -> None:
+    """Connect two nodes, skipping LED computation
+    
+    This function adds connections without updating LED state. Useful when making
+    many connections at once - you can defer LED updates until all connections are done.
+    
+    Note: This is not much faster overall, it just skips LED updates for bulk operations.
+    
+    Args:
+        node1, node2: Nodes to connect (int, string, or Node constant)
+        duplicates: Same behavior as connect() (default: -1)
+    
+    Example:
+        # Make multiple connections without LED updates
+        for i in range(10):
+            fast_connect(i, i+10)
+        # LEDs update automatically after loop completes
+    """
+    ...
+
+def fast_disconnect(node1: NodeRef, node2: NodeRef) -> None:
+    """Disconnect two nodes, skipping LED computation
+    
+    Same LED-skipping behavior as fast_connect(). Useful for bulk disconnections.
+    
+    Args:
+        node1, node2: Nodes to disconnect
+    """
     ...
 
 def nodes_clear() -> None:
@@ -2680,9 +3878,7 @@ def nodes_save(slot: int = -1) -> int:
     """
     ...
 
-def nodes_discard() -> None:
-    """Discard unsaved changes and restore last saved state"""
-    ...
+
 
 def nodes_has_changes() -> bool:
     """Check if there are unsaved changes"""
@@ -2754,6 +3950,89 @@ def net_info(netNum: int) -> Dict[str, Union[str, int]]:
     """Alias for get_net_info()"""
     ...
 
+def set_net_color_hsv(netNum: int, h: float, s: float = -1, v: float = -1) -> bool:
+    """Set net color using HSV color space (auto-detects 0.0-1.0 vs 0-255 range)
+    
+    Args:
+        netNum: The net number
+        h: Hue value (0.0-1.0 or 0-255, auto-detected based on value)
+        s: Saturation (0.0-1.0 or 0-255, default: max saturation if not provided)
+        v: Value/brightness (0.0-1.0 or 0-255, default: 32 for reasonable brightness)
+    
+    Returns:
+        True on success, False on failure
+    
+    Example:
+        set_net_color_hsv(0, 0.0)           # Red at default brightness
+        set_net_color_hsv(1, 0.33)          # Green  
+        set_net_color_hsv(2, 0.66, 1.0, 1.0)  # Blue at max brightness
+    """
+    ...
+
+# ============================================================================
+# Path Query Functions
+# ============================================================================
+
+def get_num_paths(include_duplicates: bool = True) -> int:
+    """Get the number of routing paths
+    
+    Args:
+        include_duplicates: If True, count all paths. If False, count only primary paths.
+    
+    Returns:
+        Number of paths
+    
+    Example:
+        total = get_num_paths()           # All paths including duplicates
+        primary = get_num_paths(False)    # Only primary paths
+    """
+    ...
+
+def get_path_info(path_idx: int) -> Optional[Dict]:
+    """Get detailed routing path information
+    
+    Args:
+        path_idx: Path index (0 to get_num_paths()-1)
+    
+    Returns:
+        Dict with keys: node1, node2, net, chips, x, y, duplicate
+        Returns None if index is invalid
+    
+    Example:
+        path = get_path_info(0)
+        if path:
+            print(f"Path from {path['node1']} to {path['node2']}")
+    """
+    ...
+
+def get_all_paths() -> List[Dict]:
+    """Get all routing paths as a list of dicts
+    
+    Returns:
+        List of path dicts, same format as get_path_info()
+    
+    Example:
+        for path in get_all_paths():
+            print(f"{path['node1']} -> {path['node2']}")
+    """
+    ...
+
+def get_path_between(node1: int, node2: int) -> Optional[Dict]:
+    """Query the routing path between two specific nodes
+    
+    Args:
+        node1, node2: Nodes to query path between
+    
+    Returns:
+        Path dict if found, None otherwise
+    
+    Example:
+        path = get_path_between(1, 5)
+        if path:
+            print(f"Route uses chips: {path['chips']}")
+    """
+    ...
+
 # ============================================================================
 # Slot Management
 # ============================================================================
@@ -2803,6 +4082,172 @@ def oled_connect() -> None:
 
 def oled_disconnect() -> None:
     """Disconnect I2C lines from OLED"""
+    ...
+
+def oled_set_text_size(size: int) -> bool:
+    """Set the default text size for oled_print()
+    
+    Args:
+        size: Text size (0=small multiline scrolling, 1=normal, 2=large centered)
+        
+    Returns:
+        True if successful, False if invalid size
+    """
+    ...
+
+def oled_get_text_size() -> int:
+    """Get the current default text size
+    
+    Returns:
+        Current default text size (0-2)
+    """
+    ...
+
+def oled_copy_print(enable: bool) -> None:
+    """Enable/disable copying MicroPython print() output to OLED
+    
+    When enabled, all print() statements will also appear on the OLED
+    in small scrolling text mode.
+    
+    Args:
+        enable: True to enable copy mode, False to disable
+    """
+    ...
+
+def oled_get_fonts() -> list[str]:
+    """Get list of available font families
+    
+    Returns:
+        List of font family names that can be used with oled_set_font()
+    """
+    ...
+
+def oled_set_font(font_name: str) -> bool:
+    """Set the current font family
+    
+    Args:
+        font_name: Name of font family (e.g., "Eurostile", "Jokerman", "Comic Sans")
+        
+    Returns:
+        True if font was set successfully, False if font not found
+    """
+    ...
+
+def oled_get_current_font() -> str:
+    """Get the name of the currently active font
+    
+    Returns:
+        Current font family name
+    """
+    ...
+
+def oled_load_bitmap(filepath: str) -> bool:
+    """Load a bitmap file into the internal bitmap buffer
+    
+    Supports raw bitmap files and custom format with header.
+    Common sizes: 128x32 (512 bytes), 128x64 (1024 bytes)
+    
+    Args:
+        filepath: Path to bitmap file
+        
+    Returns:
+        True if loaded successfully, False on error
+    """
+    ...
+
+def oled_display_bitmap(x: int, y: int, width: int, height: int, data: Optional[bytes] = None) -> bool:
+    """Display a bitmap on the OLED
+    
+    If data is provided, displays that bitmap directly.
+    If data is None, displays the previously loaded bitmap from oled_load_bitmap().
+    
+    Args:
+        x: X position on display
+        y: Y position on display
+        width: Bitmap width in pixels (ignored if using loaded bitmap)
+        height: Bitmap height in pixels (ignored if using loaded bitmap)
+        data: Optional bitmap data as bytes (1 bit per pixel, packed)
+        
+    Returns:
+        True if displayed successfully, False on error
+    """
+    ...
+
+def oled_show_bitmap_file(filepath: str, x: int, y: int) -> bool:
+    """Load and display a bitmap file in one call
+    
+    Convenience function that combines oled_load_bitmap() and oled_display_bitmap().
+    
+    Args:
+        filepath: Path to bitmap file
+        x: X position on display
+        y: Y position on display
+        
+    Returns:
+        True if successful, False on error
+    """
+    ...
+
+def oled_get_framebuffer() -> bytes:
+    """Get the current OLED framebuffer as bytes
+    
+    Returns a copy of the framebuffer that can be modified and
+    written back with oled_set_framebuffer().
+    
+    Returns:
+        Framebuffer data as bytes (1 bit per pixel, packed)
+        Size depends on display: 128x32 = 512 bytes, 128x64 = 1024 bytes
+    """
+    ...
+
+def oled_set_framebuffer(data: Union[bytes, bytearray]) -> bool:
+    """Set the entire OLED framebuffer from bytes
+    
+    Allows direct manipulation of the display buffer.
+    Data must be the correct size for the display.
+    
+    Args:
+        data: Framebuffer data (1 bit per pixel, packed)
+              Must be 512 bytes for 128x32 or 1024 bytes for 128x64
+        
+    Returns:
+        True if successful, False if wrong size
+    """
+    ...
+
+def oled_get_framebuffer_size() -> tuple[int, int, int]:
+    """Get the framebuffer dimensions
+    
+    Returns:
+        Tuple of (width, height, buffer_size_in_bytes)
+    """
+    ...
+
+def oled_set_pixel(x: int, y: int, color: int) -> bool:
+    """Set a single pixel on the OLED
+    
+    Note: Call oled_show() to make the change visible.
+    
+    Args:
+        x: X coordinate (0 to width-1)
+        y: Y coordinate (0 to height-1)
+        color: Pixel color (0=black/off, 1=white/on)
+        
+    Returns:
+        True if successful, False if OLED not connected
+    """
+    ...
+
+def oled_get_pixel(x: int, y: int) -> int:
+    """Get the value of a single pixel
+    
+    Args:
+        x: X coordinate (0 to width-1)
+        y: Y coordinate (0 to height-1)
+        
+    Returns:
+        Pixel color (0=black/off, 1=white/on, -1=error)
+    """
     ...
 
 # ============================================================================
@@ -2882,6 +4327,47 @@ def button_check() -> ProbeButton:
     ...
 
 # ============================================================================
+# Probe Switch Functions  
+# ============================================================================
+
+def get_switch_position() -> int:
+    """Get current probe switch position
+    
+    Returns:
+        0 (SWITCH_MEASURE): Probe in measure mode
+        1 (SWITCH_SELECT): Probe in select mode
+        -1 (SWITCH_UNKNOWN): Position unknown
+    
+    Example:
+        if get_switch_position() == SWITCH_MEASURE:
+            voltage = measureMode()
+    """
+    ...
+
+def set_switch_position(position: int) -> None:
+    """Manually set probe switch position
+    
+    Args:
+        position: 0 (SWITCH_MEASURE), 1 (SWITCH_SELECT), or -1 (SWITCH_UNKNOWN)
+    """
+    ...
+
+def check_switch_position() -> int:
+    """Check probe switch position via current sensing and update state
+    
+    Uses hysteresis thresholds to prevent oscillation between modes.
+    
+    Returns:
+        Updated switch position (0, 1, or -1)
+    
+    Example:
+        position = check_switch_position()
+        if position == SWITCH_SELECT:
+            pad = probe_read(blocking=False)
+    """
+    ...
+
+# ============================================================================
 # Clickwheel Functions
 # ============================================================================
 
@@ -2895,6 +4381,142 @@ def clickwheel_down(clicks: int = 1) -> None:
 
 def clickwheel_press() -> None:
     """Press clickwheel button"""
+    ...
+
+def clickwheel_get_position() -> int:
+    """Get raw clickwheel position counter
+    
+    Returns:
+        Current position value (accumulates as you turn)
+    
+    Example:
+        pos = clickwheel_get_position()
+        print(f"Position: {pos}")
+    """
+    ...
+
+def clickwheel_reset_position() -> None:
+    """Reset clickwheel position counter to 0"""
+    ...
+
+def clickwheel_get_direction(consume: bool = True) -> int:
+    """Get clickwheel direction event
+    
+    Args:
+        consume: If True (default), clears direction after reading (one-shot).
+                 If False, direction persists until consumed.
+    
+    Returns:
+        0 (CLICKWHEEL_NONE), 1 (CLICKWHEEL_UP), or 2 (CLICKWHEEL_DOWN)
+    
+    Note: Direction persists until consumed, so you won't miss turn events
+    
+    Example:
+        direction = clickwheel_get_direction()
+        if direction == CLICKWHEEL_UP:
+            value += 1
+    """
+    ...
+
+def clickwheel_get_button() -> int:
+    """Get clickwheel button state
+    
+    Returns:
+        0 (CLICKWHEEL_IDLE), 1 (CLICKWHEEL_PRESSED), 2 (CLICKWHEEL_HELD),
+        3 (CLICKWHEEL_RELEASED), or 4 (CLICKWHEEL_DOUBLECLICKED)
+    """
+    ...
+
+def clickwheel_is_initialized() -> bool:
+    """Check if clickwheel hardware is initialized and ready"""
+    ...
+
+# ============================================================================
+# Service Management Functions
+# ============================================================================
+
+def force_service(name: str) -> bool:
+    """Force immediate execution of a specific system service
+    
+    Args:
+        name: Service name (e.g., "ProbeButton", "Peripherals")
+    
+    Returns:
+        True if service found and executed, False otherwise
+    
+    Example:
+        while True:
+            force_service("ProbeButton")  # Ensure button updates
+            button = check_button()
+            time.sleep(0.001)
+    """
+    ...
+
+def force_service_by_index(index: int) -> bool:
+    """Force service execution by index (faster than name lookup)
+    
+    Args:
+        index: Service index from get_service_index()
+    
+    Returns:
+        True if successful, False otherwise
+    
+    Example:
+        btn_idx = get_service_index("ProbeButton")
+        while True:
+            force_service_by_index(btn_idx)  # Fastest
+            button = check_button()
+    """
+    ...
+
+def get_service_index(name: str) -> int:
+    """Get service index by name for use with force_service_by_index()
+    
+    Args:
+        name: Service name
+    
+    Returns:
+        Service index (0+), or -1 if not found
+    
+    Example:
+        idx = get_service_index("ProbeButton")
+        if idx >= 0:
+            force_service_by_index(idx)
+    """
+    ...
+
+# ============================================================================
+# Terminal Color Functions
+# ============================================================================
+
+def change_terminal_color(color: int = -1, flush: bool = True) -> None:
+    """Set terminal color by 256-color palette index
+    
+    Args:
+        color: Color index (0-255), or -1 for default
+        flush: Flush output immediately (default: True)
+    
+    Example:
+        change_terminal_color(196)  # Bright red
+        print("This is in red")
+        change_terminal_color(-1)   # Reset to default
+    """
+    ...
+
+def cycle_term_color(reset: bool = False, step: float = 100.0, flush: bool = True) -> None:
+    """Cycle through terminal colors
+    
+    Args:
+        reset: If True, reset to start of color sequence
+        step: Color increment step (default: 100.0)
+        flush: Flush output immediately (default: True)
+    
+    Example:
+        cycle_term_color(reset=True)   # Start fresh
+        for i in range(10):
+            cycle_term_color()         # Next color
+            print(f"Line {i}")
+    """
     ...
 
 # ============================================================================
@@ -3177,6 +4799,47 @@ CONNECT_BUTTON: ProbeButton
 REMOVE_BUTTON: ProbeButton
 
 # ============================================================================
+# Probe Switch Position Constants
+# ============================================================================
+
+SWITCH_MEASURE: int
+"""Probe switch in measure mode (0)"""
+
+SWITCH_SELECT: int
+"""Probe switch in select mode (1)"""
+
+SWITCH_UNKNOWN: int
+"""Probe switch position unknown (-1)"""
+
+# ============================================================================
+# Clickwheel Constants
+# ============================================================================
+
+CLICKWHEEL_NONE: int
+"""No clickwheel movement (0)"""
+
+CLICKWHEEL_UP: int
+"""Clickwheel turned clockwise (1)"""
+
+CLICKWHEEL_DOWN: int
+"""Clickwheel turned counter-clockwise (2)"""
+
+CLICKWHEEL_IDLE: int
+"""Clickwheel button idle (0)"""
+
+CLICKWHEEL_PRESSED: int
+"""Clickwheel button pressed (1)"""
+
+CLICKWHEEL_HELD: int
+"""Clickwheel button held down (2)"""
+
+CLICKWHEEL_RELEASED: int
+"""Clickwheel button released (3)"""
+
+CLICKWHEEL_DOUBLECLICKED: int
+"""Clickwheel button double-clicked (4)"""
+
+# ============================================================================
 # Probe Pad Constants
 # ============================================================================
 
@@ -3337,21 +5000,6 @@ class JFSModule:
 
 jfs: JFSModule
 
-# ============================================================================
-# Python Helper Functions
-# ============================================================================
-
-def quick_connect(*nodes: NodeRef) -> None:
-    """Connect multiple nodes in sequence
-    
-    Usage:
-        quick_connect(1, 2, 3, 4)  # Connects 1-2, 2-3, 3-4
-        quick_connect(D13, TOP_RAIL, A0)
-    """
-    ...
-
-
-
 )===";
 #endif
 
@@ -3360,37 +5008,39 @@ def quick_connect(*nodes: NodeRef) -> None:
 //==============================================================================
 
 #define INCLUDE_VIPERIDE_REINIT
-const char* VIPERIDE_REINIT_PY = R"(import sys,os
-print(sys.ps1)
-try: u=os.uname()
-except: u=('','','','',sys.platform)
-try: v=sys.version.split(';')[1].strip()
-except: v='MicroPython '+u[2]
-mpy=getattr(sys.implementation, '_mpy', 0)
-sp=':'.join(sys.path)
-d=[u[4],u[2],u[0],v,mpy>>10,mpy&0xFF,(mpy>>8)&3,sp]
-print('|'.join(str(x) for x in d))
+const char* VIPERIDE_REINIT_PY = R"(if True:
+  import sys
+  import os
+  print(sys.ps1)
+  try: u=os.uname()
+  except: u=('','','','',sys.platform)
+  try: v=sys.version.split(';')[1].strip()
+  except: v='MicroPython '+u[2]
+  mpy=getattr(sys.implementation, '_mpy', 0)
+  sp=':'.join(sys.path)
+  d=[u[4],u[2],u[0],v,mpy>>10,mpy&0xFF,(mpy>>8)&3,sp]
+  print('|'.join(str(x) for x in d))
 
-s = os.statvfs('/')
-fs = s[1] * s[2]
-ff = s[3] * s[0]
-fu = fs - ff
-print('%s|%s|%s'%(fu,ff,fs))
+  s = os.statvfs('/')
+  fs = s[1] * s[2]
+  ff = s[3] * s[0]
+  fu = fs - ff
+  print('%s|%s|%s'%(fu,ff,fs))
 
-def walk(p):
- for n in os.listdir(p if p else '/'):
-  fn=p+'/'+n
-  try: s=os.stat(fn)
-  except: s=(0,)*7
-  try:
-   if s[0] & 0x4000 == 0:
-    print('f|'+fn+'|'+str(s[6]))
-   elif n not in ('.','..'):
-    print('d|'+fn+'|'+str(s[6]))
-    walk(fn)
-  except:
-   print('f|'+p+'/???|'+str(s[6]))
-walk(''))";
+  def walk(p):
+    for n in os.listdir(p if p else '/'):
+      fn=p+'/'+n
+      try: s=os.stat(fn)
+      except: s=(0,)*7
+      try:
+        if s[0] & 0x4000 == 0:
+          print('f|'+fn+'|'+str(s[6]))
+        elif n not in ('.','..'):
+          print('d|'+fn+'|'+str(s[6]))
+          walk(fn)
+      except:
+        print('f|'+p+'/???|'+str(s[6]))
+  walk(''))";
 
 //==============================================================================
 // FilesystemStuff.cpp Integration Guide
@@ -3427,6 +5077,15 @@ walk(''))";
 // #ifdef INCLUDE_NODE_CONNECTIONS
 //     { "/python_scripts/examples/node_connections.py", NODE_CONNECTIONS_PY, "node_connections.py" },
 // #endif
+// #ifdef INCLUDE_OLED_DEMO
+//     { "/python_scripts/examples/oled_demo.py", OLED_DEMO_PY, "oled_demo.py" },
+// #endif
+// #ifdef INCLUDE_OSCILLOSCOPE
+//     { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py" },
+// #endif
+// #ifdef INCLUDE_OUTPUT_TEST
+//     { "/python_scripts/examples/output_test.py", OUTPUT_TEST_PY, "output_test.py" },
+// #endif
 // #ifdef INCLUDE_SIMPLE_FAKE_GPIO_TEST
 //     { "/python_scripts/examples/simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY, "simple_fake_gpio_test.py" },
 // #endif
@@ -3435,6 +5094,9 @@ walk(''))";
 // #endif
 // #ifdef INCLUDE_TEST_NEOPIXEL
 //     { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py" },
+// #endif
+// #ifdef INCLUDE_TEST_OLED_FEATURES
+//     { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py" },
 // #endif
 // #ifdef INCLUDE_UART_BASICS
 //     { "/python_scripts/examples/uart_basics.py", UART_BASICS_PY, "uart_basics.py" },
