@@ -189,6 +189,30 @@ oled_show = _native.oled_show
 oled_connect = _native.oled_connect
 oled_disconnect = _native.oled_disconnect
 
+# OLED Text Size Control
+oled_set_text_size = _native.oled_set_text_size
+oled_get_text_size = _native.oled_get_text_size
+
+# OLED Print Redirection
+oled_copy_print = _native.oled_copy_print
+
+# OLED Font System
+oled_get_fonts = _native.oled_get_fonts
+oled_set_font = _native.oled_set_font
+oled_get_current_font = _native.oled_get_current_font
+
+# OLED Bitmap Functions
+oled_load_bitmap = _native.oled_load_bitmap
+oled_display_bitmap = _native.oled_display_bitmap
+oled_show_bitmap_file = _native.oled_show_bitmap_file
+
+# OLED Framebuffer Access
+oled_get_framebuffer = _native.oled_get_framebuffer
+oled_set_framebuffer = _native.oled_set_framebuffer
+oled_get_framebuffer_size = _native.oled_get_framebuffer_size
+oled_set_pixel = _native.oled_set_pixel
+oled_get_pixel = _native.oled_get_pixel
+
 # ============================================================================
 # Probe Functions
 # ============================================================================

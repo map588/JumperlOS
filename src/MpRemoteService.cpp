@@ -198,6 +198,11 @@ ServiceStatus MpRemoteService::service( ) {
 
 volatile int probePowerDAConMpRemoteService = probePowerDAC;
 volatile int switchPositionOnMpRemoteService = switchPosition;
+unsigned long lastShowLEDmeasurementsintervalinMpRemoteService = 0;
+unsigned long lastReadGPIOIntervalinMpRemoteService = 0;
+extern unsigned long showLEDmeasurementsInterval;
+extern unsigned long readGPIOInterval;
+
 
 void MpRemoteService::onScriptExecutionBegin() {
     // Default implementation - can be overridden for custom behavior
@@ -208,7 +213,11 @@ void MpRemoteService::onScriptExecutionBegin() {
     
     probePowerDAConMpRemoteService = probePowerDAC;
     switchPositionOnMpRemoteService = switchPosition;
-    routableBufferPower( 0, 1, 1 );
+    lastShowLEDmeasurementsintervalinMpRemoteService = showLEDmeasurementsInterval;
+    showLEDmeasurementsInterval = 55000;
+    lastReadGPIOIntervalinMpRemoteService = readGPIOInterval;
+    readGPIOInterval = 5000;
+    // routableBufferPower( 0, 1, 1 );
     // refreshConnections( 0, 1, 0 );
     // Example: You could add pre-execution setup here:
     // - Start execution timer
@@ -225,7 +234,9 @@ void MpRemoteService::onScriptExecutionComplete() {
     pauseCore2 = 0;
     probePowerDAC = probePowerDAConMpRemoteService;
     switchPosition = switchPositionOnMpRemoteService;
-    routableBufferPower( 1, 1, 0 );
+    showLEDmeasurementsInterval = lastShowLEDmeasurementsintervalinMpRemoteService;
+    readGPIOInterval = lastReadGPIOIntervalinMpRemoteService;
+    // routableBufferPower( 1, 1, 0 );
     // refreshConnections( 0, 1, 0 );
     // Example: You could add cleanup, logging, or state management here
     // This fires after GC has run but before returning to the REPL prompt

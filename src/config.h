@@ -91,8 +91,8 @@ struct config {
         // Hysteresis thresholds to prevent oscillation between modes
         // Switch to SELECT mode when current > high threshold
         // Switch to MEASURE mode when current < low threshold
-        float probe_switch_threshold_high = 0.35;  // mA - switch to SELECT
-        float probe_switch_threshold_low = 0.10;   // mA - switch to MEASURE
+        float probe_switch_threshold_high = 0.65;  // mA - switch to SELECT
+        float probe_switch_threshold_low = 0.50;   // mA - switch to MEASURE
         float probe_switch_threshold = 0.40;       // DEPRECATED - kept for backward compatibility
         float measure_mode_output_voltage = 3.30;
         float probe_current_zero = 2.0;

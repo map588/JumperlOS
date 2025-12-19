@@ -20,14 +20,14 @@ last_node_2 = 0
 
 bridgeSpread = 4
 
-sleepTime = 0.01
+sleepTime_us = 1000 # controls how fast things move
 
 hue = 230
 
-j.clickwheel_reset_position()
-last_pos = j.clickwheel_get_position()
-switchPosition = j.get_switch_position()
+j.clickwheel_reset_position() # the clickwheel is read by PIO and keeps an internal count, let's reset it to 0
+last_pos = j.clickwheel_get_position() # should be 0 unless you're really fast
 
+switchPosition = j.get_switch_position() 
 
 while True:
     
@@ -44,7 +44,7 @@ while True:
     if (tappedNode != j.NO_PAD):
         # print(tappedNode)
         if (tappedNode <= 60):
-            node_1 = int(tappedNode)
+            node_1 = int(tappedNode) # read_probe returns a PAD type so let's convert it to int so it can become a NODE
             node_2 = int(tappedNode + bridgeSpread)
 
 # Encoder stuff
@@ -85,24 +85,28 @@ while True:
         # print("node 2 =" + str(node_2))
 
         j.disconnect(last_node_1, last_node_2)
+        
+        j.pause_core2(True) # we'll pause core 2 so the color of this net is set atomically
+        
         j.connect(node_1, node_2)
-
+        
     last_node_1 = node_1
     last_node_2 = node_2
 
 # Net info stuff
     lastNet = j.get_num_nets() - 1
     j.set_net_color_hsv(lastNet,hue)
-    
+    j.pause_core2(False) # unpause so the LEDs can update with the new net color (if the nets are unchanged this does nothing)
+
 # Probe button stuff 
-    if (sleepTime < 0.05):
+    if (sleepTime_us < 50000):
         j.force_service("ProbeButton") # this is needed if there's not enough time in the time.sleep to check the button
 
     button = j.check_button()
     
     if (button == j.BUTTON_CONNECT):
         # print("CONNECT")
-        hue += 8
+        hue += 3
         if (hue > 255):
             hue = 0
         # print(hue)
@@ -114,5 +118,5 @@ while True:
         # print (hue)
 
     
-    time.sleep(sleepTime)
+    time.sleep_us(sleepTime_us)
 

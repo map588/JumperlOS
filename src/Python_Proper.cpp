@@ -304,6 +304,9 @@ unsigned long interruptCheckInterval = 1;  // 1ms throttle for responsive interr
 extern bool mpremote_debug_python_output;
 bool mpremote_debug_python_output = false;
 
+// Global flag for OLED print copy feature
+bool oled_copy_print_enabled = false;
+
 // MicroPython HAL stdout function with Jumperless-specific functionality
 extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     // Check for interrupt before outputting (this is called frequently)
@@ -320,6 +323,11 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
         }
         if (len > 200) Serial.print("...");
         Serial.println();
+    }
+    
+    // If OLED copy is enabled, send to OLEDOut stream
+    if (oled_copy_print_enabled && oled.isConnected()) {
+        OLEDOut.write((const uint8_t*)str, len);
     }
     
     // Basic output to global stream (regular MicroPython output)
@@ -465,11 +473,13 @@ extern "C" void mp_hal_check_interrupt(void) {
 
   // CRITICAL: Check interrupt flag FIRST before any throttling or expensive operations
   // This flag can be set from ISR or from stream detection and needs immediate response
-  // NOTE: We DON'T clear the flag here anymore - let mp_hal_delay_ms() handle it
-  // This ensures the flag persists long enough to break out of delay loops
   if (mp_interrupt_requested) {
+    // Schedule the interrupt in MicroPython's VM
     mp_sched_keyboard_interrupt();
-    // DON'T clear flag here - mp_hal_delay_ms will clear it after breaking out
+    // IMMEDIATELY clear the flag to prevent duplicate scheduling
+    // Note: mp_hal_delay_ms checks the flag BEFORE calling this function,
+    // so it will see the flag and break out before we clear it here
+    mp_interrupt_requested = false;
     last_interrupt_time = millis();
     return;
   }

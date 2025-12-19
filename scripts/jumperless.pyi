@@ -668,6 +668,172 @@ def oled_disconnect() -> None:
     """Disconnect I2C lines from OLED"""
     ...
 
+def oled_set_text_size(size: int) -> bool:
+    """Set the default text size for oled_print()
+    
+    Args:
+        size: Text size (0=small multiline scrolling, 1=normal, 2=large centered)
+        
+    Returns:
+        True if successful, False if invalid size
+    """
+    ...
+
+def oled_get_text_size() -> int:
+    """Get the current default text size
+    
+    Returns:
+        Current default text size (0-2)
+    """
+    ...
+
+def oled_copy_print(enable: bool) -> None:
+    """Enable/disable copying MicroPython print() output to OLED
+    
+    When enabled, all print() statements will also appear on the OLED
+    in small scrolling text mode.
+    
+    Args:
+        enable: True to enable copy mode, False to disable
+    """
+    ...
+
+def oled_get_fonts() -> list[str]:
+    """Get list of available font families
+    
+    Returns:
+        List of font family names that can be used with oled_set_font()
+    """
+    ...
+
+def oled_set_font(font_name: str) -> bool:
+    """Set the current font family
+    
+    Args:
+        font_name: Name of font family (e.g., "Eurostile", "Jokerman", "Comic Sans")
+        
+    Returns:
+        True if font was set successfully, False if font not found
+    """
+    ...
+
+def oled_get_current_font() -> str:
+    """Get the name of the currently active font
+    
+    Returns:
+        Current font family name
+    """
+    ...
+
+def oled_load_bitmap(filepath: str) -> bool:
+    """Load a bitmap file into the internal bitmap buffer
+    
+    Supports raw bitmap files and custom format with header.
+    Common sizes: 128x32 (512 bytes), 128x64 (1024 bytes)
+    
+    Args:
+        filepath: Path to bitmap file
+        
+    Returns:
+        True if loaded successfully, False on error
+    """
+    ...
+
+def oled_display_bitmap(x: int, y: int, width: int, height: int, data: Optional[bytes] = None) -> bool:
+    """Display a bitmap on the OLED
+    
+    If data is provided, displays that bitmap directly.
+    If data is None, displays the previously loaded bitmap from oled_load_bitmap().
+    
+    Args:
+        x: X position on display
+        y: Y position on display
+        width: Bitmap width in pixels (ignored if using loaded bitmap)
+        height: Bitmap height in pixels (ignored if using loaded bitmap)
+        data: Optional bitmap data as bytes (1 bit per pixel, packed)
+        
+    Returns:
+        True if displayed successfully, False on error
+    """
+    ...
+
+def oled_show_bitmap_file(filepath: str, x: int, y: int) -> bool:
+    """Load and display a bitmap file in one call
+    
+    Convenience function that combines oled_load_bitmap() and oled_display_bitmap().
+    
+    Args:
+        filepath: Path to bitmap file
+        x: X position on display
+        y: Y position on display
+        
+    Returns:
+        True if successful, False on error
+    """
+    ...
+
+def oled_get_framebuffer() -> bytes:
+    """Get the current OLED framebuffer as bytes
+    
+    Returns a copy of the framebuffer that can be modified and
+    written back with oled_set_framebuffer().
+    
+    Returns:
+        Framebuffer data as bytes (1 bit per pixel, packed)
+        Size depends on display: 128x32 = 512 bytes, 128x64 = 1024 bytes
+    """
+    ...
+
+def oled_set_framebuffer(data: Union[bytes, bytearray]) -> bool:
+    """Set the entire OLED framebuffer from bytes
+    
+    Allows direct manipulation of the display buffer.
+    Data must be the correct size for the display.
+    
+    Args:
+        data: Framebuffer data (1 bit per pixel, packed)
+              Must be 512 bytes for 128x32 or 1024 bytes for 128x64
+        
+    Returns:
+        True if successful, False if wrong size
+    """
+    ...
+
+def oled_get_framebuffer_size() -> tuple[int, int, int]:
+    """Get the framebuffer dimensions
+    
+    Returns:
+        Tuple of (width, height, buffer_size_in_bytes)
+    """
+    ...
+
+def oled_set_pixel(x: int, y: int, color: int) -> bool:
+    """Set a single pixel on the OLED
+    
+    Note: Call oled_show() to make the change visible.
+    
+    Args:
+        x: X coordinate (0 to width-1)
+        y: Y coordinate (0 to height-1)
+        color: Pixel color (0=black/off, 1=white/on)
+        
+    Returns:
+        True if successful, False if OLED not connected
+    """
+    ...
+
+def oled_get_pixel(x: int, y: int) -> int:
+    """Get the value of a single pixel
+    
+    Args:
+        x: X coordinate (0 to width-1)
+        y: Y coordinate (0 to height-1)
+        
+    Returns:
+        Pixel color (0=black/off, 1=white/on, -1=error)
+    """
+    ...
+
 # ============================================================================
 # Probe Functions
 # ============================================================================

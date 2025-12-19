@@ -937,6 +937,8 @@ int gpioOutput[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 volatile bool readingGPIO = false;
 volatile bool readingADC = false;
 volatile bool usingI2C = false;
+unsigned long lastReadGPIOStartTime = 0;
+unsigned long readGPIOInterval = 3000;
 CurrentSenseState currentSenseState;
 
 void readGPIO( void ) {
@@ -944,6 +946,12 @@ void readGPIO( void ) {
     if ( false ) {
         return;
     }
+
+    if ( micros( ) - lastReadGPIOStartTime < readGPIOInterval ) {
+        return;
+    }
+
+    lastReadGPIOStartTime = micros( );
     
     // CRITICAL: Memory barrier to ensure Core 2 sees latest ownership flags from Core 1
     // Without this, Core 2 might use cached values and not skip claimed pins
@@ -1787,8 +1795,19 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
 
 float railSpread = 17.88;
 
+unsigned long lastShowLEDmeasurementsStartTime = 0;
+unsigned long showLEDmeasurementsInterval = 15000;
+
 void showLEDmeasurements( void ) {
     //return;
+
+  
+
+    if ( micros( ) - lastShowLEDmeasurementsStartTime < showLEDmeasurementsInterval ) {
+        return;
+    }
+
+    lastShowLEDmeasurementsStartTime = micros( );
 
     for ( int i = 0; i < 8; i++ ) {
         int samples = 8;

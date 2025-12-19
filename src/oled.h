@@ -219,7 +219,26 @@ public:
     void clearLine(int line);
     void showFileStatus(const char* currentPath, int fileCount, const char* selectedFile);
     void showFileStatusScrolled(const char* visibleText, int fileCount, int cursorPosition);
-    void showMultiLineSmallText(const char* text, bool clear = true);
+    void showMultiLineSmallText(const char* text, bool clear = true, bool show = true);
+    void resetMultiLineSmallText(); // Reset scroll position for showMultiLineSmallText
+    
+    // Advanced small text buffer display with editing support
+    struct SmallTextDisplayConfig {
+        const char* text;              // Text buffer to display
+        SmallFont font;                // Font to use
+        bool clear_before;             // Clear display before drawing
+        bool show_after;               // Show display after drawing
+        bool enable_cursor;            // Show cursor (for editing mode)
+        int cursor_line;               // Cursor line position (0-based)
+        int cursor_col;                // Cursor column position (0-based)
+        int start_line;                // First line to display (for scrolling)
+        int max_lines;                 // Maximum lines to show (-1 = auto-calculate)
+        int horizontal_offset;         // Horizontal scroll offset for current line
+        bool highlight_cursor_line;    // Highlight entire cursor line
+        const char* status_text;       // Optional status text at bottom
+    };
+    
+    void showSmallTextBuffer(const SmallTextDisplayConfig& config);
     
     // Small font functions
     void setSmallFont(SmallFont smallFont);
@@ -316,6 +335,13 @@ int initOLED(void);
 int oledTest(int sdaRow = NANO_D2, int sclRow = NANO_D3, int sdaPin = 26, int sclPin = 27, int leaveConnections = 1);
 void testOLEDSmallFonts(void);
 FontFamily mapConfigValueToFontFamily(int configValue);
+
+// Bitmap buffer access - exposed for MicroPython
+extern uint8_t customBitmapBuffer[1024];
+extern int customBitmapWidth;
+extern int customBitmapHeight;
+extern bool customBitmapLoaded;
+bool loadBitmapFromFile(const char* filepath);
 
 // Bitmap data
 extern const unsigned char jogo255[];

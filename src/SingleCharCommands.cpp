@@ -226,6 +226,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\t$ = calibrate DACs\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\t= = dump oled frame buffer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tk = show oled in terminal\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tt = OLED terminal mode\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tR = show board LEDs\n\r" );
         // shownMenuItems += printMenuLine( showExtraMenu, 3, "\t% = list all filesystem contents\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tE = don't show this menu\n\r" );
@@ -657,14 +658,112 @@ void SingleCharCommands::initializeCommands( ) {
                      "Wavegen test.",
                      cmd_wavegen, MENU_DEBUG, CAT_ADVANCED );
 
-    registerCommand( 't', "print text from terminal",
-                     "Print text from terminal.",
-                     cmd_printTextFromTerminal, MENU_DEBUG, CAT_ADVANCED );
+    registerCommand( 't', "OLED terminal mode",
+                     "Interactive OLED terminal - type text to display on OLED. Press ESC to exit, 'c' to clear.",
+                     cmd_printTextFromTerminal, MENU_ADVANCED, CAT_SETTINGS );
 }
 
 CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
-    OLEDprintFromTerminal( );
-    return CMD_DONT_SHOW_MENU;
+    // Interactive OLED terminal mode
+    Jerial.println( "\n\r╭────────────────────────────────────╮" );
+    Jerial.println( "│     OLED Terminal Mode             │" );
+    Jerial.println( "├────────────────────────────────────┤" );
+    Jerial.println( "│ Type text to display on OLED       │" );
+    Jerial.println( "│ Press Ctrl+Q to exit               │" );
+    Jerial.println( "│ Ctrl+A to clear display            │" );
+    Jerial.println( "╰────────────────────────────────────╯\n\r" );
+    
+    if (!oled.isConnected()) {
+        Jerial.println( "✗ OLED not connected" );
+        Jerial.println( "  Use '.' command to connect OLED first" );
+        return CMD_DONT_SHOW_MENU;
+    }
+    Serial.write(0x0E); // interactive mode on
+    delay(10);
+
+    // Clear OLED and prepare for text
+    OLEDOut.clear();
+    OLEDOut.println( "OLED Terminal" );
+    OLEDOut.println( "Type below:" );
+    
+    Jerial.println( "Ready. Type your text:" );
+    
+    String inputLine = "";
+    bool exitMode = false;
+    
+    while (!exitMode) {
+        if (Jerial.available() > 0) {
+            char ch = Jerial.read();
+            
+            // Check for exit conditions
+            if (ch == 17) {  // Ctrl+Q 
+                exitMode = true;
+                Jerial.println( "\n\r✓ Exiting OLED terminal mode" );
+                break;
+            }
+            
+            // Handle special commands
+            if (ch == 0x01) {
+                // Clear display
+                OLEDOut.clear();
+                Jerial.println( "[Display cleared]" );
+                continue;
+            }
+            
+
+            OLEDOut.write(ch);
+
+            if (ch == '\n') {
+                Serial.println(" -");
+                Serial.flush();
+                //continue;
+            } else {
+                Serial.print(ch);
+                Serial.flush();
+            }
+            // Echo to serial
+  
+            
+            // Jerial.write(ch);
+            // Jerial.flush();
+            
+            // Handle newline
+            // if (ch == '\n' || ch == '\r') {
+            //     if (inputLine.length() > 0) {
+            //         // Send line to OLED
+            //         OLEDOut.println(inputLine);
+            //         inputLine = "";
+            //     }
+            //     continue;
+            // }
+            
+            // Handle backspace
+            // if (ch == '\b' || ch == 0x7F) {
+            //     if (inputLine.length() > 0) {
+            //         inputLine.remove(inputLine.length() - 1);
+            //     }
+            //     continue;
+            // }
+            
+            // // Add character to line buffer
+            // if (ch >= 32 && ch < 127) {  // Printable characters
+            //     inputLine += ch;
+                
+            //     // Auto-send if line gets too long
+            //     if (inputLine.length() >= 21) {  // Max chars per line on OLED
+            //         OLEDOut.println(inputLine);
+            //         Jerial.println();  // Newline on serial
+            //         inputLine = "";
+            //     }
+            // }
+        }
+        
+        // Small delay to prevent busy-waiting
+        delay(1);
+    }
+    Serial.write(0x0F); // interactive mode off
+    delay(10);
+    return CMD_SHOW_MENU;
 }
 // ============================================================================
 // Command Callback Implementations

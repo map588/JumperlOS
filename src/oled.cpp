@@ -349,10 +349,11 @@ oled::oled( ) {}
 // Helper function to load bitmap from filesystem
 // Returns true if successfully loaded, false otherwise
 // Bitmap data is stored in a static buffer
-static uint8_t customBitmapBuffer[ 1024 ] = { 0 }; // Support up to 128x64 displays (1024 bytes)
-static int customBitmapWidth = 0;
-static int customBitmapHeight = 0;
-static bool customBitmapLoaded = false;
+// Bitmap buffer - exposed for MicroPython access
+uint8_t customBitmapBuffer[ 1024 ] = { 0 }; // Support up to 128x64 displays (1024 bytes)
+int customBitmapWidth = 0;
+int customBitmapHeight = 0;
+bool customBitmapLoaded = false;
 
 // Helper to check if string looks like a file path
 bool looksLikeFilePath( const char* str ) {
@@ -471,6 +472,13 @@ bool loadBitmapFromFile( const char* filepath ) {
     return false;
 }
 
+void oled::displayBitmap( int x, int y, const unsigned char* bitmap, int width, int height ) {
+    if ( !oledConnected && stillWriteToFramebuffer == false )
+        return;
+    
+    getDisplay().drawBitmap( x, y, bitmap, width, height, 1 );
+}
+
 // Initialization
 int oled::init( ) {
     #if OLED_DEBUG
@@ -554,6 +562,10 @@ int oled::init( ) {
     }
     // Set font from config value (config value IS the FontFamily enum)
     if ( jumperlessConfig.top_oled.font >= 0 && jumperlessConfig.top_oled.font <= FONT_PRAGMATISM ) {
+        // Serial.print(" Font: ");
+        // Serial.print(jumperlessConfig.top_oled.font);
+        // Serial.flush();
+        // delay(100);
         FontFamily family = (FontFamily)jumperlessConfig.top_oled.font;
         setFontForSize( family, 2 ); // Use size 2 (large/12pt) as default
         currentFontFamily = family;
@@ -1935,34 +1947,328 @@ void oled::showFileStatusScrolled( const char* visibleText, int fileCount, int c
     usingSmallFont = false;
 }
 
-void oled::showMultiLineSmallText( const char* text, bool clear ) {
+void oled::showMultiLineSmallText( const char* text, bool clear, bool show ) {
     if ( !oledConnected && stillWriteToFramebuffer == false )
         return;
 
-    if ( clear && oledConnected ) {
-        getDisplay().clearDisplay( );
+    // Static line buffer for terminal-like scrolling
+    static char lineBuffer[8][32];  // Max 8 lines, 32 chars each
+    static int lineCount = 0;
+    static int currentLinePos = 0;  // Current position in the current line
+    
+    if ( clear ) {
+        clearFramebuffer( );
+        // Clear line buffer
+        for (int i = 0; i < 8; i++) {
+            memset(lineBuffer[i], 0, 32);
+        }
+        lineCount = 0;
+        currentLinePos = 0;
     }
 
     // Store current font before changing
     const GFXfont* savedFont = currentFont;
     FontFamily savedFamily = currentFontFamily;
+    uint8_t savedTextSize = currentTextSize;
 
-    // Use default small font for better text density
-    setSmallFont( DEFAULT_SMALL_FONT );
-    getDisplay().setTextWrap( false ); // Disable text wrapping - let text fall off the edge
-
-    // Simply print the text without wrapping
-    setCursor( 0, 8 ); // Start at top with proper baseline
-    getDisplay().print( text );
-
-    if ( clear && oledConnected ) {
-        getDisplay().display( );
+    // Set Andale Mono 5pt directly (font index 12) - most reliable approach
+    // CRITICAL: Must set font on display BEFORE drawing
+    currentFont = fontList[ 12 ].font;  // ANDALEMO5pt7b
+    currentFontFamily = fontList[ 12 ].family;
+    getDisplay().setFont( currentFont );
+    
+    // Ensure text size is 1 for small fonts (critical!)
+    getDisplay().setTextSize( 1 );
+    this->currentTextSize = 1;
+    
+    // Use 8-pixel line height for compact display (allows 4 lines on 32px display)
+    int lineHeight = 8;
+    int maxVisibleLines = displayHeight / lineHeight;
+    
+    // Calculate max chars per line based on display width
+    int charWidth = getCharacterWidth();
+    const int maxCharsPerLine = charWidth > 0 ? (displayWidth / charWidth) : 21;
+    
+    // Ensure we have at least one line
+    if (lineCount == 0) {
+        lineCount = 1;
+        lineBuffer[0][0] = '\0';
+        currentLinePos = 0;
+    }
+    
+    // Process incoming text character by character
+    for (size_t i = 0; text[i] != '\0'; i++) {
+        char c = text[i];
+        
+        // Handle newline - move to next line
+        if (c == '\n') {
+            // Finalize current line
+            lineBuffer[lineCount - 1][currentLinePos] = '\0';
+            
+            // Start new line
+            if (lineCount >= 8) {
+                // Scroll buffer up
+                for (int j = 0; j < 7; j++) {
+                    memcpy(lineBuffer[j], lineBuffer[j + 1], 32);
+                }
+                lineCount = 7;
+            }
+            lineCount++;
+            currentLinePos = 0;
+            lineBuffer[lineCount - 1][0] = '\0';
+            continue;
+        }
+        
+        // Add character to current line
+        if (currentLinePos < 31) {
+            lineBuffer[lineCount - 1][currentLinePos++] = c;
+            lineBuffer[lineCount - 1][currentLinePos] = '\0';
+        }
+        
+        // Check if we need to wrap (line is full)
+        if (currentLinePos >= maxCharsPerLine) {
+            // Find last space for word wrapping
+            int wrapPos = currentLinePos;
+            int lastSpace = -1;
+            
+            for (int j = currentLinePos - 1; j >= currentLinePos / 2; j--) {
+                if (lineBuffer[lineCount - 1][j] == ' ') {
+                    lastSpace = j;
+                    break;
+                }
+            }
+            
+            // If we found a space, wrap there
+            if (lastSpace > 0) {
+                // Save characters after the space for next line
+                char overflow[32];
+                int overflowLen = 0;
+                for (int j = lastSpace + 1; j < currentLinePos; j++) {
+                    overflow[overflowLen++] = lineBuffer[lineCount - 1][j];
+                }
+                overflow[overflowLen] = '\0';
+                
+                // Truncate current line at space
+                lineBuffer[lineCount - 1][lastSpace] = '\0';
+                
+                // Start new line with overflow
+                if (lineCount >= 8) {
+                    for (int j = 0; j < 7; j++) {
+                        memcpy(lineBuffer[j], lineBuffer[j + 1], 32);
+                    }
+                    lineCount = 7;
+                }
+                lineCount++;
+                strcpy(lineBuffer[lineCount - 1], overflow);
+                currentLinePos = overflowLen;
+            } else {
+                // No space found, hard wrap
+                lineBuffer[lineCount - 1][currentLinePos] = '\0';
+                
+                if (lineCount >= 8) {
+                    for (int j = 0; j < 7; j++) {
+                        memcpy(lineBuffer[j], lineBuffer[j + 1], 32);
+                    }
+                    lineCount = 7;
+                }
+                lineCount++;
+                currentLinePos = 0;
+                lineBuffer[lineCount - 1][0] = '\0';
+            }
+        }
+    }
+    
+    // Clear framebuffer and redraw all visible lines
+    clearFramebuffer();
+    
+    // Calculate which lines to display (show last N lines that fit)
+    int startLine = 0;
+    if ( lineCount > maxVisibleLines ) {
+        startLine = lineCount - maxVisibleLines;
+    }
+    
+    // Draw visible lines
+    // Start at y=7 to maximize space usage (baseline for first line)
+    // With 8px spacing, lines are at: 7, 15, 23, 31 (all fit within 32px)
+    for (int i = startLine; i < lineCount && (i - startLine) < maxVisibleLines; i++) {
+        int displayLine = i - startLine;
+        int y = (displayLine * lineHeight) + 7;
+        
+        if ( lineBuffer[i][0] != '\0' ) {
+            setCursor( 0, y, POS_BASELINE );
+            getDisplay().print( lineBuffer[i] );
+        }
     }
 
-    // Restore previous font
+    if ( show && oledConnected ) {
+        flushFramebuffer( );
+    }
+
+    // Restore previous font and text size
     currentFont = savedFont;
     currentFontFamily = savedFamily;
+    currentTextSize = savedTextSize;
     getDisplay().setFont( currentFont );
+    getDisplay().setTextSize( currentTextSize );
+    usingSmallFont = false;
+}
+
+// Reset the scroll position for showMultiLineSmallText (useful when starting a new display session)
+void oled::resetMultiLineSmallText() {
+    // Access the static variable from showMultiLineSmallText by calling with clear=true
+    // This is handled by the clear parameter, so this function is just for API clarity
+    // Users can also just call showMultiLineSmallText("", true, false) to reset
+}
+
+// Advanced small text buffer display with editing support
+void oled::showSmallTextBuffer( const SmallTextDisplayConfig& config ) {
+    if ( !oledConnected && stillWriteToFramebuffer == false )
+        return;
+    
+    if ( !config.text )
+        return;
+    
+    // Clear framebuffer if requested
+    if ( config.clear_before ) {
+        clearFramebuffer( );
+    }
+    
+    // Store current font before changing
+    const GFXfont* savedFont = currentFont;
+    FontFamily savedFamily = currentFontFamily;
+    uint8_t savedTextSize = currentTextSize;
+    
+    // Use specified small font
+    setSmallFont( config.font );
+    
+    // Ensure text size is 1 for small fonts (critical!)
+    getDisplay().setTextSize( 1 );
+    this->currentTextSize = 1;
+    
+    // Calculate display parameters from actual font metrics
+    FontMetrics metrics = getFontMetrics();
+    int charWidth = getCharacterWidth();
+    int lineHeight = metrics.lineHeight; // Use actual font line height
+    int maxLines = config.max_lines > 0 ? config.max_lines : (displayHeight / lineHeight);
+    
+    // Split text into lines
+    const char* lineStart = config.text;
+    const char* lineEnd;
+    int lineIndex = 0;
+    int displayLine = 0;
+    
+    // Process each line
+    while ( lineStart && *lineStart && displayLine < maxLines ) {
+        // Find end of line (newline or end of string)
+        lineEnd = strchr( lineStart, '\n' );
+        
+        // Calculate line length
+        size_t lineLen = lineEnd ? (lineEnd - lineStart) : strlen( lineStart );
+        
+        // Only display lines starting from start_line
+        if ( lineIndex >= config.start_line ) {
+            int currentY = (displayLine * lineHeight) + lineHeight; // Baseline position
+            
+            // Determine if this is the cursor line
+            bool isCursorLine = config.enable_cursor && (lineIndex == config.cursor_line);
+            
+            // Calculate horizontal offset for this line
+            int horizontalOffset = isCursorLine ? config.horizontal_offset : 0;
+            
+            // Draw line with optional horizontal scrolling
+            if ( lineLen > 0 ) {
+                // Use stack buffer to avoid heap allocation
+                char lineBuffer[64];
+                int startPos = horizontalOffset;
+                
+                // Clamp startPos to valid range
+                if ( startPos < 0 ) startPos = 0;
+                if ( startPos > lineLen ) startPos = lineLen;
+                
+                int availableLen = lineLen - startPos;
+                size_t maxChars = min( (size_t)availableLen, sizeof(lineBuffer) - 1 );
+                
+                if ( maxChars > 0 ) {
+                    memcpy( lineBuffer, lineStart + startPos, maxChars );
+                    lineBuffer[maxChars] = '\0';
+                    
+                    // Highlight cursor line if requested
+                    if ( isCursorLine && config.highlight_cursor_line ) {
+                        int textWidth = strlen(lineBuffer) * charWidth;
+                        fillRect( 0, currentY - lineHeight + 1, min(textWidth, displayWidth), lineHeight - 1, SSD1306_WHITE );
+                        setTextColor( SSD1306_BLACK );
+                        setCursor( 0, currentY, POS_BASELINE );
+                        getDisplay().print( lineBuffer );
+                        setTextColor( SSD1306_WHITE );
+                    } else {
+                        setCursor( 0, currentY, POS_BASELINE );
+                        getDisplay().print( lineBuffer );
+                    }
+                }
+            } else if ( isCursorLine && config.enable_cursor ) {
+                // Empty line with cursor - show space
+                setCursor( 0, currentY, POS_BASELINE );
+                getDisplay().print( " " );
+            }
+            
+            // Draw cursor if enabled and on this line
+            if ( isCursorLine && config.enable_cursor ) {
+                int visibleCursorPos = config.cursor_col - horizontalOffset;
+                int maxVisibleChars = displayWidth / charWidth;
+                
+                if ( visibleCursorPos >= 0 && visibleCursorPos < maxVisibleChars ) {
+                    // Get character at cursor position
+                    char cursorChar = ' ';
+                    int actualCursorPos = config.cursor_col;
+                    
+                    if ( actualCursorPos < lineLen ) {
+                        cursorChar = lineStart[actualCursorPos];
+                        if ( cursorChar == '\n' || cursorChar == '\0' ) {
+                            cursorChar = ' ';
+                        }
+                    }
+                    
+                    int cursorX = visibleCursorPos * charWidth;
+                    drawHighlightedChar( cursorX, currentY, cursorChar );
+                }
+            }
+            
+            displayLine++;
+        }
+        
+        lineIndex++;
+        
+        // Advance to next line
+        if ( lineEnd ) {
+            lineStart = lineEnd + 1; // Skip newline
+        } else {
+            break; // No more lines
+        }
+    }
+    
+    // Draw status text at bottom if provided
+    if ( config.status_text && strlen(config.status_text) > 0 ) {
+        int statusY = displayHeight - 1; // Bottom of screen (baseline)
+        
+        // Clear bottom area
+        fillRect( 0, statusY - lineHeight, displayWidth, lineHeight, SSD1306_BLACK );
+        
+        // Draw status text
+        setCursor( 0, statusY, POS_BASELINE );
+        getDisplay().print( config.status_text );
+    }
+    
+    // Show display if requested
+    if ( config.show_after && oledConnected ) {
+        flushFramebuffer( );
+    }
+    
+    // Restore previous font and text size
+    currentFont = savedFont;
+    currentFontFamily = savedFamily;
+    currentTextSize = savedTextSize;
+    getDisplay().setFont( currentFont );
+    getDisplay().setTextSize( currentTextSize );
     usingSmallFont = false;
 }
 
@@ -2971,8 +3277,8 @@ void oled::disconnect( void ) {
     //     return;
     // }
     // oledConnected = false;
-    clear( 1000 );
-    show( 1000 );
+    // clear( 1000 );
+    // show( 1000 );
 
     // Only remove crossbar bridges if not using hardwired pins
     if ( !oledUsingHardwiredPins ) {

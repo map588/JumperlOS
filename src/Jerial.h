@@ -777,16 +777,6 @@ public:
     void clear();
     
     /**
-     * Get current line number (0-based)
-     */
-    int getCurrentLine() const { return current_line; }
-    
-    /**
-     * Get current column position (0-based)
-     */
-    int getCurrentColumn() const { return current_col; }
-    
-    /**
      * Enable/disable scrolling (when disabled, wraps to line 0)
      */
     void setScrollEnabled(bool enabled) { scroll_enabled = enabled; }
@@ -798,16 +788,6 @@ public:
     bool isConnected() const;
     
 private:
-    // Line buffer for managing display content
-    char line_buffer[OLEDSTREAM_MAX_POSSIBLE_LINES][OLEDSTREAM_LINE_LENGTH];
-    
-    // Current position
-    int current_line;
-    int current_col;
-    
-    // Display dimensions
-    int max_lines; // Dynamically calculated based on display height (displayHeight / 8)
-    
     // Settings
     SmallFont current_font;
     bool auto_update;
@@ -819,13 +799,16 @@ private:
     // Newline filtering (prevent consecutive newlines)
     bool last_was_newline;
     
-    // Internal helpers
+    // Internal helpers (stubs - showMultiLineSmallText handles buffering)
     void newline();
     void scrollUp();
     void updateDisplay();
     void printChar(char c);
     void recalculateMaxLines(); // Recalculate max_lines from oled.displayHeight
     bool isANSIEscape(char c); // Check if character is part of ANSI sequence
+    
+    // Display dimensions (kept for compatibility)
+    int max_lines; // Dynamically calculated based on display height (displayHeight / 8)
 };
 
 // Global instance

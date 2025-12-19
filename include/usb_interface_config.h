@@ -36,8 +36,8 @@
 
 static const char* USB_CDC_NAMES[] = {
     "Jumperless Main",       // CDC 0 - Main serial
-    "Jumperless Serial 1",   // CDC 1 - Arduino/Serial1
-    "JL Logic Analyzer",     // CDC 2 - Logic analyzer (port 3)
+    "JL UART Passthrough",   // CDC 1 - Arduino/Serial1
+    "JL Micropython REPL",     // CDC 2 - Micropython REPL
     "JL TUI",                // CDC 3 - TUI
     "JL Serial 3"            // CDC 4 - Serial 3
 };

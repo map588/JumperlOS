@@ -2809,8 +2809,8 @@ bool writeStringToFile( const char* filename, const char* content ) {
         return false;
     }
 
-    if ( contentLength > 32768 ) { // Limit individual files to 32KB
-        addFilesystemMessage( "ERROR: File too large (" + String( contentLength / 1024 ) + "KB, max 32KB)", 196 );
+    if ( contentLength > 64 * 1024 ) { // Limit individual files to 32KB
+        addFilesystemMessage( "ERROR: File too large (" + String( contentLength / 1024 ) + "KB, max 64KB)", 196 );
         return false;
     }
 
@@ -2959,6 +2959,12 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #endif
 #ifdef INCLUDE_VIPERIDE_REINIT
         { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py" },
+#endif
+#ifdef INCLUDE_OSCILLOSCOPE
+        { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py" },
+#endif
+#ifdef INCLUDE_TEST_OLED_FEATURES
+        { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py" },
 #endif
     };
 

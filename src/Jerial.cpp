@@ -1592,18 +1592,12 @@ size_t JerialClass::writeToOutputs(const uint8_t *buffer, size_t size) {
 OLEDStream OLEDOut;
 
 OLEDStream::OLEDStream() 
-    : current_line(0),
-      current_col(0),
-      max_lines(4), // Default for 32px height, will be recalculated
-      current_font(DEFAULT_SMALL_FONT),
-      auto_update(true),
+    : current_font(DEFAULT_SMALL_FONT),
+      auto_update(true),  // CRITICAL: Must be true for print redirect to work
       scroll_enabled(true),
       in_ansi_escape(false),
-      last_was_newline(false) {
-    // Initialize line buffer
-    for (int i = 0; i < OLEDSTREAM_MAX_POSSIBLE_LINES; i++) {
-        memset(line_buffer[i], 0, OLEDSTREAM_LINE_LENGTH);
-    }
+      last_was_newline(false),
+      max_lines(4) { // Default for 32px height
     recalculateMaxLines();
 }
 
@@ -1649,36 +1643,45 @@ size_t OLEDStream::write(uint8_t byte) {
         return 1; // Character consumed, don't display
     }
     
+    // Build current character/string to send
+    char charBuf[5] = {0};
+    int charLen = 0;
+    
     // Handle special characters
     if (c == '\n' || c == '\r') {
         // Filter consecutive newlines - only process if last wasn't a newline
         if (!last_was_newline) {
-            newline();
+            charBuf[charLen++] = '\n';
             last_was_newline = true;
+        } else {
+            return 1; // Skip consecutive newlines
         }
-        // Otherwise skip it
     } else if (c == '\t') {
         // Tab = 4 spaces
-        for (int i = 0; i < 4; i++) {
-            printChar(' ');
-        }
+        charBuf[0] = ' ';
+        charBuf[1] = ' ';
+        charBuf[2] = ' ';
+        charBuf[3] = ' ';
+        charLen = 4;
         last_was_newline = false;
     } else if (c == '\b') {
-        // Backspace
-        if (current_col > 0) {
-            current_col--;
-            line_buffer[current_line][current_col] = ' ';
-        }
+        // Backspace - not easily supported with showMultiLineSmallText
+        // Just ignore for now
         last_was_newline = false;
+        return 1;
     } else if (c >= 32 && c <= 126) {
         // Printable ASCII character
-        printChar(c);
+        charBuf[charLen++] = c;
         last_was_newline = false;
+    } else {
+        // Ignore other control characters
+        return 1;
     }
-    // Ignore other control characters
     
-    if (auto_update) {
-        updateDisplay();
+    // Send to showMultiLineSmallText (clear=false to append)
+    if (charLen > 0 && auto_update) {
+        charBuf[charLen] = '\0';
+        oled.showMultiLineSmallText(charBuf, false, true);
     }
     
     return 1;
@@ -1689,15 +1692,11 @@ size_t OLEDStream::write(const uint8_t *buffer, size_t size) {
         return 0;
     }
     
+    // DON'T disable auto-update - we want each character to update immediately
+    // The original code disabled it for performance, but that breaks print redirect
+    // because characters never make it to showMultiLineSmallText
     for (size_t i = 0; i < size; i++) {
-        bool saved_auto = auto_update;
-        if (i < size - 1) {
-            auto_update = false;
-        }
-        
         write(buffer[i]);
-        
-        auto_update = saved_auto;
     }
     
     return size;
@@ -1712,21 +1711,13 @@ void OLEDStream::setSmallFont(SmallFont font) {
 }
 
 void OLEDStream::clear() {
-    // Recalculate max lines in case display size changed
-    recalculateMaxLines();
-    
-    for (int i = 0; i < max_lines; i++) {
-        memset(line_buffer[i], 0, OLEDSTREAM_LINE_LENGTH);
-    }
-    
-    current_line = 0;
-    current_col = 0;
+    // Reset state
     last_was_newline = false;
     in_ansi_escape = false;
     
+    // Clear OLED and reset showMultiLineSmallText buffer
     if (isConnected()) {
-        oled.clear();
-        oled.show();
+        oled.showMultiLineSmallText("", true, true);
     }
 }
 
@@ -1734,63 +1725,40 @@ bool OLEDStream::isConnected() const {
     return oled.isConnected();
 }
 
-// Internal Helpers
+// Internal Helpers - simplified since showMultiLineSmallText handles buffering
+// These are kept as stubs for compatibility but don't do anything
 void OLEDStream::printChar(char c) {
-    if (current_col >= OLEDSTREAM_LINE_LENGTH - 1) {
-        newline();
-    }
-    
-    line_buffer[current_line][current_col++] = c;
-    line_buffer[current_line][current_col] = '\0';
+    // No-op: showMultiLineSmallText handles buffering
 }
 
 void OLEDStream::newline() {
-    current_col = 0;
-    current_line++;
-    
-    if (current_line >= max_lines) {
-        if (scroll_enabled) {
-            scrollUp();
-            current_line = max_lines - 1;
-        } else {
-            current_line = 0;
-        }
-    }
-    
-    memset(line_buffer[current_line], 0, OLEDSTREAM_LINE_LENGTH);
+    // No-op: showMultiLineSmallText handles buffering
 }
 
 void OLEDStream::scrollUp() {
-    for (int i = 0; i < max_lines - 1; i++) {
-        memcpy(line_buffer[i], line_buffer[i + 1], OLEDSTREAM_LINE_LENGTH);
-    }
-    
-    memset(line_buffer[max_lines - 1], 0, OLEDSTREAM_LINE_LENGTH);
+    // No-op: showMultiLineSmallText handles scrolling
 }
 
 void OLEDStream::updateDisplay() {
+    // No-op: showMultiLineSmallText is called directly in write()
+    // This is only here for manual flush() calls
     if (!isConnected()) {
         return;
     }
     
-    oled.clearFramebuffer();
-    oled.setSmallFont(current_font);
-    
-    for (int i = 0; i < max_lines; i++) {
-        if (line_buffer[i][0] != '\0') {
-            int16_t y = (i * 8) + 8;
-            oled.setCursor(0, y);
-            oled.print(line_buffer[i]);
-        }
-    }
-    
-    oled.restoreNormalFont();
-    oled.show();
+    // Just ensure the display is updated
+    oled.flushFramebuffer();
 }
 
 void OLEDStream::recalculateMaxLines() {
     if (isConnected()) {
-        max_lines = oled.displayHeight / 8;
+        // Get actual line height from current small font
+        oled.setSmallFont(current_font);
+        FontMetrics metrics = oled.getFontMetrics();
+        int lineHeight = metrics.lineHeight > 0 ? metrics.lineHeight : 11; // Default to 11 if invalid
+        
+        max_lines = oled.displayHeight / lineHeight;
+        
         // Ensure we don't exceed buffer size
         if (max_lines > OLEDSTREAM_MAX_POSSIBLE_LINES) {
             max_lines = OLEDSTREAM_MAX_POSSIBLE_LINES;
@@ -1799,6 +1767,8 @@ void OLEDStream::recalculateMaxLines() {
         if (max_lines < 1) {
             max_lines = 1;
         }
+        
+        oled.restoreNormalFont();
     } else {
         max_lines = 4; // Default for 32px height
     }
