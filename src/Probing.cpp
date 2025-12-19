@@ -2316,7 +2316,17 @@ restartProbingNoPrint:
     connectedRows[ 0 ] = -1;
     probeActive = false;
     probeHighlight = -1;
-    //showProbeLEDs = 4;
+    connectOrClearProbe = -1; // Reset connect/clear state
+    
+    // CRITICAL: Restore LED state based on actual switch position when exiting probing
+    // This ensures LEDs reflect the correct mode after probing completes
+    // Must be done AFTER resetting connectOrClearProbe to ensure clean state
+    if ( switchPosition == 0 ) {
+        showProbeLEDs = 3; // Restore to measure mode
+    } else {
+        showProbeLEDs = 4; // Restore to select idle mode
+    }
+    
     brightenNet( -1 );
     // showLEDsCore2 = 1;
     //  Serial.print("millis() - timer[0] = ");
@@ -5095,6 +5105,11 @@ unsigned long probeRainbowTimer = 0;
 
 unsigned long lastProbeLEDsTime = 0;
 unsigned long probeLEDsDelay = 20;
+unsigned long lastProbeStateValidation = 0;
+const unsigned long PROBE_STATE_VALIDATION_INTERVAL = 1000; // Check state every 1 second
+unsigned long lastPersistentStateChange = 0; // Track when we changed to a persistent state
+int lastRequestedPersistentState = 0; // Track what persistent state was requested
+bool persistentStateChangeNeedsRetry = false; // Flag to retry persistent state after 1 second
 
 void Probing::probeLEDhandler( void ) {
 
@@ -5109,23 +5124,79 @@ void Probing::probeLEDhandler( void ) {
 
     while(checkingButton == 1 || ProbeButton::getInstance().getButtonState() != 0) {
        tight_loop_contents();
-       if (millis() - currentTime > 100) {
+       if (millis() - currentTime > 500) {
+        Serial.println("timeout");
+        Serial.flush();
         return;
        }
     }
 
     showingProbeLEDs = 1;
-    // if (lastProbeLEDs != showProbeLEDs) {
-    // Serial.print("showProbeLEDs = ");
-    // Serial.println(showProbeLEDs);
-    // Serial.print("lastProbeLEDs = ");
-    // Serial.println(lastProbeLEDs);
-    // Serial.flush();
-    // // }
+    
+    // RETRY MECHANISM: 1 second after setting a persistent state, verify and re-send
+    // This ensures the LED state "sticks" even if timing issues interfered with first attempt
+    if ( persistentStateChangeNeedsRetry && 
+         ( currentTime - lastPersistentStateChange ) >= 1000 ) {
+        
+        // Verify current state still matches what we wanted to set
+        int expectedState = ( switchPosition == 0 ) ? 3 : 4;
+        
+        if ( lastRequestedPersistentState == expectedState ) {
+            // Force re-send of the persistent state to ensure it "sticks"
+            // This bypasses the early return checks
+            if ( showProbeLEDs == 0 ) {
+                showProbeLEDs = expectedState;
+            }
+        }
+        
+        // Clear retry flag after attempting (whether state matched or not)
+        persistentStateChangeNeedsRetry = false;
+    }
+    
+    // PERIODIC STATE VALIDATION: Every second, verify LEDs reflect actual system state
+    // This ensures LEDs stay synchronized even if interference or timing issues occur
+    if ( ( currentTime - lastProbeStateValidation ) >= PROBE_STATE_VALIDATION_INTERVAL ) {
+        lastProbeStateValidation = currentTime;
+        
+        // Determine what state SHOULD be displayed based on actual system state
+        int expectedState = 0;
+        
+        // Base state on switch position (the fundamental state)
+        if ( switchPosition == 0 ) {
+            expectedState = 3; // Measure mode
+        } else if ( switchPosition == 1 ) {
+            expectedState = 4; // Select idle mode
+        }
+        
+        // If expected state doesn't match what's currently shown, force an update
+        // Skip validation if we're in the middle of an event-driven state (1, 2, 8, 10)
+        // Those are transient and will naturally return to the base state
+        if ( expectedState != 0 && lastProbeLEDs != expectedState ) {
+            // Only validate persistent states (3, 4) - event states are intentionally transient
+            if ( lastProbeLEDs == 3 || lastProbeLEDs == 4 || lastProbeLEDs == 0 ) {
+                // LEDs are out of sync with actual state - force correction
+                showProbeLEDs = expectedState;
+            }
+        }
+    }
+    
+    // Only update if state has changed or if it's case 2 (fade needs multiple updates)
+    // Case 2 is special - it cycles through brightness levels based on removeFade variable
+    // Persistent states (3, 4) only need update when state changes OR during retry
+    if ( showProbeLEDs == 0 && !persistentStateChangeNeedsRetry ) {
+        // No update requested and no retry pending
+        showingProbeLEDs = 0;
+        return;
+    }
+    
+    if ( showProbeLEDs == lastProbeLEDs && showProbeLEDs != 2 && !persistentStateChangeNeedsRetry ) {
+        // Already showing correct state and not a fade animation and no retry pending
+        showingProbeLEDs = 0;
+        return;
+    }
 
-    // if ( showProbeLEDs != 0 ) {
-        lastProbeLEDs = showProbeLEDs;
-    // }
+    // Store the requested state to display
+    int requestedState = showProbeLEDs;
 
     switch ( showProbeLEDs ) {
     case 1:
@@ -5137,7 +5208,6 @@ void Probing::probeLEDhandler( void ) {
         // probeLEDs[0].setColorCode(0x000011);
         //  Serial.println(showProbeLEDs);
         //   probeLEDs.show();
-         showProbeLEDs = 0;
         break;
     case 2: {
 
@@ -5189,7 +5259,6 @@ void Probing::probeLEDhandler( void ) {
         // probeLEDs[0].setColorCode(0x110000);
         // probeLEDs.show();
         //  Serial.println(showProbeLEDs);
-        showProbeLEDs = 0;
         break;
     }
     case 3:
@@ -5202,7 +5271,7 @@ void Probing::probeLEDhandler( void ) {
 
         probeLEDs.setPixelColor( 0, 0x170c17 ); // select idle
         // probeLEDs[0].setColorCode(0x110011);
-        delay(20);
+        // delay(20);
         // probeLEDs.showBlocking();
         //  Serial.println("\n\n\rselect idle\n\n\r");
         //  Serial.flush();
@@ -5249,18 +5318,16 @@ void Probing::probeLEDhandler( void ) {
 
     case 10:
         probeLEDs.setPixelColor( 0, 0x000000 ); // off
-        showProbeLEDs = 0;
         break;
     default:
         break;
     }
 
-    showProbeLEDs = 0;
-
+    // Check if mode changed for timing purposes
     // Only update settle timer when LED MODE changes (not during fade brightness changes)
     // Case 2 is the remove fade - same mode, just brightness changes
     // We only care about mode changes that affect current draw significantly
-    bool modeChanged = ( showProbeLEDs != 0 && lastProbeLEDs != showProbeLEDs );
+    bool modeChanged = ( requestedState != 0 && lastProbeLEDs != requestedState );
 
     // CRITICAL: Probe LEDs always use blocking PIO transfers
     // This eliminates any DMA-related interference with INA219 current readings
@@ -5269,10 +5336,32 @@ void Probing::probeLEDhandler( void ) {
 
     // Track when LED MODE was changed so we can wait for current to stabilize
     // Don't update for every fade step - that would block current reading continuously
-    if ( modeChanged && showProbeLEDs != 2 ) { // Don't count fade updates (case 2)
+    if ( modeChanged && requestedState != 2 ) { // Don't count fade updates (case 2)
         lastProbeLEDUpdateTime = millis( );
     }
 
+    // Update lastProbeLEDs to track what we just displayed
+    lastProbeLEDs = requestedState;
+
+    // Track persistent state changes for retry mechanism
+    // If we just set a persistent state (3 or 4), schedule a retry in 1 second
+    if ( ( requestedState == 3 || requestedState == 4 ) && modeChanged ) {
+        lastPersistentStateChange = millis( );
+        lastRequestedPersistentState = requestedState;
+        persistentStateChangeNeedsRetry = true;
+    }
+
+    // IMPORTANT: Only clear EVENT-DRIVEN states (1, 2, 8, 10)
+    // Keep PERSISTENT states (3=measure, 4=select idle) so LEDs always reflect current mode
+    // Case 3 and 4 reflect switch position and should persist until state changes
+    // Case 1, 2, 8, 10 are one-shot events that should clear after display
+    if ( showProbeLEDs == 1 || showProbeLEDs == 2 || showProbeLEDs == 8 || showProbeLEDs == 10 ) {
+        showProbeLEDs = 0; // Clear event-driven states
+    }
+    // For persistent states (3, 4), keep showProbeLEDs set so LEDs always reflect current mode
+    // This way if handler is called when already in mode 3, it will skip update (early return)
+    // But if something external changes LED state, setting showProbeLEDs=3 again will restore it
+    
     showingProbeLEDs = 0;
 }
 

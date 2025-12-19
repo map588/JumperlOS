@@ -86,7 +86,7 @@ struct config {
         float adc_4_spread = 5.0;
         float adc_7_zero = 9.0;
         float adc_7_spread = 18.28;
-        int probe_max = 4040;
+        int probe_max = 4055;
         int probe_min = 10;
         // Hysteresis thresholds to prevent oscillation between modes
         // Switch to SELECT mode when current > high threshold

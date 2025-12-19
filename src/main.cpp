@@ -117,7 +117,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 150;
 
-const char firmwareVersion[] = "5.6.2.2"; //! remember to update this
+const char firmwareVersion[] = "5.6.2.4"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -1498,7 +1498,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
         schedulerTimer = micros( );
         core2busy = false;
-    }  else if ( showProbeLEDs != 0 && checkingButton == 0 && ProbeButton::getInstance().getButtonState() == 0 ) {
+    }  else if ( checkingButton == 0 && ProbeButton::getInstance().getButtonState() == 0 ) {
         t[ 14 ] = micros( );
         probeLEDhandler( );
         t[ 15 ] = micros( );

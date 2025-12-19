@@ -128,8 +128,8 @@ public:
     
     ServiceStatus service() override;
     const char* getName() const override { return "ProbeSwitch"; }
-    ServicePriority getPriority() const override { return ServicePriority::LOW; }
-    unsigned long interval_ms = 1500; // switchPositionCheckInterval;
+    ServicePriority getPriority() const override { return ServicePriority::NORMAL; }
+    unsigned long interval_ms = 500; // switchPositionCheckInterval;
     
 private:
     ProbeSwitch() = default;

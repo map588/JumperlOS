@@ -12,7 +12,7 @@
 // Comment out any example you don't want to include
 #define INCLUDE_ADC_BASICS
 #define INCLUDE_DAC_BASICS
-#define INCLUDE_FAKE_GPIO
+// #define INCLUDE_FAKE_GPIO
 #define INCLUDE_GPIO_BASICS
 #define INCLUDE_INTERACTION_DEMO
 #define INCLUDE_LED_BRIGHTNESS_CONTROL

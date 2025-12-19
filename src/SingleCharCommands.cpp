@@ -709,6 +709,8 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
                 Jerial.println( "[Display cleared]" );
                 continue;
             }
+
+
             
 
             OLEDOut.write(ch);
@@ -717,7 +719,10 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
                 Serial.println(" -");
                 Serial.flush();
                 //continue;
-            } else {
+            } else if (ch == ' ' || ch == '\t' || ch == 20) {
+                Serial.print(" ");
+                Serial.flush();
+            }else {
                 Serial.print(ch);
                 Serial.flush();
             }
@@ -738,12 +743,7 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
             // }
             
             // Handle backspace
-            // if (ch == '\b' || ch == 0x7F) {
-            //     if (inputLine.length() > 0) {
-            //         inputLine.remove(inputLine.length() - 1);
-            //     }
-            //     continue;
-            // }
+
             
             // // Add character to line buffer
             // if (ch >= 32 && ch < 127) {  // Printable characters

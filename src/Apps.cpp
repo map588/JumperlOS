@@ -179,6 +179,198 @@ void leaveApp( int lastNetSlot ) {
 
 void fileManagerApp( void ) { filesystemApp( true ); }
 
+void calibrateProbeSwitchThresholds( void ) {
+    b.clear( );
+    
+    cycleTerminalColor( true, 5.0, true );
+    Serial.println( "\n\rProbe Switch Threshold Calibration" );
+    cycleTerminalColor( );
+    Serial.println( "This will automatically set the switch position detection thresholds\n\r" );
+    
+    int lastNetSlot = netSlot;
+    netSlot = 8;
+    globalState.clearAllConnections( );
+    refreshConnections( -1, 0 );
+    routableBufferPower( 1, 1, 1 );
+    delay( 500 );
+    
+    // Arrays to store current readings for both positions
+    const int NUM_READINGS = 10;
+    float measureReadings[ NUM_READINGS ];
+    float selectReadings[ NUM_READINGS ];
+    int measureCount = 0;
+    int selectCount = 0;
+    
+    // ===== MEASURE MODE CALIBRATION =====
+    b.clear( );
+    b.print( "Measure", 0x000510, 0x000000, 0, 1, -1 );
+
+    
+    // Draw diagram showing probe in measure position (switch away from tip)
+    b.printRawRow( 0b00010000, 1, 0x100008, 0x000000 );
+    b.printRawRow( 0b00010000, 2, 0x100008, 0x000000 );
+    b.printRawRow( 0b00010000, 3, 0x100008, 0x000000 );
+    b.printRawRow( 0b00001000, 4, 0x100008, 0x000000 ); // Switch indicator
+    b.printRawRow( 0b00000100, 5, 0x100008, 0x000000 );
+    b.printRawRow( 0b00000100, 6, 0x100008, 0x000000 );
+    b.printRawRow( 0b00000100, 7, 0x100008, 0x000000 );
+    b.printRawRow( 0b00000100, 8, 0x100008, 0x000000 );
+    b.printRawRow( 0b00001110, 9, 0x100008, 0x000000 );
+    b.printRawRow( 0b00001110, 10, 0x100008, 0x000000 );
+    b.printRawRow( 0b00000010, 11, 0x100008, 0x000000 );
+    b.printRawRow( 0b00000100, 12, 0x100008, 0x000000 );
+    b.printRawRow( 0b00001000, 13, 0x100008, 0x000000 );
+    b.printRawRow( 0b00001000, 14, 0x100008, 0x000000 );
+    
+    oled.clear( );
+    oled.print( "Move probe switch\n" );
+    oled.print( "AWAY from tip\n" );
+    oled.print( "(MEASURE mode)\n\n" );
+    oled.print( "Hold clickwheel\n" );
+    oled.print( "when ready" );
+    oled.show( );
+    
+    Serial.println( "\n\rStep 1: MEASURE mode (switch away from tip)" );
+    Serial.println( "Move the probe switch AWAY from the TIP" );
+    Serial.println( "Hold the clickwheel when ready\n\r" );
+    Serial.flush( );
+    
+    // Wait for user confirmation
+    encoderButtonState = IDLE;
+    while ( encoderButtonState != HELD ) {
+        delay( 10 );
+    }
+    delay( 500 );
+    encoderButtonState = IDLE;
+    
+    // Take readings in MEASURE mode
+    Serial.println( "Taking MEASURE mode readings..." );
+    b.print( "READ.", 0x100010, 0x000000, 0, -1, -1 );
+    for ( int i = 0; i < NUM_READINGS; i++ ) {
+        delay( 200 );
+        float current = checkProbeCurrent( );
+        measureReadings[ i ] = current;
+        Serial.printf( "Reading %d: %.3f mA\n\r", i + 1, current );
+        b.printRawRow( 0xFF << ( 7 - i ), 7, 0x001010, 0x000000 );
+    }
+    
+    // Calculate average for MEASURE mode
+    float measureAvg = 0;
+    for ( int i = 0; i < NUM_READINGS; i++ ) {
+        measureAvg += measureReadings[ i ];
+    }
+    measureAvg /= NUM_READINGS;
+    Serial.printf( "\nMEASURE mode average: %.3f mA\n\n\r", measureAvg );
+    
+    delay( 1000 );
+    
+    // ===== SELECT MODE CALIBRATION =====
+    b.clear( );
+    b.print( "Select", 0x000510, 0x000000, 0, 1, -1 );
+    
+    // Draw diagram showing probe in select position (switch towards tip)
+    b.printRawRow( 0b00000100, 1, 0x000510, 0x000000 );
+    b.printRawRow( 0b00000100, 2, 0x000510, 0x000000 );
+    b.printRawRow( 0b00001000, 3, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 4, 0x000510, 0x000000 ); // Switch indicator
+    b.printRawRow( 0b00011000, 5, 0x000510, 0x000000 );
+    b.printRawRow( 0b00011000, 6, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 7, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 8, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 9, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 10, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 11, 0x000510, 0x000000 );
+    b.printRawRow( 0b00001000, 12, 0x000510, 0x000000 );
+    b.printRawRow( 0b00000100, 13, 0x000510, 0x000000 );
+    b.printRawRow( 0b00000100, 14, 0x000510, 0x000000 );
+    
+    oled.clear( );
+    oled.print( "Move probe switch\n" );
+    oled.print( "TOWARDS tip\n" );
+    oled.print( "(SELECT mode)\n\n" );
+    oled.print( "Hold clickwheel\n" );
+    oled.print( "when ready" );
+    oled.show( );
+    
+    Serial.println( "\n\rStep 2: SELECT mode (switch towards tip)" );
+    Serial.println( "Move the probe switch TOWARDS the tip" );
+    Serial.println( "Hold the clickwheel when ready\n\r" );
+    Serial.flush( );
+    
+    // Wait for user confirmation
+    encoderButtonState = IDLE;
+    while ( encoderButtonState != HELD ) {
+        delay( 10 );
+    }
+    delay( 500 );
+    encoderButtonState = IDLE;
+    
+    // Take readings in SELECT mode
+    Serial.println( "Taking SELECT mode readings..." );
+    b.print( "READ.", 0x101010, 0x000000, 0, -1, -1 );
+    for ( int i = 0; i < NUM_READINGS; i++ ) {
+        delay( 200 );
+        float current = checkProbeCurrent( );
+        selectReadings[ i ] = current;
+        Serial.printf( "Reading %d: %.3f mA\n\r", i + 1, current );
+        b.printRawRow( 0xFF << ( 7 - i ), 7, 0x001010, 0x000000 );
+    }
+    
+    // Calculate average for SELECT mode
+    float selectAvg = 0;
+    for ( int i = 0; i < NUM_READINGS; i++ ) {
+        selectAvg += selectReadings[ i ];
+    }
+    selectAvg /= NUM_READINGS;
+    Serial.printf( "\nSELECT mode average: %.3f mA\n\n\r", selectAvg );
+    
+    // ===== CALCULATE THRESHOLDS =====
+    // Set thresholds with hysteresis in the middle of the two averages
+    // Add 20% buffer zone on each side to ensure reliable detection
+    float midpoint = ( measureAvg + selectAvg ) / 2.0;
+    float range = fabs( selectAvg - measureAvg );
+    float buffer = range * 0.15; // 15% buffer
+    
+    // Ensure MEASURE mode is always the lower value
+    float lowerAvg = min( measureAvg, selectAvg );
+    float higherAvg = max( measureAvg, selectAvg );
+    
+    // Set thresholds with hysteresis
+    jumperlessConfig.calibration.probe_switch_threshold_low = midpoint - buffer;
+    jumperlessConfig.calibration.probe_switch_threshold_high = midpoint + buffer;
+    
+    Serial.println( "\n\r=== Calibration Results ===" );
+    Serial.printf( "MEASURE mode average: %.3f mA\n\r", lowerAvg );
+    Serial.printf( "SELECT mode average:  %.3f mA\n\r", higherAvg );
+    Serial.printf( "Midpoint: %.3f mA\n\r", midpoint );
+    Serial.printf( "Range: %.3f mA\n\r", range );
+    Serial.printf( "\nLow threshold:  %.3f mA (switch to MEASURE)\n\r", 
+                   jumperlessConfig.calibration.probe_switch_threshold_low );
+    Serial.printf( "High threshold: %.3f mA (switch to SELECT)\n\r", 
+                   jumperlessConfig.calibration.probe_switch_threshold_high );
+    Serial.println( "\n\rSaving configuration..." );
+    
+    // Display results on OLED
+    oled.clear( );
+    oled.setTextSize( 1 );
+    oled.print( "Calibration Done!\n\n" );
+    char oledBuffer[ 64 ];
+    snprintf( oledBuffer, sizeof( oledBuffer ), "Low:  %.2f mA\n", jumperlessConfig.calibration.probe_switch_threshold_low );
+    oled.print( oledBuffer );
+    snprintf( oledBuffer, sizeof( oledBuffer ), "High: %.2f mA\n", jumperlessConfig.calibration.probe_switch_threshold_high );
+    oled.print( oledBuffer );
+    oled.show( );
+    
+    // Show success on breadboard
+    b.clear( );
+    b.print( "DONE!", 0x002000, 0x000000, 1, -1, -1 );
+    
+    saveConfig( );
+    delay( 2000 );
+    
+    leaveApp( lastNetSlot );
+}
+
 void probeCalibApp( void ) {
     b.clear( );
 
@@ -196,7 +388,7 @@ oled.showMultiLineSmallText("Tap rows with the probe and rotate the clickweel un
 // oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
 // oled.showMultiLineSmallText("Hold the clickwheel when you're done\n\r", false, true);
 oled.flushFramebuffer( );
-
+// calibrateProbeSwitchThresholds();
 
 // OLEDOut.println("Test 1: PASS");
 // OLEDOut.println("Test 2: PASS");
@@ -1685,6 +1877,15 @@ void calibrateDacs( void ) {
     // showProbeLEDs = 1;
     refreshConnections( -1 );
     configChanged = true;
+    
+    // Run probe switch threshold calibration
+    Serial.println( "\n\n\r" );
+    Serial.println( "========================================" );
+    Serial.println( "Starting Probe Switch Calibration..." );
+    Serial.println( "========================================\n\r" );
+    delay( 1000 );
+    // calibrateProbeSwitchThresholds( );
+    
     if ( firstStart == 1 ) {
         initializeMicroPythonExamples( true );
 

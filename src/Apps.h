@@ -30,6 +30,7 @@ void fileManagerApp(void);
 
 void customApp(void);
 void xlsxGui(void);
+void calibrateProbeSwitchThresholds(void);
 void probeCalibApp(void);
 void jdiMIPdisplay(void);
 
