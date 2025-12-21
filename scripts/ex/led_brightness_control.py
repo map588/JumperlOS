@@ -1,6 +1,6 @@
 """
 LED Brightness Control Demo
-Touch breadboard pads 1-10 to control LED brightness levels.
+Touch breadboard pads 1-60 to control LED brightness levels.
 
 Hardware Setup:
 1. Connect LED anode to breadboard row 15
