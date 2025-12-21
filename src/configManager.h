@@ -26,10 +26,11 @@ struct StringIntEntry {
 void loadConfig(void);
 void saveConfig(void);
 void resetConfigToDefaults(int clearCalibration = 0, int clearHardware = 0);
+void loadHardwareFromEEPROM(void);  // Load hardware revision from EEPROM (survives config reset)
 
 // Firmware versioning and file provisioning
 bool checkAndHandleFirmwareUpdate(void);
-void provisionFirmwareFiles(void);
+void provisionFirmwareFiles(bool print = false);
 bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsigned int dataLen);
 int compareVersions(const char* v1, const char* v2);  // Compare version strings (X.Y.Z.W)
 

@@ -290,3 +290,5 @@ The `t` command provides a simple, interactive way to write text to the OLED dis
 
 Just type `t`, enter your text, and watch it appear on the OLED with automatic scrolling! 🖥️✨
 
+
+

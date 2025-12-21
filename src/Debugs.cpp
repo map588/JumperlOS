@@ -27,7 +27,7 @@
 
 
 bool debugFlagsMenu() {
-debugFlagInit();
+// debugFlagInit();
 
 debugFlags:
 

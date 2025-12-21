@@ -227,6 +227,7 @@ int gpioNet[ 42 ] = {
 };
 
 int revisionNumber = 0;
+int probeRevision = 0;
 
 float adcReadings[ 8 ] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -938,10 +939,10 @@ volatile bool readingGPIO = false;
 volatile bool readingADC = false;
 volatile bool usingI2C = false;
 unsigned long lastReadGPIOStartTime = 0;
-unsigned long readGPIOInterval = 3000;
+unsigned long readGPIOInterval = 1000;
 CurrentSenseState currentSenseState;
 
-void readGPIO( void ) {
+void __not_in_flash_func(readGPIO)( ) {
 
     if ( false ) {
         return;
@@ -1105,7 +1106,10 @@ extern int adcCurrentlyConnectedPin;
 // Background reading for fake GPIO pins (indices 10-41)
 // Uses stored chipXY snapshots for INPUT pins, reads OUTPUT state directly
 // Rotates through pins to avoid blocking main loop
-void readFakeGPIO( void ) {
+unsigned long lastReadFakeGPIOTime = 0;
+void __not_in_flash_func(readFakeGPIO)( void ) {
+
+    // lastReadFakeGPIOTime = micros( );
     // Skip during high-priority operations
     if ( logicAnalyzer.is_running( ) || logicAnalyzer.is_armed( ) || flashingArduino == true ) {
         return;
@@ -1184,6 +1188,8 @@ void readFakeGPIO( void ) {
     
     // Advance offset for next cycle (rotate through all pins over multiple calls)
     readCycleOffset = ( readCycleOffset + pinsPerCycle ) % MAX_FAKE_GPIO;
+
+    // Serial.println(micros( ) - lastReadFakeGPIOTime);
 }
 
 void setRailsAndDACs( int saveEEPROM ) {
@@ -1465,12 +1471,17 @@ void initINA219( void ) {
     }
 
 
+    // delay(1000);
     currentReadingOffset0_mA = INA0.getCurrent_mA();
 
     while ( INA1.getConversionFlag() == false ) {
         tight_loop_contents();
     }
+    // delay(1000);
     currentReadingOffset1_mA = INA1.getCurrent_mA();
+    // Serial.println("currentReadingOffset0_mA: " + String(currentReadingOffset0_mA));
+    // Serial.println("currentReadingOffset1_mA: " + String(currentReadingOffset1_mA));
+    // Serial.flush();
 }
 
 void setDacByNumber( int dac, float voltage, int save, int saveEEPROM,
@@ -1527,8 +1538,10 @@ void dacSine( int resolution ) {
 // OPTIMIZATION: Cache readings and only rebuild when nets change
 static bool readingsValid = false;
 static int lastNumberOfNets = 0;
+unsigned long lastRebuildShownReadingsTime = 0;
+void __not_in_flash_func(rebuildShownReadings)() {
 
-void rebuildShownReadings() {
+    // lastRebuildShownReadingsTime = micros( );
     // Clear all readings
     showADCreadings[ 0 ] = 0;
     showADCreadings[ 1 ] = 0;
@@ -1598,6 +1611,8 @@ void rebuildShownReadings() {
             gpio_function_map[ i ] = fun;
         }
     }
+
+    // Serial.println(micros( ) - lastRebuildShownReadingsTime);
     
     // Memory barrier to ensure all writes to showADCreadings[] are visible to other cores
     __dmb();
@@ -1796,9 +1811,9 @@ int toggleGPIO( int lowHigh, int gpio, int onlyCheck ) {
 float railSpread = 17.88;
 
 unsigned long lastShowLEDmeasurementsStartTime = 0;
-unsigned long showLEDmeasurementsInterval = 15000;
+unsigned long showLEDmeasurementsInterval = 5000;
 
-void showLEDmeasurements( void ) {
+void __not_in_flash_func(showLEDmeasurements)( void ) {
     //return;
 
   
@@ -2239,7 +2254,7 @@ void printPIOStateMachines( ) {
     }
 }
 
-float readAdcVoltage( int channel, int samples ) {
+float __not_in_flash_func(readAdcVoltage)( int channel, int samples ) {
 
     if ( channel < 0 || channel > 7 ) {
         return 0;
@@ -2254,7 +2269,7 @@ float readAdcVoltage( int channel, int samples ) {
     return adcReading;
 }
 
-int readAdc( int channel, int samples ) {
+int __not_in_flash_func(readAdc)( int channel, int samples ) {
     // Wait if another core is using the ADC
     // CRITICAL: Add timeout to prevent permanent hang if ADC is never released
     unsigned long adcWaitStart = micros();

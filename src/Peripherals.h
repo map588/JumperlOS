@@ -89,6 +89,7 @@ extern int dacZero[4];
 
 extern uint32_t gpioReadingColors[42];  // 10 real + 32 fake GPIO
 extern int revisionNumber;
+extern int probeRevision;
 
 extern int baudRate;
 

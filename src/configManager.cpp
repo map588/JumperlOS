@@ -581,6 +581,12 @@ void updateConfigFromFile(const char* filename) {
                 foundConfigVersion = true;
             }
             //! this is a place to add new config options
+        } else if (strcmp(section, "firmware") == 0) {
+            if (strcmp(key, "last_version") == 0) {
+                strncpy(jumperlessConfig.firmware.last_version, value, sizeof(jumperlessConfig.firmware.last_version)-1);
+                jumperlessConfig.firmware.last_version[sizeof(jumperlessConfig.firmware.last_version)-1] = '\0';
+            }
+            else if (strcmp(key, "files_provisioned") == 0) jumperlessConfig.firmware.files_provisioned = parseBool(value);
         } else if (strcmp(section, "hardware") == 0) {
             if (strcmp(key, "generation") == 0) jumperlessConfig.hardware.generation = parseInt(value);
             else if (strcmp(key, "revision") == 0) jumperlessConfig.hardware.revision = parseInt(value);
@@ -598,8 +604,12 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "nets_to_chips") == 0) jumperlessConfig.debug.nets_to_chips = parseBool(value);
             else if (strcmp(key, "nets_to_chips_alt") == 0) jumperlessConfig.debug.nets_to_chips_alt = parseBool(value);
             else if (strcmp(key, "leds") == 0) jumperlessConfig.debug.leds = parseBool(value);
+            else if (strcmp(key, "probing") == 0) jumperlessConfig.debug.probing = parseBool(value);
+            else if (strcmp(key, "oled") == 0) jumperlessConfig.debug.oled = parseBool(value);
+            else if (strcmp(key, "logo_pads") == 0) jumperlessConfig.debug.logo_pads = parseBool(value);
             else if (strcmp(key, "logic_analyzer") == 0) jumperlessConfig.debug.logic_analyzer = parseBool(value);
             else if (strcmp(key, "arduino") == 0) jumperlessConfig.debug.arduino = parseInt(value);
+            else if (strcmp(key, "usb_mass_storage") == 0) jumperlessConfig.debug.usb_mass_storage = parseBool(value);
         } else if (strcmp(section, "routing") == 0) {
             if (strcmp(key, "stack_paths") == 0) {
                 jumperlessConfig.routing.stack_paths = parseInt(value);
@@ -642,6 +652,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "bottom_guy") == 0) jumperlessConfig.logo_pads.bottom_guy = parseArbitraryFunction(value);
             else if (strcmp(key, "building_pad_top") == 0) jumperlessConfig.logo_pads.building_pad_top = parseArbitraryFunction(value);
             else if (strcmp(key, "building_pad_bottom") == 0) jumperlessConfig.logo_pads.building_pad_bottom = parseArbitraryFunction(value);
+            else if (strcmp(key, "repeat_ms") == 0) jumperlessConfig.logo_pads.repeat_ms = parseInt(value);
         } else if (strcmp(section, "display") == 0) {
             if (strcmp(key, "lines_wires") == 0) jumperlessConfig.display.lines_wires = parseLinesWires(value);
             else if (strcmp(key, "menu_brightness") == 0) jumperlessConfig.display.menu_brightness = parseInt(value);
@@ -782,6 +793,7 @@ void updateConfigFromFile(const char* filename) {
             }
             
             // Restore all saved values (this preserves user settings while adding any new defaults)
+            jumperlessConfig.firmware = savedConfig.firmware;
             jumperlessConfig.hardware = savedConfig.hardware;
             jumperlessConfig.dacs = savedConfig.dacs;
             jumperlessConfig.debug = savedConfig.debug;
@@ -862,6 +874,32 @@ void saveConfigToFile(const char* filename) {
     // CRITICAL: Pause Core2 during flash write operations
     bool was_paused = pauseCore2ForFlash(100);
     
+    // Save hardware revision to EEPROM only if changed or invalid (survives config reset)
+    // EEPROM writes are slow and have limited endurance (~100K cycles)
+    bool needsEEPROMCommit = false;
+    
+    int currentRevision = EEPROM.read(REVISIONADDRESS);
+    int currentProbeRev = EEPROM.read(PROBE_REVISIONADDRESS);
+    
+    // Write revision if different or out of range
+    if (currentRevision != jumperlessConfig.hardware.revision || 
+        currentRevision <= 0 || currentRevision > 10) {
+        EEPROM.write(REVISIONADDRESS, jumperlessConfig.hardware.revision);
+        needsEEPROMCommit = true;
+    }
+    
+    // Write probe revision if different or out of range
+    if (currentProbeRev != jumperlessConfig.hardware.probe_revision ||
+        currentProbeRev <= 0 || currentProbeRev > 10) {
+        EEPROM.write(PROBE_REVISIONADDRESS, jumperlessConfig.hardware.probe_revision);
+        needsEEPROMCommit = true;
+    }
+    
+    // Only commit if we actually wrote something
+    if (needsEEPROMCommit) {
+        EEPROM.commit();
+    }
+    
     // Delete existing file if it exists
     if (safeFileExists(filename, 500)) {
         safeFileDelete(filename, 1000);
@@ -909,8 +947,12 @@ void saveConfigToFile(const char* filename) {
     file.print("nets_to_chips = "); file.print(jumperlessConfig.debug.nets_to_chips ? 1:0); file.println(";");
     file.print("nets_to_chips_alt = "); file.print(jumperlessConfig.debug.nets_to_chips_alt ? 1:0); file.println(";");
     file.print("leds = "); file.print(jumperlessConfig.debug.leds ? 1:0); file.println(";");
+    file.print("probing = "); file.print(jumperlessConfig.debug.probing ? 1:0); file.println(";");
+    file.print("oled = "); file.print(jumperlessConfig.debug.oled ? 1:0); file.println(";");
+    file.print("logo_pads = "); file.print(jumperlessConfig.debug.logo_pads ? 1:0); file.println(";");
     file.print("logic_analyzer = "); file.print(jumperlessConfig.debug.logic_analyzer ? 1:0); file.println(";");
     file.print("arduino = "); file.print(jumperlessConfig.debug.arduino); file.println(";");
+    file.print("usb_mass_storage = "); file.print(jumperlessConfig.debug.usb_mass_storage ? 1:0); file.println(";");
     file.println();
 
     // Write routing settings section
@@ -958,6 +1000,7 @@ void saveConfigToFile(const char* filename) {
     file.print("bottom_guy = "); file.print(jumperlessConfig.logo_pads.bottom_guy); file.println(";");
     file.print("building_pad_top = "); file.print(jumperlessConfig.logo_pads.building_pad_top); file.println(";");
     file.print("building_pad_bottom = "); file.print(jumperlessConfig.logo_pads.building_pad_bottom); file.println(";");
+    file.print("repeat_ms = "); file.print(jumperlessConfig.logo_pads.repeat_ms); file.println(";");
     file.println();
 
     // Write display settings section
@@ -1062,8 +1105,12 @@ bool configHasChanges() {
     if (jumperlessConfig.debug.nets_to_chips != lastSavedConfig.debug.nets_to_chips) return true;
     if (jumperlessConfig.debug.nets_to_chips_alt != lastSavedConfig.debug.nets_to_chips_alt) return true;
     if (jumperlessConfig.debug.leds != lastSavedConfig.debug.leds) return true;
+    if (jumperlessConfig.debug.probing != lastSavedConfig.debug.probing) return true;
+    if (jumperlessConfig.debug.oled != lastSavedConfig.debug.oled) return true;
+    if (jumperlessConfig.debug.logo_pads != lastSavedConfig.debug.logo_pads) return true;
     if (jumperlessConfig.debug.logic_analyzer != lastSavedConfig.debug.logic_analyzer) return true;
     if (jumperlessConfig.debug.arduino != lastSavedConfig.debug.arduino) return true;
+    if (jumperlessConfig.debug.usb_mass_storage != lastSavedConfig.debug.usb_mass_storage) return true;
     
     // Routing section
     if (jumperlessConfig.routing.stack_paths != lastSavedConfig.routing.stack_paths) return true;
@@ -1105,6 +1152,7 @@ bool configHasChanges() {
     if (jumperlessConfig.logo_pads.bottom_guy != lastSavedConfig.logo_pads.bottom_guy) return true;
     if (jumperlessConfig.logo_pads.building_pad_top != lastSavedConfig.logo_pads.building_pad_top) return true;
     if (jumperlessConfig.logo_pads.building_pad_bottom != lastSavedConfig.logo_pads.building_pad_bottom) return true;
+    if (jumperlessConfig.logo_pads.repeat_ms != lastSavedConfig.logo_pads.repeat_ms) return true;
     
     // Display section
     if (jumperlessConfig.display.lines_wires != lastSavedConfig.display.lines_wires) return true;
@@ -1456,11 +1504,23 @@ void saveConfigIncremental(const char* filename) {
                 } else if (strcmp(key, "leds") == 0) {
                     snprintf(newLine, sizeof(newLine), "leds = %d;", jumperlessConfig.debug.leds ? 1 : 0);
                     updated = true;
+                } else if (strcmp(key, "probing") == 0) {
+                    snprintf(newLine, sizeof(newLine), "probing = %d;", jumperlessConfig.debug.probing ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "oled") == 0) {
+                    snprintf(newLine, sizeof(newLine), "oled = %d;", jumperlessConfig.debug.oled ? 1 : 0);
+                    updated = true;
+                } else if (strcmp(key, "logo_pads") == 0) {
+                    snprintf(newLine, sizeof(newLine), "logo_pads = %d;", jumperlessConfig.debug.logo_pads ? 1 : 0);
+                    updated = true;
                 } else if (strcmp(key, "logic_analyzer") == 0) {
                     snprintf(newLine, sizeof(newLine), "logic_analyzer = %d;", jumperlessConfig.debug.logic_analyzer ? 1 : 0);
                     updated = true;
                 } else if (strcmp(key, "arduino") == 0) {
                     snprintf(newLine, sizeof(newLine), "arduino = %d;", jumperlessConfig.debug.arduino);
+                    updated = true;
+                } else if (strcmp(key, "usb_mass_storage") == 0) {
+                    snprintf(newLine, sizeof(newLine), "usb_mass_storage = %d;", jumperlessConfig.debug.usb_mass_storage ? 1 : 0);
                     updated = true;
                 }
             }
@@ -1578,6 +1638,9 @@ void saveConfigIncremental(const char* filename) {
                     updated = true;
                 } else if (strcmp(key, "building_pad_bottom") == 0) {
                     snprintf(newLine, sizeof(newLine), "building_pad_bottom = %d;", jumperlessConfig.logo_pads.building_pad_bottom);
+                    updated = true;
+                } else if (strcmp(key, "repeat_ms") == 0) {
+                    snprintf(newLine, sizeof(newLine), "repeat_ms = %d;", jumperlessConfig.logo_pads.repeat_ms);
                     updated = true;
                 }
             }
@@ -1899,7 +1962,7 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
     }
     
     // Write data from PROGMEM
-    uint8_t buffer[128];
+    uint8_t buffer[550];
     unsigned int bytesWritten = 0;
     while (bytesWritten < dataLen) {
         unsigned int chunkSize = min(sizeof(buffer), dataLen - bytesWritten);
@@ -1918,8 +1981,11 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
     file.flush();
     safeFileClose(file, true);  // Write mode, needs flush
     unpauseCore2ForFlash(was_paused);
+    changeTerminalColor( 163, true );
     Serial.print("Provisioned: ");
     Serial.println(filename);
+    Serial.flush();
+    changeTerminalColor( -1, true );
     return true;
 }
 
@@ -1927,13 +1993,15 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
  * Provision embedded image files to filesystem
  * This is called on first boot or firmware update
  */
-void provisionFirmwareFiles(void) {
+void provisionFirmwareFiles(bool print) {
 
-    if (debugFP) {
+   if (print) {
+    changeTerminalColor( 162, true );
     Serial.println("\n\r╔═══════════════════════════════════════╗");
     Serial.println("║  Provisioning Firmware Files          ║");
-    Serial.println("╚═══════════════════════════════════════╝\n\r");
-    }
+    Serial.println("╚═══════════════════════════════════════╝\n\r");  
+    Serial.flush();
+   }
     // Provision image files
     provisionEmbeddedFile("images/bubbleJumpThin.bin", bubbleJumpThin_bin, bubbleJumpThin_bin_len);
     provisionEmbeddedFile("images/bubbleJump.bin", bubbleJump_bin, bubbleJump_bin_len);
@@ -2029,15 +2097,30 @@ bool checkAndHandleFirmwareUpdate(void) {
     // First boot (no version stored) or firmware was updated
     bool isFirstBoot = (strlen(lastVersion) == 0);
     bool wasUpdated = !isFirstBoot && (strcmp(lastVersion, currentVersion) != 0);
+    // delay(1000);
+    // changeTerminalColor( 166, true );
+    // Serial.print("Current version: ");
+    // Serial.println(currentVersion);
+    // Serial.print("Last version: ");
+    // Serial.println(lastVersion);
+    // Serial.flush();
     
     if (isFirstBoot) {
-        if (debugFP) {
+        // if (debugFP) {
+        changeTerminalColor( 164, true );
         Serial.println("\n\r╔═══════════════════════════════════════╗");
         Serial.println("║  First Boot Detected                  ║");
         Serial.println("╚═══════════════════════════════════════╝\n\r");
-        }
+        // }
+        Serial.flush();
+        Serial.print("Previous version: ");
+        Serial.println(lastVersion);
+        Serial.print("Current version:  ");
+        Serial.println(currentVersion);
+        Serial.flush();
+        changeTerminalColor( -1, true );
         // Provision files
-        provisionFirmwareFiles();
+        provisionFirmwareFiles(true);
         
         // Set default config values for first boot
         if (strlen(jumperlessConfig.top_oled.startup_message) == 0) {
@@ -2047,7 +2130,8 @@ bool checkAndHandleFirmwareUpdate(void) {
         }
         
     } else if (wasUpdated) {
-        if (debugFP) {
+        // if (debugFP) {
+        changeTerminalColor( 164, true );
         Serial.println("\n\r╔═══════════════════════════════════════╗");
         Serial.println("║  Firmware Update Detected             ║");
         Serial.println("╚═══════════════════════════════════════╝\n\r");
@@ -2056,9 +2140,10 @@ bool checkAndHandleFirmwareUpdate(void) {
         Serial.print("Current version:  ");
         Serial.println(currentVersion);
         Serial.println();
-        }
+        Serial.flush();
+        changeTerminalColor( -1, true );
         // Provision new files (will skip existing ones)
-        provisionFirmwareFiles();
+        provisionFirmwareFiles(false);
         
         // Perform config migrations (respects user changes)
         performConfigMigrations(lastVersion, currentVersion);
@@ -2079,6 +2164,41 @@ bool checkAndHandleFirmwareUpdate(void) {
     }
     
     return wasUpdated || isFirstBoot;
+}
+
+/**
+ * Load hardware revision from EEPROM into config
+ * This ensures hardware revision survives config resets and first boots
+ * Should be called BEFORE loadConfig() to set hardware defaults
+ */
+void loadHardwareFromEEPROM(void) {
+    // Ensure EEPROM is initialized
+    static bool eepromInitialized = false;
+    if (!eepromInitialized) {
+        EEPROM.begin(512);
+        eepromInitialized = true;
+    }
+    
+    // Read hardware revision directly from EEPROM
+    int storedRevision = EEPROM.read(REVISIONADDRESS);
+    int storedProbeRev = EEPROM.read(PROBE_REVISIONADDRESS);
+    
+    // Validate and use stored revision
+    if (storedRevision > 0 && storedRevision <= 10) {
+        jumperlessConfig.hardware.revision = storedRevision;
+        jumperlessConfig.hardware.generation = 5;  // Always V5 for now
+    }
+    
+    // Validate and use stored probe revision
+    if (storedProbeRev > 0 && storedProbeRev <= 10) {
+        jumperlessConfig.hardware.probe_revision = storedProbeRev;
+    }
+    
+    // Update global variables for backward compatibility
+    extern int revisionNumber;
+    extern int probeRevision;
+    revisionNumber = jumperlessConfig.hardware.revision;
+    probeRevision = jumperlessConfig.hardware.probe_revision;
 }
 
 void loadConfig(void) {
@@ -2179,9 +2299,17 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         if (pasteable == true) Serial.print("`[debug] ");
         Serial.print("leds = "); Serial.print(getStringFromTable(jumperlessConfig.debug.leds, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[debug] ");
+        Serial.print("probing = "); Serial.print(getStringFromTable(jumperlessConfig.debug.probing, boolTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[debug] ");
+        Serial.print("oled = "); Serial.print(getStringFromTable(jumperlessConfig.debug.oled, boolTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[debug] ");
+        Serial.print("logo_pads = "); Serial.print(getStringFromTable(jumperlessConfig.debug.logo_pads, boolTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[debug] ");
         Serial.print("logic_analyzer = "); Serial.print(getStringFromTable(jumperlessConfig.debug.logic_analyzer, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[debug] ");
         Serial.print("arduino = "); Serial.print(jumperlessConfig.debug.arduino); Serial.println(";");
+        if (pasteable == true) Serial.print("`[debug] ");
+        Serial.print("usb_mass_storage = "); Serial.print(getStringFromTable(jumperlessConfig.debug.usb_mass_storage, boolTable)); Serial.println(";");
     }
     cycleTerminalColor();
     // Print routing settings section
@@ -2267,6 +2395,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("building_pad_top = "); Serial.print(getStringFromTable(jumperlessConfig.logo_pads.building_pad_top, arbitraryFunctionTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[logo_pads] ");
         Serial.print("building_pad_bottom = "); Serial.print(getStringFromTable(jumperlessConfig.logo_pads.building_pad_bottom, arbitraryFunctionTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[logo_pads] ");
+        Serial.print("repeat_ms = "); Serial.print(jumperlessConfig.logo_pads.repeat_ms); Serial.println(";");
     }
     cycleTerminalColor();
     // Print display settings section
@@ -3153,8 +3283,12 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "nets_to_chips") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.nets_to_chips);
         else if (strcmp(key, "nets_to_chips_alt") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.nets_to_chips_alt);
         else if (strcmp(key, "leds") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.leds);
+        else if (strcmp(key, "probing") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.probing);
+        else if (strcmp(key, "oled") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.oled);
+        else if (strcmp(key, "logo_pads") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.logo_pads);
         else if (strcmp(key, "logic_analyzer") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.logic_analyzer);
         else if (strcmp(key, "arduino") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.arduino);
+        else if (strcmp(key, "usb_mass_storage") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.usb_mass_storage);
     }
     else if (strcmp(section, "routing") == 0) {
         if (strcmp(key, "stack_paths") == 0) sprintf(oldValue, "%d", jumperlessConfig.routing.stack_paths);
@@ -3195,6 +3329,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "bottom_guy") == 0) sprintf(oldValue, "%d", jumperlessConfig.logo_pads.bottom_guy);
         else if (strcmp(key, "building_pad_top") == 0) sprintf(oldValue, "%d", jumperlessConfig.logo_pads.building_pad_top);
         else if (strcmp(key, "building_pad_bottom") == 0) sprintf(oldValue, "%d", jumperlessConfig.logo_pads.building_pad_bottom);
+        else if (strcmp(key, "repeat_ms") == 0) sprintf(oldValue, "%d", jumperlessConfig.logo_pads.repeat_ms);
     }
     else if (strcmp(section, "display") == 0) {
         if (strcmp(key, "lines_wires") == 0) sprintf(oldValue, "%d", jumperlessConfig.display.lines_wires);
@@ -3272,8 +3407,12 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "nets_to_chips") == 0) jumperlessConfig.debug.nets_to_chips = parseBool(value);
         else if (strcmp(key, "nets_to_chips_alt") == 0) jumperlessConfig.debug.nets_to_chips_alt = parseBool(value);
         else if (strcmp(key, "leds") == 0) jumperlessConfig.debug.leds = parseBool(value);
+        else if (strcmp(key, "probing") == 0) jumperlessConfig.debug.probing = parseBool(value);
+        else if (strcmp(key, "oled") == 0) jumperlessConfig.debug.oled = parseBool(value);
+        else if (strcmp(key, "logo_pads") == 0) jumperlessConfig.debug.logo_pads = parseBool(value);
         else if (strcmp(key, "logic_analyzer") == 0) jumperlessConfig.debug.logic_analyzer = parseBool(value);
         else if (strcmp(key, "arduino") == 0) jumperlessConfig.debug.arduino = parseInt(value);
+        else if (strcmp(key, "usb_mass_storage") == 0) jumperlessConfig.debug.usb_mass_storage = parseBool(value);
     }
     else if (strcmp(section, "routing") == 0) {
         if (strcmp(key, "stack_paths") == 0) jumperlessConfig.routing.stack_paths = parseInt(value);
@@ -3315,6 +3454,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "bottom_guy") == 0) jumperlessConfig.logo_pads.bottom_guy = parseArbitraryFunction(value);
         else if (strcmp(key, "building_pad_top") == 0) jumperlessConfig.logo_pads.building_pad_top = parseArbitraryFunction(value);
         else if (strcmp(key, "building_pad_bottom") == 0) jumperlessConfig.logo_pads.building_pad_bottom = parseArbitraryFunction(value);
+        else if (strcmp(key, "repeat_ms") == 0) jumperlessConfig.logo_pads.repeat_ms = parseInt(value);
     }
     else if (strcmp(section, "display") == 0) {
         if (strcmp(key, "lines_wires") == 0) jumperlessConfig.display.lines_wires = parseLinesWires(value);

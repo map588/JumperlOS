@@ -82,6 +82,7 @@ void debugFlagInit(int forceDefaults) {
   netColorMode = EEPROM.read(NETCOLORMODE_ADDRESS);
 
   revisionNumber = EEPROM.read(REVISIONADDRESS);
+  probeRevision = EEPROM.read(PROBE_REVISIONADDRESS);
 
   // pathDuplicates = EEPROM.read(PATH_DUPLICATE_ADDRESS);
   // dacDuplicates = EEPROM.read(DAC_DUPLICATE_ADDRESS);
@@ -145,6 +146,15 @@ void debugFlagInit(int forceDefaults) {
     revisionNumber = REV;
 
     Serial.println(revisionNumber);
+    }
+  
+  if (probeRevision <= 0 || probeRevision > 10) {
+    Serial.print("Probe revision out of range (");
+    Serial.print(probeRevision);
+    Serial.print("), setting to probe revision ");
+    EEPROM.write(PROBE_REVISIONADDRESS, REV);
+    probeRevision = REV;
+    Serial.println(probeRevision);
     }
 
 

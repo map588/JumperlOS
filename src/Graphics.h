@@ -117,7 +117,7 @@ extern const int highSaturationSpectrumColorsCount;
 extern const int highSaturationBrightColors[29];
 extern const int highSaturationBrightColorsCount;
 
-
+void showSwitchPosition(int position, String text = " ", uint32_t color = 0x000000, uint32_t textColor = 0x000000);
 void printSpectrumOrderedColorCube(void);
 
 void playDoom(void);

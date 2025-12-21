@@ -115,9 +115,9 @@ unsigned long startupTimers[ 16 ];
 
 volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
-unsigned long dumpLEDrate = 150;
+unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.2.4"; //! remember to update this
+const char firmwareVersion[] = "5.6.2.6"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -128,6 +128,7 @@ void setup( ) {
     pinMode( RESETPIN, OUTPUT_12MA );
 
     digitalWrite( RESETPIN, HIGH );
+    
 
     // FatFS.begin();
     if ( !FatFS.begin( ) ) {
@@ -139,9 +140,19 @@ void setup( ) {
     // Initialize multicore synchronization primitives BEFORE Core 2 starts
     // This provides proper mutex-based protection for shared resources
     core_sync_init( );
+    Serial.begin( 115200 );
 
+    // Configure Jerial for both input and output
+    // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
+    // InjectionBufferStream is automatically prioritized via MultiSourceStream layer
+    Jerial.setInputStream( JerialEndpoint::USB_SERIAL );  // Input with terminal control
+    Jerial.addOutputStream( JerialEndpoint::USB_SERIAL ); // Output to USB
     startupTimers[ 0 ] = millis( );
 
+    // Load hardware revision from EEPROM first (survives config resets)
+    // This reads directly from EEPROM and initializes it if needed
+    loadHardwareFromEEPROM( );
+    
     loadConfig( );
 
     // Check for firmware updates and provision new files if needed
@@ -177,13 +188,7 @@ void setup( ) {
         jumperlessConfig.top_oled.show_in_terminal = 3;
     }
 
-    Serial.begin( 115200 );
 
-    // Configure Jerial for both input and output
-    // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
-    // InjectionBufferStream is automatically prioritized via MultiSourceStream layer
-    Jerial.setInputStream( JerialEndpoint::USB_SERIAL );  // Input with terminal control
-    Jerial.addOutputStream( JerialEndpoint::USB_SERIAL ); // Output to USB
     // Jerial.addOutputStream(JerialEndpoint::USB_SER2);  // Output to Serial1
     // Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
     // Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
@@ -192,7 +197,7 @@ void setup( ) {
     // Enable automatic tag stripping for input
     // This removes <j> and </j> tags from incoming USB commands to prevent weird behavior
     // Jerial.setAutoStripTags(true);
-
+    digitalWrite( RESETPIN, LOW );
     initDAC( );
     // Serial.println("DAC initialized");
     // Serial.flush();
@@ -452,9 +457,11 @@ menu:
             if ( autoCalibrationNeeded == true ) {
                 Serial.println( "New calibration options detected in config.txt. "
                                 "Running automatic calibration..." );
-                delay( 3000 );
+                delay( 1000 );
             }
             calibrateDacs( );
+            // calibrateProbeSwitchThresholds( );
+            // probeCalibApp();
             firstStart = false;
         }
         firstLoop = 2;
@@ -562,7 +569,7 @@ dontshowmenu:
     // This allows saves from anywhere in the UI, not just when main menu is shown
     connectFromArduino = '\0';
     firstConnection = -1;
-    core1passthrough = 1;
+
 
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
     Serial.write( 'I' ); // About to enter busy loop
@@ -682,7 +689,7 @@ dontshowmenu:
         // Note: clickMenu() is called within menus.service(), but we need to detect result
         // This will be refactored when we remove gotos entirely
         if ( menus.inClickMenu != 0 ) {
-            core1passthrough = 0;
+           
             goto loadfile;
         }
         busyTimers[ 3 ] = micros( );
@@ -1352,7 +1359,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                     // CRITICAL: Update ADC/GPIO mappings before reading measurements
                     // This ensures showADCreadings[] is populated from current paths
                     // Prevents race condition where Core 0/1 updates paths but Core 2 reads stale ADC mappings
-                    chooseShownReadings( );
+                    // chooseShownReadings( );
 
                     showLEDmeasurements( );
 

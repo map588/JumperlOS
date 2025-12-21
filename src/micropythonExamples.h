@@ -12,7 +12,7 @@
 // Comment out any example you don't want to include
 #define INCLUDE_ADC_BASICS
 #define INCLUDE_DAC_BASICS
-// #define INCLUDE_FAKE_GPIO
+#define INCLUDE_FAKE_GPIO
 #define INCLUDE_GPIO_BASICS
 #define INCLUDE_INTERACTION_DEMO
 #define INCLUDE_LED_BRIGHTNESS_CONTROL
@@ -1092,7 +1092,7 @@ while True:
 #ifdef INCLUDE_LED_BRIGHTNESS_CONTROL
 const char* LED_BRIGHTNESS_CONTROL_PY = R"("""
 LED Brightness Control Demo
-Touch breadboard pads 1-10 to control LED brightness levels.
+Touch breadboard pads 1-60 to control LED brightness levels.
 
 Hardware Setup:
 1. Connect LED anode to breadboard row 15
@@ -1110,6 +1110,7 @@ print("Hardware Setup:")
 print("  Connect LED anode to row 15")
 print("  Connect LED cathode to GND")
 
+j.disconnect(j.DAC0, -1)
 j.disconnect(15, -1)
 j.connect(j.DAC0, 15)
 

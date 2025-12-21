@@ -45,35 +45,7 @@ static FilesystemMessage fsMessages[ MAX_FS_MESSAGES ];
 static int fsMessageCount = 0;
 static unsigned long lastMessageDisplayTime = 0;
 
-void addFilesystemMessage( const String& message, int color = 248 ) {
-    // Safety check - don't add messages during early startup
-    if ( !Serial ) {
-        return;
-    }
 
-    // If we have a global file manager instance, use its persistent message area
-    if ( globalFileManager != nullptr ) {
-        globalFileManager->addPersistentMessage( message, color );
-        return;
-    }
-
-    // Add to traditional message queue for compatibility (fallback)
-    if ( fsMessageCount < MAX_FS_MESSAGES ) {
-        fsMessages[ fsMessageCount ].message = message;
-        fsMessages[ fsMessageCount ].color = color;
-        fsMessages[ fsMessageCount ].timestamp = millis( );
-        fsMessageCount++;
-    } else {
-        // Shift messages up and add new one at end
-        for ( int i = 0; i < MAX_FS_MESSAGES - 1; i++ ) {
-            fsMessages[ i ] = fsMessages[ i + 1 ];
-        }
-        fsMessages[ MAX_FS_MESSAGES - 1 ].message = message;
-        fsMessages[ MAX_FS_MESSAGES - 1 ].color = color;
-        fsMessages[ MAX_FS_MESSAGES - 1 ].timestamp = millis( );
-    }
-    lastMessageDisplayTime = millis( );
-}
 
 void clearFilesystemMessages( ) {
     fsMessageCount = 0;
@@ -102,6 +74,43 @@ void displayFilesystemMessages( ) {
         }
         Serial.flush( );
     }
+}
+
+
+void addFilesystemMessage( const String& message, int color = 248 ) {
+    // Safety check - don't add messages during early startup
+    if ( !Serial ) {
+        return;
+    }
+
+    // If we have a global file manager instance, use its persistent message area
+    if ( globalFileManager != nullptr ) {
+        globalFileManager->addPersistentMessage( message, color );
+        return;
+    }
+
+    // Add to traditional message queue for compatibility (fallback)
+    if ( fsMessageCount < MAX_FS_MESSAGES ) {
+        fsMessages[ fsMessageCount ].message = message;
+        fsMessages[ fsMessageCount ].color = color;
+        fsMessages[ fsMessageCount ].timestamp = millis( );
+        fsMessageCount++;
+    } else {
+        // Shift messages up and add new one at end
+        for ( int i = 0; i < MAX_FS_MESSAGES - 1; i++ ) {
+            fsMessages[ i ] = fsMessages[ i + 1 ];
+        }
+        fsMessages[ MAX_FS_MESSAGES - 1 ].message = message;
+        fsMessages[ MAX_FS_MESSAGES - 1 ].color = color;
+        fsMessages[ MAX_FS_MESSAGES - 1 ].timestamp = millis( );
+    }
+    changeTerminalColor( color, false );
+    Serial.println( message );
+    Serial.flush();
+    changeTerminalColor( -1, false );
+    // displayFilesystemMessages();
+    
+    lastMessageDisplayTime = millis( );
 }
 
 FileManager::FileManager( ) {

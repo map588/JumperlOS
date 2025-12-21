@@ -18,6 +18,7 @@ print("Hardware Setup:")
 print("  Connect LED anode to row 15")
 print("  Connect LED cathode to GND")
 
+j.disconnect(j.DAC0, -1)
 j.disconnect(15, -1)
 j.connect(j.DAC0, 15)
 

@@ -294,5 +294,9 @@ CommandResult cmd_dmxSerial(char c, const String& line);
 CommandResult cmd_userFunction(char c, const String& line);
 CommandResult cmd_erattaClear(char c, const String& line);
 CommandResult cmd_printTextFromTerminal(char c, const String& line);
+
+
+
+CommandResult cmd_showSwitchPosition(char c, const String& line);
 #endif // SINGLE_CHAR_COMMANDS_H
 

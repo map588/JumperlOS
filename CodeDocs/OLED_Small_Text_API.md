@@ -287,3 +287,5 @@ oled.showMultiLineSmallText(textBuffer, true, true);
 - `Apps.cpp` - Simple usage examples with `showMultiLineSmallText()`
 
 
+
+

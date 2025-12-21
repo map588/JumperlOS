@@ -5,12 +5,14 @@
 
 #include "Apps.h"
 #include "ArduinoStuff.h"
+#include "BitmapEditor.h"
 #include "CH446Q.h"
 #include "Commands.h"
 #include "FatFS.h"
 #include "FileParsing.h"
-#include "FilesystemStuff.h"  // For safe file operations
+#include "FilesystemStuff.h" // For safe file operations
 #include "Graphics.h"
+#include "Highlighting.h"
 #include "ImagesApp.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
@@ -25,8 +27,6 @@
 #include "configManager.h"
 #include "menuTree.h"
 #include "oled.h"
-#include "BitmapEditor.h"
-#include "Highlighting.h"
 
 // External declarations
 extern Adafruit_SSD1306 display;
@@ -38,53 +38,53 @@ extern Adafruit_SSD1306 display;
 // Static member initialization
 Menus* Menus::instance = nullptr;
 
-Menus& Menus::getInstance() {
-    if (instance == nullptr) {
-        instance = new Menus();
+Menus& Menus::getInstance( ) {
+    if ( instance == nullptr ) {
+        instance = new Menus( );
     }
     return *instance;
 }
 
-Menus::Menus() {
+Menus::Menus( ) {
     // Initialize defaults
 }
 
 /**
  * @brief Main service method for menu system
- * 
+ *
  * This is called each loop iteration and handles:
  * - Click menu detection
  * - Menu rendering when active
  */
-ServiceStatus Menus::service() {
+ServiceStatus Menus::service( ) {
     lastStatus = ServiceStatus::IDLE;
-//dont allow menus to run if the bitmap editor is active
-    // Check if menu is active
-    if (inClickMenu != 0) {
+    // dont allow menus to run if the bitmap editor is active
+    //  Check if menu is active
+    if ( inClickMenu != 0 ) {
         lastStatus = ServiceStatus::BLOCKING;
         return lastStatus;
     }
-    
+
     // Check for menu activation (delegated to clickMenu)
-    int menuResult = clickMenu();
-    if (menuResult >= 0) {
+    int menuResult = clickMenu( );
+    if ( menuResult >= 0 ) {
         lastStatus = ServiceStatus::BLOCKING;
     }
-    
+
     return lastStatus;
 }
 
 // Backward compatibility - create references to singleton members
-int& inClickMenu = Menus::getInstance().inClickMenu;
-int& defconDisplay = Menus::getInstance().defconDisplay;
-int& selectingRotaryNode = Menus::getInstance().selectingRotaryNode;
-int& menuState = Menus::getInstance().menuState;
-int& menuPosition = Menus::getInstance().menuPosition;
-int& menuScroll = Menus::getInstance().menuScroll;
-int& menuScrollTarget = Menus::getInstance().menuScrollTarget;
-int& menuScrollMax = Menus::getInstance().menuScrollMax;
-int& menuPositionMax = Menus::getInstance().menuPositionMax;
-int& menuPositionMin = Menus::getInstance().menuPositionMin;
+int& inClickMenu = Menus::getInstance( ).inClickMenu;
+int& defconDisplay = Menus::getInstance( ).defconDisplay;
+int& selectingRotaryNode = Menus::getInstance( ).selectingRotaryNode;
+int& menuState = Menus::getInstance( ).menuState;
+int& menuPosition = Menus::getInstance( ).menuPosition;
+int& menuScroll = Menus::getInstance( ).menuScroll;
+int& menuScrollTarget = Menus::getInstance( ).menuScrollTarget;
+int& menuScrollMax = Menus::getInstance( ).menuScrollMax;
+int& menuPositionMax = Menus::getInstance( ).menuPositionMax;
+int& menuPositionMin = Menus::getInstance( ).menuPositionMin;
 
 // ============================================================================
 // Existing Functions
@@ -125,7 +125,7 @@ struct action {
     int baud;
     int printOrUSB; // 0 print 1 USB
     float analogVoltage;
-    int integerValue; // For integer input (action 7)
+    int integerValue;   // For integer input (action 7)
     String stringValue; // For text input (action 8)
 };
 
@@ -244,7 +244,7 @@ void parseMenuFile( void ) {
         int actionChar = menuLines[ i ].charAt( actionIndex + 1 );
         if ( actionIndex != -1 ) {
             int charsToRemove = 3; // Default: remove ">X " (e.g., ">n ")
-            
+
             switch ( actionChar ) {
             case 'n':
                 actions[ i ] = 1;
@@ -270,12 +270,14 @@ void parseMenuFile( void ) {
                     if ( firstParen != -1 ) {
                         int parenCount = 0;
                         int lastParen = firstParen;
-                        for ( int k = firstParen; k < menuLines[ i ].length(); k++ ) {
-                            if ( menuLines[ i ].charAt( k ) == '(' ) parenCount++;
+                        for ( int k = firstParen; k < menuLines[ i ].length( ); k++ ) {
+                            if ( menuLines[ i ].charAt( k ) == '(' )
+                                parenCount++;
                             if ( menuLines[ i ].charAt( k ) == ')' ) {
                                 parenCount--;
                                 lastParen = k;
-                                if ( parenCount == 0 ) break;
+                                if ( parenCount == 0 )
+                                    break;
                             }
                         }
                         charsToRemove = lastParen - actionIndex + 1;
@@ -435,10 +437,10 @@ int previousMenuSelection[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
 int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
     // Don't allow menus to run if the bitmap editor is active
-    if ( BitmapEditor::getInstance().active ) {
+    if ( BitmapEditor::getInstance( ).active ) {
         return -1;
     }
-    
+
     if ( menuLineIndex < 2 ) {
         // b.clear();
         b.print( "No menu file", 0x0f0400, 0xFFFFFF, 0, -1, 0 );
@@ -447,15 +449,15 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
     }
 
     int returnedMenuPosition = -1;
-    if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) {
+    if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
         // Check if Highlighting wants to handle this button press (for voltage adjustment)
-        if (Highlighting::getInstance().wantsToHandleButtonPress()) {
+        if ( Highlighting::getInstance( ).wantsToHandleButtonPress( ) ) {
             // Don't consume the button press - let Highlighting handle it
             return -1;
         }
         // Don't set showLEDsCore2 here - buffer not ready yet
         // It will be set in getMenuSelection() after buffer is prepared
-        
+
         encoderButtonState = IDLE;
         inClickMenu = 1;
         // if (menuRead == 0) {
@@ -467,7 +469,6 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
         // Serial.setTimeout(1000);
         // Serial.flush();
 
-        
         // showLoss();
         // while(Serial.available() == 0) ;
 
@@ -686,10 +687,11 @@ int getMenuSelection( void ) {
 
     clearAction( );
 
-    clearLEDsExceptRails( );
+    // showLEDsCore2 = 2;
+    // clearLEDsExceptRails( );
     // Don't set showLEDsCore2 here - buffer not populated with menu text yet
     // It will be set after buffer is updated in the menu loop (firstTime == 1 case)
-   // waitCore2( );
+    // waitCore2( );
     // delay(100);
     if ( returnToMenuPosition != -1 && returnToMenuLevel != -1 ) {
         menuPosition = returnToMenuPosition;
@@ -703,8 +705,8 @@ int getMenuSelection( void ) {
 
     noInputTimer = millis( );
     while ( Serial.available( ) == 0 ) {
-        jOS.serviceCritical();
-        rotaryEncoderButtonStuff();  // Update button state every iteration
+        jOS.serviceCritical( );
+        rotaryEncoderButtonStuff( ); // Update button state every iteration
 
         if ( Serial.getWriteError( ) ) {
 
@@ -725,9 +727,8 @@ int getMenuSelection( void ) {
             return -2;
         }
         delayMicroseconds( 400 );
-       
 
-        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) { //! click
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance( ).getButtonPress( ) == 2 ) { //! click
 
             lastMenuLevel = menuLevel;
             noInputTimer = millis( );
@@ -767,12 +768,19 @@ int getMenuSelection( void ) {
             // Serial.println();
             // Clear the consumed event and wait for physical button release (debounce)
             encoderButtonState = IDLE;
-            while ( isEncoderButtonPhysicallyPressed() )  // Wait for physical button release
+            while ( isEncoderButtonPhysicallyPressed( ) ) // Wait for physical button release
                 ;
         } else if ( encoderDirectionState == UP || firstTime == 1 || force == 1 ) { // ! up
             // lastMenuLevel > menuLevel) {
             encoderDirectionState = NONE;
-            firstTime = 0;
+            if ( firstTime == 1 ) {
+                // Serial.print("Menu position: ");
+                // Serial.println(menuPosition);
+                // Serial.flush();
+                delayMicroseconds( 15000 );
+                firstTime = 0;
+                // showLEDsCore2 = 2;
+            }
             // currentAction.Category
             resetPosition = true;
             noInputTimer = millis( );
@@ -802,7 +810,7 @@ int getMenuSelection( void ) {
                     i = subMenuStartIndex - 1;
                 } else if ( i == subMenuEndIndex && loopCount == 1 ) {
 
-                   // Serial.println( "!!! " );
+                    // Serial.println( "!!! " );
                     b.clear( );
                     returnToMenuPosition = -1;
                     returnToMenuLevel = -1;
@@ -863,8 +871,8 @@ int getMenuSelection( void ) {
                 Serial.print( menuLine.c_str( ) );
                 Serial.flush( );
                 menuLine.replace( "±", "+-" );
-                if (numberOfChoices[menuPosition] == 0) {
-               oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
+                if ( numberOfChoices[ menuPosition ] == 0 ) {
+                    oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
                 }
             } else if ( actions[ menuPosition ] == 6 ) {
                 // Font preview - display at native size (1x) using the specific font
@@ -967,33 +975,33 @@ int getMenuSelection( void ) {
                             // Serial.println("get float voltage");
                             getActionFloat( menuPosition );
                         }
-                        
+
                         if ( actions[ menuPosition ] == 7 ) {
                             // Integer input action found
                             // currentAction.fromAscii[subSelection] contains the selected option text
-                            String selectedOptionText = String(currentAction.fromAscii[subSelection]);
-                            selectedOptionText.toLowerCase();
-                            
+                            String selectedOptionText = String( currentAction.fromAscii[ subSelection ] );
+                            selectedOptionText.toLowerCase( );
+
                             // Check if it's "Custom" - only then trigger interactive input
-                            if (selectedOptionText.indexOf("custom") != -1) {
+                            if ( selectedOptionText.indexOf( "custom" ) != -1 ) {
                                 // Parse integer range from current menu line
                                 String menuStr = menuLines[ menuPosition ];
                                 int actionIndex = menuStr.indexOf( '>' );
-                                
+
                                 if ( actionIndex != -1 ) {
                                     int firstParen = menuStr.indexOf( '(', actionIndex );
                                     int firstClose = menuStr.indexOf( ')', firstParen );
                                     int secondParen = menuStr.indexOf( '(', firstClose );
                                     int secondClose = menuStr.indexOf( ')', secondParen );
-                                    
+
                                     int minVal = 0, maxVal = 100;
                                     if ( firstParen != -1 && firstClose != -1 && secondParen != -1 && secondClose != -1 ) {
                                         String minStr = menuStr.substring( firstParen + 1, firstClose );
                                         String maxStr = menuStr.substring( secondParen + 1, secondClose );
-                                        minVal = minStr.toInt();
-                                        maxVal = maxStr.toInt();
+                                        minVal = minStr.toInt( );
+                                        maxVal = maxStr.toInt( );
                                     }
-                                    
+
                                     // Get current value from config if this is for Width/Height
                                     int currentVal = -1;
                                     if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Width" ) != -1 ) {
@@ -1001,19 +1009,19 @@ int getMenuSelection( void ) {
                                     } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Height" ) != -1 ) {
                                         currentVal = jumperlessConfig.top_oled.height;
                                     }
-                                    
+
                                     currentAction.integerValue = getActionInt( minVal, maxVal, currentVal );
                                 }
                             } else {
                                 // Preset value selected - extract the numeric value
                                 int presetValue = 0;
-                                for (int k = 0; k < selectedOptionText.length(); k++) {
-                                    if (selectedOptionText[k] >= '0' && selectedOptionText[k] <= '9') {
-                                        presetValue = presetValue * 10 + (selectedOptionText[k] - '0');
+                                for ( int k = 0; k < selectedOptionText.length( ); k++ ) {
+                                    if ( selectedOptionText[ k ] >= '0' && selectedOptionText[ k ] <= '9' ) {
+                                        presetValue = presetValue * 10 + ( selectedOptionText[ k ] - '0' );
                                     }
                                 }
-                                
-                                if (presetValue > 0) {
+
+                                if ( presetValue > 0 ) {
                                     currentAction.integerValue = presetValue;
                                 } else {
                                     // Fallback - couldn't parse, use current config value
@@ -1027,7 +1035,7 @@ int getMenuSelection( void ) {
                                 }
                             }
                         }
-                        
+
                         int keepSelecting = 0;
 
                         for ( int i = 0; i < 10; i++ ) {
@@ -1080,14 +1088,14 @@ int getMenuSelection( void ) {
                 Serial.print( menuLine.c_str( ) );
                 Serial.flush( );
                 menuLine.replace( "±", "+-" );
-                
+
                 // if (actions[menuPosition+1] != 0) {
 
-                if (numberOfChoices[menuPosition] == 0) {
+                if ( numberOfChoices[ menuPosition ] == 0 ) {
 
-                oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
+                    oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
                 }
-//                }
+                //                }
             } else if ( actions[ menuPosition ] == 6 ) {
                 // Font preview - display at native size (1x) using the specific font
                 int fontIndex = oled.setFont( menuLines[ menuPosition ], 0 );
@@ -1166,29 +1174,29 @@ int getMenuSelection( void ) {
             } else if ( actions[ menuPosition ] == 7 ) {
                 // Integer input action - handle presets or custom input
                 // currentAction.fromAscii[subSelection] contains the selected option text
-                String selectedOptionText = String(currentAction.fromAscii[subSelection]);
-                selectedOptionText.toLowerCase();
-                
+                String selectedOptionText = String( currentAction.fromAscii[ subSelection ] );
+                selectedOptionText.toLowerCase( );
+
                 // Check if "Custom" was selected
-                if (selectedOptionText.indexOf("custom") != -1) {
+                if ( selectedOptionText.indexOf( "custom" ) != -1 ) {
                     // Parse range and show interactive input
                     String menuStr = menuLines[ menuPosition ];
                     int actionIndex = menuStr.indexOf( '>' );
-                    
+
                     if ( actionIndex != -1 ) {
                         int firstParen = menuStr.indexOf( '(', actionIndex );
                         int firstClose = menuStr.indexOf( ')', firstParen );
                         int secondParen = menuStr.indexOf( '(', firstClose );
                         int secondClose = menuStr.indexOf( ')', secondParen );
-                        
+
                         int minVal = 0, maxVal = 100;
                         if ( firstParen != -1 && firstClose != -1 && secondParen != -1 && secondClose != -1 ) {
                             String minStr = menuStr.substring( firstParen + 1, firstClose );
                             String maxStr = menuStr.substring( secondParen + 1, secondClose );
-                            minVal = minStr.toInt();
-                            maxVal = maxStr.toInt();
+                            minVal = minStr.toInt( );
+                            maxVal = maxStr.toInt( );
                         }
-                        
+
                         // Get current value from config
                         int currentVal = -1;
                         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Width" ) != -1 ) {
@@ -1196,19 +1204,19 @@ int getMenuSelection( void ) {
                         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Height" ) != -1 ) {
                             currentVal = jumperlessConfig.top_oled.height;
                         }
-                        
+
                         currentAction.integerValue = getActionInt( minVal, maxVal, currentVal );
                     }
                 } else {
                     // Preset value - parse it directly
                     int presetValue = 0;
-                    for (int k = 0; k < selectedOptionText.length(); k++) {
-                        if (selectedOptionText[k] >= '0' && selectedOptionText[k] <= '9') {
-                            presetValue = presetValue * 10 + (selectedOptionText[k] - '0');
+                    for ( int k = 0; k < selectedOptionText.length( ); k++ ) {
+                        if ( selectedOptionText[ k ] >= '0' && selectedOptionText[ k ] <= '9' ) {
+                            presetValue = presetValue * 10 + ( selectedOptionText[ k ] - '0' );
                         }
                     }
-                    
-                    if (presetValue > 0) {
+
+                    if ( presetValue > 0 ) {
                         currentAction.integerValue = presetValue;
                     } else {
                         currentAction.integerValue = 128; // Safe default
@@ -1220,57 +1228,57 @@ int getMenuSelection( void ) {
             } else if ( actions[ menuPosition ] == 8 ) {
                 // Text input action: -->t(maxLength)
                 // Check if user selected "Edit" (trigger input) or "Clear" (skip input)
-                String selectedOptionText = String(currentAction.fromAscii[subSelection]);
+                String selectedOptionText = String( currentAction.fromAscii[ subSelection ] );
                 // Serial.print("DEBUG: selectedOptionText BEFORE toLowerCase: '");
                 // Serial.print(selectedOptionText);
                 // Serial.println("'");
-                selectedOptionText.toLowerCase();
+                selectedOptionText.toLowerCase( );
                 // Serial.print("DEBUG: selectedOptionText AFTER toLowerCase: '");
                 // Serial.print(selectedOptionText);
                 // Serial.println("'");
                 // Serial.flush();
-                
-                if (selectedOptionText.indexOf("text") != -1) {
+
+                if ( selectedOptionText.indexOf( "text" ) != -1 ) {
                     // Parse max length from menu string
                     String menuStr = menuLines[ menuPosition ];
                     int actionIndex = menuStr.indexOf( '>' );
-                    
+
                     int maxLength = 32; // Default
                     if ( actionIndex != -1 ) {
                         int firstParen = menuStr.indexOf( '(', actionIndex );
                         int firstClose = menuStr.indexOf( ')', firstParen );
-                        
+
                         if ( firstParen != -1 && firstClose != -1 ) {
                             String lengthStr = menuStr.substring( firstParen + 1, firstClose );
-                            maxLength = lengthStr.toInt();
-                            if (maxLength <= 0 || maxLength > 128) {
+                            maxLength = lengthStr.toInt( );
+                            if ( maxLength <= 0 || maxLength > 128 ) {
                                 maxLength = 32; // Clamp to safe default
                             }
                         }
                     }
-                    
+
                     // Get the string from user via rotary encoder
                     currentAction.stringValue = getActionString( maxLength );
-                } else if (selectedOptionText.indexOf("bitmap") != -1) {
+                } else if ( selectedOptionText.indexOf( "bitmap" ) != -1 ) {
                     // Get the bitmap from user via rotary encoder
                     encoderButtonState = IDLE;
                     lastButtonEncoderState = IDLE;
-                    //Serial.println("getActionBitmap");
-                    //Serial.flush();
-                    String bitmapFilename = getActionBitmap();
-                    Serial.println(bitmapFilename);
-                    Serial.flush();
-                    if (bitmapFilename.length() > 0) {
+                    // Serial.println("getActionBitmap");
+                    // Serial.flush();
+                    String bitmapFilename = getActionBitmap( );
+                    Serial.println( bitmapFilename );
+                    Serial.flush( );
+                    if ( bitmapFilename.length( ) > 0 ) {
                         currentAction.stringValue = bitmapFilename;
                     } else {
                         currentAction.stringValue = "";
                     }
-                } else if (selectedOptionText.indexOf("clear") != -1) {
+                } else if ( selectedOptionText.indexOf( "clear" ) != -1 ) {
                     // "Clear" selected - don't trigger text input, just clear in doMenuAction
-                    
+
                     currentAction.stringValue = "";
                 }
-                
+
                 return doMenuAction( );
 
             } else {
@@ -1324,7 +1332,7 @@ int getMenuSelection( void ) {
 
         delayMicroseconds( 80 );
 
-        if ( encoderButtonState == HELD || ProbeButton::getInstance().getButtonPress() == 1) {
+        if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             noInputTimer = millis( );
             lastMenuLevel = menuLevel;
             // Serial.println("Held");
@@ -1475,8 +1483,8 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
         subMenuStrings[ i ] = "";
     }
 
-   // Serial.println("selectSubmenuOption");
-//delay(5000);
+    // Serial.println("selectSubmenuOption");
+    // delay(5000);
     int shiftStars = -2;
     int lastOption = 0;
     for ( int i = 0; i < 8; i++ ) {
@@ -1510,17 +1518,17 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
             // Serial.print(menuLines[menuPosition]);
             // Serial.print("'");
             // Serial.println();
-            
+
             subMenuStrings[ i ] = menuLines[ menuPosition ].substring(
                 optionStart - shiftStars, optionEnd - shiftStars - 1 );
-                
+
             // Serial.print("DEBUG extracted subMenuStrings[");
             // Serial.print(i);
             // Serial.print("]='");
             // Serial.print(subMenuStrings[i]);
             // Serial.println("'");
             // Serial.flush();
-            
+
             if ( subMenuStrings[ i ].length( ) > maxMenuOptionLength ) {
                 menuOptionLengths[ i ] = subMenuStrings[ i ].length( );
                 if ( strcasecmp( subMenuStrings[ i ].c_str( ), "max " ) == 0 ) {
@@ -1636,13 +1644,13 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
     int firstTime = 1;
     delayMicroseconds( 1000 );
     while ( optionSelected == -1 ) {
-        //rotaryEncoderStuff();
-        rotaryEncoderButtonStuff();
-        jOS.serviceCritical();
+        // rotaryEncoderStuff();
+        rotaryEncoderButtonStuff( );
+        jOS.serviceCritical( );
         delayMicroseconds( 1000 );
 
-        if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance().getButtonState() == 1) {
-            ///Serial.println("selectSubmenuOption: HELD");
+        if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance( ).getButtonState( ) == 1 ) {
+            /// Serial.println("selectSubmenuOption: HELD");
             b.clear( );
             SlotManager& mgr = SlotManager::getInstance( );
             if ( mgr.isPreviewMode( ) ) {
@@ -1653,7 +1661,7 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
             showLEDsCore2 = 1;
             return -1;
         }
-        if ( (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED) || ProbeButton::getInstance().getButtonPress() == 2) {
+        if ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) || ProbeButton::getInstance( ).getButtonPress( ) == 2 ) {
 
             encoderButtonState = IDLE;
             optionSelected = highlightedOption;
@@ -2067,17 +2075,16 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
                 leds.setPixelColor( bbPixelToNodesMapV5[ highlightedOption + 18 ][ 1 ],
                                     nodeSelectionColorsHeader[ highlightedOption ] );
 
-                if ( SlotManager::getInstance( ).slotExists( highlightedOption ) == false || globalState.connections.numBridges <= 1) {
+                if ( SlotManager::getInstance( ).slotExists( highlightedOption ) == false || globalState.connections.numBridges <= 1 ) {
                     // Serial.println("slotExists: " + String(SlotManager::getInstance( ).slotExists( highlightedOption )));
                     // Serial.println("numBridges: " + String(globalState.connections.numBridges));
                     // Serial.println("bridges[0][0]: " + String(globalState.connections.bridges[0][0]));
                     // Serial.println("bridges[0][1]: " + String(globalState.connections.bridges[0][1]));
                     // Serial.flush();
-                    if (((globalState.connections.numBridges == 1) && (globalState.connections.bridges[0][0] == ROUTABLE_BUFFER_IN || globalState.connections.bridges[0][1] == ROUTABLE_BUFFER_IN)) || globalState.connections.numBridges == 0) {
+                    if ( ( ( globalState.connections.numBridges == 1 ) && ( globalState.connections.bridges[ 0 ][ 0 ] == ROUTABLE_BUFFER_IN || globalState.connections.bridges[ 0 ][ 1 ] == ROUTABLE_BUFFER_IN ) ) || globalState.connections.numBridges == 0 ) {
 
-         
-                    b.print( subMenuStrings[ highlightedOption ].c_str( ),
-                             nodeSelectionColors[ highlightedOption ], 0xFFFFFD, 3, 1, -1, 0 );
+                        b.print( subMenuStrings[ highlightedOption ].c_str( ),
+                                 nodeSelectionColors[ highlightedOption ], 0xFFFFFD, 3, 1, -1, 0 );
                     }
                 }
 
@@ -2117,11 +2124,11 @@ int yesNoMenu( unsigned long timeout ) {
     unsigned long startTime = millis( );
     encoderButtonState = IDLE;
     lastButtonEncoderState = IDLE;
-    
+
     while ( optionSelected == -1 ) {
-        jOS.serviceCritical();
-        rotaryEncoderButtonStuff();  // Update button state
-        
+        jOS.serviceCritical( );
+        rotaryEncoderButtonStuff( ); // Update button state
+
         if ( millis( ) - startTime > timeout ) {
             inClickMenu = 0;
             return -1;
@@ -2234,19 +2241,19 @@ int selectNodeAction( int whichSelection ) {
 
     // Position-based tracking for direct encoder reading
     long lastEncoderPosition = encoderPosition;
-    
+
     // Acceleration tracking with direction
-    unsigned long lastChangeTime = millis();
+    unsigned long lastChangeTime = millis( );
     int scrollAcceleration = 1;
-    int lastDirection = 0;  // -1=down, 0=none, 1=up
-    int consecutiveFastCount = 0;  // Track consecutive fast movements
+    int lastDirection = 0;        // -1=down, 0=none, 1=up
+    int consecutiveFastCount = 0; // Track consecutive fast movements
     int accelCount = 0;
 
     while ( nodeSelected == -1 && Serial.available( ) == 0 ) {
         delayMicroseconds( 200 );
-       rotaryEncoderStuff();
-        jOS.serviceCritical();
-        if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance().getButtonPress() == 1) {
+        rotaryEncoderStuff( );
+        jOS.serviceCritical( );
+        if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             b.clear( );
             rotaryDivider = lastDivider;
             return -1;
@@ -2254,47 +2261,47 @@ int selectNodeAction( int whichSelection ) {
 
         // Read encoder position directly for immediate response
         long currentEncoderPosition = encoderPosition;
-        long encoderDelta = -(currentEncoderPosition - lastEncoderPosition);
-        
+        long encoderDelta = -( currentEncoderPosition - lastEncoderPosition );
+
         bool needsUpdate = false;
 
         if ( encoderDelta != 0 || firstTime == 1 ) {
 
             if ( firstTime != 1 ) {
                 // Determine current direction from delta
-                int currentDirection = (encoderDelta > 0) ? 1 : ((encoderDelta < 0) ? -1 : 0);
-                
+                int currentDirection = ( encoderDelta > 0 ) ? 1 : ( ( encoderDelta < 0 ) ? -1 : 0 );
+
                 // Reset acceleration if direction changed
-                if (currentDirection != 0 && currentDirection != lastDirection) {
+                if ( currentDirection != 0 && currentDirection != lastDirection ) {
                     scrollAcceleration = 1;
                     consecutiveFastCount = 0;
                     accelCount = 0;
                     lastDirection = currentDirection;
                 }
-                
+
                 // Calculate acceleration based on delta magnitude
-                unsigned long currentTime = millis();
+                unsigned long currentTime = millis( );
                 unsigned long timeSinceLastChange = currentTime - lastChangeTime;
-                int deltaMagnitude = abs(encoderDelta);
-                
+                int deltaMagnitude = abs( encoderDelta );
+
                 // Fast rotation = large delta between polls
-                bool isFastRotation = (deltaMagnitude >= 3);
-                
-                if (isFastRotation) {
+                bool isFastRotation = ( deltaMagnitude >= 3 );
+
+                if ( isFastRotation ) {
                     consecutiveFastCount++;
                     accelCount++;
-                    
+
                     // Gradually increase acceleration
-                    if (consecutiveFastCount >= 2) {
+                    if ( consecutiveFastCount >= 2 ) {
                         rotaryDivider = 2;
                     }
-                    if (accelCount >= 4) {
+                    if ( accelCount >= 4 ) {
                         scrollAcceleration = 2;
                     }
-                    if (scrollAcceleration > 24) {
+                    if ( scrollAcceleration > 24 ) {
                         scrollAcceleration = 24;
                     }
-                } else if (timeSinceLastChange > 80) {
+                } else if ( timeSinceLastChange > 80 ) {
                     // Slow/stopped - reset everything
                     scrollAcceleration = 1;
                     rotaryDivider = 3;
@@ -2305,7 +2312,7 @@ int selectNodeAction( int whichSelection ) {
                     // Medium speed - reset fast count but maintain some acceleration
                     consecutiveFastCount = 0;
                 }
-                
+
                 lastChangeTime = currentTime;
 
                 // Apply movement based on delta direction
@@ -2376,12 +2383,12 @@ int selectNodeAction( int whichSelection ) {
                     oled.clearPrintShow( definesToChar( highlightedNode, 0 ), 2, true, true );
                 }
             }
-            
+
             lastEncoderPosition = currentEncoderPosition;
             needsUpdate = true;
             firstTime = 0;
         }
-        
+
         // Update LED display if value changed
         if ( needsUpdate ) {
             int overlappingSelection = -1;
@@ -2446,7 +2453,7 @@ int selectNodeAction( int whichSelection ) {
         }
 
         // Check for confirmation (short press)
-        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) {
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance( ).getButtonPress( ) == 2 ) {
             encoderButtonState = IDLE;
             nodeSelected = highlightedNode;
 
@@ -2467,10 +2474,10 @@ int selectNodeAction( int whichSelection ) {
             }
         }
     }
-    
+
     // Restore rotary divider
     rotaryDivider = lastDivider;
-    
+
     if ( nodeSelected <= 59 && nodeSelected >= 0 ) {
         return nodeSelected + 1;
     } else {
@@ -2486,7 +2493,7 @@ float getActionFloat( int menuPosition, int rail ) {
 
     char floatString[ 8 ] = "0.0";
     rotaryDivider = 3;
-    b.clear( 1 );
+    // b.clear( 1 );
     int firstTime = 1;
     int snapToValue = 0;
 
@@ -2506,14 +2513,15 @@ float getActionFloat( int menuPosition, int rail ) {
 
     // Encoder acceleration tracking (using VoltageAdjuster approach)
     long lastEncoderPosition = encoderPosition;
-    unsigned long lastChangeTime = millis();
+    unsigned long lastChangeTime = millis( );
     float accelerationMultiplier = 1.0;
-    int lastDirection = 0;  // -1=down, 0=none, 1=up
-    int consecutiveFastCount = 0;  // Track consecutive fast movements
-    
+    int lastDirection = 0;        // -1=down, 0=none, 1=up
+    int consecutiveFastCount = 0; // Track consecutive fast movements
+
     float min = -8.0;
     float max = 8.0;
 
+    float roundedCurrentChoice = 0.0;
     // No need for temp backup - globalState.power should always match hardware
     switch ( rail ) {
     case 0:
@@ -2536,26 +2544,29 @@ float getActionFloat( int menuPosition, int rail ) {
     } else if ( currentAction.optionVoltage == 8 ) {
         min = -8.0;
         max = 8.0;
+        
     }
+    roundedCurrentChoice = roundf( currentChoice * 10.0f ) / 10.0f;
+
 
     while ( true ) {
-        jOS.serviceCritical();
-        //rotaryEncoderStuff();  // Update encoder and button state
-        
+        jOS.serviceCritical( );
+        // rotaryEncoderStuff();  // Update encoder and button state
+
         // Check for cancellation (long press) - check FIRST on every iteration
-        if ( encoderButtonState == HELD || ProbeButton::getInstance().getButtonState() == 1 ) {
+        if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonState( ) == 1 ) {
             encoderButtonState = IDLE;
             showLEDsCore2 = -1;
-            return currentChoice; // Return current choice without applying
+            return roundedCurrentChoice; // Return current choice without applying
         }
-        
+
         // Check for confirmation (short press) - check SECOND on every iteration
-        if ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) || 
-             ProbeButton::getInstance().getButtonPress() == 2 ) {
-            currentChoice = roundf(currentChoice * 10.0f) / 10.0f;
+        if ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) ||
+             ProbeButton::getInstance( ).getButtonPress( ) == 2 ) {
+            roundedCurrentChoice = roundf( currentChoice * 10.0f ) / 10.0f;
             encoderButtonState = IDLE;
-            currentAction.analogVoltage = currentChoice;
-            
+            currentAction.analogVoltage = roundedCurrentChoice;
+
             int keepSelecting = 0;
             for ( int i = 0; i < 10; i++ ) {
                 if ( selectMultiple[ i ] == menuPosition ) {
@@ -2569,46 +2580,49 @@ float getActionFloat( int menuPosition, int rail ) {
                 selectNodeAction( );
             }
 
-            return currentChoice;
+            return roundedCurrentChoice;
         }
-        
+
         // Check for serial cancellation
-        if ( Serial.available() > 0 ) {
-            Serial.read();
+        if ( Serial.available( ) > 0 ) {
+            Serial.read( );
             showLEDsCore2 = -1;
-            return currentChoice;
+            return roundedCurrentChoice;
         }
-        
+
         // Read probe pads for direct voltage selection
-        int probeReading = justReadProbe(true);
-        
+        int probeReading = justReadProbe( true );
+
         // Check if probe is touching the voltage selection area (rows 31-60)
         if ( probeReading >= 31 && probeReading <= 60 ) {
             // Map probe position to voltage value based on config range
             // Probe rows 31-60 (30 positions) map to min-max voltage
             float voltageRange = max - min;
-            float normalizedPosition = (probeReading - 31) / 29.0;  // 0.0 to 1.0
-            currentChoice = min + (normalizedPosition * voltageRange);
+            float normalizedPosition = ( probeReading - 31 ) / 29.0; // 0.0 to 1.0
+            currentChoice = min + ( normalizedPosition * voltageRange );
             
+
             // Round to 0.1V increments
-            currentChoice = roundf(currentChoice * 10.0f) / 10.0f;
-            
+            // currentChoice = roundf(currentChoice * 10.0f) / 10.0f;
+
             // Clamp to limits
-            if ( currentChoice > max ) currentChoice = max;
-            if ( currentChoice < min ) currentChoice = min;
-            
+            if ( currentChoice > max )
+                currentChoice = max;
+            if ( currentChoice < min )
+                currentChoice = min;
+
             // Clamp to DAC limits
             if ( currentChoice > jumperlessConfig.dacs.limit_max ) {
                 currentChoice = jumperlessConfig.dacs.limit_max;
             } else if ( currentChoice < jumperlessConfig.dacs.limit_min ) {
                 currentChoice = jumperlessConfig.dacs.limit_min;
             }
-            
+roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
             // Snap to zero
-            if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
-                currentChoice = 0.0;
-            }
-            
+            // if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
+            //     currentChoice = 0.0;
+            // }
+
             // Determine color
             uint32_t numberColor = posColor;
             if ( currentChoice > 0.05 ) {
@@ -2632,63 +2646,67 @@ float getActionFloat( int menuPosition, int rail ) {
             } else if ( currentChoice < -0.05 ) {
                 numberColor = negColor;
             }
-            
+
             // Format and display
             if ( currentChoice < 0.00 ) {
-                snprintf( floatString, 8, "%0.1f V", currentChoice );
+                snprintf( floatString, 8, "%0.1f V", roundedCurrentChoice );
             } else {
-                snprintf( floatString, 8, " %0.1f V", currentChoice );
+                snprintf( floatString, 8, " %0.1f V", roundedCurrentChoice );
             }
-            
+
             b.clear( 1 );
             b.print( floatString, numberColor, 0xffffff, 0, 1, 1 );
             Serial.print( "\r                        \r" );
             Serial.print( floatString );
             oled.clearPrintShow( floatString, 2, true, true, true );
-            
+
             // Update global state immediately
             if ( rail == 0 ) {
-                globalState.power.topRail = currentChoice;
-                globalState.power.bottomRail = currentChoice;
+                globalState.power.topRail = roundedCurrentChoice;
+                globalState.power.bottomRail = roundedCurrentChoice;
             } else if ( rail == 1 ) {
-                globalState.power.topRail = currentChoice;
+                globalState.power.topRail = roundedCurrentChoice;
             } else if ( rail == 2 ) {
-                globalState.power.bottomRail = currentChoice;
+                globalState.power.bottomRail = roundedCurrentChoice;
             }
-            
+
             // Apply voltage to hardware (only for safe range)
-            if ( currentChoice > 0.0 && currentChoice <= 5.0 ) {
+            if ( currentChoice >= 0.0 && currentChoice <= 5.0 ) {
                 switch ( rail ) {
                 case 0:
-                    setTopRail( currentChoice, 1, 0 );
-                    setBotRail( currentChoice, 1, 0 );
+                    setTopRail( roundedCurrentChoice, 1, 0 );
+                    setBotRail( roundedCurrentChoice, 1, 0 );
                     break;
                 case 1:
-                    setTopRail( currentChoice, 1, 0 );
+                    setTopRail( roundedCurrentChoice, 1, 0 );
                     break;
                 case 2:
-                    setBotRail( currentChoice, 1, 0 );
+                    setBotRail( roundedCurrentChoice, 1, 0 );
                     break;
                 }
             }
-            
+
             showLEDsCore2 = 2;
-            
+
             // Reset encoder-based tracking since we're using probe now
             lastEncoderPosition = encoderPosition;
             accelerationMultiplier = 1.0;
             consecutiveFastCount = 0;
             lastDirection = 0;
             firstTime = 0;
-            continue;  // Skip encoder processing this iteration
+            // Serial.print("currentChoice: ");
+            // Serial.print(currentChoice);
+            // Serial.println();
+            // Serial.flush();
+            continue; // Skip encoder processing this iteration
         }
-        
+
         // Read encoder position directly for immediate response
         long currentEncoderPosition = encoderPosition;
         long encoderDelta = currentEncoderPosition - lastEncoderPosition;
-        
+
         bool valueChanged = false;
-        
+
         // Process encoder movement
         if ( encoderDelta != 0 || firstTime == 1 ) {
             // Handle snap delay
@@ -2697,35 +2715,35 @@ float getActionFloat( int menuPosition, int rail ) {
                 lastEncoderPosition = currentEncoderPosition;
                 continue;
             }
-            
-            if ( !firstTime ) {
+
+            if ( !firstTime) {
                 // Determine current direction
-                int currentDirection = (encoderDelta > 0) ? 1 : ((encoderDelta < 0) ? -1 : 0);
-                
+                int currentDirection = ( encoderDelta > 0 ) ? 1 : ( ( encoderDelta < 0 ) ? -1 : 0 );
+
                 // Reset acceleration if direction changed
                 if ( currentDirection != 0 && currentDirection != lastDirection ) {
                     accelerationMultiplier = 1.0;
                     consecutiveFastCount = 0;
                     lastDirection = currentDirection;
                 }
-                
+
                 // Calculate acceleration based on delta magnitude and timing
-                unsigned long currentTime = millis();
+                unsigned long currentTime = millis( );
                 unsigned long timeSinceLastChange = currentTime - lastChangeTime;
-                int deltaMagnitude = abs(encoderDelta);
-                
+                int deltaMagnitude = abs( encoderDelta );
+
                 // Fast rotation = large delta between polls
-                bool isFastRotation = (deltaMagnitude >= 4);
-                
+                bool isFastRotation = ( deltaMagnitude >= 2 );
+
                 if ( isFastRotation ) {
                     // Fast movement detected - increment consecutive count
                     consecutiveFastCount++;
-                    
+
                     // Only accelerate after 0 consecutive fast movements in same direction
                     if ( consecutiveFastCount >= 0 ) {
                         accelerationMultiplier += 3.5;
                         if ( accelerationMultiplier > 5.0 ) {
-                            accelerationMultiplier = 5.0;
+                            accelerationMultiplier = 7.0;
                         }
                     }
                 } else if ( timeSinceLastChange > 120 ) {
@@ -2737,40 +2755,64 @@ float getActionFloat( int menuPosition, int rail ) {
                     // Medium/slow speed - reset fast count but maintain acceleration
                     consecutiveFastCount = 0;
                 }
-                
+
                 lastChangeTime = currentTime;
-                
+
                 // Calculate voltage change based on encoder delta
                 // Base change per encoder click, scaled by acceleration
                 float deltaMultiplier = 0.01 * accelerationMultiplier;
                 float addToValue = encoderDelta * deltaMultiplier;
-                
+
                 // Apply the change (note: subtract because encoder direction)
                 currentChoice -= addToValue;
+                roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
+                if ( roundedCurrentChoice == -0.0 ) {
+                    roundedCurrentChoice = 0.0;
+                }
+               // firstTime = 0;
             }
-            
+
             lastEncoderPosition = currentEncoderPosition;
+            // Serial.print( "currentChoice: " );
+            // Serial.print( currentChoice );
+            // Serial.print( " currentEncoderPosition: " );
+            // Serial.print( currentEncoderPosition );
+            // Serial.print( " encoderDelta: " );
+            // Serial.print( encoderDelta );
+            // Serial.println( );
+            // Serial.flush( );
             valueChanged = true;
-            
+
             // Clamp to limits
             if ( currentChoice > max ) {
                 currentChoice = max;
             } else if ( currentChoice < min ) {
                 currentChoice = min;
             }
-            
+
             // Clamp to DAC limits
             if ( currentChoice > jumperlessConfig.dacs.limit_max ) {
                 currentChoice = jumperlessConfig.dacs.limit_max;
+                // Serial.print("currentChoice > jumperlessConfig.dacs.limit_max: ");
+                // Serial.print(currentChoice);
+                // Serial.println();
+                // Serial.flush();
             } else if ( currentChoice < jumperlessConfig.dacs.limit_min ) {
                 currentChoice = jumperlessConfig.dacs.limit_min;
+                // Serial.print("currentChoice < jumperlessConfig.dacs.limit_min: ");
+                // Serial.print(currentChoice);
+                // Serial.println();
+                // Serial.flush();
             }
-            
+            roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
+            if ( roundedCurrentChoice == -0.0 ) {
+                roundedCurrentChoice = 0.0;
+            }
             // Determine color based on voltage value (better color logic from original)
             if ( currentChoice > 0.05 ) {
                 numberColor = posColor;
             }
-            
+
             // Blended regions (approaching special values)
             if ( currentChoice < 5.3 && currentChoice > 4.7 ) {
                 numberColor = fiveBlended;
@@ -2779,10 +2821,10 @@ float getActionFloat( int menuPosition, int rail ) {
             } else if ( currentChoice < 0.35 && currentChoice > -0.35 ) {
                 numberColor = zeroBlended;
             }
-            
+
             // Exact special values (tight ranges for snap points)
             if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
-                currentChoice = 0.0;
+               
                 numberColor = zeroColor;
             } else if ( currentChoice > 3.25 && currentChoice < 3.35 ) {
                 numberColor = threeColor;
@@ -2793,52 +2835,52 @@ float getActionFloat( int menuPosition, int rail ) {
             } else if ( currentChoice < -0.05 ) {
                 numberColor = negColor;
             }
-            
+
             // Format display string
             if ( currentChoice < 0.00 ) {
-                snprintf( floatString, 8, "%0.1f V", currentChoice );
+                snprintf( floatString, 8, "%0.1f V", roundedCurrentChoice );
             } else {
-                snprintf( floatString, 8, " %0.1f V", currentChoice );
+                snprintf( floatString, 8, " %0.1f V", roundedCurrentChoice );
             }
-            
+
             // Update LED display
             b.clear( 1 );
             b.print( floatString, numberColor, 0xffffff, 0, 1, 1 );
-            
+            showLEDsCore2 = 2;
+
             // Update serial
             Serial.print( "\r                        \r" );
             Serial.print( floatString );
-            
+
             // Update OLED
             oled.clearPrintShow( floatString, 2, true, true, true );
-            
+
             // Update global state immediately
             if ( rail == 0 ) {
-                globalState.power.topRail = roundf(currentChoice * 10.0f) / 10.0f;
-                globalState.power.bottomRail = roundf(currentChoice * 10.0f) / 10.0f;
+                globalState.power.topRail = roundedCurrentChoice;
+                globalState.power.bottomRail = roundedCurrentChoice;
             } else if ( rail == 1 ) {
-                globalState.power.topRail = roundf(currentChoice * 10.0f) / 10.0f;
+                globalState.power.topRail = roundedCurrentChoice;
             } else if ( rail == 2 ) {
-                globalState.power.bottomRail = roundf(currentChoice * 10.0f) / 10.0f;
+                globalState.power.bottomRail = roundedCurrentChoice;
             }
-            
-            
+
             // Apply voltage to hardware (only for safe range)
-            if ( firstTime == 0 && currentChoice > 0.0 && currentChoice <= 5.0 ) {
+            if ( firstTime == 0 && currentChoice >= 0.0 && currentChoice <= 5.0 ) {
                 switch ( rail ) {
                 case 0:
-                    setTopRail( currentChoice, 1, 0 ); // save=1 to update globalState
-                    setBotRail( currentChoice, 1, 0 );
+                    setTopRail( roundedCurrentChoice, 1, 0 ); // save=1 to update globalState
+                    setBotRail( roundedCurrentChoice, 1, 0 );
                     break;
                 case 1:
-                    setTopRail( currentChoice, 1, 0 );
+                    setTopRail( roundedCurrentChoice, 1, 0 );
                     break;
                 case 2:
-                    setBotRail( currentChoice, 1, 0 );
+                    setBotRail( roundedCurrentChoice, 1, 0 );
                     break;
                 }
             }
-            
+
             // Check for snap values (using accelerationMultiplier == 1.0 for precision)
             if ( snapToValue == 0 && snap != 0 && accelerationMultiplier == 1.0 ) {
                 for ( int i = 0; i < 8; i++ ) {
@@ -2847,257 +2889,267 @@ float getActionFloat( int menuPosition, int rail ) {
                     }
                 }
             }
-            
-            showLEDsCore2 = 2;
+
+            // showLEDsCore2 = 2;
+            delayMicroseconds(8000);
             firstTime = 0;
         }
     }
-    
-    return currentChoice;
+
+    return roundedCurrentChoice;
 }
 
 // EncoderAccelerator class moved to RotaryEncoder.h for shared use
 
 /**
  * @brief Get integer value from user via rotary encoder and breadboard LEDs
- * 
+ *
  * Similar to getActionFloat but for integer values. Uses rotary encoder to scroll
  * through range with acceleration. Probe touch can jump through range based on position.
- * 
+ *
  * @param min Minimum allowed value
  * @param max Maximum allowed value
  * @param currentValue Starting value (optional, defaults to middle of range)
  * @return Selected integer value
  */
-int getActionInt(int minVal, int maxVal, int currentValue) {
+int getActionInt( int minVal, int maxVal, int currentValue ) {
     // Initialize to middle of range if no current value provided
-    if (currentValue == -1) {
-        currentValue = (minVal + maxVal) / 2;
+    if ( currentValue == -1 ) {
+        currentValue = ( minVal + maxVal ) / 2;
     }
-    
+
     // Clamp to range
-    if (currentValue < minVal) currentValue = minVal;
-    if (currentValue > maxVal) currentValue = maxVal;
-    
+    if ( currentValue < minVal )
+        currentValue = minVal;
+    if ( currentValue > maxVal )
+        currentValue = maxVal;
+
     int range = maxVal - minVal;
     int originalValue = currentValue;
-    char intString[16];
-    
+    char intString[ 16 ];
+
     // Set rotary divider for good responsiveness
     int lastDivider = rotaryDivider;
     rotaryDivider = 3;
-    
-    b.clear(1);
-    
+
+    b.clear( 1 );
+
     // Color mapping based on position in range
-    uint32_t lowColor = 0x001010;    // Cyan for low values
-    uint32_t midColor = 0x101000;    // Yellow for mid values
-    uint32_t highColor = 0x100010;   // Magenta for high values
+    uint32_t lowColor = 0x001010;  // Cyan for low values
+    uint32_t midColor = 0x101000;  // Yellow for mid values
+    uint32_t highColor = 0x100010; // Magenta for high values
     uint32_t currentColor = midColor;
-    
+
     // Position-based tracking for direct encoder reading
     long lastEncoderPosition = encoderPosition;
-    
+
     // Use generalized accelerator
     EncoderAccelerator accelerator;
-    
+
     // Fractional accumulation for ultra-precise control
     float fractionalValue = (float)currentValue;
     int lastDisplayedValue = currentValue;
-    
+
     bool firstUpdate = true;
-    
+
     // Reset button state to wait for NEW press
-    Menus::getInstance().inClickMenu = 1;
+    Menus::getInstance( ).inClickMenu = 1;
     encoderButtonState = IDLE;
     lastButtonEncoderState = IDLE;
-    
+
     // Display initial value
-    float position = (float)(currentValue - minVal) / (float)range;
-    if (position < 0.33f) {
+    float position = (float)( currentValue - minVal ) / (float)range;
+    if ( position < 0.33f ) {
         currentColor = lowColor;
-    } else if (position < 0.67f) {
+    } else if ( position < 0.67f ) {
         currentColor = midColor;
     } else {
         currentColor = highColor;
     }
-    
-    snprintf(intString, 16, "%d", currentValue);
-    b.clear(1);
-    b.print(intString, currentColor, 0xffffff, 0, 1, 1);
-    Serial.print("\r                        \r");
-    Serial.print(intString);
-    oled.clearPrintShow(intString, 2, true, true, true);
+
+    snprintf( intString, 16, "%d", currentValue );
+    b.clear( 1 );
+    b.print( intString, currentColor, 0xffffff, 0, 1, 1 );
+    Serial.print( "\r                        \r" );
+    Serial.print( intString );
+    oled.clearPrintShow( intString, 2, true, true, true );
     showLEDsCore2 = 2;
-    
-    while (true) {
-        delayMicroseconds(200);
-        rotaryEncoderStuff();
-        jOS.serviceCritical();
-        
+
+    while ( true ) {
+        delayMicroseconds( 200 );
+        rotaryEncoderStuff( );
+        jOS.serviceCritical( );
+
         // Check for cancellation (long press)
-        if (encoderButtonState == HELD || ProbeButton::getInstance().getButtonPress() == 1) {
+        if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             rotaryDivider = lastDivider;
             encoderButtonState = IDLE;
-            b.clear();
-            Menus::getInstance().inClickMenu = 0;
+            b.clear( );
+            Menus::getInstance( ).inClickMenu = 0;
             return originalValue; // Return original on cancel
         }
-        
+
         // Check for confirmation (short press)
-        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) {
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance( ).getButtonPress( ) == 2 ) {
             encoderButtonState = IDLE;
             rotaryDivider = lastDivider;
-            b.clear();
-            Menus::getInstance().inClickMenu = 0;
+            b.clear( );
+            Menus::getInstance( ).inClickMenu = 0;
             return currentValue;
         }
-        
+
         // Handle serial input for cancellation
-        if (Serial.available() > 0) {
-            Serial.read();
+        if ( Serial.available( ) > 0 ) {
+            Serial.read( );
             rotaryDivider = lastDivider;
-            b.clear();
-            Menus::getInstance().inClickMenu = 0;
+            b.clear( );
+            Menus::getInstance( ).inClickMenu = 0;
             return originalValue;
         }
-        
+
         // Read encoder position directly
         long currentEncoderPosition = encoderPosition;
         long encoderDelta = currentEncoderPosition - lastEncoderPosition;
-        
+
         bool valueChanged = false;
-        
-        if (encoderDelta != 0 || firstUpdate) {
-            if (!firstUpdate) {
+
+        if ( encoderDelta != 0 || firstUpdate ) {
+            if ( !firstUpdate ) {
                 // Get accelerated delta from helper class
-                float deltaFloat = accelerator.getAcceleratedDelta(encoderDelta);
-                
+                float deltaFloat = accelerator.getAcceleratedDelta( encoderDelta );
+
                 // Apply to fractional value (note: negative because encoder direction)
                 fractionalValue -= deltaFloat;
-                
+
                 // Clamp fractional value to range
-                if (fractionalValue > (float)maxVal) fractionalValue = (float)maxVal;
-                if (fractionalValue < (float)minVal) fractionalValue = (float)minVal;
-                
+                if ( fractionalValue > (float)maxVal )
+                    fractionalValue = (float)maxVal;
+                if ( fractionalValue < (float)minVal )
+                    fractionalValue = (float)minVal;
+
                 // Convert to integer for display
-                currentValue = (int)roundf(fractionalValue);
+                currentValue = (int)roundf( fractionalValue );
             }
-            
+
             lastEncoderPosition = currentEncoderPosition;
             valueChanged = true;
             firstUpdate = false;
         }
-        
-        if (valueChanged) {
+
+        if ( valueChanged ) {
             // Clamp to range (already done to fractionalValue above)
-            if (currentValue > maxVal) currentValue = maxVal;
-            if (currentValue < minVal) currentValue = minVal;
-            
+            if ( currentValue > maxVal )
+                currentValue = maxVal;
+            if ( currentValue < minVal )
+                currentValue = minVal;
+
             // Only update display if the integer value actually changed
-            if (currentValue != lastDisplayedValue) {
+            if ( currentValue != lastDisplayedValue ) {
                 lastDisplayedValue = currentValue;
-                
+
                 // Calculate color based on position in range
-                float position = (float)(currentValue - minVal) / (float)range;
-                if (position < 0.33f) {
+                float position = (float)( currentValue - minVal ) / (float)range;
+                if ( position < 0.33f ) {
                     currentColor = lowColor;
-                } else if (position < 0.67f) {
+                } else if ( position < 0.67f ) {
                     currentColor = midColor;
                 } else {
                     currentColor = highColor;
                 }
-                
+
                 // Display on breadboard and serial
-                snprintf(intString, 16, "%d", currentValue);
-                b.clear(1);
-                b.print(intString, currentColor, 0xffffff, 0, 1, 1);
-                
-                Serial.print("\r                        \r");
-                Serial.print(intString);
-                
+                snprintf( intString, 16, "%d", currentValue );
+                b.clear( 1 );
+                b.print( intString, currentColor, 0xffffff, 0, 1, 1 );
+
+                Serial.print( "\r                        \r" );
+                Serial.print( intString );
+
                 // Display on OLED
-                oled.clearPrintShow(intString, 2, true, true, true);
-                
+                oled.clearPrintShow( intString, 2, true, true, true );
+
                 showLEDsCore2 = 2;
             }
         }
     }
-    
+
     // Should never reach here
     rotaryDivider = lastDivider;
-    Menus::getInstance().inClickMenu = 0;
+    Menus::getInstance( ).inClickMenu = 0;
     return originalValue;
 }
 
 /**
  * @brief Helper function to get display name for special characters
  */
-static const char* getCharDisplayName(char c) {
-    if (c == '\b' || c == 0x08) return "<BS>";
-    if (c == '\t') return "<TAB>";
-    if (c == '\n') return "<ENTER>";
+static const char* getCharDisplayName( char c ) {
+    if ( c == '\b' || c == 0x08 )
+        return "<BS>";
+    if ( c == '\t' )
+        return "<TAB>";
+    if ( c == '\n' )
+        return "<ENTER>";
     return nullptr;
 }
 
 /**
  * @brief Helper function to display string on breadboard with scrolling
- * 
+ *
  * @param inputString The string to display
  * @param cursorPos Current cursor position
  * @param currentChar Optional current character being selected (highlighted)
  * @param highlightColor Color for current character
  * @param dimColor Color for entered characters
  */
-static void displayStringOnBreadboard(const char* inputString, int cursorPos, 
-                                      char currentChar = 0, 
-                                      uint32_t highlightColor = 0x0f0f0f,
-                                      uint32_t dimColor = 0x050505) {
-    b.clear();
-    
+static void displayStringOnBreadboard( const char* inputString, int cursorPos,
+                                       char currentChar = 0,
+                                       uint32_t highlightColor = 0x0f0f0f,
+                                       uint32_t dimColor = 0x050505 ) {
+    b.clear( );
+
     // Calculate scroll offset - show 16 char window
     int scrollOffset = 0;
-    if (cursorPos >= 8) {
-        scrollOffset = cursorPos - 7;  // Keep cursor near middle-right
-        if (scrollOffset > cursorPos - 15 && cursorPos >= 15) {
-            scrollOffset = cursorPos - 15;  // Don't scroll past the start
+    if ( cursorPos >= 8 ) {
+        scrollOffset = cursorPos - 7; // Keep cursor near middle-right
+        if ( scrollOffset > cursorPos - 15 && cursorPos >= 15 ) {
+            scrollOffset = cursorPos - 15; // Don't scroll past the start
         }
     }
-    
+
     // Show entered characters in scrolling window
-    for (int i = scrollOffset; i < cursorPos && i < scrollOffset + 16; i++) {
+    for ( int i = scrollOffset; i < cursorPos && i < scrollOffset + 16; i++ ) {
         int displayPos = i - scrollOffset;
         int displayX = displayPos % 8;
         int displayY = displayPos / 8;
-        
-        char charStr[2] = {inputString[i], '\0'};
-        b.print(charStr, dimColor, 0x000000, displayX, -1, displayY);
+
+        char charStr[ 2 ] = { inputString[ i ], '\0' };
+        b.print( charStr, dimColor, 0x000000, displayX, -1, displayY );
     }
-    
+
     // Show current character if provided
-    if (currentChar != 0) {
+    if ( currentChar != 0 ) {
         int cursorDisplayPos = cursorPos - scrollOffset;
         int displayX = cursorDisplayPos % 8;
         int displayY = cursorDisplayPos / 8;
-        
-        if (cursorDisplayPos >= 0 && cursorDisplayPos < 16) {
-            const char* specialName = getCharDisplayName(currentChar);
-            if (specialName) {
+
+        if ( cursorDisplayPos >= 0 && cursorDisplayPos < 16 ) {
+            const char* specialName = getCharDisplayName( currentChar );
+            if ( specialName ) {
                 // Show compact special char name
-                char compactName[5];
-                if (currentChar == '\b' || currentChar == 0x08) {
-                    strcpy(compactName, "BS");
-                } else if (currentChar == '\t') {
-                    strcpy(compactName, "TAB");
-                } else if (currentChar == '\n') {
-                    strcpy(compactName, "\n");
+                char compactName[ 5 ];
+                if ( currentChar == '\b' || currentChar == 0x08 ) {
+                    strcpy( compactName, "BS" );
+                } else if ( currentChar == '\t' ) {
+                    strcpy( compactName, "TAB" );
+                } else if ( currentChar == '\n' ) {
+                    strcpy( compactName, "\n" );
                 } else {
-                    strcpy(compactName, "?");
+                    strcpy( compactName, "?" );
                 }
-                b.print(compactName, highlightColor, 0xffffff, displayX, -1, displayY);
+                b.print( compactName, highlightColor, 0xffffff, displayX, -1, displayY );
             } else {
-                char displayStr[2] = {currentChar, '\0'};
-                b.print(displayStr, highlightColor, 0xffffff, displayX, -1, displayY);
+                char displayStr[ 2 ] = { currentChar, '\0' };
+                b.print( displayStr, highlightColor, 0xffffff, displayX, -1, displayY );
             }
         }
     }
@@ -3105,10 +3157,10 @@ static void displayStringOnBreadboard(const char* inputString, int cursorPos,
 
 /**
  * @brief Get text string from user via rotary encoder character selection
- * 
+ *
  * Uses rotary encoder to select characters one by one. Displays current character
  * on breadboard LEDs and full string on OLED.
- * 
+ *
  * Features:
  * - Rotate encoder to select characters
  * - Short press to confirm character and move to next
@@ -3116,210 +3168,210 @@ static void displayStringOnBreadboard(const char* inputString, int cursorPos,
  * - Long press to finish and return string
  * - Type directly from Serial (backspace deletes, ESC exits)
  * - Special characters: <BS>, <TAB>, <ENTER> for control chars
- * 
+ *
  * @param maxLength Maximum string length (default 32)
  * @return Entered string (empty on cancel/ESC)
  */
-String getActionString(int maxLength) {
+String getActionString( int maxLength ) {
     // Character set for text input (printable ASCII + special control chars)
     // Special chars use placeholder indices that map to actual control codes
     const char* characterSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:',.<>?/\\\"\x08\t\n ";
-    int charSetLength = strlen(characterSet);
-    
+    int charSetLength = strlen( characterSet );
+
     // Use fixed-size buffer (max 128 chars + null terminator to avoid VLA)
     const int MAX_STRING_LENGTH = 129;
-    char inputString[MAX_STRING_LENGTH];
-    memset(inputString, 0, MAX_STRING_LENGTH);
-    
+    char inputString[ MAX_STRING_LENGTH ];
+    memset( inputString, 0, MAX_STRING_LENGTH );
+
     // Clamp maxLength to safe maximum
-    if (maxLength <= 0 || maxLength >= MAX_STRING_LENGTH) {
+    if ( maxLength <= 0 || maxLength >= MAX_STRING_LENGTH ) {
         maxLength = 32;
     }
-    
+
     int cursorPos = 0;
     float charIndexFloat = 0.0f; // Fractional character index for smooth acceleration
-    int charIndex = 0; // Integer character index for display
-    
+    int charIndex = 0;           // Integer character index for display
+
     // Save and set rotary divider for good responsiveness
     int lastDivider = rotaryDivider;
     rotaryDivider = 4;
-    
-    b.clear();
+
+    b.clear( );
     bool firstUpdate = true;
-    
+
     // Color for current character highlight
     uint32_t highlightColor = 0x0f0f0f;
     uint32_t dimColor = 0x030303;
     uint32_t cursorColor = 0x050505;
-    
+
     // Position-based tracking
     long lastEncoderPosition = encoderPosition;
-    
+
     // Use generalized accelerator for character selection
     EncoderAccelerator accelerator;
 
-    accelerator = EncoderAccelerator::Medium();
-    
+    accelerator = EncoderAccelerator::Medium( );
+
     // State management - match pattern from getActionInt
-    Menus::getInstance().inClickMenu = 1;
+    Menus::getInstance( ).inClickMenu = 1;
     encoderButtonState = IDLE;
     lastButtonEncoderState = IDLE;
-    
+
     // Enable interactive mode for live character echoing
     // Serial.write(0x0E);  // Turn ON interactive mode
     // Serial.flush();
-    
+
     // Display initial cursor (fixed size buffer for display)
-    char oledDisplay[140];
-    snprintf(oledDisplay, sizeof(oledDisplay), "    ");
-    oled.clearPrintShow(oledDisplay, 2, true, true, true);
-    Serial.print("\r                          \r");
-    Serial.println("Type directly or use encoder. ESC to cancel, Ctrl+Enter to finish.");
+    char oledDisplay[ 140 ];
+    snprintf( oledDisplay, sizeof( oledDisplay ), "    " );
+    oled.clearPrintShow( oledDisplay, 2, true, true, true );
+    Serial.print( "\r                          \r" );
+    Serial.println( "Type directly or use encoder. ESC to cancel, Ctrl+Enter to finish." );
     showLEDsCore2 = 2;
-    
-    while (true) {
-        //delayMicroseconds(300);
-        rotaryEncoderStuff();
-        jOS.serviceCritical();
+
+    while ( true ) {
+        // delayMicroseconds(300);
+        rotaryEncoderStuff( );
+        jOS.serviceCritical( );
         // Handle serial input for direct typing
-        if (Serial.available() > 0) {
-            char c = Serial.read();
-            
+        if ( Serial.available( ) > 0 ) {
+            char c = Serial.read( );
+
             // ESC = cancel and exit
-            if (c == 0x1B) {  // ESC
+            if ( c == 0x1B ) { // ESC
                 rotaryDivider = lastDivider;
-                b.clear();
+                b.clear( );
                 // Serial.write(0x0F);  // Turn OFF interactive mode
                 // Serial.flush();
-                Serial.println("\n\rCanceled");
-                Menus::getInstance().inClickMenu = 0;
-                return String("");
+                Serial.println( "\n\rCanceled" );
+                Menus::getInstance( ).inClickMenu = 0;
+                return String( "" );
             }
-            
+
             // Backspace = delete last character
-            if (c == '\b' || c == 0x7F) {
-                if (cursorPos > 0) {
+            if ( c == '\b' || c == 0x7F ) {
+                if ( cursorPos > 0 ) {
                     // Get the character we're deleting to maintain charIndex near it
-                    char deletedChar = inputString[cursorPos - 1];
-                    
+                    char deletedChar = inputString[ cursorPos - 1 ];
+
                     cursorPos--;
-                    inputString[cursorPos] = '\0';
-                    
+                    inputString[ cursorPos ] = '\0';
+
                     // Try to find the deleted char in the character set to position there
-                    for (int i = 0; i < charSetLength; i++) {
-                        if (characterSet[i] == deletedChar) {
+                    for ( int i = 0; i < charSetLength; i++ ) {
+                        if ( characterSet[ i ] == deletedChar ) {
                             charIndex = i;
                             charIndexFloat = (float)i;
                             break;
                         }
                     }
-                    
-                    accelerator.reset();
+
+                    accelerator.reset( );
                     firstUpdate = true;
-                    
+
                     // Update display with scrolling and live echo
-                    snprintf(oledDisplay, sizeof(oledDisplay), "%s_", inputString);
-                    oled.clearPrintShow(oledDisplay, 2, true, true, true);
-                    
+                    snprintf( oledDisplay, sizeof( oledDisplay ), "%s_", inputString );
+                    oled.clearPrintShow( oledDisplay, 2, true, true, true );
+
                     // Echo the backspace visually
-                    Serial.print("\r");
-                    Serial.print(inputString);
-                    Serial.print("                        \r");
-                    
-                    displayStringOnBreadboard(inputString, cursorPos, 0, highlightColor, cursorColor);
+                    Serial.print( "\r" );
+                    Serial.print( inputString );
+                    Serial.print( "                        \r" );
+
+                    displayStringOnBreadboard( inputString, cursorPos, 0, highlightColor, cursorColor );
                     showLEDsCore2 = 2;
                 }
                 continue;
             }
-            
+
             // Ctrl+Enter = finish and return
-            if (c == '\n' || c == '\r') {
-                if (Serial.peek() == '\n' || Serial.peek() == '\r') {
-                    Serial.read(); // Consume the other newline char
+            if ( c == '\n' || c == '\r' ) {
+                if ( Serial.peek( ) == '\n' || Serial.peek( ) == '\r' ) {
+                    Serial.read( ); // Consume the other newline char
                 }
                 // Finish and return
-                inputString[cursorPos] = '\0';
+                inputString[ cursorPos ] = '\0';
                 rotaryDivider = lastDivider;
-                b.clear();
+                b.clear( );
                 // Serial.write(0x0F);  // Turn OFF interactive mode
                 // Serial.flush();
                 // Serial.println();
-                Menus::getInstance().inClickMenu = 0;
-                return String(inputString);
+                Menus::getInstance( ).inClickMenu = 0;
+                return String( inputString );
             }
-            
+
             // Regular character - add to string
-            if (cursorPos < maxLength && (isprint(c) || c == '\t')) {
-                inputString[cursorPos] = c;
+            if ( cursorPos < maxLength && ( isprint( c ) || c == '\t' ) ) {
+                inputString[ cursorPos ] = c;
                 cursorPos++;
-                inputString[cursorPos] = '\0';
-                
-                if (cursorPos >= maxLength) {
+                inputString[ cursorPos ] = '\0';
+
+                if ( cursorPos >= maxLength ) {
                     // Max length reached
                     rotaryDivider = lastDivider;
-                    b.clear();
+                    b.clear( );
                     // Serial.write(0x0F);  // Turn OFF interactive mode
                     // Serial.flush();
                     // Serial.println();
-                    Menus::getInstance().inClickMenu = 0;
-                    return String(inputString);
+                    Menus::getInstance( ).inClickMenu = 0;
+                    return String( inputString );
                 }
-                
+
                 // Keep charIndex at the character we just typed for next position
                 // This way if you type 'a' then 'b', the encoder starts at 'b' for next char
-                for (int i = 0; i < charSetLength; i++) {
-                    if (characterSet[i] == c) {
+                for ( int i = 0; i < charSetLength; i++ ) {
+                    if ( characterSet[ i ] == c ) {
                         charIndex = i;
                         charIndexFloat = (float)i;
                         break;
                     }
                 }
-                
-                accelerator.reset();
+
+                accelerator.reset( );
                 firstUpdate = true;
-                
+
                 // Update display with scrolling - show live character
-                snprintf(oledDisplay, sizeof(oledDisplay), "%s", inputString);
-                oled.clearPrintShow(oledDisplay, 2, true, true, true);
-                
+                snprintf( oledDisplay, sizeof( oledDisplay ), "%s", inputString );
+                oled.clearPrintShow( oledDisplay, 2, true, true, true );
+
                 // Live echo with proper cursor positioning
-                Serial.print("\r");
-                Serial.print(inputString);
-                Serial.print("                        \r");
-                
-                displayStringOnBreadboard(inputString, cursorPos, 0, highlightColor, cursorColor);
+                Serial.print( "\r" );
+                Serial.print( inputString );
+                Serial.print( "                        \r" );
+
+                displayStringOnBreadboard( inputString, cursorPos, 0, highlightColor, cursorColor );
                 showLEDsCore2 = 2;
             }
             continue;
         }
-        
+
         // Check for finish (long press)
-        if (encoderButtonState == HELD || ProbeButton::getInstance().getButtonPress() == 1) {
+        if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             // Finish and return current string
-            inputString[cursorPos] = '\0';
+            inputString[ cursorPos ] = '\0';
             rotaryDivider = lastDivider;
             encoderButtonState = IDLE;
-            b.clear();
+            b.clear( );
             // Serial.write(0x0F);  // Turn OFF interactive mode
             // Serial.flush();
-            Serial.println();
-            Menus::getInstance().inClickMenu = 0;
-            return String(inputString);
+            Serial.println( );
+            Menus::getInstance( ).inClickMenu = 0;
+            return String( inputString );
         }
-        
+
         // // Check for backspace (double-click)
         // if (encoderButtonState == DOUBLECLICKED) {
         //     encoderButtonState = IDLE;
         //     lastButtonEncoderState = IDLE;
-            
+
         //     if (cursorPos > 0) {
         //         // Get the character we're deleting to maintain charIndex near it
         //         char deletedChar = inputString[cursorPos - 1];
-                
+
         //         // Delete last character
         //         cursorPos--;
         //         inputString[cursorPos] = '\0';
-                
+
         //         // Try to find the deleted char in the character set to position there
         //         for (int i = 0; i < charSetLength; i++) {
         //             if (characterSet[i] == deletedChar) {
@@ -3328,10 +3380,10 @@ String getActionString(int maxLength) {
         //                 break;
         //             }
         //         }
-                
+
         //         accelerator.reset(); // Reset acceleration
         //         firstUpdate = true;
-                
+
         //         // Update display to show deletion with scrolling
         //         snprintf(oledDisplay, sizeof(oledDisplay), "%s", inputString);
         //         oled.clearPrintShow(oledDisplay, 2, true, true, true);
@@ -3344,124 +3396,128 @@ String getActionString(int maxLength) {
         //     continue;
         // }
         // rotaryEncoderStuff();
-        
+
         // Check for character confirmation (short press)
-        if (encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance().getButtonPress() == 2) {
+        if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED || ProbeButton::getInstance( ).getButtonPress( ) == 2 ) {
             encoderButtonState = IDLE;
             lastButtonEncoderState = IDLE;
-            
+
             // Confirm current character and move to next position
-            inputString[cursorPos] = characterSet[charIndex];
+            inputString[ cursorPos ] = characterSet[ charIndex ];
             cursorPos++;
-            
-            if (cursorPos >= maxLength) {
+
+            if ( cursorPos >= maxLength ) {
                 // Max length reached, return
-                inputString[maxLength] = '\0';
+                inputString[ maxLength ] = '\0';
                 rotaryDivider = lastDivider;
-                b.clear();
+                b.clear( );
                 // Serial.write(0x0F);  // Turn OFF interactive mode
                 // Serial.flush();
-                Serial.println();
-                Menus::getInstance().inClickMenu = 0;
-                return String(inputString);
+                Serial.println( );
+                Menus::getInstance( ).inClickMenu = 0;
+                return String( inputString );
             }
-            
+
             // Keep charIndex at the character we just selected for smart positioning
             // Don't reset to 0 - stay near the last selected character
             // charIndex and charIndexFloat already set, just reset acceleration
-            accelerator.reset(); // Reset acceleration for next character
+            accelerator.reset( ); // Reset acceleration for next character
             firstUpdate = true;
             continue;
         }
-        
+
         // Read encoder for character selection
         long currentEncoderPosition = encoderPosition;
         long encoderDelta = currentEncoderPosition - lastEncoderPosition;
-        
-        if (encoderDelta != 0 || firstUpdate) {
-            if (!firstUpdate) {
+
+        if ( encoderDelta != 0 || firstUpdate ) {
+            if ( !firstUpdate ) {
                 // Get accelerated delta for smooth, fast character browsing
                 // REVERSE direction for more intuitive feel
-                float deltaFloat = accelerator.getAcceleratedDelta(-encoderDelta);
-                
+                float deltaFloat = accelerator.getAcceleratedDelta( -encoderDelta );
+
                 // Apply to fractional character index
                 charIndexFloat += deltaFloat;
-                
+
                 // Wrap around character set (use modulo for smooth wrapping)
-                while (charIndexFloat < 0.0f) charIndexFloat += charSetLength;
-                while (charIndexFloat >= charSetLength) charIndexFloat -= charSetLength;
-                
+                while ( charIndexFloat < 0.0f )
+                    charIndexFloat += charSetLength;
+                while ( charIndexFloat >= charSetLength )
+                    charIndexFloat -= charSetLength;
+
                 // Convert to integer for display
-                charIndex = (int)roundf(charIndexFloat);
-                
+                charIndex = (int)roundf( charIndexFloat );
+
                 // Ensure within bounds after rounding
-                if (charIndex < 0) charIndex = 0;
-                if (charIndex >= charSetLength) charIndex = charSetLength - 1;
+                if ( charIndex < 0 )
+                    charIndex = 0;
+                if ( charIndex >= charSetLength )
+                    charIndex = charSetLength - 1;
             }
-            
+
             // Update display - show entered string + current char with scrolling
-            char currentChar = characterSet[charIndex];
-            displayStringOnBreadboard(inputString, cursorPos, currentChar, highlightColor, cursorColor);
-            
+            char currentChar = characterSet[ charIndex ];
+            displayStringOnBreadboard( inputString, cursorPos, currentChar, highlightColor, cursorColor );
+
             // Display full string on OLED with current character and cursor
-            char tempString[MAX_STRING_LENGTH];
-            strncpy(tempString, inputString, MAX_STRING_LENGTH - 1);
-            
+            char tempString[ MAX_STRING_LENGTH ];
+            strncpy( tempString, inputString, MAX_STRING_LENGTH - 1 );
+
             // For display, show special char names
-            const char* specialName = getCharDisplayName(currentChar);
-            if (specialName) {
+            const char* specialName = getCharDisplayName( currentChar );
+            if ( specialName ) {
                 // Show the entered string + special char name + cursor
-                snprintf(oledDisplay, sizeof(oledDisplay), "%s%s", inputString, specialName);
+                snprintf( oledDisplay, sizeof( oledDisplay ), "%s%s", inputString, specialName );
             } else {
-                tempString[cursorPos] = currentChar;
-                tempString[cursorPos + 1] = '\0';
-                snprintf(oledDisplay, sizeof(oledDisplay), "%s", tempString);
+                tempString[ cursorPos ] = currentChar;
+                tempString[ cursorPos + 1 ] = '\0';
+                snprintf( oledDisplay, sizeof( oledDisplay ), "%s", tempString );
             }
-            oled.clearPrintShow(oledDisplay, 2, true, true, true);
-            
+            oled.clearPrintShow( oledDisplay, 2, true, true, true );
+
             // Display on serial with special char handling
-            Serial.print("\r");
-            if (specialName) {
-                Serial.print(inputString);
-                Serial.print(specialName);
+            Serial.print( "\r" );
+            if ( specialName ) {
+                Serial.print( inputString );
+                Serial.print( specialName );
             } else {
-                Serial.print(tempString);
+                Serial.print( tempString );
             }
-                Serial.print(" ");
-            Serial.print("                        \r");
-            
+            Serial.print( " " );
+            Serial.print( "                        \r" );
+
             showLEDsCore2 = 2;
             firstUpdate = false;
             lastEncoderPosition = currentEncoderPosition;
         }
     }
-    
+
     // Should never reach here
     rotaryDivider = lastDivider;
     // Serial.write(0x0F);  // Turn OFF interactive mode
     // Serial.flush();
-    Menus::getInstance().inClickMenu = 0;
-    return String("");
+    Menus::getInstance( ).inClickMenu = 0;
+    return String( "" );
 }
 
 /**
  * @brief Get bitmap filename from user via interactive image selector
- * 
+ *
  * Launches an interactive image browser that displays images from /images folder.
  * User can scroll through images using rotary encoder and select one.
- * 
+ *
  * Features:
  * - Rotary encoder to browse through images
  * - Live preview of each image on OLED
  * - Image info overlay (filename, counter)
  * - Short click to select image
  * - Long press to cancel
- * 
+ *
  * @return Selected image filename (empty on cancel)
  */
-String getActionBitmap() {
+String getActionBitmap( ) {
     // Call the interactive image selector from ImagesApp
-    return selectImageFromMenu();
+    return selectImageFromMenu( );
 }
 
 //>n nodes 1 //>b baud 2 //>v voltage 3 //>i integer 7 //>t text 8
@@ -3517,29 +3573,27 @@ actionCategories getActionCategory( void ) {
 int doMenuAction( int menuPosition, int selection ) {
 
     populateAction( );
-    
+
     // Strip \31 characters from menuLines referenced in action struct
     // This ensures proper matching while keeping OLED display correct
     for ( int i = 0; i < currentAction.previousMenuIndex; i++ ) {
         int menuIdx = currentAction.previousMenuPositions[ i ];
         if ( menuIdx != -1 ) {
             String cleaned = menuLines[ menuIdx ];
-            //cleaned.replace( "\31", "" );
+            // cleaned.replace( "\31", "" );
             menuLines[ menuIdx ] = cleaned;
         }
     }
-    
-   // printActionStruct( );
-   // clearLEDsExceptRails( );
-    showLEDsCore2 = -1;
-    
 
-    
+    // printActionStruct( );
+    // clearLEDsExceptRails( );
+    showLEDsCore2 = -1;
+
     actionCategories currentCategory = getActionCategory( );
 
     if ( currentCategory == SHOWACTION ) { //! Show
 
-       // Serial.print( "Show Action\n\r" );
+        // Serial.print( "Show Action\n\r" );
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Voltage" ) !=
              -1 ) {
 
@@ -3667,7 +3721,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == RAILSACTION ) { //! Rails
 
-      //  Serial.print( "Rails Action\n\r" );
+        //  Serial.print( "Rails Action\n\r" );
         showLEDsCore2 = 1;
         waitCore2( );
 
@@ -3677,22 +3731,22 @@ int doMenuAction( int menuPosition, int selection ) {
             delayMicroseconds( 100 );
             setBotRail( currentAction.analogVoltage, 1, 0 );
             // oled.clearPrintShow("Both Rails \n\rset to ", 1, true, false, false);
-            String voltageString = "Both Rails set to\n\r" + String(currentAction.analogVoltage) + " V";
-            oled.clearPrintShow(voltageString, 2, true, true, true);
+            String voltageString = "Both Rails set to\n\r" + String( currentAction.analogVoltage ) + " V";
+            oled.clearPrintShow( voltageString, 2, true, true, true );
             break;
         }
         case 1: {
             // delay(100);
             setTopRail( currentAction.analogVoltage, 1, 0 );
-            String voltageString = "Top Rail set to\n\r" + String(currentAction.analogVoltage) + " V";
-            oled.clearPrintShow(voltageString, 2, true, true, true);
+            String voltageString = "Top Rail set to\n\r" + String( currentAction.analogVoltage ) + " V";
+            oled.clearPrintShow( voltageString, 2, true, true, true );
             break;
         }
         case 2: {
             // delay(100);
             setBotRail( currentAction.analogVoltage, 1, 0 );
-            String voltageString = "Bottom Rail set to\n\r" + String(currentAction.analogVoltage) + " V";
-            oled.clearPrintShow(voltageString, 2, true, true, true);
+            String voltageString = "Bottom Rail set to\n\r" + String( currentAction.analogVoltage ) + " V";
+            oled.clearPrintShow( voltageString, 2, true, true, true );
             break;
         }
         default: {
@@ -3706,7 +3760,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == SLOTSACTION ) { //! Slots
 
-       // Serial.print( "Slots Action\n\r" );
+        // Serial.print( "Slots Action\n\r" );
 
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Save" ) !=
              -1 ) {
@@ -3723,13 +3777,13 @@ int doMenuAction( int menuPosition, int selection ) {
 
                 netSlot = currentAction.from[ 0 ];
                 String errorMsg;
-                SlotManager::getInstance( ).exitPreview(true, errorMsg);
+                SlotManager::getInstance( ).exitPreview( true, errorMsg );
 
                 SlotManager::getInstance( ).setActiveSlot( netSlot );
-                //slotChanged = 1;
-                  refreshConnections(-1);
+                // slotChanged = 1;
+                refreshConnections( -1 );
                 //  chooseShownReadings();
-               // printAllChangedNetColorFiles( );
+                // printAllChangedNetColorFiles( );
             }
             // netSlot = currentAction.from[0];
             return currentAction.from[ 0 ];
@@ -3749,7 +3803,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == OUTPUTACTION ) { //! Output
 
-       // Serial.print( "Output Action\n\r" );
+        // Serial.print( "Output Action\n\r" );
         printActionStruct( );
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "GPIO" ) !=
              -1 ) {
@@ -3866,7 +3920,7 @@ int doMenuAction( int menuPosition, int selection ) {
             }
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Limits" ) != -1 ) {
             if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Min Max" ) != -1 ) {
-               // Serial.print( "Min Max\n\r" );
+                // Serial.print( "Min Max\n\r" );
                 if ( currentAction.from[ 0 ] == 0 ) {
                     jumperlessConfig.dacs.limit_min = 0.0;
                 } else if ( currentAction.from[ 0 ] == 1 ) {
@@ -3893,12 +3947,12 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == APPSACTION ) {
 
-       // Serial.print( "Apps Action\n\r" ); //! Apps Action
+        // Serial.print( "Apps Action\n\r" ); //! Apps Action
 
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Games" ) !=
              -1 ) {
             doomOn = 1;
-           // Serial.println( "\n\n\n\rGames\n\r" );
+            // Serial.println( "\n\n\n\rGames\n\r" );
         }
         // digitalWrite(RESETPIN, HIGH);
 
@@ -3914,21 +3968,15 @@ int doMenuAction( int menuPosition, int selection ) {
         // slotChanged = 0;
         inClickMenu = 0;
 
-     
-
-          
-                runApp( -1, (char*)menuLines[ currentAction.previousMenuPositions[ 1 ] ].c_str() );
-                // showLEDsCore2 = -1;
-                refreshConnections( -1, 0 );
-                
-        
-        
+        runApp( -1, (char*)menuLines[ currentAction.previousMenuPositions[ 1 ] ].c_str( ) );
+        // showLEDsCore2 = -1;
+        refreshConnections( -1, 0 );
 
         return 10;
 
     } else if ( currentCategory == ARDUINOACTION ) {
 
-       //    Serial.print( "Arduino Action\n\r" );
+        //    Serial.print( "Arduino Action\n\r" );
 
     } else if ( currentCategory == PROBEACTION ) {
 
@@ -3936,29 +3984,29 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == CONNECTACTION ) {
         // Connect/Disconnect using encoder or probe
-        
+
         // Get the action type from the submenu selection
         // Check for "Remove" first since it's more specific
         // "Add" = connect mode (setOrClear = 1)
         // "Remove" = disconnect mode (setOrClear = 0)
-        int setOrClear = 1;  // Default to connect mode
-        
+        int setOrClear = 1; // Default to connect mode
+
         if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Remove" ) != -1 && currentAction.from[ 0 ] == 1 ) {
-            setOrClear = 0;  // Clear mode
+            setOrClear = 0; // Clear mode
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Add" ) != -1 && currentAction.from[ 0 ] == 0 ) {
-            setOrClear = 1;  // Connect mode
+            setOrClear = 1; // Connect mode
         }
-        
+
         // Exit menu mode before entering probe mode
         inClickMenu = 0;
-        
+
         // Enter probe mode with encoder support
         // This works exactly like clicking the probe button, but with encoder cursor support
         probeMode( setOrClear, -1 );
-        
+
         // Refresh display after exiting probe mode
         showLEDsCore2 = 1;
-        oled.showJogo32h();
+        oled.showJogo32h( );
 
     } else if ( currentCategory == ROUTINGACTION ) { //! Routing Options
 
@@ -4070,124 +4118,121 @@ int doMenuAction( int menuPosition, int selection ) {
             }
             debugFlagSet( 13 );
         }
-        //Serial.print( "Display Action\n\r" );
+        // Serial.print( "Display Action\n\r" );
 
     } else if ( currentCategory == OLEDACTION ) { //! OLED Options
 
-            // Handle menu-level actions that need special processing
-    // Note: Integer input (action 7) is now handled in getMenuSelection() 
-    // following the same pattern as getActionFloat (action 3)
-    
-    // Apply integer input value to config based on menu context
+        // Handle menu-level actions that need special processing
+        // Note: Integer input (action 7) is now handled in getMenuSelection()
+        // following the same pattern as getActionFloat (action 3)
+
+        // Apply integer input value to config based on menu context
         if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Width" ) != -1 ) {
             jumperlessConfig.top_oled.width = currentAction.integerValue;
             oled.displayWidth = currentAction.integerValue;
             configChanged = true;
             // Reinitialize display with new dimensions - init() now properly handles this
-            oled.init();
-           // saveConfig();
+            oled.init( );
+            // saveConfig();
         } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Height" ) != -1 ) {
             jumperlessConfig.top_oled.height = currentAction.integerValue;
             oled.displayHeight = currentAction.integerValue;
             configChanged = true;
             // Reinitialize display with new dimensions - init() now properly handles this
-            oled.init();
-         //  saveConfig();
+            oled.init( );
+            //  saveConfig();
         } else if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Rotation" ) != -1 ) {
             jumperlessConfig.top_oled.rotation = currentAction.integerValue;
             configChanged = true;
             // Apply rotation immediately without full reinit
-            getDisplay().setRotation(jumperlessConfig.top_oled.rotation);
-           // saveConfig();
+            getDisplay( ).setRotation( jumperlessConfig.top_oled.rotation );
+            // saveConfig();
         }
-        
+
         // Apply text input value to config based on menu context (action 8)
-        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "StartUp" ) != -1 && 
+        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "StartUp" ) != -1 &&
              menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Messge" ) != -1 ) {
             // Check if user selected "Edit" or "Clear"
-            String selectedOption = String(currentAction.fromAscii[0]);
-            selectedOption.toLowerCase();
-            
-            if (selectedOption.indexOf("text") != -1) {
+            String selectedOption = String( currentAction.fromAscii[ 0 ] );
+            selectedOption.toLowerCase( );
+
+            if ( selectedOption.indexOf( "text" ) != -1 ) {
                 // User wants to edit - the text input already ran, so save the value
-                strncpy(jumperlessConfig.top_oled.startup_message, currentAction.stringValue.c_str(), 32);
-                jumperlessConfig.top_oled.startup_message[32] = '\0'; // Ensure null termination
+                strncpy( jumperlessConfig.top_oled.startup_message, currentAction.stringValue.c_str( ), 32 );
+                jumperlessConfig.top_oled.startup_message[ 32 ] = '\0'; // Ensure null termination
                 configChanged = true;
-            //    saveConfig();
-                
+                //    saveConfig();
+
                 // Show confirmation on OLED and serial
-                oled.clear();
-                oled.setTextSize(1);
-                oled.clearPrintShow("Startup Message\nSaved:", 1, true, true, true);
-                oled.setTextSize(2);
-                delay(1000);
-                oled.clearPrintShow(jumperlessConfig.top_oled.startup_message, 2, true, true, true);
-                
-                Serial.print("\n\rStartup message saved: ");
-                Serial.println(jumperlessConfig.top_oled.startup_message);
-               // delay(1500); // Show confirmation briefly
-            } else if (selectedOption.indexOf("bitmap") != -1) {
+                oled.clear( );
+                oled.setTextSize( 1 );
+                oled.clearPrintShow( "Startup Message\nSaved:", 1, true, true, true );
+                oled.setTextSize( 2 );
+                delay( 1000 );
+                oled.clearPrintShow( jumperlessConfig.top_oled.startup_message, 2, true, true, true );
+
+                Serial.print( "\n\rStartup message saved: " );
+                Serial.println( jumperlessConfig.top_oled.startup_message );
+                // delay(1500); // Show confirmation briefly
+            } else if ( selectedOption.indexOf( "bitmap" ) != -1 ) {
                 // User selected a bitmap image
-                if (currentAction.stringValue.length() > 0) {
+                if ( currentAction.stringValue.length( ) > 0 ) {
                     // Store the bitmap filename in startup_message
-                    strncpy(jumperlessConfig.top_oled.startup_message, currentAction.stringValue.c_str(), 32);
-                    jumperlessConfig.top_oled.startup_message[32] = '\0'; // Ensure null termination
+                    strncpy( jumperlessConfig.top_oled.startup_message, currentAction.stringValue.c_str( ), 32 );
+                    jumperlessConfig.top_oled.startup_message[ 32 ] = '\0'; // Ensure null termination
                     configChanged = true;
-                    
-                    
+
                     // Show confirmation on OLED by displaying the selected image
-                    oled.clear();
-                    //oled.setTextSize(1);
+                    oled.clear( );
+                    // oled.setTextSize(1);
                     ///
-                    //oled.clearPrintShow("Startup Image\nSelected:", 1, true, true, true);
-                    //delay(1000);
-                    
+                    // oled.clearPrintShow("Startup Image\nSelected:", 1, true, true, true);
+                    // delay(1000);
+
                     // Display the selected bitmap as preview
-                    String fullPath =  currentAction.stringValue;
-                    if (loadAndDisplayImage(currentAction.stringValue.c_str())) {
-                        //delay(1500); // Show preview
+                    String fullPath = currentAction.stringValue;
+                    if ( loadAndDisplayImage( currentAction.stringValue.c_str( ) ) ) {
+                        // delay(1500); // Show preview
                     } else {
-                        Serial.println("Error loading image");
-                        Serial.println(currentAction.stringValue);
-                        Serial.println(fullPath);
-                        Serial.flush();
-                        oled.clearPrintShow("Error loading\nimage", 1, true, true, true);
-                       //delay(1500);
+                        Serial.println( "Error loading image" );
+                        Serial.println( currentAction.stringValue );
+                        Serial.println( fullPath );
+                        Serial.flush( );
+                        oled.clearPrintShow( "Error loading\nimage", 1, true, true, true );
+                        // delay(1500);
                     }
-                    
-                    Serial.print("\n\rStartup bitmap saved: ");
-                    Serial.println(jumperlessConfig.top_oled.startup_message);
-               //     saveConfig();
+
+                    Serial.print( "\n\rStartup bitmap saved: " );
+                    Serial.println( jumperlessConfig.top_oled.startup_message );
+                    //     saveConfig();
                 } else {
                     // User canceled selection
-                    Serial.println("\n\rBitmap selection canceled");
+                    Serial.println( "\n\rBitmap selection canceled" );
                 }
-            } else if (selectedOption.indexOf("clear") != -1) {
+            } else if ( selectedOption.indexOf( "clear" ) != -1 ) {
                 // User wants to clear - set to empty string
-                strcpy(jumperlessConfig.top_oled.startup_message, "");
+                strcpy( jumperlessConfig.top_oled.startup_message, "" );
                 configChanged = true;
-             //   saveConfig();
-             //   
+                //   saveConfig();
+                //
                 // Show confirmation with logo
-                oled.clear();
-               // oled.setTextSize(1);
-                oled.clearPrintShow("Startup Message\nCleared", 1, true, true, true);
-               // delay(1000);
-               //oled.dumpFrameBuffer();
-                
+                oled.clear( );
+                // oled.setTextSize(1);
+                oled.clearPrintShow( "Startup Message\nCleared", 1, true, true, true );
+                // delay(1000);
+                // oled.dumpFrameBuffer();
+
                 // Show the logo that will appear on startup
-                oled.init();
-                
-                Serial.println("\n\rStartup message cleared - will show logo on boot");
-                //delay(1500);
-            } 
+                oled.init( );
+
+                Serial.println( "\n\rStartup message cleared - will show logo on boot" );
+                // delay(1500);
+            }
         }
-        
- 
-    
+
         // LEDbrightness = (brightnessOptionMap[currentAction.from[0]]);
         // LEDbrightnessSpecial = (specialBrightnessOptionMap[currentAction.from[0]]);
-        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Connect" ) != -1 && 
+        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Connect" ) != -1 &&
              menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "On Boot" ) != -1 ) {
             if ( currentAction.from[ 0 ] == 0 ) {
                 jumperlessConfig.top_oled.lock_connection = 1;
@@ -4215,8 +4260,8 @@ int doMenuAction( int menuPosition, int selection ) {
             oled.setTextSize( 1 );
             configChanged = true;
 
-        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Lock" ) != -1 && 
-                    menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Connect"  ) == -1 ) {
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Lock" ) != -1 &&
+                    menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Connect" ) == -1 ) {
             if ( currentAction.from[ 0 ] == 0 ) {
                 jumperlessConfig.top_oled.lock_connection = 1;
                 globalState.config.oledLockConnection = 1;
@@ -4241,30 +4286,30 @@ int doMenuAction( int menuPosition, int selection ) {
                 jumperlessConfig.top_oled.enabled = 1;
                 showLEDsCore2 = 1;
                 oled.init( );
-                oled.clearPrintShow("OLED Connected", 2, true, true, true);
+                oled.clearPrintShow( "OLED Connected", 2, true, true, true );
                 delay( 300 );
                 // oled.clearPrintShow("Disconnecting OLED", 2, true, true, true);
                 // delay( 300 );
-                oled.clear();
-                oled.showJogo32h();
-                //oled.disconnect( );
-               // jumperlessConfig.top_oled.enabled = 0;
+                oled.clear( );
+                oled.showJogo32h( );
+                // oled.disconnect( );
+                // jumperlessConfig.top_oled.enabled = 0;
             }
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Font" ) != -1 ) {
             // Use the font name directly from menu
             String fontMenuName = menuLines[ currentAction.previousMenuPositions[ 2 ] ];
-            
+
             // Set the font by name (this will search fontList)
             int fontIndex = oled.setFont( fontMenuName, 0 );
-            
+
             // Use parseFont() to get the correct FontFamily enum value
             // This ensures consistency with config system (single source of truth)
-            int configFontValue = parseFont(fontMenuName.c_str());
-            
+            int configFontValue = parseFont( fontMenuName.c_str( ) );
+
             // Update config with FontFamily enum value
             jumperlessConfig.top_oled.font = configFontValue;
             configChanged = true;
-           // saveConfig();
+            // saveConfig();
 
             Serial.print( "Font set to: " );
             Serial.print( fontMenuName );
@@ -4272,7 +4317,7 @@ int doMenuAction( int menuPosition, int selection ) {
             Serial.print( configFontValue );
             Serial.println( ")" );
 
-        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Show" ) != -1 && 
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Show" ) != -1 &&
                     menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "in Term" ) != -1 ) {
             if ( jumperlessConfig.top_oled.show_in_terminal == 1 ) {
                 jumperlessConfig.top_oled.show_in_terminal = 0;
@@ -4286,38 +4331,37 @@ int doMenuAction( int menuPosition, int selection ) {
             // 1 = RP6/RP7 (hardwired GPIO 6/7) - uses I2C1 (Wire1)
             // 2 = Internal I2C0 (hardwired GPIO 4/5) - uses I2C0 (Wire)
             int newConnectionType = currentAction.from[ 0 ];
-            
+
             // Print feedback BEFORE disconnecting (while OLED still works)
             if ( newConnectionType == 0 ) {
-                Serial.println("\n\rOLED pins set to GPIO 7/8 (crossbar, pins 26/27)");
+                Serial.println( "\n\rOLED pins set to GPIO 7/8 (crossbar, pins 26/27)" );
             } else if ( newConnectionType == 1 ) {
-                Serial.println("\n\rOLED pins set to RP6/RP7 (hardwired, pins 6/7)");
+                Serial.println( "\n\rOLED pins set to RP6/RP7 (hardwired, pins 6/7)" );
             } else if ( newConnectionType == 2 ) {
-                Serial.println("\n\rOLED pins set to Internal I2C0 (hardwired, pins 4/5)");
+                Serial.println( "\n\rOLED pins set to Internal I2C0 (hardwired, pins 4/5)" );
             }
-            
+
             // Disconnect current OLED before changing pins
             oled.disconnect( );
-            
+
             // Update all pins for the new connection type (also sets oledUsingHardwiredPins)
             updateOledPinsForConnectionType( newConnectionType );
             configChanged = true;
-            
+
             // Save config immediately so it persists after reset
-  
-            
+
             // Small delay to let I2C settle before reconnecting
             delay( 100 );
-            
+
             // Reconnect with new pins - init() will set up correct I2C and display
             oled.init( );
 
-            saveConfig();
+            saveConfig( );
         }
 
     } else if ( currentCategory == NOCATEGORY ) {
 
-       // Serial.print( "No Category\n\r" );
+        // Serial.print( "No Category\n\r" );
     }
 
     return 1;
@@ -4834,7 +4878,7 @@ char LEDbrightnessMenu( void ) {
     } else {
         saveLEDbrightness( 0 );
         // Note: No need to call assignNetColors() here - core 2's showNets() recomputes colors every frame
-        showLEDsCore2 = 1;  // Trigger LED update on core 2
+        showLEDsCore2 = 1; // Trigger LED update on core 2
 
         return input;
     }

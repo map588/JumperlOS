@@ -661,6 +661,29 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( 't', "OLED terminal mode",
                      "Interactive OLED terminal - type text to display on OLED. Press ESC to exit, 'c' to clear.",
                      cmd_printTextFromTerminal, MENU_ADVANCED, CAT_SETTINGS );
+    registerCommand( 'T', "show switch position",
+                     "Show switch position.",
+                     cmd_showSwitchPosition, MENU_DEBUG, CAT_ADVANCED );
+}
+
+CommandResult cmd_showSwitchPosition( char c, const String& line ) {
+
+    unsigned long currentTime = millis();
+
+    for (int j = 0; j < 10; j++) {
+    for (int i = 0; i < 10; i++) {
+        showSwitchPosition(i, " ", 0x000000, 0x000000);
+        showLEDsCore2 = 2;
+        delay(100);
+    }
+    for (int i = 9; i >= 0; i--) {
+        showSwitchPosition(i, "Fuck", 0x000000, 0x000000);
+        showLEDsCore2 = 2;
+        delay(100);
+    }
+}
+        
+    return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
@@ -1189,7 +1212,7 @@ CommandResult cmd_toggleExtraMenu( char c, const String& line ) {
 CommandResult cmd_showNetlist( char c, const String& line ) {
     extern volatile int core1passthrough;
     couldntFindPath( 1 );
-    core1passthrough = 0;
+  
     Jerial.print( "\n\n\rnetlist\n\r" );
     listNets( anythingInteractiveConnected( -1 ) );
     return CMD_SHOW_MENU;

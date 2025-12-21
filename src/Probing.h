@@ -67,8 +67,8 @@ public:
     
     // Adjustable timing parameters (milliseconds)
     unsigned long checkIntervalMs = 12;          // Rate limiting between hardware checks
-    unsigned long blockDurationMs = 1000;        // Block duration after press detected
-    unsigned long minimumBlockMs = 100;          // Minimum block time before release can clear (debounce)
+    unsigned long blockDurationMs = 800;        // Block duration after press detected
+    unsigned long minimumBlockMs = 50;          // Minimum block time before release can clear (debounce)
     unsigned long connectHoldThresholdMs = 800;  // Threshold to set CONNECT_HELD flag
     unsigned long removeHoldThresholdMs = 500;   // Threshold to set REMOVE_HELD flag
     
@@ -194,7 +194,7 @@ public:
     volatile unsigned long blockProbeButtonTimer = 0;
     
     volatile int connectOrClearProbe = 0;
-    int node1or2 = 0;
+    volatile int node1or2 = 0;
     int probeHighlight = 0;
     int logoTopSetting[2] = {0, 0};
     int logoBottomSetting[2] = {0, 0};
@@ -342,7 +342,7 @@ extern int& buttonPin;
 extern volatile unsigned long& blockProbeButton;
 extern volatile unsigned long& blockProbeButtonTimer;
 extern volatile int& connectOrClearProbe;
-extern int& node1or2;
+extern volatile int& node1or2;
 extern int& probeHighlight;
 extern volatile int& removeFade;
 extern volatile bool& bufferPowerConnected;
@@ -467,7 +467,7 @@ extern int (&buildingBottomSetting)[2];
 
 // Global state flags from main.cpp
 extern volatile int probeActive;
-extern volatile int core1passthrough;
+
 extern volatile bool core1busy;
 extern volatile bool core2busy;
 extern volatile int loadingFile;

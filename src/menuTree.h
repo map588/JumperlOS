@@ -82,8 +82,10 @@ String menuLines[] = {
   // "-XLSX   GUI",
   //"-Micropython",
   "-uPython\31REPL",
-  "-File   \31Manager",
+  // "-File   \31Manager",
   "-Probe  \31Calib",
+  "-Switch \31Calib",
+
   "-JDI MIP\31display",
   "-DMX \31Serial",  
   "-OLED \31Images",

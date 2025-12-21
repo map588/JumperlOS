@@ -6,8 +6,8 @@
 #include "FileParsing.h"
 #include "FilesystemStuff.h"
 #include "Graphics.h"
+#include "JumperlOS.h" // For ContextManager
 #include "JumperlessDefines.h"
-#include "JumperlOS.h"  // For ContextManager
 #include "LEDs.h"
 #include "MatrixState.h"
 #include "Menus.h"
@@ -30,13 +30,12 @@
 #include "Images.h"
 #include "externVars.h"
 #include <Display_cfg.h>
-#include <JDI_MIP_Display.h>
-#include <DmxOutput.h>
 #include <DmxInput.h>
+#include <DmxOutput.h>
+#include <JDI_MIP_Display.h>
 
 #define DISPLAY_WIDTH 72
 #define DISPLAY_HEIGHT 144
-
 
 #define COLOR_BLACK 0x00
 #define COLOR_BLUE 0x02
@@ -79,6 +78,7 @@ struct app apps[ NUM_APPS ] = {
     { "DOOM", 16, 1, playDoom },
     { "DMX Serial", 13, 1, DMXSerialApp },
     { "OLED Images", 14, 1, imagesAppLauncher },
+    { "Switch Calib", 15, 1, calibrateProbeSwitchThresholds },
     // others can remain uninitialized (works=0)
 };
 
@@ -94,7 +94,7 @@ String normalizeSpaces( const char* s ) {
     for ( size_t i = 0; i < in.length( ); ++i ) {
         char c = in[ i ];
         if ( c == '\31' ) {
-            //out += '\n';
+            // out += '\n';
             continue;
         }
         if ( c == ' ' ) {
@@ -138,32 +138,32 @@ void runApp( int index, char* name ) {
     if ( !name )
         name = apps[ index ].name;
 
-     Serial.println( "Running app: " + normalizeSpaces( name ) );
+    Serial.println( "Running app: " + normalizeSpaces( name ) );
     // Serial.println( "Index: " + String( index ) );
 
     // Determine context type based on app name
     // Some apps (File Manager, MicroPython REPL) push their own specific context,
     // so we use APP_GENERIC for others to avoid double-pushing
     String appName = normalizeSpaces( name );
-    bool appPushesOwnContext = appName.equalsIgnoreCase("file manager") ||
-                               appName.equalsIgnoreCase("micropython repl");
-    
-    if (!appPushesOwnContext) {
+    bool appPushesOwnContext = appName.equalsIgnoreCase( "file manager" ) ||
+                               appName.equalsIgnoreCase( "micropython repl" );
+
+    if ( !appPushesOwnContext ) {
         // Push generic app context for cleanup tracking
-        ContextEntry ctx(ContextType::APP_GENERIC);
-        ctx.onExit = [](void*) {
+        ContextEntry ctx( ContextType::APP_GENERIC );
+        ctx.onExit = []( void* ) {
             // Generic cleanup - close any open files
-            closeAllFiles();
+            closeAllFiles( );
         };
-        ContextManager::getInstance().pushContext(ctx);
+        ContextManager::getInstance( ).pushContext( ctx );
     }
 
     // Direct dispatch (no giant switch)
     apps[ index ].action( );
-    
+
     // Pop context if we pushed one
-    if (!appPushesOwnContext) {
-        ContextManager::getInstance().popContext();
+    if ( !appPushesOwnContext ) {
+        ContextManager::getInstance( ).popContext( );
     }
 }
 
@@ -172,7 +172,7 @@ void microPythonREPLapp( void ) {
 }
 
 void leaveApp( int lastNetSlot ) {
-    globalState.clearAllConnections( );
+    // globalState.clearAllConnections( );
     netSlot = lastNetSlot;
     refreshConnections( -1, 0, 1 );
 }
@@ -181,79 +181,70 @@ void fileManagerApp( void ) { filesystemApp( true ); }
 
 void calibrateProbeSwitchThresholds( void ) {
     b.clear( );
-    
+
     cycleTerminalColor( true, 5.0, true );
     Serial.println( "\n\rProbe Switch Threshold Calibration" );
     cycleTerminalColor( );
     Serial.println( "This will automatically set the switch position detection thresholds\n\r" );
-    
+
     int lastNetSlot = netSlot;
     netSlot = 8;
     globalState.clearAllConnections( );
     refreshConnections( -1, 0 );
     routableBufferPower( 1, 1, 1 );
     delay( 500 );
-    
+
     // Arrays to store current readings for both positions
-    const int NUM_READINGS = 10;
+    const int NUM_READINGS = 30;
     float measureReadings[ NUM_READINGS ];
     float selectReadings[ NUM_READINGS ];
     int measureCount = 0;
     int selectCount = 0;
-    
+
     // ===== MEASURE MODE CALIBRATION =====
     b.clear( );
-    b.print( "Measure", 0x000510, 0x000000, 0, 1, -1 );
-
-    
-    // Draw diagram showing probe in measure position (switch away from tip)
-    b.printRawRow( 0b00010000, 1, 0x100008, 0x000000 );
-    b.printRawRow( 0b00010000, 2, 0x100008, 0x000000 );
-    b.printRawRow( 0b00010000, 3, 0x100008, 0x000000 );
-    b.printRawRow( 0b00001000, 4, 0x100008, 0x000000 ); // Switch indicator
-    b.printRawRow( 0b00000100, 5, 0x100008, 0x000000 );
-    b.printRawRow( 0b00000100, 6, 0x100008, 0x000000 );
-    b.printRawRow( 0b00000100, 7, 0x100008, 0x000000 );
-    b.printRawRow( 0b00000100, 8, 0x100008, 0x000000 );
-    b.printRawRow( 0b00001110, 9, 0x100008, 0x000000 );
-    b.printRawRow( 0b00001110, 10, 0x100008, 0x000000 );
-    b.printRawRow( 0b00000010, 11, 0x100008, 0x000000 );
-    b.printRawRow( 0b00000100, 12, 0x100008, 0x000000 );
-    b.printRawRow( 0b00001000, 13, 0x100008, 0x000000 );
-    b.printRawRow( 0b00001000, 14, 0x100008, 0x000000 );
-    
+    for (int i = 0; i < 10; i++) {
+        showSwitchPosition(i, "Measure", 0x000000, 0x000000);
+        delay(50);
+    }
+int row = 0;
     oled.clear( );
     oled.print( "Move probe switch\n" );
     oled.print( "AWAY from tip\n" );
     oled.print( "(MEASURE mode)\n\n" );
-    oled.print( "Hold clickwheel\n" );
+    oled.print( "Press clickwheel\n" );
     oled.print( "when ready" );
     oled.show( );
-    
+
     Serial.println( "\n\rStep 1: MEASURE mode (switch away from tip)" );
     Serial.println( "Move the probe switch AWAY from the TIP" );
-    Serial.println( "Hold the clickwheel when ready\n\r" );
+    Serial.println( "Press the clickwheel when ready\n\r" );
     Serial.flush( );
-    
+
     // Wait for user confirmation
     encoderButtonState = IDLE;
-    while ( encoderButtonState != HELD ) {
+    while ( encoderButtonState != HELD && encoderButtonState != PRESSED ) {
         delay( 10 );
     }
     delay( 500 );
     encoderButtonState = IDLE;
-    
+
+    row = 22;
     // Take readings in MEASURE mode
     Serial.println( "Taking MEASURE mode readings..." );
-    b.print( "READ.", 0x100010, 0x000000, 0, -1, -1 );
+    b.clear( 0 );
+    b.print( "Read ", 0x100010, 0x000000, 0, -1, -1 );
     for ( int i = 0; i < NUM_READINGS; i++ ) {
         delay( 200 );
         float current = checkProbeCurrent( );
         measureReadings[ i ] = current;
         Serial.printf( "Reading %d: %.3f mA\n\r", i + 1, current );
-        b.printRawRow( 0xFF << ( 7 - i ), 7, 0x001010, 0x000000 );
+        if ( i % 6 == 0 ) {
+            row++;
+        }
+        b.printRawRow( 0xFF << ( ( 5 - ( i % 6 ) ) ), row, 0x001010, 0x000000 );
     }
-    
+
     // Calculate average for MEASURE mode
     float measureAvg = 0;
     for ( int i = 0; i < NUM_READINGS; i++ ) {
@@ -261,61 +252,55 @@ void calibrateProbeSwitchThresholds( void ) {
     }
     measureAvg /= NUM_READINGS;
     Serial.printf( "\nMEASURE mode average: %.3f mA\n\n\r", measureAvg );
-    
+
     delay( 1000 );
-    
+
     // ===== SELECT MODE CALIBRATION =====
     b.clear( );
-    b.print( "Select", 0x000510, 0x000000, 0, 1, -1 );
-    
-    // Draw diagram showing probe in select position (switch towards tip)
-    b.printRawRow( 0b00000100, 1, 0x000510, 0x000000 );
-    b.printRawRow( 0b00000100, 2, 0x000510, 0x000000 );
-    b.printRawRow( 0b00001000, 3, 0x000510, 0x000000 );
-    b.printRawRow( 0b00010000, 4, 0x000510, 0x000000 ); // Switch indicator
-    b.printRawRow( 0b00011000, 5, 0x000510, 0x000000 );
-    b.printRawRow( 0b00011000, 6, 0x000510, 0x000000 );
-    b.printRawRow( 0b00010000, 7, 0x000510, 0x000000 );
-    b.printRawRow( 0b00010000, 8, 0x000510, 0x000000 );
-    b.printRawRow( 0b00010000, 9, 0x000510, 0x000000 );
-    b.printRawRow( 0b00010000, 10, 0x000510, 0x000000 );
-    b.printRawRow( 0b00010000, 11, 0x000510, 0x000000 );
-    b.printRawRow( 0b00001000, 12, 0x000510, 0x000000 );
-    b.printRawRow( 0b00000100, 13, 0x000510, 0x000000 );
-    b.printRawRow( 0b00000100, 14, 0x000510, 0x000000 );
-    
+    for (int i = 10; i >= 0; i--) {
+        showSwitchPosition(i, "Select", 0x000000, 0x000510);
+        delay(50);
+    }
+
     oled.clear( );
     oled.print( "Move probe switch\n" );
     oled.print( "TOWARDS tip\n" );
     oled.print( "(SELECT mode)\n\n" );
-    oled.print( "Hold clickwheel\n" );
+    oled.print( "Press clickwheel\n" );
     oled.print( "when ready" );
     oled.show( );
-    
+
     Serial.println( "\n\rStep 2: SELECT mode (switch towards tip)" );
     Serial.println( "Move the probe switch TOWARDS the tip" );
-    Serial.println( "Hold the clickwheel when ready\n\r" );
+    Serial.println( "Press the clickwheel when ready\n\r" );
     Serial.flush( );
-    
+
     // Wait for user confirmation
     encoderButtonState = IDLE;
-    while ( encoderButtonState != HELD ) {
+    while ( encoderButtonState != HELD && encoderButtonState != PRESSED ) {
         delay( 10 );
     }
     delay( 500 );
     encoderButtonState = IDLE;
-    
+    row = 22;
+
     // Take readings in SELECT mode
     Serial.println( "Taking SELECT mode readings..." );
-    b.print( "READ.", 0x101010, 0x000000, 0, -1, -1 );
+    b.clear( 0 );
+    b.print( "Read  ", 0x101010, 0x000000, 0, -1, -1 );
     for ( int i = 0; i < NUM_READINGS; i++ ) {
         delay( 200 );
         float current = checkProbeCurrent( );
         selectReadings[ i ] = current;
         Serial.printf( "Reading %d: %.3f mA\n\r", i + 1, current );
-        b.printRawRow( 0xFF << ( 7 - i ), 7, 0x001010, 0x000000 );
+
+        if ( i % 6 == 0 ) {
+            row++;
+        }
+
+        b.printRawRow( 0xFF << ( ( 5 - ( i % 6 ) ) ), row, 0x001010, 0x000000 );
     }
-    
+
     // Calculate average for SELECT mode
     float selectAvg = 0;
     for ( int i = 0; i < NUM_READINGS; i++ ) {
@@ -323,33 +308,33 @@ void calibrateProbeSwitchThresholds( void ) {
     }
     selectAvg /= NUM_READINGS;
     Serial.printf( "\nSELECT mode average: %.3f mA\n\n\r", selectAvg );
-    
+
     // ===== CALCULATE THRESHOLDS =====
     // Set thresholds with hysteresis in the middle of the two averages
     // Add 20% buffer zone on each side to ensure reliable detection
     float midpoint = ( measureAvg + selectAvg ) / 2.0;
     float range = fabs( selectAvg - measureAvg );
-    float buffer = range * 0.15; // 15% buffer
-    
+    float buffer = range * 0.30; // 15% buffer
+
     // Ensure MEASURE mode is always the lower value
     float lowerAvg = min( measureAvg, selectAvg );
     float higherAvg = max( measureAvg, selectAvg );
-    
+
     // Set thresholds with hysteresis
     jumperlessConfig.calibration.probe_switch_threshold_low = midpoint - buffer;
     jumperlessConfig.calibration.probe_switch_threshold_high = midpoint + buffer;
-    
+
     Serial.println( "\n\r=== Calibration Results ===" );
     Serial.printf( "MEASURE mode average: %.3f mA\n\r", lowerAvg );
     Serial.printf( "SELECT mode average:  %.3f mA\n\r", higherAvg );
     Serial.printf( "Midpoint: %.3f mA\n\r", midpoint );
     Serial.printf( "Range: %.3f mA\n\r", range );
-    Serial.printf( "\nLow threshold:  %.3f mA (switch to MEASURE)\n\r", 
+    Serial.printf( "\nLow threshold:  %.3f mA (switch to MEASURE)\n\r",
                    jumperlessConfig.calibration.probe_switch_threshold_low );
-    Serial.printf( "High threshold: %.3f mA (switch to SELECT)\n\r", 
+    Serial.printf( "High threshold: %.3f mA (switch to SELECT)\n\r",
                    jumperlessConfig.calibration.probe_switch_threshold_high );
     Serial.println( "\n\rSaving configuration..." );
-    
+
     // Display results on OLED
     oled.clear( );
     oled.setTextSize( 1 );
@@ -360,15 +345,59 @@ void calibrateProbeSwitchThresholds( void ) {
     snprintf( oledBuffer, sizeof( oledBuffer ), "High: %.2f mA\n", jumperlessConfig.calibration.probe_switch_threshold_high );
     oled.print( oledBuffer );
     oled.show( );
-    
+
     // Show success on breadboard
     b.clear( );
-    b.print( "DONE!", 0x002000, 0x000000, 1, -1, -1 );
-    
+    b.print( "Done!", 0x002000, 0x000000, 1, -1, -1 );
+
     saveConfig( );
     delay( 2000 );
-    
+
     leaveApp( lastNetSlot );
+}
+
+
+void testSwitchThresholds( void ) {
+    float thresholdLow = jumperlessConfig.calibration.probe_switch_threshold_low;
+    float thresholdHigh = jumperlessConfig.calibration.probe_switch_threshold_high;
+
+
+
+while (true) {
+
+
+
+
+
+
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    Serial.printf( "Threshold Low: %.3f mA\n\r", thresholdLow );
+    Serial.printf( "Threshold High: %.3f mA\n\r", thresholdHigh );
+    Serial.flush( );
 }
 
 void probeCalibApp( void ) {
@@ -384,29 +413,31 @@ void probeCalibApp( void ) {
     Serial.println( "Hold the clickwheel when you're done\n\n\r" );
     cycleTerminalColor( );
 
-oled.showMultiLineSmallText("Tap rows with the probe and rotate the clickweel until they're lighting up the correct row", true, true);
-// oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
-// oled.showMultiLineSmallText("Hold the clickwheel when you're done\n\r", false, true);
-oled.flushFramebuffer( );
-// calibrateProbeSwitchThresholds();
+    oled.showMultiLineSmallText( "Tap rows with the probe and rotate the clickweel until they're lighting up the correct row", true, true );
+    // oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
+    // oled.showMultiLineSmallText("Hold the clickwheel when you're done\n\r", false, true);
+    oled.flushFramebuffer( );
+    // calibrateProbeSwitchThresholds();
 
-// OLEDOut.println("Test 1: PASS");
-// OLEDOut.println("Test 2: PASS");
-// OLEDOut.println("All tests OK!");
+    // OLEDOut.println("Test 1: PASS");
+    // OLEDOut.println("Test 2: PASS");
+    // OLEDOut.println("All tests OK!");
 
+    int finishCountdown = -1;
+    unsigned long finishCountdownTimer = 0;
 
     bool done = false;
 
-    b.clear( );
+    // b.clear( );
     int lastNetSlot = netSlot;
     netSlot = 8;
     globalState.clearAllConnections( );
 
-    refreshConnections( -1, 0 );
+    refreshConnections( 0, 0 );
     routableBufferPower( 1, 1, 1 );
     resetEncoderPosition = true;
     int lastEncoderPosition = encoderPosition;
-    int reading = 0;
+    int reading = -1;
     int lastReading = -1;
 
     int probeMax = jumperlessConfig.calibration.probe_max;
@@ -424,10 +455,49 @@ oled.flushFramebuffer( );
 
     float measureModeOutputVoltage = jumperlessConfig.calibration.measure_mode_output_voltage;
 
+    b.printRawRow( 0b00011110, 0, 0x100005, 0x000000 );
+    b.printRawRow( 0b00011000, 1, 0x100005, 0x000000 );
+    b.printRawRow( 0b00010100, 2, 0x100005, 0x000000 );
+    b.printRawRow( 0b00010010, 3, 0x100005, 0x000000 );
+    b.printRawRow( 0b00000010, 4, 0x100005, 0x000000 );
+    b.printRawRow( 0b00000100, 5, 0x100005, 0x000000 );
+    b.printRawRow( 0b00000000, 6, 0x100005, 0x000000 );
+
+    b.print( "Adjust", 0x100005, 0x000000, 1, 0, 1 );
+
+    b.printRawRow( 0b00010000, 50, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010000, 51, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010100, 52, 0x000510, 0x000000 );
+    b.printRawRow( 0b00010010, 53, 0x000510, 0x000000 );
+    b.printRawRow( 0b00001111, 54, 0x000510, 0x000000 );
+    b.printRawRow( 0b00000010, 55, 0x000510, 0x000000 );
+    b.printRawRow( 0b00000100, 56, 0x000510, 0x000000 );
+
+    b.print( "Tap", 0x000510, 0x000000, 0, 1, 3 );
+    showLEDsCore2 = 2;
+    delay( 200 );
+    // b.clear( );
+    bool touched = false;
+
+    int probeRead = -1;
+
+    // while (probeRead == -1) {
+    //     probeRead = readProbeRaw( 0, true );
+
+    // }
+
     while ( done == false ) {
-        int probeRead = readProbeRaw( 0, true );
-        if ( probeRead != -1 )
+        probeRead = readProbeRaw( 0, true );
+
+        if ( probeRead != -1 ) {
             lastValidProbeRead = probeRead;
+            if ( !touched ) {
+                touched = true;
+                finishCountdown = 0;
+                finishCountdownTimer = millis( );
+                // b.clear( );
+            }
+        }
 
         int rowProbed = map( lastValidProbeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 );
         int rowProbedWithOldMapping = map( lastValidProbeRead, jumperlessConfig.calibration.probe_min, probeMax, 101, 0 );
@@ -448,8 +518,10 @@ oled.flushFramebuffer( );
             }
             resetEncoderPosition = true;
         }
+        if ( probeRead != -1 ) {
 
-        reading = rowProbed;
+            reading = rowProbed;
+        }
 
         if ( encoderPosition != lastEncoderPosition || reading != lastReading ) {
             lastEncoderPosition = encoderPosition;
@@ -474,35 +546,166 @@ oled.flushFramebuffer( );
             Serial.flush( );
         }
 
-        if ( reading == -1 )
-            continue;
+        // if ( reading == -1 )
+        //     continue;
 
         if ( reading != lastReading && reading != -1 ) {
+
+            // Serial.println( "reading: " + String( reading ) );
+            // Serial.flush( );
+            uint32_t modeColor = measureOrSelect == 0 ? 0x200010 : 0x001030;
+            uint32_t modeLogoColor = measureOrSelect == 0 ? 0xa00060 : 0x3080f0;
             clearLEDsExceptRails( );
+            clearColorOverrides( true, true, true );
+            if ( nodeSelected >= LOGO_PAD_TOP ) {
+                // Serial.print( "Node selected: " );
+                // Serial.println( nodeSelected );
+                // Serial.flush( );
+
+                switch ( nodeSelected ) {
+                case ADC_PAD:
+
+                    setLogoOverride( ADC_0, modeLogoColor );
+                    setLogoOverride( ADC_1, modeLogoColor );
+                    break;
+                case DAC_PAD:
+                    setLogoOverride( DAC_0, modeLogoColor );
+                    setLogoOverride( DAC_1, modeLogoColor );
+                    break;
+                case GPIO_PAD:
+                    setLogoOverride( GPIO_0, modeLogoColor );
+                    setLogoOverride( GPIO_1, modeLogoColor );
+                    break;
+                case LOGO_PAD_TOP:
+                    setLogoOverride( LOGO_TOP, modeLogoColor );
+                    break;
+                case LOGO_PAD_BOTTOM:
+                    setLogoOverride( LOGO_BOTTOM, modeLogoColor );
+                    break;
+                case BUILDING_PAD_TOP:
+                    modeLogoColor = measureOrSelect == 0 ? 0x905000 : 0x008090;
+                    setLogoOverride( LOGO_TOP, modeLogoColor );
+                    break;
+                case BUILDING_PAD_BOTTOM:
+                    modeLogoColor = measureOrSelect == 0 ? 0x905000 : 0x008090;
+                    setLogoOverride( LOGO_BOTTOM, modeLogoColor );
+                    break;
+                }
+                showLEDsCore2 = 2;
+            }
+
             if ( nodeSelected != nodeSelectedWithOldMapping && measureOrSelect == 1 ) {
                 b.lightUpNode( nodeSelectedWithOldMapping, 0x050205 );
             }
             if ( measureOrSelect == 0 ) {
-                b.lightUpNode( nodeSelected, 0x200010 );
+                b.lightUpNode( nodeSelected, modeColor );
             } else {
-                b.lightUpNode( nodeSelected, 0x001030 );
+                b.lightUpNode( nodeSelected, modeColor );
             }
         }
         lastReading = reading;
         lastNodeSelected = nodeSelected;
         lastNodeSelectedWithOldMapping = nodeSelectedWithOldMapping;
 
-        if ( encoderButtonState == HELD )
-            done = true;
+        // Serial.println( "lastButtonEncoderState: " + String( lastButtonEncoderState ) );
+
+        // Serial.println( "encoderButtonState: " + String( encoderButtonState ) );
+
+  
+
+       
+            if ( millis( ) - finishCountdownTimer > 350 ) {
+                int countup = 0;
+                if ( ( encoderButtonState == 4 && lastButtonEncoderState == 4 ) || ( encoderButtonState == 2 && lastButtonEncoderState == 2 ) ) {
+                    
+                finishCountdown++;
+                countup = 1;
+                } else {
+                    finishCountdown--;
+                    countup = 0;
+                    if (finishCountdown < 0) {
+                        finishCountdown = -1;
+                    }
+                }
+                finishCountdownTimer = millis( );
+               
+                switch ( finishCountdown ) {
+                case 0:
+                    if (countup == 0) {
+                        setLogoOverride( GPIO_1, -3);
+                    }
+
+                    setLogoOverride( GPIO_0, 0xa0a0f0 );
+
+                    showLEDsCore2 = 2;
+                    break;
+                case 1:
+                    if (countup == 0) {
+                        setLogoOverride( DAC_0, -3);
+                    }
+                    setLogoOverride( GPIO_1, 0xa0a0f0 );
+
+                    showLEDsCore2 = 2;
+                    break;
+                case 2:
+                    if (countup == 0) {
+                        setLogoOverride( DAC_1, -3);
+                    }
+
+                    setLogoOverride( DAC_0, 0xa0a0f0 );
+
+                    showLEDsCore2 = 2;
+                    break;
+                case 3:
+                    if (countup == 0) {
+                        setLogoOverride( ADC_0, -3);
+                    }
+                    setLogoOverride( DAC_1, 0xa0a0f0 );
+
+                    showLEDsCore2 = 2;
+                    break;
+                case 4:
+                    if (countup == 0) {
+                        setLogoOverride( ADC_1, -3);
+                    }
+                    setLogoOverride( ADC_0, 0xa0a0f0 );
+
+                    showLEDsCore2 = 2;
+                    break;
+                case 5:
+                    setLogoOverride( ADC_1, 0xa0a0f0 );
+
+                    showLEDsCore2 = 2;
+                    break;
+                case 6:
+                    clearColorOverrides( true, true, true );
+                    done = true;
+                    break;
+                default:
+                    if (countup == 0) {
+                       
+                        setLogoOverride( GPIO_0, -3);
+       
+                    }
+                    
+                    break;
+                }
+            
+        } 
+
+            
+        
+
+        if ( done ) {
+
+            Serial.println( "\n\n\r" );
+            Serial.println( "Saving config..." );
+
+            saveConfig( );
+            leaveApp( lastNetSlot );
+        }
     }
-
-    Serial.println( "\n\n\r" );
-    Serial.println( "Saving config..." );
-
-    saveConfig( );
-    leaveApp( lastNetSlot );
 }
-
 void customApp( void ) {
     leds.clear( );
     b.clear( );
@@ -998,7 +1201,7 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
         waitCore2( );
     }
 
-    TwoWire *WireScan = &Wire1; // default to Wire1
+    TwoWire* WireScan = &Wire1; // default to Wire1
     if ( internalScan == 1 ) {
         WireScan = &Wire; // use Wire for internal scan
     }
@@ -1009,16 +1212,16 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
     oled.show( );
     delay( 20 );
 
-if ( internalScan == 0 ) {
-    WireScan->end( );
-    WireScan->setSDA( sdaPin );
-    WireScan->setSCL( sclPin );
-    WireScan->begin( );
-    WireScan->setClock( 100000 );
-}
+    if ( internalScan == 0 ) {
+        WireScan->end( );
+        WireScan->setSDA( sdaPin );
+        WireScan->setSCL( sclPin );
+        WireScan->begin( );
+        WireScan->setClock( 100000 );
+    }
     if ( internalScan == 1 ) {
-    Serial.println( "\nScanning internal I2C bus..." );
-    Serial.println( "    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F " );
+        Serial.println( "\nScanning internal I2C bus..." );
+        Serial.println( "    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F " );
     } else {
         Serial.println( "\nScanning I2C bus..." );
         Serial.println( "    _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _A  _B  _C  _D  _E  _F " );
@@ -1083,8 +1286,8 @@ if ( internalScan == 0 ) {
     }
 
     if ( internalScan == 0 ) {
-    WireScan->end( );
-    WireScan->begin( );
+        WireScan->end( );
+        WireScan->begin( );
     }
     if ( oled.oledConnected == true ) {
         delay( 500 );
@@ -1099,7 +1302,7 @@ if ( internalScan == 0 ) {
     return nDevices;
 }
 
-void calibrateDacs( void ) {
+void calibrateDacs( ) {
 
     if ( firstStart == 1 ) {
         Serial.println( "\n\rFirst startup calibration\n\n\r" );
@@ -1611,7 +1814,7 @@ void calibrateDacs( void ) {
         Serial.print( "\t" );
         Serial.println( adcSpread[ 7 ] );
         delay( 10 );
-        checkProbeCurrentZero( );
+        // checkProbeCurrentZero( );
         saveDacCalibration( );
     }
     setRailsAndDACs( );
@@ -1877,7 +2080,7 @@ void calibrateDacs( void ) {
     // showProbeLEDs = 1;
     refreshConnections( -1 );
     configChanged = true;
-    
+
     // Run probe switch threshold calibration
     Serial.println( "\n\n\r" );
     Serial.println( "========================================" );
@@ -1885,9 +2088,11 @@ void calibrateDacs( void ) {
     Serial.println( "========================================\n\r" );
     delay( 1000 );
     // calibrateProbeSwitchThresholds( );
-    
+
     if ( firstStart == 1 ) {
-        initializeMicroPythonExamples( true );
+        initializeMicroPythonExamples( false );
+        calibrateProbeSwitchThresholds( );
+        probeCalibApp( );
 
         delay( 1300 );
         rp2040.restart( );
@@ -1947,12 +2152,12 @@ static inline uint16_t rgbToJdi( uint8_t r, uint8_t g, uint8_t b ) {
 
 void jdiMIPdisplay( void ) {
     // Allocate JDI display object (5.1KB) - freed on exit
-    jdi_display = new (std::nothrow) JDI_MIP_Display();
-    if (jdi_display == nullptr) {
-        Serial.println("Failed to allocate JDI display (5.1KB)");
+    jdi_display = new ( std::nothrow ) JDI_MIP_Display( );
+    if ( jdi_display == nullptr ) {
+        Serial.println( "Failed to allocate JDI display (5.1KB)" );
         return;
     }
-    
+
     jdi_display->begin( );
     jdi_display->displayOn( );
     jdi_display->clearScreen( );
@@ -2040,9 +2245,9 @@ void jdiMIPdisplay( void ) {
             break;
         delay( 10 );
     }
-    
+
     // Free JDI display object
-    if (jdi_display != nullptr) {
+    if ( jdi_display != nullptr ) {
         delete jdi_display;
         jdi_display = nullptr;
     }
@@ -2060,15 +2265,15 @@ void dmx_packet_callback( DmxInput* dmxInput ) {
 // DMX Configuration Structure
 struct DMXLightConfig {
     // Hardware configuration
-    uint8_t tx_pin;           // GPIO pin for DMX TX (connects to RS-485 transceiver)
-    uint8_t dmx_address;      // Starting DMX address (1-512)
-    
+    uint8_t tx_pin;      // GPIO pin for DMX TX (connects to RS-485 transceiver)
+    uint8_t dmx_address; // Starting DMX address (1-512)
+
     // Channel mode configuration
     enum ChannelMode {
-        MODE_6CH = 6,         // 6 channel: R, G, B, W, A, UV
-        MODE_10CH = 10        // 10 channel: Intensity, R, G, B, W, A, UV, Strobe, Function, Speed
+        MODE_6CH = 6,  // 6 channel: R, G, B, W, A, UV
+        MODE_10CH = 10 // 10 channel: Intensity, R, G, B, W, A, UV, Strobe, Function, Speed
     } channel_mode;
-    
+
     // Color values (0-255)
     struct {
         uint8_t red;
@@ -2078,15 +2283,15 @@ struct DMXLightConfig {
         uint8_t amber;
         uint8_t uv;
     } color;
-    
+
     // Extended controls (for 10-channel mode)
     struct {
-        uint8_t intensity;    // Master intensity (Ch1 in 10ch mode)
-        uint8_t strobe;       // Strobe speed (Ch8 in 10ch mode, 0-50: off, 51-255: slow to fast)
-        uint8_t function;     // Function select (Ch9 in 10ch mode)
-        uint8_t speed;        // Function speed (Ch10 in 10ch mode)
+        uint8_t intensity; // Master intensity (Ch1 in 10ch mode)
+        uint8_t strobe;    // Strobe speed (Ch8 in 10ch mode, 0-50: off, 51-255: slow to fast)
+        uint8_t function;  // Function select (Ch9 in 10ch mode)
+        uint8_t speed;     // Function speed (Ch10 in 10ch mode)
     } extended;
-    
+
     // Transmission settings
     uint16_t refresh_rate_ms; // DMX refresh rate in milliseconds (typical: 25-50ms for 20-40Hz)
     bool wireless_mode;       // True = wireless (512 bytes, no start code), False = wired (513 bytes with start code)
@@ -2096,34 +2301,33 @@ struct DMXLightConfig {
 void updateDMXUniverse( uint8_t* universe, const DMXLightConfig& config ) {
     // Universe[0] is ALWAYS the start code (0x00 for DMX512)
     // The Pico-DMX library requires this format
-    universe[0] = 0x00;
-    
+    universe[ 0 ] = 0x00;
+
     // DMX addresses are 1-based: address 1 = universe[1], address 2 = universe[2], etc.
     // Fixture at DMX address 1 reads its Channel 1 from universe[1]
     uint16_t addr = config.dmx_address; // Starting address (1-based, maps directly to array index)
-    
+
     if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
         // 6 Channel mode: R, G, B, W, A, UV
         // For fixture at address 1: Red->universe[1], Green->universe[2], etc.
-        universe[addr] = config.color.red;      // Channel 1 at address
-        universe[addr + 1] = config.color.green;  // Channel 2
-        universe[addr + 2] = config.color.blue;   // Channel 3
-        universe[addr + 3] = config.color.white;  // Channel 4
-        universe[addr + 4] = config.color.amber;  // Channel 5
-        universe[addr + 5] = config.color.uv;     // Channel 6
-    } 
-    else if ( config.channel_mode == DMXLightConfig::MODE_10CH ) {
+        universe[ addr ] = config.color.red;       // Channel 1 at address
+        universe[ addr + 1 ] = config.color.green; // Channel 2
+        universe[ addr + 2 ] = config.color.blue;  // Channel 3
+        universe[ addr + 3 ] = config.color.white; // Channel 4
+        universe[ addr + 4 ] = config.color.amber; // Channel 5
+        universe[ addr + 5 ] = config.color.uv;    // Channel 6
+    } else if ( config.channel_mode == DMXLightConfig::MODE_10CH ) {
         // 10 Channel mode: Intensity, R, G, B, W, A, UV, Strobe, Function, Speed
-        universe[addr] = config.extended.intensity;
-        universe[addr + 1] = config.color.red;
-        universe[addr + 2] = config.color.green;
-        universe[addr + 3] = config.color.blue;
-        universe[addr + 4] = config.color.white;
-        universe[addr + 5] = config.color.amber;
-        universe[addr + 6] = config.color.uv;
-        universe[addr + 7] = config.extended.strobe;
-        universe[addr + 8] = config.extended.function;
-        universe[addr + 9] = config.extended.speed;
+        universe[ addr ] = config.extended.intensity;
+        universe[ addr + 1 ] = config.color.red;
+        universe[ addr + 2 ] = config.color.green;
+        universe[ addr + 3 ] = config.color.blue;
+        universe[ addr + 4 ] = config.color.white;
+        universe[ addr + 5 ] = config.color.amber;
+        universe[ addr + 6 ] = config.color.uv;
+        universe[ addr + 7 ] = config.extended.strobe;
+        universe[ addr + 8 ] = config.extended.function;
+        universe[ addr + 9 ] = config.extended.speed;
     }
 }
 
@@ -2134,54 +2338,53 @@ void DMXSerialApp( void ) {
 
     // Initialize DMX configuration
     DMXLightConfig config = {
-        .tx_pin = GPIO_1_PIN,                    // TX on GPIO 1 (hardware GPIO 20)
-        .dmx_address = 1,                        // Start at DMX address 1
+        .tx_pin = GPIO_1_PIN,                     // TX on GPIO 1 (hardware GPIO 20)
+        .dmx_address = 1,                         // Start at DMX address 1
         .channel_mode = DMXLightConfig::MODE_6CH, // Use 6-channel mode
         .color = {
-            .red = 100,     // Test with maximum value
+            .red = 100, // Test with maximum value
             .green = 0,
             .blue = 0,
             .white = 0,
             .amber = 0,
-            .uv = 100
-        },
+            .uv = 100 },
         .extended = {
-            .intensity = 50,  // Full intensity in 10ch mode
-            .strobe = 0,       // No strobe
-            .function = 1,     // Function off (0-50 = Ch1-7 valid)
-            .speed = 0         // Speed off
+            .intensity = 50, // Full intensity in 10ch mode
+            .strobe = 0,     // No strobe
+            .function = 1,   // Function off (0-50 = Ch1-7 valid)
+            .speed = 0       // Speed off
         },
-        .refresh_rate_ms = 40,  // 400ms refresh rate
-        .wireless_mode = false   // Start in wired mode (direct RS-485 connection)
+        .refresh_rate_ms = 40, // 400ms refresh rate
+        .wireless_mode = false // Start in wired mode (direct RS-485 connection)
     };
 
     // DMX universe buffer (513 bytes: 1 start code + 512 channels)
     // Allocate on heap to reduce stack pressure
     constexpr uint16_t UNIVERSE_SIZE = 513;
-    uint8_t* universe = new (std::nothrow) uint8_t[UNIVERSE_SIZE];
-    if (universe == nullptr) {
+    uint8_t* universe = new ( std::nothrow ) uint8_t[ UNIVERSE_SIZE ];
+    if ( universe == nullptr ) {
         Serial.println( "ERROR: Failed to allocate DMX universe buffer (513 bytes)" );
         return;
     }
     memset( universe, 0, UNIVERSE_SIZE );
-    universe[0] = 0x00;  // DMX512 start code
+    universe[ 0 ] = 0x00; // DMX512 start code
 
     // Initialize DMX transmitter
     DmxOutput dmxTx;
     Serial.print( "Initializing DMX transmitter on GPIO " );
     Serial.print( config.tx_pin );
     Serial.println( " using PIO0..." );
-    
+
     if ( dmxTx.begin( config.tx_pin, pio0 ) != DmxOutput::SUCCESS ) {
         Serial.println( "ERROR: Failed to initialize DMX transmitter!" );
         return;
     }
     Serial.println( "✓ DMX transmitter initialized" );
-    
+
     // Setup GPIO 2 (hw 21) as inverted output of GPIO 1 for pseudo-differential signaling
     // This creates DMX+ and DMX- without needing an RS-485 transceiver chip
     Serial.print( "Setting up GPIO 2 (hw 21) as inverted output..." );
-    
+
     // Create a PIO program to invert GPIO 1 onto GPIO 2
     // We'll use PIO1 to avoid conflicts with the DMX transmitter on PIO0
     // PIO Assembly:
@@ -2191,17 +2394,16 @@ void DMXSerialApp( void ) {
     //   out pins, 1     ; Output 1 bit from OSR to GPIO 2
     //   .wrap
     static const uint16_t inverter_program[] = {
-        0x4001,  // in pins, 1     - Read 1 bit from input pins
-        0xa027,  // mov osr, !isr  - Invert ISR and move to OSR
-        0x6001,  // out pins, 1    - Output 1 bit to output pins
+        0x4001, // in pins, 1     - Read 1 bit from input pins
+        0xa027, // mov osr, !isr  - Invert ISR and move to OSR
+        0x6001, // out pins, 1    - Output 1 bit to output pins
     };
-    
+
     struct pio_program inverter = {
         .instructions = inverter_program,
         .length = 3,
-        .origin = -1
-    };
-    
+        .origin = -1 };
+
     // // Try to add program to PIO1
     // if ( !pio_can_add_program( pio1, &inverter ) ) {
     //     Serial.println( " FAILED (no PIO space)" );
@@ -2209,7 +2411,7 @@ void DMXSerialApp( void ) {
     // } else {
     //     uint offset = pio_add_program( pio1, &inverter );
     //     int sm = pio_claim_unused_sm( pio1, false );
-        
+
     //     if ( sm == -1 ) {
     //         Serial.println( " FAILED (no state machine)" );
     //         Serial.println( "⚠️  Running without inverted output" );
@@ -2217,10 +2419,10 @@ void DMXSerialApp( void ) {
     //         // Configure GPIO 2 as output for the inverter PIO
     //         pio_gpio_init( pio1, GPIO_2_PIN );
     //         pio_sm_set_consecutive_pindirs( pio1, sm, GPIO_2_PIN, 1, true );   // Output
-            
+
     //         // NOTE: Don't initialize GPIO 1 for PIO1 - it's already owned by PIO0 for DMX output
     //         // We can still READ its state by mapping it as the input pin in the state machine config
-            
+
     //         // Configure state machine
     //         pio_sm_config c = pio_get_default_sm_config( );
     //         sm_config_set_in_pins( &c, GPIO_1_PIN );      // Read GPIO 1 state (without claiming it)
@@ -2229,11 +2431,11 @@ void DMXSerialApp( void ) {
     //         sm_config_set_out_shift( &c, true, false, 1 ); // Shift right, no autopull, threshold 1
     //         sm_config_set_wrap( &c, offset, offset + 2 ); // Wrap from instruction 0 to 2
     //         sm_config_set_clkdiv( &c, 1.0f );             // Run as fast as possible (~125MHz)
-            
+
     //         // Initialize and start the state machine
     //         pio_sm_init( pio1, sm, offset, &c );
     //         pio_sm_set_enabled( pio1, sm, true );
-            
+
     //         Serial.println( " ✓ OK" );
     //         Serial.println( "✓ Pseudo-differential output configured" );
     //         Serial.println( "  GPIO 1 (hw 20) = DMX+" );
@@ -2261,66 +2463,82 @@ void DMXSerialApp( void ) {
         PATTERN_RGB_CYCLE,
         PATTERN_WHITE_STROBE,
         PATTERN_RAINBOW,
-        PATTERN_SPECTRUM,  // New: smooth RGBA[UV] spectrum cycle
+        PATTERN_SPECTRUM, // New: smooth RGBA[UV] spectrum cycle
         PATTERN_COUNT
     };
     TestPattern currentPattern = PATTERN_COLOR_FADE;
-    
+
     Serial.println( "Commands: m = toggle mode (6/10ch), p = toggle manual/pattern, w = wired/wireless, a/z = address -/+, q = quit\n" );
 
     // Channel names for encoder control
     const char* channelNames6ch[] = { "Red", "Green", "Blue", "White", "Amber", "UV" };
     const char* channelNames10ch[] = { "Intensity", "Red", "Green", "Blue", "White", "Amber", "UV", "Strobe", "Function", "Speed" };
-    
+
     // Control mode: manual encoder control vs test patterns
     bool manualMode = true;
     uint8_t currentChannel = 0;
     int lastEncoderPos = encoderPosition;
     encoderButtonStates lastButtonState = IDLE;
-    
+
     // Get pointer to current channel
-    auto getChannelPtr = [&]() -> uint8_t* {
+    auto getChannelPtr = [ & ]( ) -> uint8_t* {
         if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
             switch ( currentChannel ) {
-                case 0: return &config.color.red;
-                case 1: return &config.color.green;
-                case 2: return &config.color.blue;
-                case 3: return &config.color.white;
-                case 4: return &config.color.amber;
-                case 5: return &config.color.uv;
+            case 0:
+                return &config.color.red;
+            case 1:
+                return &config.color.green;
+            case 2:
+                return &config.color.blue;
+            case 3:
+                return &config.color.white;
+            case 4:
+                return &config.color.amber;
+            case 5:
+                return &config.color.uv;
             }
         } else {
             switch ( currentChannel ) {
-                case 0: return &config.extended.intensity;
-                case 1: return &config.color.red;
-                case 2: return &config.color.green;
-                case 3: return &config.color.blue;
-                case 4: return &config.color.white;
-                case 5: return &config.color.amber;
-                case 6: return &config.color.uv;
-                case 7: return &config.extended.strobe;
-                case 8: return &config.extended.function;
-                case 9: return &config.extended.speed;
+            case 0:
+                return &config.extended.intensity;
+            case 1:
+                return &config.color.red;
+            case 2:
+                return &config.color.green;
+            case 3:
+                return &config.color.blue;
+            case 4:
+                return &config.color.white;
+            case 5:
+                return &config.color.amber;
+            case 6:
+                return &config.color.uv;
+            case 7:
+                return &config.extended.strobe;
+            case 8:
+                return &config.extended.function;
+            case 9:
+                return &config.extended.speed;
             }
         }
         return &config.color.red;
     };
-    
-    auto getChannelName = [&]() -> const char* {
-        return ( config.channel_mode == DMXLightConfig::MODE_6CH ) ? channelNames6ch[currentChannel] : channelNames10ch[currentChannel];
+
+    auto getChannelName = [ & ]( ) -> const char* {
+        return ( config.channel_mode == DMXLightConfig::MODE_6CH ) ? channelNames6ch[ currentChannel ] : channelNames10ch[ currentChannel ];
     };
-    
+
     Serial.println( "MANUAL CONTROL MODE" );
     Serial.println( "Live Dashboard: [Selected] channel shown in brackets\n" );
 
     unsigned long lastTransmitTime = 0;
     unsigned long lastDisplayTime = 0;
     unsigned long patternTime = 0;
-    uint16_t patternStep = 0;  // Use uint16_t for values > 255
+    uint16_t patternStep = 0; // Use uint16_t for values > 255
 
     while ( true ) {
         unsigned long now = millis( );
-        
+
         // MANUAL MODE: Encoder controls individual channels
         if ( manualMode ) {
             // Handle encoder button (cycle channels)
@@ -2329,45 +2547,50 @@ void DMXSerialApp( void ) {
                     uint8_t maxCh = ( config.channel_mode == DMXLightConfig::MODE_6CH ) ? 5 : 9;
                     currentChannel = ( currentChannel + 1 ) % ( maxCh + 1 );
                     lastEncoderPos = encoderPosition;
-                    lastDisplayTime = 0;  // Force immediate display update
+                    lastDisplayTime = 0; // Force immediate display update
                 } else if ( encoderButtonState == HELD ) {
                     goto exit_loop;
                 }
                 lastButtonState = encoderButtonState;
             }
-            
+
             // Handle encoder rotation (adjust value) - REVERSED for intuitive control
-            int delta = lastEncoderPos - encoderPosition;  // Reversed!
+            int delta = lastEncoderPos - encoderPosition; // Reversed!
             if ( delta != 0 ) {
                 lastEncoderPos = encoderPosition;
-                
+
                 uint8_t* val = getChannelPtr( );
                 int newVal = *val + delta;
-                if ( newVal < 0 ) newVal = 0;
-                if ( newVal > 255 ) newVal = 255;
+                if ( newVal < 0 )
+                    newVal = 0;
+                if ( newVal > 255 )
+                    newVal = 255;
                 *val = newVal;
-                lastDisplayTime = 0;  // Force immediate update on change
+                lastDisplayTime = 0; // Force immediate update on change
             }
-            
+
             // Live dashboard update (throttled) - updates continuously
-            if ( now - lastDisplayTime >= 50 ) {  // Faster refresh for smoother feel
+            if ( now - lastDisplayTime >= 50 ) { // Faster refresh for smoother feel
                 lastDisplayTime = now;
                 uint8_t* val = getChannelPtr( );
-                
+
                 // Clear line and print live dashboard
                 Serial.print( "\r                                                                                      \r" );
-                
+
                 // Compact bar graphs for all 6 channels (4 chars per bar)
-                auto printBar = [&]( uint8_t value, bool selected ) {
-                    int bars = value / 32;  // 0-3 bars for compact display
-                    if ( selected ) Serial.print( "[" );
+                auto printBar = [ & ]( uint8_t value, bool selected ) {
+                    int bars = value / 32; // 0-3 bars for compact display
+                    if ( selected )
+                        Serial.print( "[" );
                     for ( int i = 0; i < 8; i++ ) {
                         Serial.print( i < bars ? "█" : "░" );
                     }
-                    if ( selected ) Serial.print( "]" );
-                    else Serial.print( " " );
+                    if ( selected )
+                        Serial.print( "]" );
+                    else
+                        Serial.print( " " );
                 };
-                
+
                 Serial.print( "R" );
                 printBar( config.color.red, currentChannel == 0 );
                 Serial.print( "G" );
@@ -2380,7 +2603,7 @@ void DMXSerialApp( void ) {
                 printBar( config.color.amber, currentChannel == 4 );
                 Serial.print( "U" );
                 printBar( config.color.uv, currentChannel == 5 );
-                
+
                 Serial.print( " | " );
                 Serial.print( getChannelName( ) );
                 Serial.print( ":" );
@@ -2392,7 +2615,7 @@ void DMXSerialApp( void ) {
                 }
                 Serial.flush( );
             }
-        } 
+        }
         // PATTERN MODE: Run test patterns
         else {
             if ( encoderButtonState == HELD ) {
@@ -2400,8 +2623,8 @@ void DMXSerialApp( void ) {
             }
             lastButtonState = encoderButtonState;
 
-        // Update test pattern
-        switch ( currentPattern ) {
+            // Update test pattern
+            switch ( currentPattern ) {
             case PATTERN_COLOR_FADE:
                 // Fade through red, green, blue, white
                 if ( now - patternTime > 120 ) {
@@ -2411,45 +2634,44 @@ void DMXSerialApp( void ) {
                         config.color.green = 0;
                         config.color.blue = 0;
                         config.color.white = 0;
-                    }
-                    else if ( patternStep < 510 ) {
+                    } else if ( patternStep < 510 ) {
                         config.color.red = 510 - patternStep;
                         config.color.green = patternStep - 255;
                         config.color.blue = 0;
                         config.color.white = 0;
-                    }
-                    else if ( patternStep < 765 ) {
+                    } else if ( patternStep < 765 ) {
                         config.color.red = 0;
                         config.color.green = 765 - patternStep;
                         config.color.blue = patternStep - 510;
                         config.color.white = 0;
-                    }
-                    else if ( patternStep < 1020 ) {
+                    } else if ( patternStep < 1020 ) {
                         config.color.red = 0;
                         config.color.green = 0;
                         config.color.blue = 1020 - patternStep;
                         config.color.white = patternStep - 765;
-                    }
-                    else {
+                    } else {
                         config.color.white = 0;
                         patternStep = 0;
                     }
                     patternStep++;
                 }
                 break;
-                
+
             case PATTERN_RGB_CYCLE:
                 // Cycle through pure R, G, B
                 if ( now - patternTime > 1000 ) {
                     patternTime = now;
                     config.color = { 0, 0, 0, 0, 0, 0 };
-                    if ( patternStep == 0 ) config.color.red = 255;
-                    else if ( patternStep == 1 ) config.color.green = 255;
-                    else if ( patternStep == 2 ) config.color.blue = 255;
+                    if ( patternStep == 0 )
+                        config.color.red = 255;
+                    else if ( patternStep == 1 )
+                        config.color.green = 255;
+                    else if ( patternStep == 2 )
+                        config.color.blue = 255;
                     patternStep = ( patternStep + 1 ) % 3;
                 }
                 break;
-                
+
             case PATTERN_WHITE_STROBE:
                 // Strobe white light
                 if ( now - patternTime > 100 ) {
@@ -2458,27 +2680,27 @@ void DMXSerialApp( void ) {
                     patternStep++;
                 }
                 break;
-                
+
             case PATTERN_RAINBOW:
                 // Rainbow using all colors
                 if ( now - patternTime > 15 ) {
                     patternTime = now;
-                    config.color.red = ( uint8_t )( ( sin( patternStep * 0.02 ) + 1.0 ) * 127 );
-                    config.color.green = ( uint8_t )( ( sin( patternStep * 0.02 + 2.09 ) + 1.0 ) * 127 );
-                    config.color.blue = ( uint8_t )( ( sin( patternStep * 0.02 + 4.18 ) + 1.0 ) * 127 );
+                    config.color.red = (uint8_t)( ( sin( patternStep * 0.02 ) + 1.0 ) * 127 );
+                    config.color.green = (uint8_t)( ( sin( patternStep * 0.02 + 2.09 ) + 1.0 ) * 127 );
+                    config.color.blue = (uint8_t)( ( sin( patternStep * 0.02 + 4.18 ) + 1.0 ) * 127 );
                     patternStep++;
                 }
                 break;
-                
+
             case PATTERN_SPECTRUM:
                 // Smooth spectrum cycle through Red→Amber→Green→Cyan→Blue→UV→Magenta→Red
                 // Using all 6 channels: R, G, B, W, A, UV
                 if ( now - patternTime > 15 ) {
                     patternTime = now;
-                    
+
                     // Cycle through 9 phases (0-1530 steps, 170 steps per phase)
                     uint16_t phase = patternStep % 1530;
-                    
+
                     // Reset all channels
                     config.color.red = 0;
                     config.color.green = 0;
@@ -2486,67 +2708,60 @@ void DMXSerialApp( void ) {
                     config.color.white = 0;
                     config.color.amber = 0;
                     config.color.uv = 0;
-                    
+
                     if ( phase < 170 ) {
                         // Phase 0: Pure Red
                         config.color.red = 255;
-                    }
-                    else if ( phase < 340 ) {
+                    } else if ( phase < 340 ) {
                         // Phase 1: Red→Amber (Orange)
                         uint8_t t = phase - 170;
                         config.color.red = 255 - ( t * 255 / 170 );
                         config.color.amber = t * 255 / 170;
-                    }
-                    else if ( phase < 510 ) {
+                    } else if ( phase < 510 ) {
                         // Phase 2: Pure Amber (Warm yellow)
                         config.color.amber = 255;
-                    }
-                    else if ( phase < 680 ) {
+                    } else if ( phase < 680 ) {
                         // Phase 3: Amber→Green
                         uint8_t t = phase - 510;
                         config.color.amber = 255 - ( t * 255 / 170 );
                         config.color.green = t * 255 / 170;
-                    }
-                    else if ( phase < 850 ) {
+                    } else if ( phase < 850 ) {
                         // Phase 4: Green→Cyan (Green+Blue)
                         uint8_t t = phase - 680;
                         config.color.green = 255;
                         config.color.blue = t * 255 / 170;
-                    }
-                    else if ( phase < 1020 ) {
+                    } else if ( phase < 1020 ) {
                         // Phase 5: Cyan→Blue
                         uint8_t t = phase - 850;
                         config.color.green = 255 - ( t * 255 / 170 );
                         config.color.blue = 255;
-                    }
-                    else if ( phase < 1190 ) {
+                    } else if ( phase < 1190 ) {
                         // Phase 6: Blue→UV (Deep violet)
                         uint8_t t = phase - 1020;
                         config.color.blue = 255 - ( t * 255 / 170 );
                         config.color.uv = t * 255 / 170;
-                    }
-                    else if ( phase < 1360 ) {
+                    } else if ( phase < 1360 ) {
                         // Phase 7: Pure UV (Purple)
                         config.color.uv = 255;
-                    }
-                    else {
+                    } else {
                         // Phase 8: UV→Red (Magenta)
                         uint8_t t = phase - 1360;
                         config.color.uv = 255 - ( t * 255 / 170 );
                         config.color.red = t * 255 / 170;
                     }
-                    
+
                     patternStep++;
-                    if ( patternStep >= 1530 ) patternStep = 0;
+                    if ( patternStep >= 1530 )
+                        patternStep = 0;
                 }
                 break;
-                
+
             case PATTERN_COUNT:
             default:
                 // Should not reach here
                 break;
-        }
-        }  // End of pattern mode block
+            }
+        } // End of pattern mode block
 
         // Transmit DMX packets at configured refresh rate
         if ( now - lastTransmitTime >= config.refresh_rate_ms ) {
@@ -2559,8 +2774,8 @@ void DMXSerialApp( void ) {
             // CRITICAL: Wireless modules require the FULL 512 channels + start code (513 bytes total)
             // Sending partial universes causes the wireless module to misinterpret data
             // The Wtlx512 manual states it "Regenerates" the full DMX signal
-            
-            dmxTx.write( universe,513 );  // Send 513 bytes with start code
+
+            dmxTx.write( universe, 513 ); // Send 513 bytes with start code
             // Serial.print("Sending: ");
             // Serial.print(universe[0]);
             // Serial.print(" ");
@@ -2587,127 +2802,127 @@ void DMXSerialApp( void ) {
         if ( Serial.available( ) > 0 ) {
             char c = Serial.read( );
             switch ( c ) {
-                case 'p':
-                case 'P':
-                    // Toggle between manual and pattern mode
-                    manualMode = !manualMode;
-                    if ( manualMode ) {
-                        Serial.println( "\n\n✓ MANUAL CONTROL MODE" );
-                        Serial.println( "Live Dashboard below:\n" );
-                        lastEncoderPos = encoderPosition;
-                        lastDisplayTime = 0;  // Force immediate update
-                    } else {
-                        Serial.println( "\n\n✓ TEST PATTERN MODE" );
-                        Serial.println( "Use 1-5 to select pattern:" );
-                        Serial.println( "  1=Fade  2=Cycle  3=Strobe  4=Rainbow  5=Spectrum\n" );
-                        patternStep = 0;
-                    }
-                    break;
-                    
-                case '1':
-                    if ( !manualMode ) {
-                        currentPattern = PATTERN_COLOR_FADE;
-                        patternStep = 0;
-                        Serial.println( "Pattern: Color Fade" );
-                    }
-                    break;
-                    
-                case '2':
-                    if ( !manualMode ) {
-                        currentPattern = PATTERN_RGB_CYCLE;
-                        patternStep = 0;
-                        Serial.println( "Pattern: RGB Cycle" );
-                    }
-                    break;
-                    
-                case '3':
-                    if ( !manualMode ) {
-                        currentPattern = PATTERN_WHITE_STROBE;
-                        patternStep = 0;
-                        Serial.println( "Pattern: White Strobe" );
-                    }
-                    break;
-                    
-                case '4':
-                    if ( !manualMode ) {
-                        currentPattern = PATTERN_RAINBOW;
-                        patternStep = 0;
-                        Serial.println( "Pattern: Rainbow" );
-                    }
-                    break;
-                    
-                case '5':
-                    if ( !manualMode ) {
-                        currentPattern = PATTERN_SPECTRUM;
-                        patternStep = 0;
-                        Serial.println( "Pattern: Spectrum Cycle (RGBAUV)" );
-                    }
-                    break;
-                    
-                case 'm':
-                case 'M':
-                    // Toggle between 6 and 10 channel mode
-                    if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
-                        config.channel_mode = DMXLightConfig::MODE_10CH;
-                        Serial.println( "\n\n✓ Switched to 10-channel mode\n" );
-                    } else {
-                        config.channel_mode = DMXLightConfig::MODE_6CH;
-                        Serial.println( "\n\n✓ Switched to 6-channel mode\n" );
-                    }
-                    if ( manualMode ) {
-                        currentChannel = 0;  // Reset to first channel
-                        lastDisplayTime = 0;  // Force immediate dashboard update
-                    }
-                    break;
-                    
-                case 'a':
-                case 'A':
-                    // Adjust DMX address (decrement)
-                    if ( config.dmx_address >= 1 ) {
-                        config.dmx_address--;
-                        Serial.print( "\n\n✓ DMX Address: " );
-                        Serial.print( config.dmx_address );
-                        Serial.println( "\n" );
-                    } else {
-                        Serial.println( "\n\n⚠️  Already at minimum address (0)\n" );
-                    }
-                    if ( manualMode ) {
-                        lastDisplayTime = 0;  // Force immediate dashboard update
-                    }
-                    break;
-                    
-                case 'z':
-                case 'Z':
-                    // Adjust DMX address (increment)
-                    if ( config.dmx_address < 255 ) {  // uint8_t max is 255
-                        config.dmx_address++;
-                        Serial.print( "\n\n✓ DMX Address: " );
-                        Serial.print( config.dmx_address );
-                        Serial.println( "\n" );
-                    } else {
-                        Serial.println( "\n\n⚠️  Already at maximum address (255)\n" );
-                    }
-                    if ( manualMode ) {
-                        lastDisplayTime = 0;  // Force immediate dashboard update
-                    }
-                    break;
-                    
-                case 'w':
-                case 'W':
-                    // Toggle wireless mode flag (currently both modes send 513 bytes)
-                    // This is a placeholder for future wireless-specific handling
-                    config.wireless_mode = !config.wireless_mode;
-                    Serial.print( "\n\n✓ Mode: " );
-                    Serial.println( config.wireless_mode ? "WIRELESS (testing)" : "WIRED (standard)" );
-                    Serial.println( "  Currently both modes send 513 bytes - testing in progress.\n" );
-                    if ( manualMode ) {
-                        lastDisplayTime = 0;  // Force immediate dashboard update
-                    }
-                    break;
-                    
-                case 'q':
-                case 'Q':
-                    goto exit_loop;
+            case 'p':
+            case 'P':
+                // Toggle between manual and pattern mode
+                manualMode = !manualMode;
+                if ( manualMode ) {
+                    Serial.println( "\n\n✓ MANUAL CONTROL MODE" );
+                    Serial.println( "Live Dashboard below:\n" );
+                    lastEncoderPos = encoderPosition;
+                    lastDisplayTime = 0; // Force immediate update
+                } else {
+                    Serial.println( "\n\n✓ TEST PATTERN MODE" );
+                    Serial.println( "Use 1-5 to select pattern:" );
+                    Serial.println( "  1=Fade  2=Cycle  3=Strobe  4=Rainbow  5=Spectrum\n" );
+                    patternStep = 0;
+                }
+                break;
+
+            case '1':
+                if ( !manualMode ) {
+                    currentPattern = PATTERN_COLOR_FADE;
+                    patternStep = 0;
+                    Serial.println( "Pattern: Color Fade" );
+                }
+                break;
+
+            case '2':
+                if ( !manualMode ) {
+                    currentPattern = PATTERN_RGB_CYCLE;
+                    patternStep = 0;
+                    Serial.println( "Pattern: RGB Cycle" );
+                }
+                break;
+
+            case '3':
+                if ( !manualMode ) {
+                    currentPattern = PATTERN_WHITE_STROBE;
+                    patternStep = 0;
+                    Serial.println( "Pattern: White Strobe" );
+                }
+                break;
+
+            case '4':
+                if ( !manualMode ) {
+                    currentPattern = PATTERN_RAINBOW;
+                    patternStep = 0;
+                    Serial.println( "Pattern: Rainbow" );
+                }
+                break;
+
+            case '5':
+                if ( !manualMode ) {
+                    currentPattern = PATTERN_SPECTRUM;
+                    patternStep = 0;
+                    Serial.println( "Pattern: Spectrum Cycle (RGBAUV)" );
+                }
+                break;
+
+            case 'm':
+            case 'M':
+                // Toggle between 6 and 10 channel mode
+                if ( config.channel_mode == DMXLightConfig::MODE_6CH ) {
+                    config.channel_mode = DMXLightConfig::MODE_10CH;
+                    Serial.println( "\n\n✓ Switched to 10-channel mode\n" );
+                } else {
+                    config.channel_mode = DMXLightConfig::MODE_6CH;
+                    Serial.println( "\n\n✓ Switched to 6-channel mode\n" );
+                }
+                if ( manualMode ) {
+                    currentChannel = 0;  // Reset to first channel
+                    lastDisplayTime = 0; // Force immediate dashboard update
+                }
+                break;
+
+            case 'a':
+            case 'A':
+                // Adjust DMX address (decrement)
+                if ( config.dmx_address >= 1 ) {
+                    config.dmx_address--;
+                    Serial.print( "\n\n✓ DMX Address: " );
+                    Serial.print( config.dmx_address );
+                    Serial.println( "\n" );
+                } else {
+                    Serial.println( "\n\n⚠️  Already at minimum address (0)\n" );
+                }
+                if ( manualMode ) {
+                    lastDisplayTime = 0; // Force immediate dashboard update
+                }
+                break;
+
+            case 'z':
+            case 'Z':
+                // Adjust DMX address (increment)
+                if ( config.dmx_address < 255 ) { // uint8_t max is 255
+                    config.dmx_address++;
+                    Serial.print( "\n\n✓ DMX Address: " );
+                    Serial.print( config.dmx_address );
+                    Serial.println( "\n" );
+                } else {
+                    Serial.println( "\n\n⚠️  Already at maximum address (255)\n" );
+                }
+                if ( manualMode ) {
+                    lastDisplayTime = 0; // Force immediate dashboard update
+                }
+                break;
+
+            case 'w':
+            case 'W':
+                // Toggle wireless mode flag (currently both modes send 513 bytes)
+                // This is a placeholder for future wireless-specific handling
+                config.wireless_mode = !config.wireless_mode;
+                Serial.print( "\n\n✓ Mode: " );
+                Serial.println( config.wireless_mode ? "WIRELESS (testing)" : "WIRED (standard)" );
+                Serial.println( "  Currently both modes send 513 bytes - testing in progress.\n" );
+                if ( manualMode ) {
+                    lastDisplayTime = 0; // Force immediate dashboard update
+                }
+                break;
+
+            case 'q':
+            case 'Q':
+                goto exit_loop;
             }
         }
 
@@ -2717,18 +2932,16 @@ void DMXSerialApp( void ) {
 exit_loop:
     // Clean shutdown
     dmxTx.end( );
-    
+
     // Free DMX universe buffer
-    if (universe != nullptr) {
+    if ( universe != nullptr ) {
         delete[] universe;
     }
-    
+
     Serial.flush( );
     Serial.println( "\n✓ DMX transmitter stopped" );
     Serial.println( "Exiting DMX Light Controller" );
 }
-
-
 
 /*
 Channel mapping:

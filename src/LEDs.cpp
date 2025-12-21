@@ -536,10 +536,10 @@ void initLEDs(void) {
   //   Serial.println(claimedSms[0][i]);
   // }
 
+
   probeLEDs.begin();
   probeLEDs.setPixelColor(0, 0x111111);
   probeLEDs.show();
-
 
 
   // Serial.println("\n\rprobeLEDs.begin()\n\r");
@@ -1387,6 +1387,9 @@ logoLedAccess = true;
   logoOverrideMap[ledNumber].colorOverride = colorOverride;
   switch (ledNumber) {
     case ADC_0:
+    if (colorOverride == -3) {
+      ADCcolorOverride0 = -1;
+    } else 
       if (colorOverride == -2) {
         ADCcolorOverride0 = logoOverrideMap[ADC_0].defaultOverride;
       } else {
@@ -1394,6 +1397,9 @@ logoLedAccess = true;
       }
       break;
     case ADC_1:
+    if (colorOverride == -3) {
+      ADCcolorOverride1 = -1;
+    } else 
       if (colorOverride == -2) {
         ADCcolorOverride1 = logoOverrideMap[ADC_1].defaultOverride;
       } else {
@@ -1401,6 +1407,9 @@ logoLedAccess = true;
       }
       break;
     case DAC_0:
+    if (colorOverride == -3) {
+      DACcolorOverride0 = -1;
+    } else 
       if (colorOverride == -2) {
         DACcolorOverride0 = logoOverrideMap[DAC_0].defaultOverride;
       } else {
@@ -1408,6 +1417,9 @@ logoLedAccess = true;
       }
       break;
     case DAC_1:
+    if (colorOverride == -3) {
+      DACcolorOverride1 = -1;
+    } else 
       if (colorOverride == -2) {
         DACcolorOverride1 = logoOverrideMap[DAC_1].defaultOverride;
       } else {
@@ -1415,6 +1427,9 @@ logoLedAccess = true;
       }
       break;
     case GPIO_0:  
+    if (colorOverride == -3) {
+      GPIOcolorOverride0 = -1;
+    } else 
       if (colorOverride == -2) {
         GPIOcolorOverride0 = logoOverrideMap[GPIO_0].defaultOverride;
       } else {
@@ -1422,6 +1437,9 @@ logoLedAccess = true;
       }
       break;
     case GPIO_1:
+    if (colorOverride == -3) {
+      GPIOcolorOverride1 = -1;
+    } else 
       if (colorOverride == -2) {
         GPIOcolorOverride1 = logoOverrideMap[GPIO_1].defaultOverride;
       } else {
@@ -1429,6 +1447,9 @@ logoLedAccess = true;
       }
       break;
     case LOGO_TOP:
+    if (colorOverride == -3) {
+      logoColorOverrideTop = -1;
+    } else 
       if (colorOverride == -2) {
         logoColorOverrideTop = logoOverrideMap[LOGO_TOP].defaultOverride;
       } else {
@@ -1436,6 +1457,9 @@ logoLedAccess = true;
       }
       break;
     case LOGO_BOTTOM:
+    if (colorOverride == -3) {
+      logoColorOverrideBottom = -1;
+    } else 
       if (colorOverride == -2) {
         logoColorOverrideBottom = logoOverrideMap[LOGO_BOTTOM].defaultOverride;
       } else {
@@ -1443,6 +1467,9 @@ logoLedAccess = true;
       }
       break;
     case LOGO:
+    if (colorOverride == -3) {
+      logoColorOverride = -1;
+    } else 
       if (colorOverride == -2) {
         logoColorOverride = logoOverrideMap[LOGO].defaultOverride;
       } else {
@@ -3133,7 +3160,7 @@ struct rgbColor shiftHue(struct rgbColor colorToShift, int hueShift,
 
   return colorToShiftRgb;
   }
-bool photos = true; //this lets me adjust the brightness for better photos
+bool photos = false; //this lets me adjust the brightness for better photos
 
 void lightUpNode(int node, uint32_t color) {
 
@@ -3151,11 +3178,12 @@ uint32_t dimLogoColor(uint32_t color, int brightness) {
   hsvColor colorHsv = RgbToHsv(dimColor);
 
   colorHsv.v = brightness;
-  if (photos == true || true) {
+  if (photos == true ) {
     return packRgb(HsvToRgb(colorHsv).r / 3, HsvToRgb(colorHsv).g / 3,
                    HsvToRgb(colorHsv).b);
     } else {
-    return packRgb(HsvToRgb(colorHsv).r, HsvToRgb(colorHsv).g * 2,
+      colorHsv.v = brightness -5;
+    return packRgb(HsvToRgb(colorHsv).r, HsvToRgb(colorHsv).g * 1,
                    HsvToRgb(colorHsv).b * 3);
     }
   }

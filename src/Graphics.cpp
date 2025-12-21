@@ -3732,7 +3732,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   }
 
   unsigned long functionStartTime = millis();
-  const unsigned long FUNCTION_TIMEOUT_MS = 60;
+  const unsigned long FUNCTION_TIMEOUT_MS = 600;
 
   if (jumperlessConfig.serial_2.function == 5 ||
       jumperlessConfig.serial_2.function == 6) {
@@ -4562,6 +4562,224 @@ void playDoom(void) {
   // core1busy = 0;
   //core2busy = 0;
 }
+
+
+// //position is 0 - 10 (0 is select, 10 is measure)
+// void showSwitchPosition(int position, uint32_t color, uint32_t textColor) {
+
+
+//   hsvColor hsvColor = RgbToHsv(color);
+//   hsvColor textHsvColor = RgbToHsv(textColor);
+
+//  hsvColor hsvSelectColor = RgbToHsv(0x000510);
+//  hsvColor hsvMeasureColor = RgbToHsv(0x100005);
+
+
+
+//   // if (color == 0x000000) {
+//   //   if (position < 5) {
+//   //     color = 0x000510;
+//   //   } else {
+//   //     color = 0x100005;
+//   //   }
+//   // } 
+
+//   if (textColor == 0x000000) {
+//     if (position == 0) {
+//       textColor = 0x000510;
+//     } else {
+//       textColor = 0x100005;
+//     }
+//   } 
+
+  
+
+
+//     b.clear( );
+//     if (position < 5) {
+//     b.print( "Select", textColor, 0x000000, 0, 1, 1 );
+//     } else {
+//       b.print( "Measure", textColor, 0x000000, 0, 1, -1 );
+//     }
+
+//     row = 0;
+//     // Draw diagram showing probe in measure position (switch away from tip)
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000100, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 ); // Switch indicator
+//     b.printRawRow( 0b00000100, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001110, row++, color, 0x000000 );// switch indicator 
+//     b.printRawRow( 0b00001110, row++, color, 0x000000 );// switch indicator// start of where the switch moves (select side)
+//     b.printRawRow( 0b00001110, row++, color, 0x000000 );// switch indicator
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );// end of where the switch moves (measure side)
+//     b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//     b.printRawRow( 0b00000100, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//     b.printRawRow( 0b00001000, row++, color, 0x000000 );
+
+//   // } else {
+//   //   b.clear( );
+//   //   b.print( "Measure", textColor, 0x000000, 0, 1, -1 );
+//   //   int row = 0;
+//   //   // Draw diagram showing probe in measure position (switch away from tip)
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000100, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 ); // Switch indicator
+//   //   b.printRawRow( 0b00000100, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001110, row++, color, 0x000000 ); // switch indicator
+//   //   b.printRawRow( 0b00001110, row++, color, 0x000000 );// switch indicator
+//   //   b.printRawRow( 0b00001110, row++, color, 0x000000 );// switch indicator
+//   //   b.printRawRow( 0b00000010, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00000100, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+//   //   b.printRawRow( 0b00001000, row++, color, 0x000000 );
+
+//   // }
+// }
+
+
+
+//position is 0 - 10 (0 is select, 10 is measure)
+void showSwitchPosition(int position, String textOverride , uint32_t color, uint32_t textColor) {
+  // Clamp position to valid range
+  if (position < 0) position = 0;
+  if (position > 10) position = 10;
+
+  hsvColor hsvCol = RgbToHsv(color);
+  hsvColor hsvSelectColor = RgbToHsv(0x000510);
+  hsvColor hsvMeasureColor = RgbToHsv(0x100005);
+
+  // Interpolate color from select to measure based on position
+  float interpolation = position / 10.0f;
+  
+  hsvColor interpolatedHsv;
+  interpolatedHsv.h = hsvSelectColor.h + (hsvMeasureColor.h - hsvSelectColor.h) * interpolation;
+  interpolatedHsv.s = hsvSelectColor.s + (hsvMeasureColor.s - hsvSelectColor.s) * interpolation;
+  interpolatedHsv.v = hsvSelectColor.v + (hsvMeasureColor.v - hsvSelectColor.v) * interpolation;
+  
+  uint32_t drawColor = HsvToRaw(interpolatedHsv);
+  // Serial.printf("Position: %d, drawColor: 0x%06X\n\r", position, drawColor);
+
+
+  // Use provided color if not black, otherwise use interpolated color
+  if (color != 0x000000) {
+    drawColor = color;
+  }
+
+  // Text switches at midpoint (position 5)
+  const char* text;
+  if (textOverride == " ") {
+  if (position < 5) {
+    text = "Select";
+    if (textColor == 0x000000) {
+      textColor = 0x000510;
+    }
+  } else {
+    text = "Measure";
+    if (textColor == 0x000000) {
+      textColor = 0x100005;
+    }
+  }
+  } else {
+    text = textOverride.c_str();
+    if (textColor == 0x000000) {
+      textColor = 0x110007;
+    }
+  }
+  // Calculate body position within the 12-row animated section
+  // Position 0: body at row 0-2 of middle section (select)
+  // Position 10: body at row 9-11 of middle section (measure)
+  int bodyOffsetInMiddle = (position +1);  // 0-9 range for positioning
+
+  b.clear();
+  
+  // Print text
+  // if (position < 5) {
+    b.print(text, textColor, 0x000000, 0, 1, 0);
+  // } else {
+  //   b.print(text, textColor, 0x000000, 0, 1, -1);
+  // }
+
+  // Draw the probe diagram - fixed top (rows 0-10)
+  int row = 0;
+
+  b.printRawRow(0b00000100, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00000100, row++, drawColor, 0x000000);
+
+  
+  // Animated middle section (rows 11-22) - 12 rows where switch moves
+  for (int i = 0; i < 13; i++) {
+    if (i >= bodyOffsetInMiddle && i <= bodyOffsetInMiddle + 2) {
+      // Draw switch body (widest part)
+      b.printRawRow(0b00001110, row++, drawColor, 0x000000);
+    } else {
+      // Draw thin shaft
+      b.printRawRow(0b00000010, row++, drawColor, 0x000000);
+    }
+  }
+  
+  // Fixed bottom (rows 23-30)
+  b.printRawRow(0b00000010, row++, drawColor, 0x000000);
+  b.printRawRow(0b00000100, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+  b.printRawRow(0b00001000, row++, drawColor, 0x000000);
+
+}
+
+
+
+
+
+
+
 
 uint8_t rainbowr[30] = {30, 29, 26, 23, 20, 17, 14, 11, 8,  5,
                         2,  0,  0,  0,  0,  0,  0,  0,  0,  2,
