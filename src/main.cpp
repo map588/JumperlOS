@@ -117,7 +117,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.2.6"; //! remember to update this
+const char firmwareVersion[] = "5.6.2.7"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 

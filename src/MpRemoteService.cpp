@@ -141,7 +141,6 @@ ServiceStatus MpRemoteService::service( ) {
         if ( c < 0 )
             break;
 
-        // Debug output removed for production
         if ( m_debug || printReceivedPython ) {
             if (c < 0x20) {
                 Serial.printf( "[MpRemote] Rx: \\x%02X\r\n", c );

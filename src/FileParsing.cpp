@@ -1959,12 +1959,15 @@ void readStringFromSerial(int source, int addRemove) {
       // Jerial.println();
 
       serialString.toInt(node2);
-      serialString.printTo(Serial);
-      Jerial.println();
-      Jerial.print("node1 = ");
-      Jerial.println(node1);
-      Jerial.print("node2 = ");
-      Jerial.println(node2);
+      // serialString.printTo(Serial);
+      // Jerial.println();
+      // Jerial.print("node1 = ");
+      // Jerial.println(node1);
+      // Jerial.print("node2 = ");
+      // Jerial.println(node2);
+
+
+
     }
 
     if (isNodeValid(node1) != 1) {
@@ -1979,14 +1982,14 @@ void readStringFromSerial(int source, int addRemove) {
 
     if (addRemove == 0) {
       addBridgeToState(node1, node2);
-      saveStateToSlot();  // Save after each addition
+      //saveStateToSlot();  // Save after each addition
     } else if (addRemove == 1) {
       if (node1 == node2 || isNodeValid(node2) == 0) {
         node2 = -1;
       }
 
       removeBridgeFromState(node1, node2);
-      saveStateToSlot();  // Save after each removal
+      //saveStateToSlot();  // Save after each removal
     }
 
   } while (finished == 0);
