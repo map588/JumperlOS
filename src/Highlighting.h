@@ -65,6 +65,14 @@ public:
     int lastBrightenedNet = -1;
     int lastWarningNet = -1;
     
+    // Measure mode state (for continuous voltage display when switch is in measure position)
+    bool measureModeActive = false;        // True when showing continuous voltage
+    int measureModeNode = -1;              // Node being measured
+    int measureModeADC = -1;               // ADC channel being used (0-4)
+    int measureModeADCDefine = -1;         // ADC define (ADC0-ADC4) for connections
+    unsigned long lastMeasureUpdateTime = 0;
+    static constexpr int MEASURE_UPDATE_INTERVAL_MS = 100;  // Update display every 100ms
+    
     // Public methods
     void clearHighlighting(int updateLEDs = 0);
     int encoderNetHighlight(int print = 1, int mode = 1, int divider = 4);
@@ -78,6 +86,12 @@ public:
     bool shouldPersistHighlight(int node);
     bool wantsToHandleButtonPress(void);  // Returns true if button press should go to voltage adjustment
     int handleEncoderButtonPress(void);   // Returns 1 if handled, 0 if not
+    
+    // Measure mode methods (continuous voltage display when switch in measure position)
+    int findUnusedADC(void);              // Find an ADC not connected to anything, returns 0-4 or -1
+    void startMeasureMode(int node);      // Connect ADC to node and start continuous display
+    void stopMeasureMode(void);           // Disconnect ADC and stop display
+    void updateMeasureModeDisplay(void);  // Update OLED and serial with current voltage
     
 private:
     Highlighting();

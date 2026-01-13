@@ -359,8 +359,8 @@ public:
     
     // Slot management
     bool loadSlot(int slotNum, String& errorMsg);
-    bool saveSlot(int slotNum, String& errorMsg);
-    bool saveActiveSlot(String& errorMsg);
+    bool saveSlot(int slotNum, String& errorMsg, bool skipValidation = false);  // skipValidation for faster auto-saves
+    bool saveActiveSlot(String& errorMsg, bool skipValidation = false);
     bool slotExists(int slotNum) const;
     bool deleteSlot(int slotNum, String& errorMsg);
     void clearActiveSlot();
@@ -377,6 +377,13 @@ public:
     // Slot tracking synchronization
     void setActiveSlot(int slotNum);  // Sets activeSlotNumber and syncs with global netSlot
     void syncFromGlobalNetSlot();     // Updates activeSlotNumber from netSlot (for external changes)
+    
+    // Temporary slot mode - for apps that need a working slot and want to restore when done
+    // This is different from preview mode: temp mode clears the slot and applies to hardware
+    bool enterTemporarySlot(int tempSlot, bool saveCurrentFirst = true);  // Enter temp slot, returns false on error
+    bool exitTemporarySlot(bool refreshHardware = true);                   // Return to original slot
+    bool isTemporarySlotMode() const { return temporarySlotActive; }
+    int getTemporarySlotOriginal() const { return temporarySlotOriginal; }
     
     // Create slot files on-demand (not pre-created)
     bool ensureSlotExists(int slotNum);
@@ -416,6 +423,10 @@ private:
     int previewSlotNumber;       // Which slot we're previewing
     int originalSlotNumber;      // Which slot to return to when done
     float originalRailVoltages[2]; // Save rail voltages (topRail, bottomRail) during preview
+    
+    // Temporary slot mode state (for apps using a working slot)
+    bool temporarySlotActive;
+    int temporarySlotOriginal;   // Which slot to return to when exiting temp mode
     
     // History buffer (circular buffer for undo/redo)
     JumperlessState* historyBuffer;

@@ -87,14 +87,14 @@ ServiceStatus ProbeButton::service( ) {
     // ========================================================================
     if ( newState == 0 ) {
         // Button released!
-        if ( currentButtonState != 0 ) {
+       // if ( currentButtonState != 0 ) {
             blockProbeButton = 0;
             blockProbeButtonTimer = 0;
             lastButtonState = currentButtonState;
             currentButtonState = 0;
             buttonChanged = true;
             lastStatus = ServiceStatus::BUSY;
-        }
+        //}
 
         // Clear hold state immediately
         connectHeld = false;
@@ -208,7 +208,7 @@ int ProbeButton::getButtonPress( bool consume ) {
     int press = buttonPress;
 
     if ( press != 0 ) {
-        blockProbeButton = 300;
+        blockProbeButton = 600;
         blockProbeButtonTimer = millis( );
     }
 
@@ -1950,7 +1950,9 @@ restartProbingNoPrint:
             if ( connectedRowsIndex == 1 ) {
                 nodesToConnect[ node1or2 ] = connectedRows[ 0 ];
 
-                // Serial.print("nodesToConnect[node1or2] = ");
+                // Serial.print("nodesToConnect[");
+                // Serial.print(node1or2);
+                // Serial.print("] = ");
                 // Serial.println(nodesToConnect[node1or2]);
                 // Serial.flush();
 
@@ -2032,6 +2034,13 @@ restartProbingNoPrint:
             if ( node1or2 >= 2 || ( setOrClear == 0 && node1or2 >= 1 ) ) {
 
                 probeHighlight = -1;
+                // Serial.print("connectedRowsIndex: ");
+                // Serial.print(connectedRowsIndex);
+                // Serial.print(" nodesToConnect[0]: ");
+                // Serial.print(nodesToConnect[0]);
+                // Serial.print(" nodesToConnect[1]: ");
+                // Serial.println(nodesToConnect[1]);
+
                 // Serial.print("fuck");
 
                 if ( setOrClear == 1 && ( nodesToConnect[ 0 ] != nodesToConnect[ 1 ] ) &&
@@ -2643,16 +2652,22 @@ int Probing::selectSFprobeMenu( int function ) {
 
         // function = attachPadsToSettings(function);
 
-        if ( node1or2 == 0 ) {
-            node1or2 = 1;
-            nodesToConnect[ 0 ] = function;
-            nodesToConnect[ 1 ] = -1;
-            connectedRowsIndex = 1;
-        } else {
-            nodesToConnect[ 1 ] = function;
+        // if ( node1or2 == 0 ) {
+        //     node1or2 = 1;
+        //     nodesToConnect[ 0 ] = function;
+        //     nodesToConnect[ 1 ] = -1;
+        //     connectedRowsIndex = 1;
+        // } else {
+        //     nodesToConnect[ 1 ] = function;
 
-            // connectedRowsIndex = 0;
-        }
+        //     // connectedRowsIndex = 0;
+        // }
+        // Serial.print("sf connectedRowsIndex: ");
+        // Serial.print(connectedRowsIndex);
+        // Serial.print(" nodesToConnect[0]: ");
+        // Serial.print(nodesToConnect[0]);
+        // Serial.print(" nodesToConnect[1]: ");
+        // Serial.println(nodesToConnect[1]);
 
         // Serial.print("function!!!!!: ");
         // printNodeOrName(function, 1);
@@ -3302,6 +3317,7 @@ int Probing::chooseIsense( void ) {
 
     delay( 100 );
 
+    // connectedRowsIndex ++;
     // Serial.print( "Current Sense selected: " );
     // Serial.println( function == ISENSE_PLUS ? "ISENSE_PLUS (+)" : function == ISENSE_MINUS ? "ISENSE_MINUS (-)" : "None" );
     // Serial.flush( );
@@ -4082,7 +4098,11 @@ float Probing::voltageSelect( int fiveOrEight ) {
 // Track when LED was last updated to allow current to stabilize
 // Must be declared before checkSwitchPosition() which uses it
 unsigned long lastProbeLEDUpdateTime = 0;
-const unsigned long LED_SETTLE_TIME_MS = 15; // Wait 15ms after LED update before reading current
+const unsigned long LED_SETTLE_TIME_MS = 35; // Wait 15ms after LED update before reading current
+
+// Global timestamp for when INA219 probe current was last read
+// Other code can check this to avoid interference with current sensing
+volatile unsigned long lastProbeCurrentCheckTime = 0;
 
 int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 
@@ -4137,6 +4157,8 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
         // setDac1voltage( 3.33, 0, 0, false );
     }
 
+    // Update global timestamp BEFORE reading current so other code knows we're about to read
+    lastProbeCurrentCheckTime = millis();
     float current_mA = checkProbeCurrent( ); // - currentReadingOffset1_mA;
 
     // HYSTERESIS LOGIC to prevent oscillation:
@@ -4268,7 +4290,7 @@ float Probing::checkProbeCurrentZero( void ) {
     // Serial.println("\n\n\n\\n\n\nn\nn\n\n checkingProbeCurrentZero \n\n\n\n\n\n");
     // Serial.flush();
 
-    showProbeLEDs = 10;
+    //showProbeLEDs = 10;
     probeLEDs.setPixelColor( 0, 0x000000 );
     probeLEDs.show( );
     delayMicroseconds( 100 );

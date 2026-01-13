@@ -934,6 +934,10 @@ size_t JumperlessState::estimateRAMUsage() const {
 bool JumperlessState::toYAML(String& output) const {
     output = "";
     
+    // Pre-allocate buffer to avoid repeated reallocations during concatenation
+    // Estimate: ~50 bytes per bridge + ~500 bytes overhead = ~3KB typical
+    output.reserve(connections.numBridges * 50 + 500);
+    
     // Header
     output += "version: " + String(version) + "\n";
     output += "sourceOfTruth: " + String(config.sourceOfTruth == BRIDGES_PRIMARY ? "bridges" : "nets") + "\n\n";
@@ -2216,7 +2220,8 @@ void applyStateToHardware() {
 SlotManager::SlotManager() 
     : activeState(globalState), activeSlotNumber(0), historySize(STATE_HISTORY_SIZE), 
       historyHead(0), historyCount(0), historyPosition(0),
-      previewModeActive(false), previewSlotNumber(-1), originalSlotNumber(-1) {
+      previewModeActive(false), previewSlotNumber(-1), originalSlotNumber(-1),
+      temporarySlotActive(false), temporarySlotOriginal(-1) {
     // Always initialize to slot 0, sync with netSlot on first use
     netSlot = 0;  // Ensure global is also 0
     initHistory();
@@ -2391,32 +2396,35 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
     return true;
 }
 
-bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
+// Static cache for /slots directory existence (avoid repeated FS checks)
+static bool slotsDirectoryExists = false;
+
+bool SlotManager::saveSlot(int slotNum, String& errorMsg, bool skipValidation) {
     // Allow slot 99 (Python slot) in addition to 0-7
     if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
         errorMsg = "Invalid slot number: " + String(slotNum);
         return false;
     }
     
-    // Serial.println("Saving slot " + String(slotNum) + " with " + String(activeState.connections.numBridges) + " connections");
-    // Serial.flush();
-    
-    // Ensure /slots directory exists (create on-demand)
-    if (!FatFS.exists("/slots")) {
-        // Serial.println("  Creating /slots directory");
-        // Serial.flush();
-        if (!FatFS.mkdir("/slots")) {
-            errorMsg = "Failed to create /slots directory";
-            return false;
+    // Cache /slots directory existence check (avoid FS call on every save)
+    if (!slotsDirectoryExists) {
+        if (!FatFS.exists("/slots")) {
+            if (!FatFS.mkdir("/slots")) {
+                errorMsg = "Failed to create /slots directory";
+                return false;
+            }
         }
+        slotsDirectoryExists = true;
     }
     
-    // Validate state before saving
-    if (!activeState.validate(errorMsg)) {
-        errorMsg = "Cannot save invalid state: " + errorMsg;
-        Serial.println("  Validation failed: " + errorMsg);
-        Serial.flush();
-        return false;
+    // Optionally skip validation for auto-saves (state is validated on connection add/remove)
+    if (!skipValidation) {
+        if (!activeState.validate(errorMsg)) {
+            errorMsg = "Cannot save invalid state: " + errorMsg;
+            Serial.println("  Validation failed: " + errorMsg);
+            Serial.flush();
+            return false;
+        }
     }
     
     // Convert to YAML
@@ -2428,9 +2436,6 @@ bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
         return false;
     }
     
-    // Serial.println("  Writing to file...");
-    // Serial.flush();
-    
     // Write to file (this will create the file if it doesn't exist)
     if (!writeSlotFile(slotNum, yamlContent, errorMsg)) {
         Serial.println("  Write failed: " + errorMsg);
@@ -2438,21 +2443,18 @@ bool SlotManager::saveSlot(int slotNum, String& errorMsg) {
         return false;
     }
     
-    // Serial.println("  ✓ Saved successfully");
-    // Serial.flush();
-    
     activeSlotNumber = slotNum;
     netSlot = slotNum;  // Sync global slot tracker
     activeState.clearDirty();  // Mark as saved
     return true;
 }
 
-bool SlotManager::saveActiveSlot(String& errorMsg) {
+bool SlotManager::saveActiveSlot(String& errorMsg, bool skipValidation) {
     if (activeSlotNumber < 0) {
         errorMsg = "No active slot to save";
         return false;
     }
-    return saveSlot(activeSlotNumber, errorMsg);
+    return saveSlot(activeSlotNumber, errorMsg, skipValidation);
 }
 
 bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
@@ -2504,6 +2506,80 @@ void SlotManager::syncFromGlobalNetSlot() {
         // String errorMsg;
         // loadSlot(netSlot, errorMsg);
     }
+}
+
+// ============================================================================
+// Temporary Slot Mode - For apps that need a working slot and restore when done
+// Unlike preview mode, this clears the temp slot and applies changes to hardware
+// Optimized for speed - skips unnecessary file I/O and LED updates
+// ============================================================================
+
+bool SlotManager::enterTemporarySlot(int tempSlot, bool saveCurrentFirst) {
+    // Validate temp slot number (allow slot 8 and slot 99 as special temp slots)
+    if (tempSlot < 0 || tempSlot >= NUM_SLOTS) {
+        // Allow slot 8 specifically as the app temporary slot
+        if (tempSlot != 8 && tempSlot != 99) {
+            return false;
+        }
+    }
+    
+    // Don't nest temporary slot modes
+    if (temporarySlotActive) {
+        return false;
+    }
+    
+    // Only save if state has actually changed (skip expensive filesystem write)
+    if (saveCurrentFirst && activeState.isDirty()) {
+        String errorMsg;
+        saveActiveSlot(errorMsg);
+    }
+    
+    // Remember where we came from
+    temporarySlotOriginal = activeSlotNumber;
+    
+    // Switch to the temporary slot - fast, just updates slot tracking
+    netSlot = tempSlot;
+    activeSlotNumber = tempSlot;
+    
+    // Clear the active state for fresh start (fast - no file I/O)
+    // Skip loading temp slot since apps will set up their own connections anyway
+    clearActiveSlot();
+    
+    temporarySlotActive = true;
+    return true;
+}
+
+bool SlotManager::exitTemporarySlot(bool refreshHardware) {
+    if (!temporarySlotActive) {
+        return false;
+    }
+    
+    // Restore slot tracking
+    netSlot = temporarySlotOriginal;
+    activeSlotNumber = temporarySlotOriginal;
+    
+    // Load the original slot data from file
+    // This is necessary to restore the user's connections
+    String content;
+    String errorMsg;
+    String filename = getSlotFilename(temporarySlotOriginal);
+    
+    if (FatFS.exists(filename.c_str())) {
+        if (readSlotFile(temporarySlotOriginal, content, errorMsg)) {
+            activeState.fromYAML(content, errorMsg);
+        }
+    }
+    
+    temporarySlotActive = false;
+    temporarySlotOriginal = -1;
+    
+    // Refresh hardware connections (caller can skip if they'll do it manually)
+    if (refreshHardware) {
+        extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
+        refreshConnections(-1, 0, 1);
+    }
+    
+    return true;
 }
 
 bool SlotManager::ensureSlotExists(int slotNum) {
@@ -3598,7 +3674,8 @@ ServiceStatus SlotManager::service() {
             syncFromGlobalNetSlot();
             
             // saveSlot will handle core synchronization and clearDirty
-            if (saveSlot(activeSlotNumber, errorMsg)) {
+            // Skip validation on auto-save (state is validated when connections are added/removed)
+            if (saveSlot(activeSlotNumber, errorMsg, true)) {
                 unsigned long saveTime = micros() - saveStart;
                 if (debugWaitLoopTiming) {
                 if (saveTime > 100000) {

@@ -171,10 +171,8 @@ void microPythonREPLapp( void ) {
     enterMicroPythonREPL( global_mp_stream );
 }
 
-void leaveApp( int lastNetSlot ) {
-    // globalState.clearAllConnections( );
-    netSlot = lastNetSlot;
-    refreshConnections( -1, 0, 1 );
+void leaveApp( void ) {
+    SlotManager::getInstance( ).exitTemporarySlot( );  // Restores original slot + refreshes hardware
 }
 
 void fileManagerApp( void ) { filesystemApp( true ); }
@@ -182,20 +180,21 @@ void fileManagerApp( void ) { filesystemApp( true ); }
 void calibrateProbeSwitchThresholds( void ) {
     b.clear( );
 
+   // showProbeLEDs = 4;
     cycleTerminalColor( true, 5.0, true );
     Serial.println( "\n\rProbe Switch Threshold Calibration" );
     cycleTerminalColor( );
     Serial.println( "This will automatically set the switch position detection thresholds\n\r" );
 
-    int lastNetSlot = netSlot;
-    netSlot = 8;
-    globalState.clearAllConnections( );
-    refreshConnections( -1, 0 );
+    int tempSlot = 8;
+    netSlot = tempSlot;
+    SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
+    //refreshConnections( -1, 0 );
     routableBufferPower( 1, 1, 1 );
-    delay( 500 );
+    //delay( 50 );
 
     // Arrays to store current readings for both positions
-    const int NUM_READINGS = 30;
+    const int NUM_READINGS = 20;
     float measureReadings[ NUM_READINGS ];
     float selectReadings[ NUM_READINGS ];
     int measureCount = 0;
@@ -208,13 +207,14 @@ void calibrateProbeSwitchThresholds( void ) {
         delay(50);
     }
 int row = 0;
-    oled.clear( );
-    oled.print( "Move probe switch\n" );
-    oled.print( "AWAY from tip\n" );
-    oled.print( "(MEASURE mode)\n\n" );
-    oled.print( "Press clickwheel\n" );
-    oled.print( "when ready" );
-    oled.show( );
+    // oled.clear( );
+    // oled.print( "Move probe switch\n" );
+    // oled.print( "AWAY from tip\n" );
+    // oled.print( "(MEASURE mode)\n\n" );
+    // oled.print( "Press clickwheel\n" );
+    // oled.print( "when ready" );
+    // oled.show( );
+    oled.showMultiLineSmallText( "Switch to MEASURE\n\r(AWAY from TIP)\n\n\rClick wheel = start", true, true );
 
     Serial.println( "\n\rStep 1: MEASURE mode (switch away from tip)" );
     Serial.println( "Move the probe switch AWAY from the TIP" );
@@ -226,11 +226,14 @@ int row = 0;
     while ( encoderButtonState != HELD && encoderButtonState != PRESSED ) {
         delay( 10 );
     }
-    delay( 500 );
+    delay( 50 );
     encoderButtonState = IDLE;
 
     row = 22;
     // Take readings in MEASURE mode
+    probeLEDs.setPixelColor( 0, 0x003600 ); // measure
+    probeLEDs.showBlocking( ); // Use blocking for immediate display
+    delay(200);
     Serial.println( "Taking MEASURE mode readings..." );
     b.clear( 0 );
     b.print( "Read ", 0x100010, 0x000000, 0, -1, -1 );
@@ -262,13 +265,14 @@ int row = 0;
         delay(50);
     }
 
-    oled.clear( );
-    oled.print( "Move probe switch\n" );
-    oled.print( "TOWARDS tip\n" );
-    oled.print( "(SELECT mode)\n\n" );
-    oled.print( "Press clickwheel\n" );
-    oled.print( "when ready" );
-    oled.show( );
+    // oled.clear( );
+    // oled.print( "Move probe switch\n" );
+    // oled.print( "TOWARDS tip\n" );
+    // oled.print( "(SELECT mode)\n\n" );
+    // oled.print( "Press clickwheel\n" );
+    // oled.print( "when ready" );
+    // oled.show( );
+    oled.showMultiLineSmallText( "Switch to SELECT\n\r(TOWARDS TIP)\n\n\rClick wheel = start", true, true );
 
     Serial.println( "\n\rStep 2: SELECT mode (switch towards tip)" );
     Serial.println( "Move the probe switch TOWARDS the tip" );
@@ -286,10 +290,14 @@ int row = 0;
 
     // Take readings in SELECT mode
     Serial.println( "Taking SELECT mode readings..." );
+   probeLEDs.setPixelColor( 0, 0x170c17 ); // select idle
+    probeLEDs.showBlocking( ); // Use blocking for immediate display
+    delay(200);
     b.clear( 0 );
     b.print( "Read  ", 0x101010, 0x000000, 0, -1, -1 );
     for ( int i = 0; i < NUM_READINGS; i++ ) {
         delay( 200 );
+        
         float current = checkProbeCurrent( );
         selectReadings[ i ] = current;
         Serial.printf( "Reading %d: %.3f mA\n\r", i + 1, current );
@@ -309,12 +317,18 @@ int row = 0;
     selectAvg /= NUM_READINGS;
     Serial.printf( "\nSELECT mode average: %.3f mA\n\n\r", selectAvg );
 
+    if (measureAvg < 0.0){
+        measureAvg = 0.0;
+    }
+    if (selectAvg < 0.0){
+        selectAvg = 0.0;
+    }
     // ===== CALCULATE THRESHOLDS =====
     // Set thresholds with hysteresis in the middle of the two averages
     // Add 20% buffer zone on each side to ensure reliable detection
     float midpoint = ( measureAvg + selectAvg ) / 2.0;
     float range = fabs( selectAvg - measureAvg );
-    float buffer = range * 0.30; // 15% buffer
+    float buffer = range * 0.05; // 5% buffer
 
     // Ensure MEASURE mode is always the lower value
     float lowerAvg = min( measureAvg, selectAvg );
@@ -336,15 +350,14 @@ int row = 0;
     Serial.println( "\n\rSaving configuration..." );
 
     // Display results on OLED
-    oled.clear( );
-    oled.setTextSize( 1 );
-    oled.print( "Calibration Done!\n\n" );
-    char oledBuffer[ 64 ];
-    snprintf( oledBuffer, sizeof( oledBuffer ), "Low:  %.2f mA\n", jumperlessConfig.calibration.probe_switch_threshold_low );
-    oled.print( oledBuffer );
-    snprintf( oledBuffer, sizeof( oledBuffer ), "High: %.2f mA\n", jumperlessConfig.calibration.probe_switch_threshold_high );
-    oled.print( oledBuffer );
-    oled.show( );
+//    oled.clear( );
+//    oled.setTextSize( 1 );
+    // oled.print( "Calibration Done!\n\n" );
+   // oled.showMultiLineSmallText( "Calibration Done!\n\rLow:  %.2f mA\n\rHigh: %.2f mA", true, true );
+    char oledBuffer[ 64 ] = "Calibration Done!\n\n\r";
+    snprintf( oledBuffer + strlen( oledBuffer ), sizeof( oledBuffer ) - strlen( oledBuffer ), "Low:  %.2f mA\n", jumperlessConfig.calibration.probe_switch_threshold_low );
+    snprintf( oledBuffer + strlen( oledBuffer ), sizeof( oledBuffer ) - strlen( oledBuffer ), "High: %.2f mA", jumperlessConfig.calibration.probe_switch_threshold_high );
+    oled.showMultiLineSmallText( oledBuffer, true, true );
 
     // Show success on breadboard
     b.clear( );
@@ -353,7 +366,7 @@ int row = 0;
     saveConfig( );
     delay( 2000 );
 
-    leaveApp( lastNetSlot );
+    leaveApp( );
 }
 
 
@@ -413,7 +426,7 @@ void probeCalibApp( void ) {
     Serial.println( "Hold the clickwheel when you're done\n\n\r" );
     cycleTerminalColor( );
 
-    oled.showMultiLineSmallText( "Tap rows with the probe and rotate the clickweel until they're lighting up the correct row", true, true );
+    oled.showMultiLineSmallText( "Tap pads + rotate wheel to align both switch positions\n\rhold click = save", true, true );
     // oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
     // oled.showMultiLineSmallText("Hold the clickwheel when you're done\n\r", false, true);
     oled.flushFramebuffer( );
@@ -425,15 +438,11 @@ void probeCalibApp( void ) {
 
     int finishCountdown = -1;
     unsigned long finishCountdownTimer = 0;
-
     bool done = false;
+    
+    SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
 
-    // b.clear( );
-    int lastNetSlot = netSlot;
-    netSlot = 8;
-    globalState.clearAllConnections( );
-
-    refreshConnections( 0, 0 );
+    refreshConnections( -1, 0 );
     routableBufferPower( 1, 1, 1 );
     resetEncoderPosition = true;
     int lastEncoderPosition = encoderPosition;
@@ -480,7 +489,7 @@ void probeCalibApp( void ) {
     bool touched = false;
 
     int probeRead = -1;
-
+bool firstRead = true;
     // while (probeRead == -1) {
     //     probeRead = readProbeRaw( 0, true );
 
@@ -504,8 +513,8 @@ void probeCalibApp( void ) {
 
         nodeSelected = probeRowMap[ rowProbed ];
         nodeSelectedWithOldMapping = probeRowMapByPad[ rowProbedWithOldMapping ];
-
-        int checkSwitch = checkSwitchPosition( );
+        jOS.forceServiceByName("ProbeSwitch");
+        int checkSwitch = Probing::getInstance( ).switchPosition;
         if ( checkSwitch != lastSwitchPosition ) {
             if ( checkSwitch == 0 ) {
                 lastSwitchPosition = 0;
@@ -521,6 +530,10 @@ void probeCalibApp( void ) {
         if ( probeRead != -1 ) {
 
             reading = rowProbed;
+            if (firstRead) {
+                firstRead = false;
+                
+            }
         }
 
         if ( encoderPosition != lastEncoderPosition || reading != lastReading ) {
@@ -539,6 +552,24 @@ void probeCalibApp( void ) {
                     jumperlessConfig.calibration.probe_max = 15;
                 }
             }
+            char debugOutput[100];
+            if (measureOrSelect == 0) {
+                snprintf(debugOutput, sizeof(debugOutput), "MEASURE  raw: %d\n\rread: %d\n\rnode: %s\n\rv: %0.4f",
+                           lastValidProbeRead, rowProbed,
+                           definesToChar( nodeSelected ),
+                           jumperlessConfig.calibration.measure_mode_output_voltage );
+            } else {
+                snprintf(debugOutput, sizeof(debugOutput), "SELECT   raw: %d\n\rread: %d\n\rnode: %s\n\rmax: %d",
+                           lastValidProbeRead, rowProbed,
+                           definesToChar( nodeSelected ),  
+                           jumperlessConfig.calibration.probe_max );
+            }
+            if (firstRead == false) {
+        oled.showMultiLineSmallText(debugOutput, true, true);
+            }
+
+
+
             Serial.printf( "                                  \rraw: %d enc: %d reading: %d max: %d node: %s mode: %s v: %0.4f",
                            lastValidProbeRead, encoderPosition, rowProbed, jumperlessConfig.calibration.probe_max,
                            definesToChar( nodeSelected ), measureOrSelect ? "measure" : "select",
@@ -702,7 +733,7 @@ void probeCalibApp( void ) {
             Serial.println( "Saving config..." );
 
             saveConfig( );
-            leaveApp( lastNetSlot );
+            leaveApp( );
         }
     }
 }
@@ -723,11 +754,8 @@ void customApp( void ) {
     b.print( "look atthe FW", (uint32_t)0x002008 );
     delay( 1000 );
 
-    int lastNetSlot = netSlot;
-    netSlot = 8; // net slot for custom app
+    SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
     int leave = 0;
-
-    globalState.clearAllConnections( );
 
     addBridgeToState( 12, 25 );
     addBridgeToState( TOP_RAIL, 52 );
@@ -774,7 +802,7 @@ void customApp( void ) {
     Serial.println( voltage );
 
     if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-        leaveApp( lastNetSlot );
+        leaveApp( );
         return;
     }
 
@@ -807,7 +835,7 @@ void customApp( void ) {
     delay( 1 );
 
     if ( ( encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED ) || Serial.available( ) > 0 ) {
-        leaveApp( lastNetSlot );
+        leaveApp( );
         return;
     }
 
@@ -837,7 +865,7 @@ void customApp( void ) {
     Serial.println( " mA\n\r" );
 
     if ( ( encoderButtonState == PRESSED && lastButtonEncoderState == RELEASED ) || Serial.available( ) > 0 ) {
-        leaveApp( lastNetSlot );
+        leaveApp( );
         return;
     }
 
@@ -864,7 +892,7 @@ void customApp( void ) {
     }
 
     if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-        leaveApp( lastNetSlot );
+        leaveApp( );
         return;
     }
 
@@ -885,7 +913,7 @@ void customApp( void ) {
     // Use state-based button check in loop (doesn't consume events)
     while ( checkProbeButtonState( ) == 0 ) {
         if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-            leaveApp( lastNetSlot );
+            leaveApp( );
             return;
         }
         probeRow = justReadProbe( );
@@ -913,7 +941,7 @@ void customApp( void ) {
     delay( 100 );
 
     if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-        leaveApp( lastNetSlot );
+        leaveApp( );
         return;
     }
 
@@ -929,7 +957,7 @@ void customApp( void ) {
     refreshLocalConnections( -1, 0 );
 
     if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-        leaveApp( lastNetSlot );
+        leaveApp( );
         return;
     }
 
@@ -939,7 +967,7 @@ void customApp( void ) {
         refreshConnections( -1, 0 );
         showLEDsCore2 = -1;
         if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-            leaveApp( lastNetSlot );
+            leaveApp( );
             return;
         }
     }
@@ -954,7 +982,7 @@ void customApp( void ) {
     unsigned long timeout = 5000;
     while ( millis( ) - startTime < timeout ) {
         if ( digitalRead( BUTTON_ENC ) == 0 || Serial.available( ) > 0 ) {
-            leaveApp( lastNetSlot );
+            leaveApp( );
             return;
         }
         sendXYraw( CHIP_K, 4, 0, 1 );
@@ -1303,7 +1331,9 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
 }
 
 void calibrateDacs( ) {
-
+    // Enter temporary slot FIRST to preserve user's active slot
+    SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
+    
     if ( firstStart == 1 ) {
         Serial.println( "\n\rFirst startup calibration\n\n\r" );
 
@@ -1311,12 +1341,12 @@ void calibrateDacs( ) {
         Serial.println( "Initializing routing system for first startup..." );
         Serial.flush( );
         initChipStatus( );                  // Initialize chip mappings based on hardware revision
-        globalState.clearAllConnections( ); // Clear all connections using state system
+        globalState.clearAllConnections( ); // Clear temp slot connections
         delay( 100 );                       // Give system time to stabilize
         Serial.println( "Routing system initialized." );
     } else {
         // Serial.println("Calibration");
-        globalState.clearAllConnections( );
+        globalState.clearAllConnections( ); // Clear temp slot connections
     }
     // delay(3000);
     float setVoltage = 0.0;
@@ -1325,12 +1355,8 @@ void calibrateDacs( ) {
     // sendAllPathsCore2 = 1;
     INA0.setBusADC( 0x0e );
     INA1.setBusADC( 0x0e );
-    int lastNetSlot = netSlot;
-    netSlot = 8;
 
     int failedToConverge = 0;
-
-    globalState.clearAllConnections( );
     // for (int i = 0; i < 4; i++) {
 
     // Serial.print("netSlot: ");
@@ -1853,11 +1879,12 @@ void calibrateDacs( ) {
 
     b.clear( );
     b.print( "Test?", 0x0a0a00, 0x000000, 1, -1, -1 );
+    showLEDsCore2 = -2;
     int yesNo;
     if ( firstStart == 1 ) {
         yesNo = 1; // yesNoMenu(800);
     } else {
-        yesNo = yesNoMenu( 4000 );
+        yesNo = yesNoMenu( 8000 );
     }
 
     failedToConverge = 0;
@@ -2041,13 +2068,9 @@ void calibrateDacs( ) {
     INA0.setBusADC( 0x0b );
     INA1.setBusADC( 0x0b );
     // removeBridgeFromState(ISENSE_PLUS, -1);
-    globalState.clearAllConnections( );
-    netSlot = lastNetSlot;
-    if ( failedToConverge == 0 ) {
-
-    } else {
-    }
-
+    
+    leaveApp( );  // Restore original slot
+if ( yesNo == 1 ) {
     // Print big block text for PASS or FAIL
     if ( failedToConverge < 7 ) {
         changeTerminalColor( 84, true ); // Green
@@ -2073,6 +2096,7 @@ void calibrateDacs( ) {
     Serial.println( failedToConverge );
     Serial.println( );
     Serial.println( );
+}
     changeTerminalColor( -1, true );
 
     refreshConnections( -1 );
@@ -2082,11 +2106,11 @@ void calibrateDacs( ) {
     configChanged = true;
 
     // Run probe switch threshold calibration
-    Serial.println( "\n\n\r" );
-    Serial.println( "========================================" );
-    Serial.println( "Starting Probe Switch Calibration..." );
-    Serial.println( "========================================\n\r" );
-    delay( 1000 );
+    // Serial.println( "\n\n\r" );
+    // Serial.println( "========================================" );
+    // Serial.println( "Starting Probe Switch Calibration..." );
+    // Serial.println( "========================================\n\r" );
+    // delay( 1000 );
     // calibrateProbeSwitchThresholds( );
 
     if ( firstStart == 1 ) {

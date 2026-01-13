@@ -117,7 +117,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.2.7"; //! remember to update this
+const char firmwareVersion[] = "5.6.2.9"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -263,7 +263,7 @@ void setup( ) {
     // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
     // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
     // Serial.flush();
-
+delay(10);
     checkProbeCurrentZero( );
     startupTimers[ 8 ] = millis( );
     // createSlots( -1, 0 );

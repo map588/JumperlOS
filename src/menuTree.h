@@ -90,6 +90,7 @@ String menuLines[] = {
   "-DMX \31Serial",  
   "-OLED \31Images",
 
+
   //"-Show   Image",
  
 
@@ -117,6 +118,13 @@ String menuLines[] = {
    "-Scan",
    "-I2C    \31Scan",
 
+
+   "Calib  ration",
+  "-Probe  \31Pads",
+  "-Switch \31Thresh",
+  "-DACs   \31Calib",
+
+  
    "Slots",
    "-$Load$",
    "--*0**1**2**3**4**5**6**7*>s",

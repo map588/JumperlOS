@@ -2113,17 +2113,26 @@ int yesNoMenu( unsigned long timeout ) {
     // delayMicroseconds(3000);
     int optionSelected = -1;
     int highlightedOption = 0;
-    int changed = 1;
+    int changed = 0;
     uint32_t selectColor = 0x1a001a;
     uint32_t yesColor = 0x001004;
     uint32_t yesColorBright = 0x001f0f;
     uint32_t noColor = 0x100003;
     uint32_t noColorBright = 0x1f0008;
     uint32_t backgroundColor = 0x000002;
-    int firstTime = 1;
     unsigned long startTime = millis( );
     encoderButtonState = IDLE;
     lastButtonEncoderState = IDLE;
+
+    // Display initial state immediately before entering loop
+    Serial.print( "\r                      \r" );
+    b.clear( 1 );
+    Serial.print( "No" );
+    b.print( ">", noColorBright, 0x0, 4, 1, -1 );
+    b.print( "Yes", yesColor, 0x0, 1, 1, -2 );
+    b.print( "No", noColorBright, 0x0, 5, 1, -1 );
+    delay( 100 );
+    showLEDsCore2 = 2;
 
     while ( optionSelected == -1 ) {
         jOS.serviceCritical( );
@@ -2150,7 +2159,7 @@ int yesNoMenu( unsigned long timeout ) {
         }
 
         delayMicroseconds( 1000 );
-
+        
         if ( encoderButtonState == HELD ) {
             b.clear( );
             inClickMenu = 0;
@@ -2162,7 +2171,6 @@ int yesNoMenu( unsigned long timeout ) {
             optionSelected = highlightedOption;
             inClickMenu = 0;
             return optionSelected;
-            changed = 1;
         } else if ( encoderDirectionState == UP ) {
             encoderDirectionState = NONE;
             highlightedOption += 1;
@@ -2170,13 +2178,12 @@ int yesNoMenu( unsigned long timeout ) {
                 highlightedOption = 0;
             }
             changed = 1;
-        } else if ( encoderDirectionState == DOWN || firstTime == 1 ) {
+        } else if ( encoderDirectionState == DOWN ) {
             encoderDirectionState = NONE;
             highlightedOption -= 1;
             if ( highlightedOption < 0 ) {
                 highlightedOption = 1;
             }
-            firstTime = 0;
             changed = 1;
         }
         if ( changed == 1 ) {
@@ -3563,6 +3570,10 @@ actionCategories getActionCategory( void ) {
                     "OLED" ) != -1 ) {
         return OLEDACTION;
 
+    } else if ( menuLines[ currentAction.previousMenuPositions[ 0 ] ].indexOf(
+                    "Calib" ) != -1 ) {
+        return CALIBRATIONACTION;
+
     } else {
         return NOCATEGORY;
     }
@@ -3970,6 +3981,32 @@ int doMenuAction( int menuPosition, int selection ) {
 
         runApp( -1, (char*)menuLines[ currentAction.previousMenuPositions[ 1 ] ].c_str( ) );
         // showLEDsCore2 = -1;
+        refreshConnections( -1, 0 );
+
+        return 10;
+
+    } else if ( currentCategory == CALIBRATIONACTION ) {
+
+        // Serial.print( "Calibration Action\n\r" ); //! Calibration Action
+
+        inClickMenu = 0;
+
+        // Translate menu names to app names
+        String menuItem = menuLines[ currentAction.previousMenuPositions[ 1 ] ];
+        String appName;
+
+        if ( menuItem.indexOf( "Pads" ) != -1 ) {
+            appName = "Probe  Calib";
+        } else if ( menuItem.indexOf( "Thresh" ) != -1 ) {
+            appName = "Switch Calib";
+        } else if ( menuItem.indexOf( "DACs" ) != -1 ) {
+            appName = "Calib  DACs";
+        } else {
+            // Fallback: try the menu item directly
+            appName = menuItem;
+        }
+
+        runApp( -1, (char*)appName.c_str( ) );
         refreshConnections( -1, 0 );
 
         return 10;

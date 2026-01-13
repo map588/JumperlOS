@@ -471,6 +471,9 @@ extern volatile int probeActive;
 extern volatile bool core1busy;
 extern volatile bool core2busy;
 extern volatile int loadingFile;
+
+// Timestamp for last INA219 probe current check (for measure mode timing coordination)
+extern volatile unsigned long lastProbeCurrentCheckTime;
   
 
 #endif

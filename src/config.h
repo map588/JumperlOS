@@ -31,7 +31,7 @@ struct config {
 
     struct hardware {
         int generation = 5;
-        int revision = 5;
+        int revision = 7;
         int probe_revision = 5;
     } hardware;
 
@@ -156,7 +156,7 @@ struct config {
             int gpio_scl = RP_GPIO_27; //the define number for the hardware pin
             int sda_row = NANO_D2; //the row number
             int scl_row = NANO_D3; //the row number
-            int connect_on_boot = 0;
+            int connect_on_boot = 1;
             int lock_connection = 0;
             int autoconnect_check_interval = -1;
             int font = 0;
