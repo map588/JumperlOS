@@ -9,6 +9,7 @@
 
 #include "WaveGen.h"
 #include <math.h>
+#include <new>  // For std::nothrow
 
 // Global pointer for static callback
 static WaveGen* g_current_wavegen = nullptr;

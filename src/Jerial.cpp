@@ -5,7 +5,6 @@
 #define DEBUG_INJECTED_COMMANDS 0
 
 #include "Jerial.h"
-#include "Adafruit_TinyUSB.h"
 #include "ArduinoStuff.h"
 #include "Python_Proper.h" // For ScriptHistory
 #include "SingleCharCommands.h"
