@@ -538,7 +538,7 @@ void initLEDs(void) {
 
 
   probeLEDs.begin();
-  probeLEDs.setPixelColor(0, 0x111111);
+  probeLEDs.setPixelColor(0, 0x000000);
   probeLEDs.show();
 
 

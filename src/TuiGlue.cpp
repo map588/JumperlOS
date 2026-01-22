@@ -1,3 +1,4 @@
+#if !defined(INCLUDE_TUI_STUFF)
 #include "TuiGlue.h"
 #include "Tui.h"
 #include "TuiPopup.h"
@@ -655,3 +656,4 @@ void TuiGlue::loop() {
   m_serial->flush();
 }
 
+#endif // INCLUDE_TUI_STUFF

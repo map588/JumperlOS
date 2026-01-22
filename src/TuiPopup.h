@@ -4,7 +4,7 @@
 #pragma once
 #include <Arduino.h>
 
-class Stream;
+// class Stream;
 
 namespace TUI {
 

@@ -32,6 +32,7 @@
 
 // Debug flag for command injection tracing
 // Set to 1 to see each character being injected from <j> tags
+#include "FileParsing.h"
 #define DEBUG_INJECTED_COMMANDS 0
 
 #include "AsyncPassthrough.h"
@@ -1510,13 +1511,26 @@ void checkDTRState(Adafruit_USBD_CDC& cdc) {
             if (asyncPassthroughEnabled && asyncPassthroughTagParsingEnabled) {
                 disableTagParsingWithInactivityTimeout(5000, 2000);
             }
-            
+            bool esp32 = true;
+            if (esp32) {
+                Serial.println("Doing ESP32 reset\t yeah for now, we're doing this until I make a proper confiLeftg option\n\r(This pulses Nano AREF to GND briefly)");
+               addBridgeToState(NANO_AREF, GND, 0, true);
+               SetArduinoResetLine(LOW, 1);   // Assert reset (both top and bottom)
+               delayMicroseconds(15000);       // Hold reset for 5ms
+                SetArduinoResetLine(LOW, 0);  
+                delayMicroseconds(15000);       // Hold reset for 5ms
+                SetArduinoResetLine(HIGH, 0);  // Release reset
+                delayMicroseconds(15000);       // Hold reset for 5ms
+                SetArduinoResetLine(HIGH, 1);  
+                removeBridgeFromState(NANO_AREF, GND, true);
+     
+            } else {
             // CRITICAL: Reset Arduino IMMEDIATELY - don't wait for main loop!
             // This matches standard Arduino auto-reset timing
-            SetArduinoResetLine(LOW, 2);   // Assert reset (both top and bottom)
+            SetArduinoResetLine(LOW, 0);   // Assert reset (both top and bottom)
             delayMicroseconds(5000);       // Hold reset for 5ms
-            SetArduinoResetLine(HIGH, 2);  // Release reset
-            
+            SetArduinoResetLine(HIGH, 0);  // Release reset
+            }
             // Small delay to let bootloader start before data arrives
            // delayMicroseconds(50000);  // 50ms for bootloader to initialize
         }

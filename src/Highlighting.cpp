@@ -91,7 +91,7 @@ ServiceStatus Highlighting::service() {
     // Probe reading stability tracking for measure mode
     static int measureModeLastProbeReading = -1;
     static int measureModeStableCount = 0;
-    static const int MEASURE_MODE_STABLE_READINGS_REQUIRED = 3;  // Require 3 consistent readings
+    static const int MEASURE_MODE_STABLE_READINGS_REQUIRED = 10;  // Require 3 consistent readings
     
     // Use debounced tracking to avoid interfering with switch position detection
     static int lastSwitchPosition = -1;
@@ -2047,8 +2047,15 @@ void Highlighting::startMeasureMode(int node) {
     // This ensures the connection is never saved to the slot file
     String errorMsg;
     globalState.addConnection(node, measureModeADCDefine, errorMsg, 0);
-    // DO NOT call globalState.markDirty() - this keeps it temporary
+
     
+    // DO NOT call globalState.markDirty() - this keeps it temporary
+
+
+    // addBridgeToState(node, measureModeADCDefine);
+
+
+
     refreshLocalConnections(0, 0, 0);  // Silent refresh - no LED update
     waitCore2();
     

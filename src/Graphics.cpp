@@ -322,11 +322,11 @@ char defconString[16] = "Jumper less V5 ";
 
 /* clang-format on */
 
-static constexpr int kCurrentSenseMaxPathLength = 320; // Allow full breadboard coverage (60 rows × 5 columns + margin)
-static constexpr int kCurrentSensePatternLength = 5;
-static constexpr float kCurrentSenseMinMotionCurrent_mA = 0.05f;
-static constexpr uint8_t kCurrentSenseRowTintAlpha = 50;
-static constexpr uint8_t kCurrentSensePathTintAlpha = 50;
+// static constexpr int kCurrentSenseMaxPathLength = 320; // Allow full breadboard coverage (60 rows × 5 columns + margin)
+// static constexpr int kCurrentSensePatternLength = 5;
+// static constexpr float kCurrentSenseMinMotionCurrent_mA = 0.05f;
+// static constexpr uint8_t kCurrentSenseRowTintAlpha = 50;
+// static constexpr uint8_t kCurrentSensePathTintAlpha = 50;
 
 enum class PathSegmentType : uint8_t {
   VIRTUAL_WIRE,  // The injected virtual wire between nets (vertical)
@@ -353,29 +353,29 @@ struct PathSegment {
   int relativeIndex;  // Position within this net/segment (0, 1, 2...) for continuous flow
 };
 
-struct CurrentSenseOverlayState {
-  bool pathValid = false;
-  int plusRow = -1;
-  int minusRow = -1;
+// struct CurrentSenseOverlayState {
+//   bool pathValid = false;
+//   int plusRow = -1;
+//   int minusRow = -1;
   
-  // Separate pixel collections for cleaner animation
-  int plusNetPixels[kCurrentSenseMaxPathLength] = {0};
-  int plusNetLength = 0;
+//   // Separate pixel collections for cleaner animation
+//   int plusNetPixels[kCurrentSenseMaxPathLength] = {0};
+//   int plusNetLength = 0;
   
-  int virtualWirePixels[kCurrentSenseMaxPathLength] = {0};
-  int virtualWireLength = 0;
+//   int virtualWirePixels[kCurrentSenseMaxPathLength] = {0};
+//   int virtualWireLength = 0;
   
-  int minusNetPixels[kCurrentSenseMaxPathLength] = {0};
-  int minusNetLength = 0;
+//   int minusNetPixels[kCurrentSenseMaxPathLength] = {0};
+//   int minusNetLength = 0;
   
-  float accumulator = 0.0f;
-  int patternOffset = 0;
-  unsigned long lastUpdateMs = 0;
-  int virtualWireNode1 = -1;  // Track virtual wire endpoints
-  int virtualWireNode2 = -1;
-};
+//   float accumulator = 0.0f;
+//   int patternOffset = 0;
+//   unsigned long lastUpdateMs = 0;
+//   int virtualWireNode1 = -1;  // Track virtual wire endpoints
+//   int virtualWireNode2 = -1;
+// };
 
-static CurrentSenseOverlayState currentSenseOverlayState;
+// static CurrentSenseOverlayState currentSenseOverlayState;
 static void renderCurrentSenseOverlay();
 
 int colorCycle = 0;
@@ -690,6 +690,7 @@ static void addVirtualCurrentSensePath() {
   else if (plusBottomCount > 0 && minusTopCount > 0) {
     plusNode = plusNodesBottom[0];
     minusNode = minusNodesTop[0];
+    
   }
   
   if (plusNode <= 0 || minusNode <= 0) {
@@ -711,6 +712,7 @@ static void addVirtualCurrentSensePath() {
   globalState.connections.paths[pathIndex].net = plusNet; // Use plusNet for the virtual wire
   globalState.connections.paths[pathIndex].duplicate = 0;
   globalState.connections.paths[pathIndex].skip = false;
+  globalState.connections.paths[pathIndex].pathType = VIRTUAL;
   
   virtualCurrentSensePathIndex = pathIndex;
   numberOfPaths = pathIndex + 1; // Temporarily increment

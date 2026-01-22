@@ -4287,19 +4287,26 @@ float Probing::checkProbeCurrent( void ) {
 float Probing::checkProbeCurrentZero( void ) {
     // return 0.0f;
 
-    // Serial.println("\n\n\n\\n\n\nn\nn\n\n checkingProbeCurrentZero \n\n\n\n\n\n");
+    // Serial.println("\n\n\n\\n\n\n\n\n\n\n\n checkingProbeCurrentZero \n\n\n\n\n\n");
+    // Serial.flush();
+//delay(2000);
+
+    showProbeLEDs = 10;
+    // probeLEDs.setPixelColor( 0, 0x000000 );
+    // probeLEDs.show( );
+    // Serial.println("setting probeLEDs to 10");
     // Serial.flush();
 
-    //showProbeLEDs = 10;
-    probeLEDs.setPixelColor( 0, 0x000000 );
-    probeLEDs.show( );
-    delayMicroseconds( 100 );
+    //delay(2000);
+    delayMicroseconds( 10000 );
     bool bridgeExists = checkIfBridgeExistsLocal( DAC0, -1 );
     if ( bridgeExists == true ) {
         removeBridgeFromState( DAC0, -1, true );
     }
     int div = 8;
-
+    // Serial.println("bridgeExists = true");
+    // Serial.flush();
+    // delay(2000);
     float current = 0.0;
     float currentSum = 0.0;
 

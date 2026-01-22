@@ -1,3 +1,4 @@
+#if !defined(INCLUDE_TUI_STUFF)
 #pragma once
 #include <Arduino.h>
 
@@ -33,3 +34,4 @@ private:
   static bool isNoiseByte(int ch);
   static void drainHost(Stream* s, uint32_t forMs = 0);
 };
+#endif // INCLUDE_TUI_STUFF

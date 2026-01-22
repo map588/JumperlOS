@@ -5,7 +5,7 @@
   - Most of this lives inside namespace TUI and is driven by TuiGlue
   - You can check isActive() via TuiGlue; this header provides the TUI core
 */
-
+#if !defined(INCLUDE_TUI_STUFF)
 #pragma once
 #include <Arduino.h>
 #include "ArduinoStuff.h"
@@ -857,3 +857,4 @@ inline bool handleInput() {
 }
 
 } // namespace TUI
+#endif // INCLUDE_TUI_STUFF

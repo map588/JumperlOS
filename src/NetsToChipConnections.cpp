@@ -1096,6 +1096,8 @@ void clearAllNTCC(void) {
   // Use actual bridge count instead of stale numberOfPaths
   int estimatedPaths = globalState.connections.numBridges * 2 + 12;  // 2x bridges + safety margin
   int pathsToClear = (estimatedPaths < MAX_BRIDGES) ? estimatedPaths : MAX_BRIDGES;
+
+  pathsToClear = MAX_BRIDGES; // yeah fuck that
   
   // Fast bulk clear with memset
   memset(pathsWithCandidates, 0, pathsToClear * sizeof(int));
@@ -4296,7 +4298,31 @@ void couldntFindPath(int forcePrint) {
 
     if (foundNegative == 1 && globalState.connections.paths[i].duplicate == 0) {
 
-      if (debugNTCC2 == true || forcePrint == 1) {
+      if (debugNTCC2 == true || forcePrint == 1 ) {
+        if (globalState.connections.paths[i].node1 == -1 || globalState.connections.paths[i].node2 == -1) {
+          continue;
+        }
+        if (globalState.connections.paths[i].pathType == VIRTUAL) {
+          continue;
+        }
+        // Serial.print("currentSenseOverlayState.virtualWireNode1 = ");
+        // Serial.println(currentSenseOverlayState.virtualWireNode1);
+        // Serial.print("currentSenseOverlayState.virtualWireNode2 = ");
+        // Serial.println(currentSenseOverlayState.virtualWireNode2);
+        // Serial.print("globalState.connections.paths[i].node1 = ");
+        // Serial.println(globalState.connections.paths[i].node1);
+        // Serial.print("globalState.connections.paths[i].node2 = ");
+        // Serial.println(globalState.connections.paths[i].node2);
+
+        if (  currentSenseOverlayState.virtualWireNode1 == globalState.connections.paths[i].node1 && 
+              currentSenseOverlayState.virtualWireNode2 == globalState.connections.paths[i].node2) {
+          continue;
+        }
+        if (  currentSenseOverlayState.virtualWireNode1 == globalState.connections.paths[i].node2 && 
+              currentSenseOverlayState.virtualWireNode2 == globalState.connections.paths[i].node1) {
+          continue;
+        }
+
         Serial.print("\n\rCouldn't find a path for ");
         printNodeOrName(globalState.connections.paths[i].node1);
         Serial.print(" to ");

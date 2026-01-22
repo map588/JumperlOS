@@ -11,7 +11,7 @@ KevinC@ppucc.io
 */
 
 #include "Jerial.h"
-#include "hardware/pio.h"
+
 #include "pico.h"
 #define PICO_RP2350A 0
 // #include <pico/stdlib.h>
@@ -117,7 +117,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.2.9"; //! remember to update this
+const char firmwareVersion[] = "5.6.2.10"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -141,6 +141,7 @@ void setup( ) {
     // This provides proper mutex-based protection for shared resources
     core_sync_init( );
     Serial.begin( 115200 );
+    
 
     // Configure Jerial for both input and output
     // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
@@ -240,6 +241,13 @@ void setup( ) {
     // Serial.println("Startup animation finished");
     // Serial.flush();
     clearAllNTCC( );
+    initINA219( );
+
+    // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
+    // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
+    // Serial.flush();
+delay(50);
+    checkProbeCurrentZero( );
 
     startupTimers[ 5 ] = millis( );
     // Serial.println("NTCC initialized");
@@ -258,13 +266,7 @@ void setup( ) {
 
     getNothingTouched( );
 
-    initINA219( );
 
-    // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
-    // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
-    // Serial.flush();
-delay(10);
-    checkProbeCurrentZero( );
     startupTimers[ 8 ] = millis( );
     // createSlots( -1, 0 );
     //  Serial.println("Slots created");
@@ -996,7 +998,7 @@ int swirlCount = 42;
 int spread = 13;
 
 unsigned long schedulerTimer = 0;
-unsigned long schedulerUpdateTime = 400;
+unsigned long schedulerUpdateTime = 8000;
 
 int swirled = 0;
 int countsss = 0;

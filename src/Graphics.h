@@ -93,6 +93,37 @@ struct specialRowAnimation {
   int type;
 };
 
+
+static constexpr int kCurrentSenseMaxPathLength = 320; // Allow full breadboard coverage (60 rows × 5 columns + margin)
+static constexpr int kCurrentSensePatternLength = 5;
+static constexpr float kCurrentSenseMinMotionCurrent_mA = 0.05f;
+static constexpr uint8_t kCurrentSenseRowTintAlpha = 50;
+static constexpr uint8_t kCurrentSensePathTintAlpha = 50;
+
+struct CurrentSenseOverlayState {
+  bool pathValid = false;
+  int plusRow = -1;
+  int minusRow = -1;
+  
+  // Separate pixel collections for cleaner animation
+  int plusNetPixels[kCurrentSenseMaxPathLength] = {0};
+  int plusNetLength = 0;
+  
+  int virtualWirePixels[kCurrentSenseMaxPathLength] = {0};
+  int virtualWireLength = 0;
+  
+  int minusNetPixels[kCurrentSenseMaxPathLength] = {0};
+  int minusNetLength = 0;
+  
+  float accumulator = 0.0f;
+  int patternOffset = 0;
+  unsigned long lastUpdateMs = 0;
+  int virtualWireNode1 = -1;  // Track virtual wire endpoints
+  int virtualWireNode2 = -1;
+};
+
+static CurrentSenseOverlayState currentSenseOverlayState;
+
 extern int defNudge;
 
 extern specialRowAnimation rowAnimations[50];
