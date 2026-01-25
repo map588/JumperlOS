@@ -8,6 +8,21 @@ extern volatile bool core1busy;
 extern volatile bool core2busy;
 
 extern volatile bool pauseCore2;
+
+// Filesystem activity indicator - set during flash/filesystem operations
+// Used by LEDs.cpp to show colored logo during saves
+extern volatile bool filesystemActive;
+extern volatile unsigned long filesystemActiveUntil;  // Minimum display time tracking
+extern const unsigned long FILESYSTEM_INDICATOR_MIN_MS;  // 1/4 second minimum display
+
+// Configurable palette for filesystem indicator (use LogoPalette enum values from LEDs.h)
+// Default: PALETTE_YELLOW (4). Set to any LogoPalette value to change the indicator color.
+extern int filesystemIndicatorPalette;
+
+// Measure mode indicator - set by MeasureMode service when actively measuring
+// Used by LEDs.cpp to show pink logo during voltage measurement
+extern volatile bool measureModeActive;
+extern int measureModeIndicatorPalette;
 extern TuiGlue tuiGlue;
 
 // =============================================================================

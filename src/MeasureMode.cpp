@@ -1,0 +1,571 @@
+// SPDX-License-Identifier: MIT
+/**
+ * @file MeasureMode.cpp
+ * @brief MeasureMode service implementation - voltage measurement with optional oscilloscope
+ * 
+ * This service handles continuous voltage measurement when the probe switch is in
+ * measure mode. It creates ephemeral (temporary) ADC connections that are never
+ * saved to the slot file.
+ */
+
+#include "MeasureMode.h"
+#include "States.h"
+#include "Probing.h"
+#include "Peripherals.h"
+#include "NetManager.h"
+#include "Commands.h"
+#include "LEDs.h"
+#include "oled.h"
+#include "Highlighting.h"
+#include "externVars.h"  // For measureModeActive indicator
+
+// External references
+extern JumperlessState globalState;
+extern class oled oled;
+extern volatile unsigned long lastProbeCurrentCheckTime;
+extern volatile int showLEDsCore2;
+
+// ============================================================================
+// Singleton Implementation
+// ============================================================================
+
+MeasureMode* MeasureMode::instance = nullptr;
+
+MeasureMode& MeasureMode::getInstance() {
+    if (instance == nullptr) {
+        instance = new MeasureMode();
+    }
+    return *instance;
+}
+
+// Global reference for convenience
+// NOTE: Named measureModeService to avoid conflict with Probing::measureMode() function
+MeasureMode& measureModeService = MeasureMode::getInstance();
+
+MeasureMode::MeasureMode() {
+    // Initialize oscilloscope sample buffer
+    for (int i = 0; i < OSCOPE_SAMPLES; i++) {
+        oscopeSamples[i] = 0.0f;
+    }
+}
+
+// ============================================================================
+// Service Implementation
+// ============================================================================
+
+ServiceStatus MeasureMode::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Track switch position changes with debounce
+    if (switchPosition != lastSwitchPosition) {
+        lastSwitchPosition = switchPosition;
+        switchStableTime = millis();
+    }
+    
+    // Only act on switch position after it's been stable for debounce period
+    bool switchStable = (millis() - switchStableTime) >= SWITCH_DEBOUNCE_MS;
+    
+    // CRITICAL: Check if we're too close to an INA219 read - if so, skip probe reading this cycle
+    unsigned long timeSinceProbeCurrentCheck = millis() - lastProbeCurrentCheckTime;
+    bool safeToReadProbe = (timeSinceProbeCurrentCheck >= PROBE_GUARD_MS);
+    
+    if (switchPosition == 0 && switchStable) {
+        // Switch is stably in measure mode - show indicator immediately
+        if (!measureModeActive) {
+            measureModeActive = true;  // Turn logo purple right away
+        }
+        
+        // Get probe reading - but only if safe to read (not too close to INA219 check)
+        int currentProbeReading = -1;
+        if (safeToReadProbe) {
+            currentProbeReading = probing.getLastProbeReading();
+            
+            // Track consecutive stable readings
+            if (currentProbeReading > 0) {
+                if (currentProbeReading == lastProbeReading) {
+                    stableReadingCount++;
+                } else {
+                    // Different reading - reset counter
+                    lastProbeReading = currentProbeReading;
+                    stableReadingCount = 1;
+                }
+            } else {
+                // No reading - don't reset immediately, might just be a gap
+                if (stableReadingCount > 0) {
+                    stableReadingCount--;
+                }
+                if (stableReadingCount == 0) {
+                    lastProbeReading = -1;
+                }
+            }
+        }
+        
+        // Only consider probe reading "stable" if we've seen the same value multiple times
+        bool probeReadingStable = (stableReadingCount >= STABLE_READINGS_REQUIRED);
+        int stableProbeReading = probeReadingStable ? lastProbeReading : -1;
+        
+        // Validate that the reading is a measurable node (not special function pad)
+        if (stableProbeReading > 0 && !isValidMeasurableNode(stableProbeReading)) {
+            stableProbeReading = -1;  // Ignore special function pads
+        }
+        
+        // If measure mode is active, update the display
+        if (measurementActive) {
+            if (oscopeEnabled) {
+                updateOscopeDisplay();
+            } else {
+                updateVoltageDisplay();
+            }
+            
+            // Check if user tapped a different node (via probe) - only if stable
+            if (stableProbeReading > 0 && stableProbeReading != measuredNode) {
+                // User tapped a different node with stable reading - switch to measuring that one
+                startMeasurement(stableProbeReading);
+                stableReadingCount = 0;  // Reset for next detection
+            }
+            
+            lastStatus = ServiceStatus::BUSY;
+            return lastStatus;  // Don't process other services while in measure mode
+        }
+        
+        // Not in measure mode yet - check if user tapped a node (only if stable)
+        if (stableProbeReading > 0) {
+            // User tapped a valid node with stable reading - start measuring
+            startMeasurement(stableProbeReading);
+            stableReadingCount = 0;  // Reset for next detection
+            lastStatus = ServiceStatus::BUSY;
+            return lastStatus;
+        }
+        
+    } else if (switchPosition == 1) {
+        // Switch is in select mode - stop measure mode if active
+        if (measurementActive) {
+            stopMeasurement();
+        }
+        // Turn off indicator when leaving measure mode
+        if (measureModeActive) {
+            measureModeActive = false;
+        }
+        // Reset measure mode stability tracking when leaving measure mode
+        stableReadingCount = 0;
+        lastProbeReading = -1;
+    }
+    
+    return lastStatus;
+}
+
+// ============================================================================
+// Node Validation
+// ============================================================================
+
+bool MeasureMode::isValidMeasurableNode(int node) {
+    // Breadboard rows (1-60) - the most common case
+    if (node >= 1 && node <= 60) return true;
+    
+    // Nano header pins (70-93, excluding special pins like RESET, AREF)
+    if (node >= NANO_D0 && node <= NANO_A7) return true;
+    
+    // Rails are measurable
+    if (node == TOP_RAIL || node == BOTTOM_RAIL) return true;
+    
+    // DACs are measurable (useful for checking DAC output)
+    if (node == DAC0 || node == DAC1) return true;
+    
+    // Supply pins are measurable
+    if (node == SUPPLY_3V3 || node == SUPPLY_5V) return true;
+    
+    // GND is technically measurable (should read ~0V)
+    if (node == GND) return true;
+    
+    // Special function pads - NOT measurable (ignore silently)
+    // LOGO_PAD_TOP (142), GPIO_PAD (144), ADC_PAD (146), etc.
+    // These pads control special functions and shouldn't be measured
+    return false;
+}
+
+// ============================================================================
+// Measurement Control
+// ============================================================================
+
+void MeasureMode::startMeasurement(int node) {
+    // Don't start if already measuring this node
+    if (measurementActive && measuredNode == node) {
+        return;
+    }
+    
+    // Stop any existing measurement first
+    if (measurementActive) {
+        stopMeasurement();
+    }
+    
+    // Connect ADC to the node
+    if (!connectADCToNode(node)) {
+        return;  // Failed to connect - error already reported
+    }
+    
+    measuredNode = node;
+    measurementActive = true;
+    // Note: measureModeActive is controlled by switch position in service(), not here
+    lastUpdateTime = 0;  // Force immediate first update
+    firstReading = true;  // Reset smoothing
+    
+    // Reset oscilloscope state
+    oscopeSampleIndex = 0;
+    for (int i = 0; i < OSCOPE_SAMPLES; i++) {
+        oscopeSamples[i] = 0.0f;
+    }
+    
+    // Highlight the node being measured (minimal LED change)
+    brightenNet(node);
+}
+
+void MeasureMode::stopMeasurement() {
+    if (!measurementActive) {
+        return;
+    }
+    
+    // Disconnect ADC
+    disconnectADC();
+    
+    measurementActive = false;
+    // Note: measureModeActive is controlled by switch position in service(), not here
+    measuredNode = -1;
+    adcChannel = -1;
+    adcDefine = -1;
+    firstReading = true;
+    
+    // Clear highlighting state
+    Highlighting& hl = Highlighting::getInstance();
+    hl.brightenedNode = -1;
+    hl.brightenedNet = -1;
+    hl.brightenedRail = -1;
+    hl.highlightedNet = -1;
+    hl.clearHighlighting();
+    
+    // Force LED update with clear
+    showLEDsCore2 = -1;  // Negative triggers clearBeforeSend for full refresh
+}
+
+// ============================================================================
+// ADC Connection Management
+// ============================================================================
+
+int MeasureMode::findUnusedADC() {
+    // ADC defines: ADC0=110, ADC1=111, ADC2=112, ADC3=113, ADC4=114
+    // ADC7=115 is reserved for probe
+    const int adcDefines[] = { ADC0, ADC1, ADC2, ADC3, ADC4 };
+    
+    for (int i = 0; i < 5; i++) {
+        bool inUse = false;
+        
+        // Check if this ADC is connected to anything in bridges
+        for (int b = 0; b < globalState.connections.numBridges; b++) {
+            if (globalState.connections.bridges[b][0] == adcDefines[i] ||
+                globalState.connections.bridges[b][1] == adcDefines[i]) {
+                inUse = true;
+                break;
+            }
+        }
+        
+        if (!inUse) {
+            return i;  // Return channel number 0-4
+        }
+    }
+    
+    return -1;  // All ADCs in use
+}
+
+bool MeasureMode::connectADCToNode(int node) {
+    // Find an unused ADC
+    int channel = findUnusedADC();
+    if (channel == -1) {
+        // No ADC available - show error briefly
+        Serial.print("\r                                        \r");
+        Serial.print("No ADC available");
+        oled.clearPrintShow("No ADC\navailable", 2, true, true, true);
+        return false;
+    }
+    
+    // Convert channel number to ADC define
+    const int adcDefines[] = { ADC0, ADC1, ADC2, ADC3, ADC4 };
+    adcChannel = channel;
+    adcDefine = adcDefines[channel];
+    
+    // Connect ADC to the node using EPHEMERAL connection
+    // This bypasses markDirty() and will never be saved to the slot file
+    // Pass applyRouting=true to immediately route and send to hardware
+    // Use ledShowOption=0 to minimize visual disruption during measurement
+    String errorMsg;
+    if (!globalState.addEphemeralConnection(node, adcDefine, errorMsg, 
+                                            true,   // applyRouting - immediately apply to hardware
+                                            0)) {   // ledShowOption - no LED update during measurement
+        Serial.print("\r                                        \r");
+        Serial.print("Connection failed: ");
+        Serial.println(errorMsg);
+        adcChannel = -1;
+        adcDefine = -1;
+        return false;
+    }
+    
+    return true;
+}
+
+void MeasureMode::disconnectADC() {
+    if (measuredNode != -1 && adcDefine != -1) {
+        // Remove the ephemeral ADC connection
+        // Pass applyRouting=true to immediately update hardware
+        String errorMsg;
+        globalState.removeEphemeralConnection(measuredNode, adcDefine, errorMsg,
+                                              true,   // applyRouting - immediately apply to hardware
+                                              -1);    // ledShowOption - restore normal LED display
+    }
+}
+
+// ============================================================================
+// Voltage Display (Simple Mode)
+// ============================================================================
+
+float lastVoltage = 0.0f;
+int lastMeasuredNode = -1;
+void MeasureMode::updateVoltageDisplay() {
+    if (!measurementActive || adcChannel < 0) {
+        return;
+    }
+    
+    unsigned long now = millis();
+    if (now - lastUpdateTime < UPDATE_INTERVAL_MS) {
+        return;  // Rate limit updates
+    }
+    lastUpdateTime = now;
+    
+    // CRITICAL: Don't read ADC too close to an INA219 probe current check
+    if ((now - lastProbeCurrentCheckTime) < 10) {
+        return;  // Skip this update cycle - too close to INA219 read
+    }
+    
+    // Read voltage from the ADC (more samples for stability)
+    float rawVoltage = readAdcVoltage(adcChannel, 16);
+    
+    // Apply exponential moving average for smoothing
+    if (firstReading) {
+        smoothedVoltage = rawVoltage;
+        firstReading = false;
+    } else {
+        smoothedVoltage = (SMOOTHING_FACTOR * rawVoltage) + ((1.0f - SMOOTHING_FACTOR) * smoothedVoltage);
+    }
+    
+    // Fix -0.00 display issue
+    if (smoothedVoltage == -0.00f) {
+        smoothedVoltage = 0.00f;
+    }
+     if (fabs(smoothedVoltage - lastVoltage) > 0.01 || measuredNode != lastMeasuredNode ) {  
+        lastMeasuredNode = measuredNode;
+    // Format voltage and node info for OLED
+    char oledString[30];
+    sprintf(oledString, "%s\n  % .2f V", definesToChar(measuredNode, 0), smoothedVoltage);
+    
+    // Update OLED display
+    oled.clearPrintShow(oledString, 2, true, true, true);
+    
+    // Update serial output (clear line first)
+    
+    Serial.print("                                        \r");
+    Serial.print(smoothedVoltage, 2);
+    Serial.print(" V  row ");
+        Serial.print(definesToChar(measuredNode, 0));
+        lastVoltage = smoothedVoltage;
+    }
+}
+
+// ============================================================================
+// Oscilloscope Mode
+// ============================================================================
+
+void MeasureMode::enableOscilloscope(bool enable) {
+    oscopeEnabled = enable;
+    if (enable) {
+        // Reset oscilloscope state
+        oscopeSampleIndex = 0;
+        for (int i = 0; i < OSCOPE_SAMPLES; i++) {
+            oscopeSamples[i] = smoothedVoltage;  // Initialize to current voltage
+        }
+        oscopeMin = 0.0f;
+        oscopeMax = 3.3f;
+    }
+}
+
+void MeasureMode::setOscopeTimebase(int timebaseMs) {
+    oscopeTimebaseMs = constrain(timebaseMs, 1, 1000);
+}
+
+void MeasureMode::sampleForOscope() {
+    // Sample at rate determined by timebase
+    unsigned long sampleInterval = (oscopeTimebaseMs * 1000UL) / OSCOPE_SAMPLES;  // microseconds
+    unsigned long now = micros();
+    
+    if (now - lastOscopeSampleTime >= sampleInterval) {
+        lastOscopeSampleTime = now;
+        
+        // Take sample with fewer averages for speed
+        oscopeSamples[oscopeSampleIndex] = readAdcVoltage(adcChannel, 4);
+        oscopeSampleIndex = (oscopeSampleIndex + 1) % OSCOPE_SAMPLES;
+    }
+}
+
+void MeasureMode::autoRangeOscope() {
+    // Find min/max in sample buffer
+    float min = 3.3f, max = 0.0f;
+    for (int i = 0; i < OSCOPE_SAMPLES; i++) {
+        if (oscopeSamples[i] < min) min = oscopeSamples[i];
+        if (oscopeSamples[i] > max) max = oscopeSamples[i];
+    }
+    
+    // Add 10% margin
+    float range = max - min;
+    oscopeMin = min - range * 0.1f;
+    oscopeMax = max + range * 0.1f;
+    
+    // Ensure minimum range to avoid division by zero
+    if (oscopeMax - oscopeMin < 0.1f) {
+        float center = (max + min) / 2.0f;
+        oscopeMin = center - 0.05f;
+        oscopeMax = center + 0.05f;
+    }
+    
+    // Clamp to valid voltage range
+    if (oscopeMin < 0.0f) oscopeMin = 0.0f;
+    if (oscopeMax > 3.3f) oscopeMax = 3.3f;
+}
+
+float MeasureMode::voltageToPixelY(float voltage) {
+    // OLED is 64 pixels tall, plot area is 56 pixels (leaving 8 for status bar)
+    constexpr int PLOT_HEIGHT = 56;
+    
+    // Clamp voltage to range
+    if (voltage < oscopeMin) voltage = oscopeMin;
+    if (voltage > oscopeMax) voltage = oscopeMax;
+    
+    // Map voltage to pixel (inverted - 0V at bottom, 3.3V at top)
+    float normalized = (voltage - oscopeMin) / (oscopeMax - oscopeMin);
+    return PLOT_HEIGHT - 1 - (normalized * (PLOT_HEIGHT - 1));
+}
+
+void MeasureMode::drawOscopeGrid() {
+    // Draw dotted grid lines
+    // OLED is 128x64, plot area is 128x56
+    
+    // Vertical divisions (every 16 pixels = 8 divisions)
+    for (int x = 0; x < 128; x += 16) {
+        for (int y = 0; y < 56; y += 4) {
+            oled.setPixel(x, y, 1);
+        }
+    }
+    
+    // Horizontal divisions (center line and quarters)
+    int centerY = 28;
+    int quarterY = 14;
+    int threeQuarterY = 42;
+    
+    for (int x = 0; x < 128; x += 4) {
+        oled.setPixel(x, centerY, 1);
+        oled.setPixel(x, quarterY, 1);
+        oled.setPixel(x, threeQuarterY, 1);
+    }
+}
+
+void MeasureMode::drawOscopeWaveform() {
+    // Draw waveform as connected line segments
+    for (int x = 0; x < 127; x++) {
+        int idx1 = (oscopeSampleIndex + x) % OSCOPE_SAMPLES;
+        int idx2 = (oscopeSampleIndex + x + 1) % OSCOPE_SAMPLES;
+        
+        int y1 = (int)voltageToPixelY(oscopeSamples[idx1]);
+        int y2 = (int)voltageToPixelY(oscopeSamples[idx2]);
+        
+        // Clamp to plot area
+        y1 = constrain(y1, 0, 55);
+        y2 = constrain(y2, 0, 55);
+        
+        // Draw line segment (vertical line if points differ significantly)
+        if (y1 == y2) {
+            oled.setPixel(x, y1, 1);
+        } else {
+            // Draw vertical line between points
+            int yMin = min(y1, y2);
+            int yMax = max(y1, y2);
+            for (int y = yMin; y <= yMax; y++) {
+                oled.setPixel(x, y, 1);
+            }
+        }
+    }
+}
+
+void MeasureMode::drawOscopeStatusBar() {
+    // Status bar at bottom (y=56 to y=63)
+    // Draw separator line
+    for (int x = 0; x < 128; x++) {
+        oled.setPixel(x, 56, 1);
+    }
+    
+    // Format status text
+    char status[32];
+    sprintf(status, "%.2fV @%d %dms", smoothedVoltage, measuredNode, oscopeTimebaseMs);
+    
+    // Draw status text using OLED's small font
+    oled.setCursor(0, 63);
+    oled.setTextSize(1);
+    oled.print(status);
+}
+
+void MeasureMode::updateOscopeDisplay() {
+    if (!measurementActive || adcChannel < 0) {
+        return;
+    }
+    
+    // Sample for oscilloscope (rate determined by timebase)
+    sampleForOscope();
+    
+    // Also update smoothed voltage for status bar
+    float rawVoltage = readAdcVoltage(adcChannel, 8);
+    if (firstReading) {
+        smoothedVoltage = rawVoltage;
+        firstReading = false;
+    } else {
+        smoothedVoltage = (SMOOTHING_FACTOR * rawVoltage) + ((1.0f - SMOOTHING_FACTOR) * smoothedVoltage);
+    }
+    
+    // Rate limit display updates
+    unsigned long now = millis();
+    if (now - lastUpdateTime < OSCOPE_UPDATE_INTERVAL_MS) {
+        return;
+    }
+    lastUpdateTime = now;
+    
+    // Auto-range based on captured data
+    autoRangeOscope();
+    
+    // Clear and redraw display
+    oled.clearFramebuffer();
+    
+    // Draw in order: grid, waveform, status bar
+    drawOscopeGrid();
+    drawOscopeWaveform();
+    drawOscopeStatusBar();
+    
+    // Send to display
+    oled.flushFramebuffer();
+}
+
+// ============================================================================
+// Measurement Type (for future expansion)
+// ============================================================================
+
+void MeasureMode::setMeasurementType(MeasurementType type) {
+    if (type != currentType) {
+        // Stop current measurement when changing type
+        if (measurementActive) {
+            stopMeasurement();
+        }
+        currentType = type;
+    }
+}

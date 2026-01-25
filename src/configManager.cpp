@@ -436,6 +436,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     float saved_probe_switch_threshold = jumperlessConfig.calibration.probe_switch_threshold;
     float saved_measure_mode_output_voltage = jumperlessConfig.calibration.measure_mode_output_voltage;
     float saved_probe_current_zero = jumperlessConfig.calibration.probe_current_zero;
+    int saved_minimum_probe_reading = jumperlessConfig.calibration.minimum_probe_reading;
     // Serial.print("saved_probe_min = ");
     // Serial.println(saved_probe_min);
     // Serial.print("saved_probe_max = ");
@@ -488,6 +489,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     jumperlessConfig.calibration.probe_switch_threshold = saved_probe_switch_threshold;
     jumperlessConfig.calibration.measure_mode_output_voltage = saved_measure_mode_output_voltage;
     jumperlessConfig.calibration.probe_current_zero = saved_probe_current_zero;
+    jumperlessConfig.calibration.minimum_probe_reading = saved_minimum_probe_reading;
     } 
 
     // NOTE: Don't call saveConfig() here - callers are responsible for saving
@@ -647,6 +649,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "probe_switch_threshold") == 0) jumperlessConfig.calibration.probe_switch_threshold = parseFloat(value);
             else if (strcmp(key, "measure_mode_output_voltage") == 0) jumperlessConfig.calibration.measure_mode_output_voltage = parseFloat(value);
             else if (strcmp(key, "probe_current_zero") == 0) jumperlessConfig.calibration.probe_current_zero = parseFloat(value);
+            else if (strcmp(key, "minimum_probe_reading") == 0) jumperlessConfig.calibration.minimum_probe_reading = parseInt(value);
         } else if (strcmp(section, "logo_pads") == 0) {
             if (strcmp(key, "top_guy") == 0) jumperlessConfig.logo_pads.top_guy = parseArbitraryFunction(value);
             else if (strcmp(key, "bottom_guy") == 0) jumperlessConfig.logo_pads.bottom_guy = parseArbitraryFunction(value);
@@ -788,7 +791,8 @@ void updateConfigFromFile(const char* filename) {
                 jumperlessConfig.calibration.adc_7_spread != savedConfig.calibration.adc_7_spread ||
                 jumperlessConfig.calibration.probe_switch_threshold != savedConfig.calibration.probe_switch_threshold ||
                 jumperlessConfig.calibration.measure_mode_output_voltage != savedConfig.calibration.measure_mode_output_voltage ||
-                jumperlessConfig.calibration.probe_current_zero != savedConfig.calibration.probe_current_zero) {
+                jumperlessConfig.calibration.probe_current_zero != savedConfig.calibration.probe_current_zero ||
+                jumperlessConfig.calibration.minimum_probe_reading != savedConfig.calibration.minimum_probe_reading) {
                 hasNewCalibrationOptions = true;
             }
             
@@ -992,6 +996,7 @@ void saveConfigToFile(const char* filename) {
     file.print("probe_switch_threshold = "); file.print(jumperlessConfig.calibration.probe_switch_threshold); file.println(";");
     file.print("measure_mode_output_voltage = "); file.print(jumperlessConfig.calibration.measure_mode_output_voltage); file.println(";");
     file.print("probe_current_zero = "); file.print(jumperlessConfig.calibration.probe_current_zero); file.println(";");
+    file.print("minimum_probe_reading = "); file.print(jumperlessConfig.calibration.minimum_probe_reading); file.println(";");
     file.println();
 
     // Write logo pad settings section
@@ -1146,6 +1151,7 @@ bool configHasChanges() {
     if (jumperlessConfig.calibration.probe_switch_threshold != lastSavedConfig.calibration.probe_switch_threshold) return true;
     if (jumperlessConfig.calibration.measure_mode_output_voltage != lastSavedConfig.calibration.measure_mode_output_voltage) return true;
     if (jumperlessConfig.calibration.probe_current_zero != lastSavedConfig.calibration.probe_current_zero) return true;
+    if (jumperlessConfig.calibration.minimum_probe_reading != lastSavedConfig.calibration.minimum_probe_reading) return true;
     
     // Logo pads section
     if (jumperlessConfig.logo_pads.top_guy != lastSavedConfig.logo_pads.top_guy) return true;
@@ -1622,6 +1628,9 @@ void saveConfigIncremental(const char* filename) {
                     updated = true;
                 } else if (strcmp(key, "probe_current_zero") == 0) {
                     snprintf(newLine, sizeof(newLine), "probe_current_zero = %.2f;", jumperlessConfig.calibration.probe_current_zero);
+                    updated = true;
+                } else if (strcmp(key, "minimum_probe_reading") == 0) {
+                    snprintf(newLine, sizeof(newLine), "minimum_probe_reading = %d;", jumperlessConfig.calibration.minimum_probe_reading);
                     updated = true;
                 }
             }
@@ -2382,6 +2391,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("measure_mode_output_voltage = "); Serial.print(jumperlessConfig.calibration.measure_mode_output_voltage); Serial.println(";");
         if (pasteable == true) Serial.print("`[calibration] ");
         Serial.print("probe_current_zero = "); Serial.print(jumperlessConfig.calibration.probe_current_zero); Serial.println(";");
+        if (pasteable == true) Serial.print("`[calibration] ");
+        Serial.print("minimum_probe_reading = "); Serial.print(jumperlessConfig.calibration.minimum_probe_reading); Serial.println(";");
     }
     cycleTerminalColor();
     // Print logo pad settings section
@@ -3323,6 +3334,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "probe_switch_threshold_low") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.calibration.probe_switch_threshold_low);
         else if (strcmp(key, "probe_switch_threshold") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.calibration.probe_switch_threshold);
         else if (strcmp(key, "probe_current_zero") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.calibration.probe_current_zero);
+        else if (strcmp(key, "minimum_probe_reading") == 0) sprintf(oldValue, "%d", jumperlessConfig.calibration.minimum_probe_reading);
         }
     else if (strcmp(section, "logo_pads") == 0) {
         if (strcmp(key, "top_guy") == 0) sprintf(oldValue, "%d", jumperlessConfig.logo_pads.top_guy);
@@ -3448,6 +3460,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "probe_switch_threshold_low") == 0) jumperlessConfig.calibration.probe_switch_threshold_low = parseFloat(value);
         else if (strcmp(key, "probe_switch_threshold") == 0) jumperlessConfig.calibration.probe_switch_threshold = parseFloat(value);
         else if (strcmp(key, "probe_current_zero") == 0) jumperlessConfig.calibration.probe_current_zero = parseFloat(value);
+        else if (strcmp(key, "minimum_probe_reading") == 0) jumperlessConfig.calibration.minimum_probe_reading = parseInt(value);
         }
     else if (strcmp(section, "logo_pads") == 0) {
         if (strcmp(key, "top_guy") == 0) jumperlessConfig.logo_pads.top_guy = parseArbitraryFunction(value);

@@ -78,6 +78,26 @@ enum SourceOfTruth {
 };
 
 /**
+ * @brief Ephemeral connection tracking
+ * 
+ * Ephemeral connections are temporary connections that:
+ * - Are added to the bridges array for routing
+ * - Are NEVER saved to YAML files  
+ * - Do NOT trigger markDirty() (won't cause slot to save)
+ * - Are tracked separately for cleanup
+ * 
+ * Use cases: Measure mode ADC connections, temporary probe connections
+ */
+struct EphemeralConnection {
+    int node1;
+    int node2;
+    int bridgeIndex;  // Index in bridges array, -1 if not yet added
+    
+    EphemeralConnection() : node1(-1), node2(-1), bridgeIndex(-1) {}
+    EphemeralConnection(int n1, int n2, int idx = -1) : node1(n1), node2(n2), bridgeIndex(idx) {}
+};
+
+/**
  * @brief Stores the connection topology: bridges, nets, and routing paths
  * This is the core of what makes a "slot" unique
  * 
@@ -249,6 +269,23 @@ public:
     bool setConnectionDuplicates(int node1, int node2, int duplicates, String& errorMsg);
     void clearAllConnections();
     
+    // Ephemeral connection management (temporary connections that are NEVER saved)
+    // Use for measure mode, temporary probing, etc.
+    // Parameters:
+    //   node1, node2: The nodes to connect
+    //   errorMsg: Output error message on failure
+    //   applyRouting: If true, immediately route and send to hardware (calls refreshLocalConnections)
+    //   ledShowOption: LED display option (0=none, 1=show, -1=default). Only used if applyRouting=true
+    //   color: Optional bridge color (0xFFFFFFFF = use default). Useful for visual feedback during measurements
+    bool addEphemeralConnection(int node1, int node2, String& errorMsg, 
+                                bool applyRouting = false, int ledShowOption = 0, 
+                                uint32_t color = 0xFFFFFFFF);
+    bool removeEphemeralConnection(int node1, int node2, String& errorMsg,
+                                   bool applyRouting = false, int ledShowOption = -1);
+    void clearAllEphemeralConnections(bool applyRouting = false, int ledShowOption = -1);
+    bool isEphemeralConnection(int node1, int node2) const;
+    int getEphemeralConnectionCount() const;
+    
     // Power management
     void setDacVoltage(int dacNum, float voltage);
     float getDacVoltage(int dacNum) const;
@@ -313,6 +350,11 @@ private:
     // Dirty flag infrastructure
     bool dirty;
     unsigned long lastModifiedTime;
+    
+    // Ephemeral connections tracking (never saved to YAML)
+    static constexpr int MAX_EPHEMERAL_CONNECTIONS = 8;
+    EphemeralConnection ephemeralConnections[MAX_EPHEMERAL_CONNECTIONS];
+    int numEphemeralConnections;
     
     // Helper for validation
     bool isNodeValid(int node) const;

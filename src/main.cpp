@@ -70,6 +70,7 @@ KevinC@ppucc.io
 #include "SingleCharCommands.h" // Single-character command system
 #include "WaveGen.h"            // New async wavegen
 #include "externVars.h"
+#include "MeasureMode.h"
 
 bread b;
 
@@ -117,7 +118,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.2.10"; //! remember to update this
+const char firmwareVersion[] = "5.6.3.0"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -246,8 +247,8 @@ void setup( ) {
     // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
     // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
     // Serial.flush();
-delay(50);
-    checkProbeCurrentZero( );
+//delay(50);
+    
 
     startupTimers[ 5 ] = millis( );
     // Serial.println("NTCC initialized");
@@ -308,6 +309,10 @@ delay(50);
     jOS.registerService( &probing );         // HIGH - user interaction sensitive (probe reading)
     jOS.registerService( &highlighting );    // HIGH - visual feedback
     jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
+
+
+    jOS.registerService( &measureModeService );
+
 
     // NORMAL priority services - periodic tasks
     jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
@@ -480,6 +485,7 @@ menu:
             // Serial.println("Initializing OLED");
             oled.init( );
         }
+        checkProbeCurrentZero( );
  
         printColorJogoSmall( );
 
@@ -623,6 +629,8 @@ dontshowmenu:
             tud_task( );
         } // Loop start
 #endif
+
+
 
         // Service all registered subsystems via jOSmanager
         // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services

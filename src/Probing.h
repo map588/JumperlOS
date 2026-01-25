@@ -5,7 +5,7 @@
 #include "JumperlessDefines.h"
 #include "JumperlOS.h"
 
-#define MINIMUM_PROBE_READING 48
+
 
 // Forward declarations
 class EncoderAccelerator;
@@ -66,7 +66,8 @@ public:
     }
     
     // Adjustable timing parameters (milliseconds)
-    unsigned long checkIntervalMs = 12;          // Rate limiting between hardware checks
+    unsigned long checkIntervalMsSelect = 82;          // Rate limiting between hardware checks
+    unsigned long checkIntervalMsMeasure = 82;          // Rate limiting between hardware checks
     unsigned long blockDurationMs = 800;        // Block duration after press detected
     unsigned long minimumBlockMs = 50;          // Minimum block time before release can clear (debounce)
     unsigned long connectHoldThresholdMs = 800;  // Threshold to set CONNECT_HELD flag

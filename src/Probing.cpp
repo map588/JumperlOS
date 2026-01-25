@@ -14,6 +14,7 @@
 #include "Graphics.h"
 #include "PersistentStuff.h"
 #include "RotaryEncoder.h"
+#include "hardware/gpio_coproc.h"
 #include "hardware/pwm.h"
 #include "pico.h"
 #include "pico/stdlib.h"
@@ -31,7 +32,7 @@
 #include "oled.h"
 
 // Button timing constants
-#define BUTTON_SETTLE_US 22
+#define BUTTON_SETTLE_US 8
 #define BUTTON_SETTLE_SHORT_US 4
 
 // ============================================================================
@@ -53,6 +54,8 @@ ProbeButton::ProbeButton( ) {
     // Initialize button state
 }
 
+
+
 /**
  * @brief High-frequency service method - checks button hardware with new blocking behavior
  *
@@ -69,7 +72,7 @@ ServiceStatus ProbeButton::service( ) {
 
     // Rate limiting - only check hardware at specified interval
     unsigned long now = millis( );
-    if ( now - lastCheckTime < checkIntervalMs ) {
+    if ( now - lastCheckTime < ( switchPosition == 0 ? checkIntervalMsMeasure : checkIntervalMsSelect ) ) {
         return lastStatus; // Not time to check yet
     }
     lastCheckTime = now;
@@ -208,7 +211,7 @@ int ProbeButton::getButtonPress( bool consume ) {
     int press = buttonPress;
 
     if ( press != 0 ) {
-        blockProbeButton = 600;
+        blockProbeButton = 300;
         blockProbeButtonTimer = millis( );
     }
 
@@ -229,9 +232,11 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     extern struct config jumperlessConfig;
 
     // Wait if LEDs are being updated (software flag)
-    if ( showingProbeLEDs != 0 ) {
-        return 0;
-    }
+    // if ( showingProbeLEDs != 0 ) {
+    //     return 0;
+    // }
+
+    int lastShowProbeLEDs = showProbeLEDs;
 
     // CRITICAL: MUST check if async DMA transfer is still in progress!
     // The async LED system returns immediately from show(), but DMA
@@ -239,10 +244,13 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     // the GPIO while DMA is active, we get glitches/flashes/shifting.
     // This is likely the root cause of random LED shifting!
     // extern Adafruit_NeoPixel probeLEDs;
-    if ( probeLEDs.isDMABusy( ) ) {
-        return 0; // Try again next time - DMA still busy
-    }
+    // if ( probeLEDs.isDMABusy( ) ) {
+    //     return 0; // Try again next time - DMA still busy
+    // }
 
+    // if ( switchPosition == 0 ) {
+    //     showProbeLEDs = 3;
+    // } 
     // Get pin references from Probing singleton
     Probing& p = Probing::getInstance( );
 
@@ -260,13 +268,16 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     gpio_set_dir( BUTTON_PIN, false );
     gpio_set_function( PROBE_LED_PIN, GPIO_FUNC_SIO );
     gpio_disable_pulls( PROBE_LED_PIN );
-    gpio_set_dir( PROBE_LED_PIN, false );
+    //gpio_set_dir( PROBE_LED_PIN, false );
+    gpioc_bit_oe_clr(PROBE_LED_PIN);
     delayMicroseconds( BUTTON_SETTLE_US );
 
     gpio_set_dir( PROBE_PIN, true );
     gpio_put( PROBE_PIN, true );
+
     gpio_set_pulls( BUTTON_PIN, false, true );
     gpio_set_input_enabled( BUTTON_PIN, true );
+    
     buttonState = gpio_get( BUTTON_PIN );
     gpio_set_input_enabled( BUTTON_PIN, false );
 
@@ -275,6 +286,7 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     gpio_set_pulls( BUTTON_PIN, true, false );
     gpio_set_input_enabled( BUTTON_PIN, true );
     delayMicroseconds( BUTTON_SETTLE_US );
+
     buttonState2 = gpio_get( BUTTON_PIN );
     gpio_set_input_enabled( BUTTON_PIN, false );
 
@@ -293,8 +305,11 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     buttonState3 = gpio_get( BUTTON_PIN );
     gpio_set_input_enabled( BUTTON_PIN, false );
 
-    gpio_set_pulls( BUTTON_PIN, false, false );
+    gpio_set_pulls( BUTTON_PIN, false, true);
     gpio_set_function( PROBE_LED_PIN, lastProbeButtonFunction );
+    gpioc_bit_oe_set(PROBE_LED_PIN);
+
+    delayMicroseconds( 20);
 
     checkingButton = 0;
     // core1busy = false;
@@ -734,7 +749,7 @@ volatile uint32_t globalEncoderCursorColor = 0x4500e8; // Cursor color
 
 
 unsigned long idleTime = millis( );
-unsigned long idleSaveTime = 3000;
+unsigned long idleSaveTime = 1000;
 
 
 /**
@@ -1482,9 +1497,9 @@ restartProbing:
     brightenNet( -1 );
 
     if ( switchPosition == 0 && globalState.hasConnection( probePowerDAC == 0 ? DAC0 : DAC1, ROUTABLE_BUFFER_IN ) ) {
-        changeTerminalColor( 197 );
-        Serial.println( "  Switch is in Measure mode!\n\r  Set switch to Select mode for best results\n\r" );
-        Serial.flush( );
+       // changeTerminalColor( 197 );
+       // Serial.println( "  Switch is in Measure mode!\n\r  Set switch to Select mode for best results\n\r" );
+       // Serial.flush( );
     }
 
     if ( setOrClear == 1 ) {
@@ -1604,6 +1619,7 @@ restartProbingNoPrint:
 
         // Keep critical services (like ProbeButton) running during blocking probeMode
         jOS.serviceCritical( );
+        
         // rotaryEncoderStuff();  // Update encoder state
 
         connectedRowsIndex = 0;
@@ -1654,28 +1670,7 @@ restartProbingNoPrint:
             row[ 0 ] = readProbe( );
         }
 
-        //! save local node file if idle for 3 seconds`
-        if ( millis( ) - idleTime > idleSaveTime ) { // save local node file if idle for 3 seconds
-            idleTime = millis( );
-            // delay( 100 );
-            // Serial.println("Saving local node file");
-            // Serial.println("idleTime = " + String(idleTime));
-            // Serial.println("numberOfLocalChanges = " + String(numberOfLocalChanges));
-            // Serial.println("connectionsThisSession = " + String(connectionsThisSession));
-            // Serial.println("setOrClear = " + String(setOrClear));
-            // Serial.println("node1or2 = " + String(node1or2));
-            // Serial.println("nodesToConnect[0] = " + String(nodesToConnect[0]));
-            // Serial.println("nodesToConnect[1] = " + String(nodesToConnect[1]));
-            // Serial.println("connectedRows[0] = " + String(connectedRows[0]));
-            // Serial.println("connectedRows[1] = " + String(connectedRows[1]));
-            // Serial.flush();
-            // saveLocalNodeFile( netSlot );
-            if ( numberOfLocalChanges > 0 ) {
-                SlotManager::getInstance( ).service();
-                // refreshConnections( 0, 1, 0 );
-                numberOfLocalChanges = 0;
-            }
-        }
+
 
         // Handle encoder returns from readProbe() - these are handled by cursor logic above
         if ( row[ 0 ] == -19 || row[ 0 ] == -17 || row[ 0 ] == -10 ) {
@@ -1689,9 +1684,23 @@ restartProbingNoPrint:
 
         if ( row[ 0 ] == -1 ) {
             // tuiGlue.loop();
+        } else {
+            idleTime = millis( );
         }
         // Serial.println(row[0]);
-
+        //! save local node file if idle for 3 seconds`
+        if ( millis( ) - idleTime > idleSaveTime ) { // save local node file if idle for 3 seconds
+            idleTime = millis( );
+            // Only call service() if state is actually dirty to avoid unnecessary work
+            // The service() will auto-save if dirty for >1 second
+            if ( globalState.isDirty( ) && numberOfLocalChanges > 0 ) {
+                SlotManager::getInstance( ).service();
+                // Only reset numberOfLocalChanges if state was actually saved (no longer dirty)
+                if ( !globalState.isDirty( ) ) {
+                    numberOfLocalChanges = 0;
+                }
+            }
+        }
         // probeButtonToggle = checkProbeButton();
         // if (isConnectable(row[0]) == false && row[0] != -1) {
         //   row[0] = -1;
@@ -2356,16 +2365,16 @@ restartProbingNoPrint:
     // showLEDsCore2 = -1;
     // refreshLocalConnections(-1);
     // delay(10);
-    if ( numberOfLocalChanges > 0 ) {
-        // Serial.print( "Accumulated " );
-        // Serial.print( numberOfLocalChanges );
-        // Serial.println( " changes in RAM (will auto-save)" );
-        // Serial.flush( );
-        // Don't save immediately - let auto-save scheduler handle it after 2 seconds
-        // This keeps probing responsive
+    // Only trigger a save on exit if state is actually dirty (has unsaved changes)
+    // If state was already saved during probing idle, skip the save
+    if ( globalState.isDirty( ) ) {
+        // State has unsaved changes - let auto-save scheduler handle it
+        // The scheduler will save within 1 second after exiting probing
     }
+    // Reset local change counter regardless - we've either saved or will auto-save
+    numberOfLocalChanges = 0;
     // delay(10);
-    refreshConnections( 1, 1, 0 );
+    //refreshConnections( 1, 1, 0 );
     row[ 0 ] = -1;
     row[ 1 ] = -2;
     // showLEDsCore2 = -1;
@@ -2447,10 +2456,8 @@ restartProbingNoPrint:
     return 1;
 }
 
-volatile int measureModeActive = 0;
-
 float Probing::measureMode( int updateSpeed ) {
-    measureModeActive = 1;
+    // NOTE: measureModeActive LED indicator is handled by MeasureMode service
     // Wait for button release (use state-based check, doesn't consume event)
     // while ( checkProbeButtonState( ) != 0 ) {
     //     delay( 1 );
@@ -2489,7 +2496,6 @@ float Probing::measureMode( int updateSpeed ) {
 
     // refreshLocalConnections(-1);
     // delay(20);
-    measureModeActive = 0;
     showProbeLEDs = 3;
     return measurement;
 }
@@ -4303,7 +4309,7 @@ float Probing::checkProbeCurrentZero( void ) {
     if ( bridgeExists == true ) {
         removeBridgeFromState( DAC0, -1, true );
     }
-    int div = 8;
+    int div = 1;
     // Serial.println("bridgeExists = true");
     // Serial.flush();
     // delay(2000);
@@ -4783,27 +4789,34 @@ int Probing::readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
 
     int measurements[ 16 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     // digitalWrite(PROBE_PIN, HIGH);
+
+    // Serial.print("ConnectOrClearProbe: ");
+    // Serial.println(connectOrClearProbe);
+    // Serial.print("CheckingPads: ");
+    // Serial.println(checkingPads);
+    
     if ( connectOrClearProbe == 1 ) {
 
         for ( int i = 0; i < numberOfReads; i++ ) {
             measurements[ i ] = readAdc( 5, 12 );
-            if ( measurements[ i ] < 300 && i < 4 ) {
+
+            if ( measurements[ i ] < 300 && measurements[ i ] > (jumperlessConfig.calibration.probe_min + 10) && i < 4 ) {
                 lowReads++;
             }
             if ( lowReads > 2 ) {
-                // numberOfReads = 8;
+                 numberOfReads = 16;
             }
             delayMicroseconds( 5 );
         }
-        // Serial.print("connect: ");
+        //  Serial.print("connect: ");
     } else if ( checkingPads == 1 ) {
         for ( int i = 0; i < numberOfReads; i++ ) {
             measurements[ i ] = readAdc( 5, 8 );
-            if ( measurements[ i ] < 300 && i < 4 ) {
+            if ( measurements[ i ] < 300 && measurements[ i ] > (jumperlessConfig.calibration.probe_min + 10) && i < 4 ) {
                 lowReads++;
             }
             if ( lowReads > 2 ) {
-                // numberOfReads = 8;
+                 numberOfReads = 16;
             }
             delayMicroseconds( 5 );
         }
@@ -4812,21 +4825,30 @@ int Probing::readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
     } else {
         for ( int i = 0; i < numberOfReads; i++ ) {
             measurements[ i ] = readAdc( 5, 6 );
-            if ( measurements[ i ] < 300 && i < 4 ) {
+            if ( measurements[ i ] < 300 && measurements[ i ] > (jumperlessConfig.calibration.probe_min + 10) && i < 4 ) {
                 lowReads++;
             }
             if ( lowReads > 2 ) {
-                // numberOfReads = 8;
+                 numberOfReads = 16;
             }
             delayMicroseconds( 5 );
         }
+        // Serial.print("s: ");
     }
 
     int sum = 0;
     int maxVariance = 0;
     int variance = 0;
+
+    // Serial.print("\r                                                                                    \rMeasurements: ");
+    // for ( int i = 0; i < numberOfReads; i++ ) {
+    //     Serial.print(measurements[ i ]);
+    //     Serial.print(" ");
+    // }
+    // Serial.println();
     for ( int i = 0; i < numberOfReads; i++ ) {
         sum += measurements[ i ];
+        
         if ( i < 3 ) {
             variance = abs( measurements[ i ] - measurements[ i + 1 ] );
             if ( variance > maxVariance ) {
@@ -4852,7 +4874,7 @@ int Probing::readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
     //   //lastReadRaw = 4096;
     // }
 
-    if ( maxVariance <= 4 && ( ( abs( average - lastReadRaw ) > 5 ) || checkingPads == 1 ) && ( average >= MINIMUM_PROBE_READING ) ) {
+    if ( maxVariance <= 4 && ( ( abs( average - lastReadRaw ) > 5 ) || checkingPads == 1 ) && ( average >= jumperlessConfig.calibration.minimum_probe_reading ) ) {
 
         // if (checkingPads != 1) {
         lastReadRaw = average;
@@ -4868,7 +4890,7 @@ int Probing::readProbeRaw( int readNothingTouched, bool allowDuplicates ) {
 
     } else {
 
-        if ( ( abs( average - lastReadRaw ) < 5 ) && allowDuplicates && ( average >= MINIMUM_PROBE_READING ) ) {
+        if ( ( abs( average - lastReadRaw ) < 2 ) && allowDuplicates && ( average >= jumperlessConfig.calibration.minimum_probe_reading ) ) {
             // Serial.print("allowDuplicates: ");
             // Serial.println(average);
             return average;
@@ -5056,7 +5078,7 @@ int Probing::readProbe( ) {
             lastReadRaw = 0;
         }
 
-        if ( millis( ) - lastProbeTime > 40 ) {
+        if ( millis( ) - lastProbeTime > 8 ) {
             lastProbeTime = millis( );
             // // Serial.println("probe timeout");
             // Serial.println("probe timeout");
@@ -5135,6 +5157,8 @@ unsigned long probeRainbowTimer = 0;
 unsigned long lastProbeLEDsTime = 0;
 unsigned long probeLEDsDelay = 20;
 
+unsigned long lastButtonCheckTime = 0;
+
 void Probing::probeLEDhandler( void ) {
 
     // core2busy = true;
@@ -5146,7 +5170,10 @@ void Probing::probeLEDhandler( void ) {
     // }
     lastProbeLEDsTime = currentTime;
 
-    while(checkingButton == 1 || ProbeButton::getInstance().getButtonState() != 0) {
+    int waitedForButtonCheck = 0;
+
+    while(checkingButton == 1) {
+        waitedForButtonCheck++;
        tight_loop_contents();
        if (millis() - currentTime > 100) {
         // Serial.println("timeout");
@@ -5154,6 +5181,13 @@ void Probing::probeLEDhandler( void ) {
         return;
        }
     }
+
+    // if (waitedForButtonCheck > 0) {
+    //     Serial.print("waitedForButtonCheck: ");
+    //     Serial.println(waitedForButtonCheck);
+    //     Serial.flush();
+    //     delayMicroseconds(1000);
+    // }
 
     showingProbeLEDs = 1;
     // if (lastProbeLEDs != showProbeLEDs) {

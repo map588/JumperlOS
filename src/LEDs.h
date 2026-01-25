@@ -276,14 +276,56 @@ const int nodesToPixelMap[120] = {
 };
 
 #define LOGO_COLOR_LENGTH 60
+#define LOGO_PALETTE_COUNT 12  // Total number of logo color palettes
+
+// ============================================================================
+// LOGO COLOR PALETTE INDICES - Use these to select palettes by name
+// ============================================================================
+enum LogoPalette {
+  PALETTE_RAINBOW    = 0,   // Full spectrum rainbow
+  PALETTE_COLD       = 1,   // Cyan/Blue tones
+  PALETTE_HOT        = 2,   // Red/Orange tones
+  PALETTE_PINK       = 3,   // Pink/Magenta tones
+  PALETTE_YELLOW     = 4,   // Yellow tones
+  PALETTE_GREEN      = 5,   // Green tones
+  PALETTE_8V_SELECT  = 6,   // Special 8V selection gradient
+  PALETTE_ORANGE     = 7,   // Orange tones
+  PALETTE_TURQUOISE  = 8,   // Turquoise/Teal tones
+  PALETTE_CHARTREUSE = 9,   // Chartreuse (yellow-green) tones
+  PALETTE_PURPLE     = 10,  // Purple/Violet tones
+  PALETTE_WHITE      = 11,  // White/neutral tones
+};
+
+// ============================================================================
+// HSV BASE HUES FOR EACH PALETTE (0-255 scale)
+// Adjust these values to tweak the color of each palette
+// ============================================================================
+#define HUE_COLD        130   // Cyan
+#define HUE_HOT         230   // Red-orange
+#define HUE_PINK        155   // Magenta-pink
+#define HUE_YELLOW      55    // Yellow
+#define HUE_GREEN       85    // Green
+#define HUE_ORANGE      20    // Orange
+#define HUE_TURQUOISE   125   // Turquoise/teal
+#define HUE_CHARTREUSE  70    // Yellow-green
+#define HUE_PURPLE      190   // Purple/violet
 
 extern uint32_t logoColors[LOGO_COLOR_LENGTH+11];
 extern uint32_t logoColorsHot[LOGO_COLOR_LENGTH+1];
 extern uint32_t logoColorsCold[LOGO_COLOR_LENGTH+1];
 extern uint32_t logoColorsYellow[LOGO_COLOR_LENGTH+1];
 extern uint32_t logoColorsPink[LOGO_COLOR_LENGTH+1];
+extern uint32_t logoColorsGreen[LOGO_COLOR_LENGTH+1];
+extern uint32_t logoColorsOrange[LOGO_COLOR_LENGTH+1];
+extern uint32_t logoColorsTurquoise[LOGO_COLOR_LENGTH+1];
+extern uint32_t logoColorsChartreuse[LOGO_COLOR_LENGTH+1];
+extern uint32_t logoColorsPurple[LOGO_COLOR_LENGTH+1];
+extern uint32_t logoColorsWhite[LOGO_COLOR_LENGTH+1];
 extern uint32_t logoColors8vSelect[LOGO_COLOR_LENGTH+11];
-extern uint32_t logoColorsAll[8][LOGO_COLOR_LENGTH + 11];
+extern uint32_t logoColorsAll[LOGO_PALETTE_COUNT][LOGO_COLOR_LENGTH + 11];
+
+// Helper to generate a single-hue palette at runtime
+void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex);
 
 
 const int bbPixelToNodesMap[120] = {

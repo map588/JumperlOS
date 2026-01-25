@@ -96,6 +96,7 @@ struct config {
         float probe_switch_threshold = 0.40;       // DEPRECATED - kept for backward compatibility
         float measure_mode_output_voltage = 3.30;
         float probe_current_zero = 2.0;
+        int minimum_probe_reading = 85;
     } calibration;
 
     struct logo_pads {

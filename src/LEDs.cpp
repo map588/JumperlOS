@@ -16,6 +16,7 @@
 #include "config.h"
 // #include <FastLED.h>
 #include "Highlighting.h"
+#include "externVars.h"  // For filesystemActive indicator
 // CRGB probeLEDs[1];
 
 // bool splitLEDs;
@@ -3188,6 +3189,9 @@ uint32_t dimLogoColor(uint32_t color, int brightness) {
     }
   }
 
+// ============================================================================
+// LOGO COLOR PALETTE ARRAYS
+// ============================================================================
 uint32_t logoColors[LOGO_COLOR_LENGTH + 11] = {
     0x800058, 0x750053, 0x700068, 0x650063, 0x600078, 0x550073, 0x500088,
     0x450083, 0x400098, 0x350093, 0x3000A8, 0x2500A3, 0x2000B8, 0x1500B3,
@@ -3195,21 +3199,26 @@ uint32_t logoColors[LOGO_COLOR_LENGTH + 11] = {
     0x0025FA, 0x0030FF, 0x0035E0, 0x0240BF, 0x0545A0, 0x10509F, 0x15558F,
     0x20607F, 0x25656F, 0x30705F, 0x35754F, 0x40803F, 0x45722F, 0x506518,
     0x55481A, 0x603A2A, 0x653332, 0x702538, 0x751948, 0x791052, 0x7E0562,
-
   };
+
+// Original palettes
 uint32_t logoColorsCold[LOGO_COLOR_LENGTH + 1];
-
 uint32_t logoColorsHot[LOGO_COLOR_LENGTH + 1];
-
 uint32_t logoColorsPink[LOGO_COLOR_LENGTH + 1];
-
 uint32_t logoColorsGreen[LOGO_COLOR_LENGTH + 1];
-
 uint32_t logoColorsYellow[LOGO_COLOR_LENGTH + 1];
+
+// New palettes
+uint32_t logoColorsOrange[LOGO_COLOR_LENGTH + 1];
+uint32_t logoColorsTurquoise[LOGO_COLOR_LENGTH + 1];
+uint32_t logoColorsChartreuse[LOGO_COLOR_LENGTH + 1];
+uint32_t logoColorsPurple[LOGO_COLOR_LENGTH + 1];
+uint32_t logoColorsWhite[LOGO_COLOR_LENGTH + 1];
 
 uint32_t logoColors8vSelect[LOGO_COLOR_LENGTH + 11];
 
-uint32_t logoColorsAll[8][LOGO_COLOR_LENGTH + 11];//0=all, 1=cold, 2=hot, 3=pink, 4=yellow, 5=green, 
+// Master array holding all palettes - use LogoPalette enum to index
+uint32_t logoColorsAll[LOGO_PALETTE_COUNT][LOGO_COLOR_LENGTH + 11];
 
 uint8_t eightSelectHues[LOGO_COLOR_LENGTH + 11] = {
     195, 191, 187, 183, 179, 175, 171, 168, 166, 164, 162, 160, 158, 156, 153,
@@ -3218,77 +3227,84 @@ uint8_t eightSelectHues[LOGO_COLOR_LENGTH + 11] = {
     27,  23,  19,  16,  13,  10,  7,   4,   3,   2,   1,   0,   254, 253, 251,
     248, 242, 236, 230, 224, 218, 212, 207, 202, 199, 197 };
 
-void  setupSwirlColors(void) {
-  rgbColor logoColorsRGB[LOGO_COLOR_LENGTH + 12];
-  int fudgeMult = 1;
-
+// ============================================================================
+// HELPER: Generate a single-hue palette from a base hue value
+// Creates a symmetric gradient that shifts hue slightly across the palette
+// ============================================================================
+void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex) {
+  rgbColor tempRGB;
+  hsvColor hsv;
+  hsv.s = 254;
+  hsv.v = 254;
+  
   for (int i = 0; i < (LOGO_COLOR_LENGTH / 2) + 1; i++) {
-
-    hsvColor connectHSV;
-    connectHSV.h = (i * 2 + 130) % 255;
-    connectHSV.s = 254;
-    connectHSV.v = 254;
-    rgbColor connectRGB = HsvToRgb(connectHSV);
-    logoColorsRGB[i] = connectRGB;
-
-    logoColorsCold[i] = packRgb(logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8,
-                                logoColorsRGB[i].b / 8);
-    logoColorsCold[LOGO_COLOR_LENGTH - i] = logoColorsCold[i];
-    logoColorsAll[1][LOGO_COLOR_LENGTH - i] = logoColorsCold[i];
-    logoColorsAll[1][i] = logoColorsCold[i];
-
-    connectHSV.h = (i * 2 + 230) % 255;
-    connectHSV.s = 254;
-    connectHSV.v = 254;
-    connectRGB = HsvToRgb(connectHSV);
-    logoColorsRGB[i] = connectRGB;
-
-    logoColorsHot[i] = packRgb(logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8,
-                               logoColorsRGB[i].b / 8);
-    logoColorsHot[LOGO_COLOR_LENGTH - i] = logoColorsHot[i];
-    logoColorsAll[2][LOGO_COLOR_LENGTH - i] = logoColorsHot[i];
-    logoColorsAll[2][i] = logoColorsHot[i];
-
-    connectHSV.h = (i * 2 + 155) % 255;
-    connectHSV.s = 254;
-    connectHSV.v = 254;
-    connectRGB = HsvToRgb(connectHSV);
-    logoColorsRGB[i] = connectRGB;
-
-    logoColorsPink[i] = packRgb(logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8,
-                                logoColorsRGB[i].b / 8);
-    logoColorsPink[LOGO_COLOR_LENGTH - i] = logoColorsPink[i];
-    logoColorsAll[3][LOGO_COLOR_LENGTH - i] = logoColorsPink[i];
-    logoColorsAll[3][i] = logoColorsPink[i];
-
-    connectHSV.h = (i * 2 + 55) % 255;
-    connectHSV.s = 254;
-    connectHSV.v = 254;
-    connectRGB = HsvToRgb(connectHSV);
-    logoColorsRGB[i] = connectRGB;
-
-    logoColorsYellow[i] = packRgb(
-        logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8, logoColorsRGB[i].b / 8);
-
-    logoColorsYellow[LOGO_COLOR_LENGTH - i] = logoColorsYellow[i];
-    logoColorsAll[4][LOGO_COLOR_LENGTH - i] = logoColorsYellow[i];
-    logoColorsAll[4][i] = logoColorsYellow[i];
-
-    connectHSV.h = (i * 2 + 85) % 255;
-    connectHSV.s = 254;
-    connectHSV.v = 254;
-    connectRGB = HsvToRgb(connectHSV);
-    logoColorsRGB[i] = connectRGB;
-
-    logoColorsGreen[i] = packRgb(logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8,
-                                 logoColorsRGB[i].b / 8);
-    logoColorsGreen[LOGO_COLOR_LENGTH - i] = logoColorsGreen[i];
-    logoColorsAll[5][LOGO_COLOR_LENGTH - i] = logoColorsGreen[i];
-    logoColorsAll[5][i] = logoColorsGreen[i];
+    hsv.h = (i * 2 + baseHue) % 255;
+    tempRGB = HsvToRgb(hsv);
+    
+    uint32_t color = packRgb(tempRGB.r / 8, tempRGB.g / 8, tempRGB.b / 8);
+    dest[i] = color;
+    dest[LOGO_COLOR_LENGTH - i] = color;
+    
+    if (paletteIndex >= 0 && paletteIndex < LOGO_PALETTE_COUNT) {
+      logoColorsAll[paletteIndex][i] = color;
+      logoColorsAll[paletteIndex][LOGO_COLOR_LENGTH - i] = color;
     }
+  }
+}
 
+// ============================================================================
+// HELPER: Generate white/neutral palette (special case - low saturation)
+// ============================================================================
+static void generateWhitePalette(uint32_t* dest, int paletteIndex) {
+  rgbColor tempRGB;
+  hsvColor hsv;
+  hsv.s = 30;  // Low saturation for near-white
+  hsv.v = 254;
+  
+  for (int i = 0; i < (LOGO_COLOR_LENGTH / 2) + 1; i++) {
+    hsv.h = (i * 4) % 255;  // Subtle rainbow tint
+    tempRGB = HsvToRgb(hsv);
+    
+    uint32_t color = packRgb(tempRGB.r / 8, tempRGB.g / 8, tempRGB.b / 8);
+    dest[i] = color;
+    dest[LOGO_COLOR_LENGTH - i] = color;
+    
+    if (paletteIndex >= 0 && paletteIndex < LOGO_PALETTE_COUNT) {
+      logoColorsAll[paletteIndex][i] = color;
+      logoColorsAll[paletteIndex][LOGO_COLOR_LENGTH - i] = color;
+    }
+  }
+}
+
+// ============================================================================
+// SETUP ALL LOGO SWIRL COLORS
+// To add a new palette:
+//   1. Add entry to LogoPalette enum in LEDs.h
+//   2. Add HUE_XXXX define in LEDs.h  
+//   3. Add extern array declaration in LEDs.h
+//   4. Add array definition above
+//   5. Add generateLogoPalette() call below
+// ============================================================================
+void setupSwirlColors(void) {
+  rgbColor logoColorsRGB[LOGO_COLOR_LENGTH + 12];
+
+  // Generate all single-hue palettes using the helper function
+  // Each palette uses HUE_XXX defined in LEDs.h for easy tweaking
+  generateLogoPalette(logoColorsCold,       HUE_COLD,       PALETTE_COLD);
+  generateLogoPalette(logoColorsHot,        HUE_HOT,        PALETTE_HOT);
+  generateLogoPalette(logoColorsPink,       HUE_PINK,       PALETTE_PINK);
+  generateLogoPalette(logoColorsYellow,     HUE_YELLOW,     PALETTE_YELLOW);
+  generateLogoPalette(logoColorsGreen,      HUE_GREEN,      PALETTE_GREEN);
+  generateLogoPalette(logoColorsOrange,     HUE_ORANGE,     PALETTE_ORANGE);
+  generateLogoPalette(logoColorsTurquoise,  HUE_TURQUOISE,  PALETTE_TURQUOISE);
+  generateLogoPalette(logoColorsChartreuse, HUE_CHARTREUSE, PALETTE_CHARTREUSE);
+  generateLogoPalette(logoColorsPurple,     HUE_PURPLE,     PALETTE_PURPLE);
+  
+  // White palette uses special low-saturation generation
+  generateWhitePalette(logoColorsWhite, PALETTE_WHITE);
+
+  // Generate the rainbow palette (full spectrum)
   for (int i = 0; i <= LOGO_COLOR_LENGTH + 10; i++) {
-
     hsvColor connectHSV;
     connectHSV.h = i * (255 / LOGO_COLOR_LENGTH);
     connectHSV.s = 254;
@@ -3298,11 +3314,10 @@ void  setupSwirlColors(void) {
 
     logoColors[i] = packRgb(logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8,
                             logoColorsRGB[i].b / 8);
-    logoColorsAll[0][i] = logoColors[i];
+    logoColorsAll[PALETTE_RAINBOW][i] = logoColors[i];
+    
+    // Generate 8V select palette (special reversed hue sequence)
     connectHSV.h = eightSelectHues[i];
-
-    // connectHSV.h = (connectHSV.h - 8);
-    // connectHSV.h<0?connectHSV.h = 254 - connectHSV.h:connectHSV.h;
     connectHSV.s = 254;
     connectHSV.v = 254;
     connectRGB = HsvToRgb(connectHSV);
@@ -3311,19 +3326,53 @@ void  setupSwirlColors(void) {
     logoColors8vSelect[i] = packRgb(
         logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8, logoColorsRGB[i].b / 8);
 
-    logoColorsAll[6][(LOGO_COLOR_LENGTH + 10) - i] = logoColors8vSelect[i];
-    //  logoColors8vSelect[LOGO_COLOR_LENGTH - i] =   logoColors8vSelect[i];
-    }
-
-
+    logoColorsAll[PALETTE_8V_SELECT][(LOGO_COLOR_LENGTH + 10) - i] = logoColors8vSelect[i];
   }
+}
 
+// ============================================================================
+// LOGO LED HELPER FUNCTIONS
+// ============================================================================
 
+// Set all 8 logo LEDs using a palette array with given start offset and spread
+// brightness: optional dimming (default 20 from dimLogoColor)
+static inline void setLogoFromPalette(uint32_t* palette, int start, int spread, int brightness = 20) {
+  for (int i = 0; i < 8; i++) {
+    leds.setPixelColor(
+        LOGO_LED_START + i,
+        dimLogoColor(palette[(start + (spread * i)) % (LOGO_COLOR_LENGTH - 1)], brightness));
+  }
+}
+
+// Set all 8 logo LEDs using a LogoPalette enum index
+static inline void setLogoFromPaletteIndex(int paletteIndex, int start, int spread, int brightness = 20) {
+  uint32_t* palette = logoColorsAll[paletteIndex % LOGO_PALETTE_COUNT];
+  setLogoFromPalette(palette, start, spread, brightness);
+}
+
+// Set all 8 logo LEDs to a single solid color
+static inline void setLogoSolidColor(uint32_t color) {
+  for (int i = 0; i < 8; i++) {
+    leds.setPixelColor(LOGO_LED_START + i, color);
+  }
+}
+
+// Set top 3 logo LEDs (indices 0-2)
+static inline void setLogoTop(uint32_t color) {
+  leds.setPixelColor(LOGO_LED_START + 0, color);
+  leds.setPixelColor(LOGO_LED_START + 1, color);
+  leds.setPixelColor(LOGO_LED_START + 2, color);
+}
+
+// Set bottom 3 logo LEDs (indices 3-5)
+static inline void setLogoBottom(uint32_t color) {
+  leds.setPixelColor(LOGO_LED_START + 3, color);
+  leds.setPixelColor(LOGO_LED_START + 4, color);
+  leds.setPixelColor(LOGO_LED_START + 5, color);
+}
 
 // Mark to run from RAM to avoid flash contention during saves
 void __not_in_flash_func(logoSwirl)(int start, int spread, int probe) {
-
-  // int fiddyNine = 58;
 
 
 
@@ -3333,176 +3382,68 @@ if (logoLedAccess == true) {
 }
 logoLedAccess = true;
 
+  // ========================================================================
+  // FILESYSTEM ACTIVITY INDICATOR - Shows during flash operations
+  // Uses configurable palette (filesystemIndicatorPalette in externVars.cpp)
+  // ========================================================================
+  unsigned long now = millis();
+  bool showFilesystemIndicator = filesystemActive || (filesystemActiveUntil > 0 && now < filesystemActiveUntil);
+  
+  if (showFilesystemIndicator) {
+    setLogoFromPaletteIndex(filesystemIndicatorPalette, start, spread);
+    logoLedAccess = false;
+    return;
+  }
+
+  // ========================================================================
+  // MEASURE MODE INDICATOR - Shows pink during voltage measurement
+  // Uses configurable palette (measureModeIndicatorPalette in externVars.cpp)
+  // ========================================================================
+  if (measureModeActive) {
+    setLogoFromPaletteIndex(measureModeIndicatorPalette, start, spread);
+    logoLedAccess = false;
+    return;
+  }
+
+  // ========================================================================
+  // PROBE MODE - Different colors based on probe state
+  // ========================================================================
   if (probe == 1) {
-    int selectionBrightness = 33;
-
-
     if (connectOrClearProbe == 1 && node1or2 == 0) {
-      // Serial.println("connectOrClearProbe == 1 && node1or2 == 0");
-
-      leds.setPixelColor(
-          LOGO_LED_START, dimLogoColor(logoColorsCold[start % (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(
-          LOGO_LED_START + 1,
-          dimLogoColor(
-            logoColorsCold[(start + (spread)) % (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(LOGO_LED_START + 2,
-                         dimLogoColor(logoColorsCold[(start + (spread * 2)) %
-                                      (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(LOGO_LED_START + 3,
-                         dimLogoColor(logoColorsCold[(start + (spread * 3)) %
-                                      (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(LOGO_LED_START + 4,
-                         dimLogoColor(logoColorsCold[(start + (spread * 4)) %
-                                      (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(LOGO_LED_START + 5,
-                         dimLogoColor(logoColorsCold[(start + (spread * 5)) %
-                                      (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(LOGO_LED_START + 6,
-                         dimLogoColor(logoColorsCold[(start + (spread * 6)) %
-                                      (LOGO_COLOR_LENGTH - 1)]));
-      leds.setPixelColor(LOGO_LED_START + 7,
-                         dimLogoColor(logoColorsCold[(start + (spread * 7)) %
-                                      (LOGO_COLOR_LENGTH - 1)]));
-      } else if (connectOrClearProbe == 1 && node1or2 != 0) {
-        leds.setPixelColor(
-            LOGO_LED_START, dimLogoColor(logoColorsPink[start % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 1, dimLogoColor(
-              logoColorsPink[(start + (spread)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-        leds.setPixelColor(
-            LOGO_LED_START + 2,
-            dimLogoColor(
-              logoColorsPink[(start + (spread * 2)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-        leds.setPixelColor(
-            LOGO_LED_START + 3,
-            dimLogoColor(
-              logoColorsPink[(start + (spread * 3)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-        leds.setPixelColor(
-            LOGO_LED_START + 4,
-            dimLogoColor(
-              logoColorsPink[(start + (spread * 4)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-        leds.setPixelColor(
-            LOGO_LED_START + 5,
-            dimLogoColor(
-              logoColorsPink[(start + (spread * 5)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-        leds.setPixelColor(
-            LOGO_LED_START + 6,
-            dimLogoColor(
-              logoColorsPink[(start + (spread * 6)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-        leds.setPixelColor(
-            LOGO_LED_START + 7,
-            dimLogoColor(
-              logoColorsPink[(start + (spread * 7)) % (LOGO_COLOR_LENGTH - 1)],
-              selectionBrightness));
-
-        } else {
-
-
-        leds.setPixelColor(
-            LOGO_LED_START, dimLogoColor(logoColorsHot[start % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 1,
-            dimLogoColor(
-              logoColorsHot[(start + (spread)) % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 2,
-            dimLogoColor(
-              logoColorsHot[(start + (spread * 2)) % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 3,
-            dimLogoColor(
-              logoColorsHot[(start + (spread * 3)) % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 4,
-            dimLogoColor(
-              logoColorsHot[(start + (spread * 4)) % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 5,
-            dimLogoColor(
-              logoColorsHot[(start + (spread * 5)) % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 6,
-            dimLogoColor(
-              logoColorsHot[(start + (spread * 6)) % (LOGO_COLOR_LENGTH - 1)]));
-        leds.setPixelColor(
-            LOGO_LED_START + 7,
-            dimLogoColor(
-              logoColorsHot[(start + (spread * 7)) % (LOGO_COLOR_LENGTH - 1)]));
-        }
-
+      // Connect mode, no node selected yet -> Cold (cyan)
+      setLogoFromPalette(logoColorsCold, start, spread);
+    } else if (connectOrClearProbe == 1 && node1or2 != 0) {
+      // Connect mode, node selected -> Pink (brighter)
+      setLogoFromPalette(logoColorsPink, start, spread, 33);
     } else {
-    //     for (int i = 0; i < (LOGO_COLOR_LENGTH-1); i++) {
-
-    //  // b.printRawRow(0b11111111, i, 0, 0xffffff);
-    // }
-   
-    leds.setPixelColor(
-        LOGO_LED_START, dimLogoColor(logoColors[start % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 1,
-        dimLogoColor(logoColors[(start + (spread)) % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 2, dimLogoColor(
-          logoColors[(start + (spread * 2)) % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 3, dimLogoColor(
-          logoColors[(start + (spread * 3)) % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 4, dimLogoColor(
-          logoColors[(start + (spread * 4)) % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 5, dimLogoColor(
-          logoColors[(start + (spread * 5)) % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 6, dimLogoColor(
-          logoColors[(start + (spread * 6)) % (LOGO_COLOR_LENGTH - 1)]));
-    leds.setPixelColor(
-        LOGO_LED_START + 7, dimLogoColor(
-          logoColors[(start + (spread * 7)) % (LOGO_COLOR_LENGTH - 1)]));
+      // Clear mode -> Hot (red/orange)
+      setLogoFromPalette(logoColorsHot, start, spread);
     }
+  } else {
+    // ========================================================================
+    // DEFAULT MODE - Rainbow swirl
+    // ========================================================================
+    setLogoFromPalette(logoColors, start, spread);
+  }
 
+  // ========================================================================
+  // OVERRIDES - Applied on top of the above
+  // ========================================================================
   if (logoColorOverride != -1) {
-    leds.setPixelColor(LOGO_LED_START, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 1, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 2, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 3, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 4, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 5, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 6, logoColorOverride);
-    leds.setPixelColor(LOGO_LED_START + 7, logoColorOverride);
-    //return;
-    }
-
+    setLogoSolidColor(logoColorOverride);
+  }
 
   if (logoColorOverrideTop == -2) {
-    leds.setPixelColor(LOGO_LED_START + 0, logoColorOverrideTopDefault);
-    leds.setPixelColor(LOGO_LED_START + 1, logoColorOverrideTopDefault);
-    leds.setPixelColor(LOGO_LED_START + 2, logoColorOverrideTopDefault);
-    } else if (logoColorOverrideTop != -1) {
-      leds.setPixelColor(LOGO_LED_START + 0, logoColorOverrideTop);
-      leds.setPixelColor(LOGO_LED_START + 1, logoColorOverrideTop);
-      leds.setPixelColor(LOGO_LED_START + 2, logoColorOverrideTop);
-      // leds.setPixelColor(LOGO_LED_START + 6, 0);
+    setLogoTop(logoColorOverrideTopDefault);
+  } else if (logoColorOverrideTop != -1) {
+    setLogoTop(logoColorOverrideTop);
+  }
 
-      }
-
-    if (logoColorOverrideBottom == -2) {
-      leds.setPixelColor(LOGO_LED_START + 3, logoColorOverrideBottomDefault);
-      leds.setPixelColor(LOGO_LED_START + 4, logoColorOverrideBottomDefault);
-      leds.setPixelColor(LOGO_LED_START + 5, logoColorOverrideBottomDefault);
-      } else if (logoColorOverrideBottom != -1) {
-        leds.setPixelColor(LOGO_LED_START + 3, logoColorOverrideBottom);
-        leds.setPixelColor(LOGO_LED_START + 4, logoColorOverrideBottom);
-        leds.setPixelColor(LOGO_LED_START + 5, logoColorOverrideBottom);
-        //leds.setPixelColor(LOGO_LED_START + 6, 0);
-        }
+  if (logoColorOverrideBottom == -2) {
+    setLogoBottom(logoColorOverrideBottomDefault);
+  } else if (logoColorOverrideBottom != -1) {
+    setLogoBottom(logoColorOverrideBottom);
+  }
 
 logoLedAccess = false;
 

@@ -520,6 +520,7 @@ JumperlessState::JumperlessState() {
     version = 2;  // Current format version (2 = YAML format)
     dirty = false;
     lastModifiedTime = 0;
+    numEphemeralConnections = 0;
     clear();
 }
 
@@ -699,6 +700,219 @@ bool JumperlessState::setConnectionDuplicates(int node1, int node2, int duplicat
     
     errorMsg = "Connection " + String(node1) + "-" + String(node2) + " not found";
     return false;
+}
+
+// ============================================================================
+// Ephemeral Connection Management
+// ============================================================================
+// Ephemeral connections are temporary - they are added to the bridges array
+// for routing but are NEVER saved to YAML and do NOT trigger markDirty().
+//
+// Key features:
+// - Are physically routed through the crossbar switches (so signals pass through)
+// - Are NEVER saved to flash/YAML (filtered out in serializeBridges)
+// - Do NOT trigger markDirty() (won't cause auto-save)
+// - Can optionally apply routing immediately with optional LED updates
+// - Support optional color for visual feedback during measurements
+
+bool JumperlessState::addEphemeralConnection(int node1, int node2, String& errorMsg,
+                                             bool applyRouting, int ledShowOption,
+                                             uint32_t color) {
+    // Validate nodes
+    if (!isNodeValid(node1)) {
+        errorMsg = "Invalid node 1: " + String(node1);
+        return false;
+    }
+    if (!isNodeValid(node2)) {
+        errorMsg = "Invalid node 2: " + String(node2);
+        return false;
+    }
+    
+    // Check if connection is allowed
+    if (!isConnectionAllowed(node1, node2, errorMsg)) {
+        return false;
+    }
+    
+    // Check if already exists as regular connection
+    if (hasConnection(node1, node2)) {
+        // Connection already exists - just track it as ephemeral
+        // (might have been added by user before measure mode)
+        // Still apply routing if requested (in case hardware state is stale)
+        if (applyRouting) {
+            refreshLocalConnections(ledShowOption, 0, 0);
+            waitCore2();
+        }
+        return true;
+    }
+    
+    // Check if already tracked as ephemeral
+    for (int i = 0; i < numEphemeralConnections; i++) {
+        if ((ephemeralConnections[i].node1 == node1 && ephemeralConnections[i].node2 == node2) ||
+            (ephemeralConnections[i].node1 == node2 && ephemeralConnections[i].node2 == node1)) {
+            // Already tracked - still apply routing if requested
+            if (applyRouting) {
+                refreshLocalConnections(ledShowOption, 0, 0);
+                waitCore2();
+            }
+            return true;  // Already tracked
+        }
+    }
+    
+    // Check if we have space for ephemeral tracking
+    if (numEphemeralConnections >= MAX_EPHEMERAL_CONNECTIONS) {
+        errorMsg = "Maximum ephemeral connections reached";
+        return false;
+    }
+    
+    // Check if we have space in bridges array
+    if (connections.numBridges >= MAX_BRIDGES) {
+        errorMsg = "Maximum number of connections reached";
+        return false;
+    }
+    
+    // Add the bridge (with 0 duplicates for minimal routing overhead)
+    int idx = connections.numBridges;
+    connections.bridges[idx][0] = node1;
+    connections.bridges[idx][1] = node2;
+    connections.bridges[idx][2] = 0;  // No duplicate paths needed for measurement
+    connections.bridgeColors[idx] = color;  // Set optional color for visual feedback
+    connections.numBridges++;
+    
+    // Track as ephemeral
+    ephemeralConnections[numEphemeralConnections] = EphemeralConnection(node1, node2, idx);
+    numEphemeralConnections++;
+    
+    // Invalidate caches to trigger routing, but DON'T mark dirty
+    // Note: We disable autoRefresh here since we'll handle it manually if requested
+    connections.invalidateCache(false);
+    // NOTE: No markDirty() call - this is the key difference from addConnection()
+    
+    // Apply routing to hardware if requested
+    if (applyRouting) {
+        refreshLocalConnections(ledShowOption, 0, 0);
+        waitCore2();
+    }
+    
+    return true;
+}
+
+bool JumperlessState::removeEphemeralConnection(int node1, int node2, String& errorMsg,
+                                                bool applyRouting, int ledShowOption) {
+    // Find in ephemeral tracking
+    int ephIdx = -1;
+    for (int i = 0; i < numEphemeralConnections; i++) {
+        if ((ephemeralConnections[i].node1 == node1 && ephemeralConnections[i].node2 == node2) ||
+            (ephemeralConnections[i].node1 == node2 && ephemeralConnections[i].node2 == node1)) {
+            ephIdx = i;
+            break;
+        }
+    }
+    
+    if (ephIdx == -1) {
+        errorMsg = "Ephemeral connection not found";
+        return false;
+    }
+    
+    // Find and remove from bridges array
+    int bridgeIdx = -1;
+    for (int i = 0; i < connections.numBridges; i++) {
+        if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+            (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+            bridgeIdx = i;
+            break;
+        }
+    }
+    
+    if (bridgeIdx != -1) {
+        // Remove bridge by shifting remaining entries
+        for (int i = bridgeIdx; i < connections.numBridges - 1; i++) {
+            connections.bridges[i][0] = connections.bridges[i + 1][0];
+            connections.bridges[i][1] = connections.bridges[i + 1][1];
+            connections.bridges[i][2] = connections.bridges[i + 1][2];
+            connections.bridgeColors[i] = connections.bridgeColors[i + 1];
+        }
+        connections.numBridges--;
+        connections.bridgeColors[connections.numBridges] = 0xFFFFFFFF;
+        
+        // Update bridge indices in remaining ephemeral connections
+        for (int i = 0; i < numEphemeralConnections; i++) {
+            if (ephemeralConnections[i].bridgeIndex > bridgeIdx) {
+                ephemeralConnections[i].bridgeIndex--;
+            }
+        }
+    }
+    
+    // Remove from ephemeral tracking
+    for (int i = ephIdx; i < numEphemeralConnections - 1; i++) {
+        ephemeralConnections[i] = ephemeralConnections[i + 1];
+    }
+    numEphemeralConnections--;
+    
+    // Invalidate caches, but DON'T mark dirty
+    // Note: We disable autoRefresh here since we'll handle it manually if requested
+    connections.invalidateCache(false);
+    
+    // Apply routing to hardware if requested
+    if (applyRouting) {
+        refreshLocalConnections(ledShowOption, 0, 0);
+        waitCore2();
+    }
+    
+    return true;
+}
+
+void JumperlessState::clearAllEphemeralConnections(bool applyRouting, int ledShowOption) {
+    // Track if we actually removed anything
+    int removedCount = numEphemeralConnections;
+    
+    // Remove all ephemeral connections from bridges (in reverse order to avoid index issues)
+    for (int e = numEphemeralConnections - 1; e >= 0; e--) {
+        int node1 = ephemeralConnections[e].node1;
+        int node2 = ephemeralConnections[e].node2;
+        
+        // Find and remove from bridges array
+        for (int i = 0; i < connections.numBridges; i++) {
+            if ((connections.bridges[i][0] == node1 && connections.bridges[i][1] == node2) ||
+                (connections.bridges[i][0] == node2 && connections.bridges[i][1] == node1)) {
+                // Remove bridge by shifting
+                for (int j = i; j < connections.numBridges - 1; j++) {
+                    connections.bridges[j][0] = connections.bridges[j + 1][0];
+                    connections.bridges[j][1] = connections.bridges[j + 1][1];
+                    connections.bridges[j][2] = connections.bridges[j + 1][2];
+                    connections.bridgeColors[j] = connections.bridgeColors[j + 1];
+                }
+                connections.numBridges--;
+                connections.bridgeColors[connections.numBridges] = 0xFFFFFFFF;
+                break;
+            }
+        }
+    }
+    
+    numEphemeralConnections = 0;
+    
+    // Only invalidate and apply routing if we actually removed something
+    if (removedCount > 0) {
+        connections.invalidateCache(false);  // Don't auto-refresh, we'll handle it
+        
+        if (applyRouting) {
+            refreshLocalConnections(ledShowOption, 0, 0);
+            waitCore2();
+        }
+    }
+}
+
+bool JumperlessState::isEphemeralConnection(int node1, int node2) const {
+    for (int i = 0; i < numEphemeralConnections; i++) {
+        if ((ephemeralConnections[i].node1 == node1 && ephemeralConnections[i].node2 == node2) ||
+            (ephemeralConnections[i].node1 == node2 && ephemeralConnections[i].node2 == node1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int JumperlessState::getEphemeralConnectionCount() const {
+    return numEphemeralConnections;
 }
 
 // Power management
@@ -1071,15 +1285,34 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
 
 // YAML serialization helpers
 void JumperlessState::serializeBridges(String& output) const {
-    if (connections.numBridges == 0) {
+    // Count non-ephemeral bridges first
+    int persistentBridges = 0;
+    for (int i = 0; i < connections.numBridges; i++) {
+        int node1 = connections.bridges[i][0];
+        int node2 = connections.bridges[i][1];
+        // Skip ephemeral connections - they should NEVER be saved to flash
+        if (!isEphemeralConnection(node1, node2)) {
+            persistentBridges++;
+        }
+    }
+    
+    if (persistentBridges == 0) {
         return;  // Don't output empty bridges section
     }
     
     output += "bridges:\n";
     for (int i = 0; i < connections.numBridges; i++) {
+        int node1 = connections.bridges[i][0];
+        int node2 = connections.bridges[i][1];
+        
+        // Skip ephemeral connections - they should NEVER be saved to flash
+        if (isEphemeralConnection(node1, node2)) {
+            continue;
+        }
+        
         // Use node names instead of raw numbers for readability
-        String n1Name = nodeValueToString(connections.bridges[i][0]);
-        String n2Name = nodeValueToString(connections.bridges[i][1]);
+        String n1Name = nodeValueToString(node1);
+        String n2Name = nodeValueToString(node2);
         
         output += "  - {n1: " + n1Name + 
                   ", n2: " + n2Name + 
@@ -3660,7 +3893,7 @@ ServiceStatus SlotManager::service() {
     
     if (hasDirtyState && !usbMountedByHost && !refreshLocalInProgress && !core1busy) {
         unsigned long timeSinceModified = millis() - activeState.getLastModifiedTime();
-        if (timeSinceModified > 5000) {  // 5 second delay for rapid command bursts (Arduino uploads, etc)
+        if (timeSinceModified > 1000) {  // 5 second delay for rapid command bursts (Arduino uploads, etc)
             slowReason = "auto-save";
             unsigned long saveStart = micros();
             

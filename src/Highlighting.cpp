@@ -10,6 +10,7 @@
 #include "Peripherals.h"
 #include "ArduinoStuff.h"
 #include "Probing.h"
+#include "MeasureMode.h"  // For MEASUREMODE_TAKES_PRECEDENCE macro
 #include "RotaryEncoder.h"
 #include "config.h"
 #include "hardware/i2c.h"
@@ -75,115 +76,27 @@ ServiceStatus Highlighting::service() {
         }
         // If not handled, button press will be processed by other systems (menus, etc.)
     }
-    
-
-
-        // ============================================================================
-    // MEASURE MODE: Check switch position and handle continuous voltage display
-    // ============================================================================
-    // switchPosition: 0 = measure, 1 = select
-    // 
-    // CRITICAL: Avoid interfering with INA219 current sensing for switch detection.
-    // - Don't read pads within 10ms of probe current check
-    // - Require stable probe readings before accepting a new node
-    // - Use debounced switch position tracking
-    
-    // Probe reading stability tracking for measure mode
-    static int measureModeLastProbeReading = -1;
-    static int measureModeStableCount = 0;
-    static const int MEASURE_MODE_STABLE_READINGS_REQUIRED = 10;  // Require 3 consistent readings
-    
-    // Use debounced tracking to avoid interfering with switch position detection
-    static int lastSwitchPosition = -1;
-    static unsigned long switchStableTime = 0;
-    static const unsigned long SWITCH_DEBOUNCE_MS = 300;  // Wait for stable switch position
-    static const unsigned long PROBE_CURRENT_GUARD_MS = 15;  // Don't read pads within 15ms of INA219 read
-    
-    // Track switch position changes with debounce
-    if (switchPosition != lastSwitchPosition) {
-        lastSwitchPosition = switchPosition;
-        switchStableTime = millis();
-    }
-    
-    // Only act on switch position after it's been stable for debounce period
-    bool switchStable = (millis() - switchStableTime) >= SWITCH_DEBOUNCE_MS;
-    
-    // CRITICAL: Check if we're too close to an INA219 read - if so, skip probe reading this cycle
-    unsigned long timeSinceProbeCurrentCheck = millis() - lastProbeCurrentCheckTime;
-    bool safeToReadProbe = (timeSinceProbeCurrentCheck >= PROBE_CURRENT_GUARD_MS);
-    
-    if (switchPosition == 0 && switchStable) {
-        // Switch is stably in measure mode
-        
-        // Get probe reading - but only if safe to read (not too close to INA219 check)
-        int currentProbeReading = -1;
-        if (safeToReadProbe) {
-            currentProbeReading = probing.getLastProbeReading();
-            
-            // Track consecutive stable readings
-            if (currentProbeReading > 0) {
-                if (currentProbeReading == measureModeLastProbeReading) {
-                    measureModeStableCount++;
-                } else {
-                    // Different reading - reset counter
-                    measureModeLastProbeReading = currentProbeReading;
-                    measureModeStableCount = 1;
-                }
-            } else {
-                // No reading - don't reset immediately, might just be a gap
-                // Only reset after multiple no-readings
-                if (measureModeStableCount > 0) {
-                    measureModeStableCount--;
-                }
-                if (measureModeStableCount == 0) {
-                    measureModeLastProbeReading = -1;
-                }
-            }
-        }
-        
-        // Only consider probe reading "stable" if we've seen the same value multiple times
-        bool probeReadingStable = (measureModeStableCount >= MEASURE_MODE_STABLE_READINGS_REQUIRED);
-        int stableProbeReading = probeReadingStable ? measureModeLastProbeReading : -1;
-        
-        // If measure mode is active, just update the display (no connection changes)
-        if (measureModeActive) {
-            updateMeasureModeDisplay();
-            
-            // Check if user tapped a different node (via probe) - only if stable
-            if (stableProbeReading > 0 && stableProbeReading != measureModeNode) {
-                // User tapped a different node with stable reading - switch to measuring that one
-                startMeasureMode(stableProbeReading);
-                measureModeStableCount = 0;  // Reset for next detection
-            }
-            
-            lastStatus = ServiceStatus::BUSY;
-            return lastStatus;  // Don't process other highlighting while in measure mode
-        }
-        
-        // Not in measure mode yet - check if user tapped a node (only if stable)
-        if (stableProbeReading > 0) {
-            // User tapped a node with stable reading - start measuring
-            startMeasureMode(stableProbeReading);
-            measureModeStableCount = 0;  // Reset for next detection
-            lastStatus = ServiceStatus::BUSY;
-            return lastStatus;
-        }
-        
-    } else if (switchPosition == 1) {
-        // Switch is in select mode - stop measure mode if active
-        if (measureModeActive) {
-            stopMeasureMode();
-        }
-        // Reset measure mode stability tracking when leaving measure mode
-        measureModeStableCount = 0;
-        measureModeLastProbeReading = -1;
-    }
-    
         // ============================================================================
     // CRITICAL PATH: Encoder highlighting - MUST run every loop for smooth UX
     // ============================================================================
     int encoderNetHighlighted = encoderNetHighlight();
     
+    // NOTE: Measure mode handling has been moved to the MeasureMode service
+    // (see MeasureMode.h/cpp) for cleaner separation of concerns
+    
+    // ============================================================================
+    // MEASURE MODE PRECEDENCE CHECK
+    // ============================================================================
+    // When switch is in measure mode (position 0) and MeasureMode service is active,
+    // skip probe highlighting to avoid display conflicts
+#if MEASUREMODE_TAKES_PRECEDENCE
+    if (switchPosition == 0 && measureModeService.isMeasurementActive()) {
+        // MeasureMode is handling display - skip probe highlighting entirely
+        return lastStatus;
+    }
+#endif
+    
+
     // Get probe reading from Probing service (cheap - cached value)
     int probeReading = probing.getLastProbeReading();
     
@@ -1970,200 +1883,12 @@ void Highlighting::adjustDACVoltage(int dac) {
 }
 
 // ============================================================================
-// Measure Mode Implementation
+// NOTE: Measure Mode Implementation has been moved to MeasureMode.cpp
 // ============================================================================
-// When switch is in measure position and user taps a pad, connect an ADC
-// and continuously display the voltage until switch changes or different node tapped
-
-/**
- * @brief Find an unused ADC channel (not connected to any node)
- * 
- * Checks ADC0-ADC4 for availability. ADC7 is reserved for probe.
- * 
- * @return ADC channel number (0-4), or -1 if all are in use
- */
-int Highlighting::findUnusedADC(void) {
-    // ADC defines: ADC0=110, ADC1=111, ADC2=112, ADC3=113, ADC4=114
-    // ADC7=115 is reserved for probe
-    const int adcDefines[] = { ADC0, ADC1, ADC2, ADC3, ADC4 };
-    
-    for (int i = 0; i < 5; i++) {
-        bool inUse = false;
-        
-        // Check if this ADC is connected to anything in bridges
-        for (int b = 0; b < globalState.connections.numBridges; b++) {
-            if (globalState.connections.bridges[b][0] == adcDefines[i] ||
-                globalState.connections.bridges[b][1] == adcDefines[i]) {
-                inUse = true;
-                break;
-            }
-        }
-        
-        if (!inUse) {
-            return i;  // Return channel number 0-4
-        }
-    }
-    
-    return -1;  // All ADCs in use
-}
-
-/**
- * @brief Start continuous voltage measurement on a node
- * 
- * Finds an unused ADC, connects it to the node, and begins
- * continuous voltage display on OLED and serial.
- * 
- * @param node The breadboard node to measure (1-60, or nano header nodes)
- */
-void Highlighting::startMeasureMode(int node) {
-    // Don't start if already measuring this node
-    if (measureModeActive && measureModeNode == node) {
-        return;
-    }
-    
-    // Stop any existing measurement first
-    if (measureModeActive) {
-        stopMeasureMode();
-    }
-    
-    // Find an unused ADC
-    int adcChannel = findUnusedADC();
-    if (adcChannel == -1) {
-        // No ADC available - show error briefly
-        Serial.print("\r                                        \r");
-        Serial.print("No ADC available");
-        oled.clearPrintShow("No ADC\navailable", 2, true, true, true);
-        return;
-    }
-    
-    // Convert channel number to ADC define
-    const int adcDefines[] = { ADC0, ADC1, ADC2, ADC3, ADC4 };
-    measureModeADC = adcChannel;
-    measureModeADCDefine = adcDefines[adcChannel];
-    measureModeNode = node;
-    
-    // Connect ADC to the node - TEMPORARY connection that should NEVER be saved
-    // CRITICAL: Use globalState.addConnection() directly without markDirty()
-    // This ensures the connection is never saved to the slot file
-    String errorMsg;
-    globalState.addConnection(node, measureModeADCDefine, errorMsg, 0);
-
-    
-    // DO NOT call globalState.markDirty() - this keeps it temporary
-
-
-    // addBridgeToState(node, measureModeADCDefine);
-
-
-
-    refreshLocalConnections(0, 0, 0);  // Silent refresh - no LED update
-    waitCore2();
-    
-    measureModeActive = true;
-    lastMeasureUpdateTime = 0;  // Force immediate first update
-    
-    // Highlight the node being measured (minimal LED change)
-    brightenNet(node);
-}
-
-/**
- * @brief Stop continuous voltage measurement
- * 
- * Disconnects the ADC from the node and clears the display.
- */
-void Highlighting::stopMeasureMode(void) {
-    if (!measureModeActive) {
-        return;
-    }
-    
-    // Remove the temporary ADC connection - NEVER save this change
-    // CRITICAL: Use globalState.removeConnection() directly without markDirty()
-    if (measureModeNode != -1 && measureModeADCDefine != -1) {
-        String errorMsg;
-        globalState.removeConnection(measureModeNode, measureModeADCDefine, errorMsg);
-        // DO NOT call globalState.markDirty() - keep this temporary
-        
-        // Use -1 for LED option to force clear before showing updated state
-        refreshLocalConnections(-1, 0, 0);
-        waitCore2();
-    }
-    
-    measureModeActive = false;
-    measureModeNode = -1;
-    measureModeADC = -1;
-    measureModeADCDefine = -1;
-    
-    // Clear all highlighting state
-    brightenedNode = -1;
-    brightenedNet = -1;
-    brightenedRail = -1;
-    highlightedNet = -1;
-    clearHighlighting();
-    
-    // Force LED update with clear
-    showLEDsCore2 = -1;  // Negative triggers clearBeforeSend for full refresh
-}
-
-/**
- * @brief Update the OLED and serial display with current voltage reading
- * 
- * Called periodically while measure mode is active.
- * Uses rate limiting and voltage smoothing to avoid noisy readings.
- */
-void Highlighting::updateMeasureModeDisplay(void) {
-    if (!measureModeActive || measureModeADC < 0) {
-        return;
-    }
-    
-    unsigned long now = millis();
-    if (now - lastMeasureUpdateTime < MEASURE_UPDATE_INTERVAL_MS) {
-        return;  // Rate limit updates
-    }
-    lastMeasureUpdateTime = now;
-    
-    // CRITICAL: Don't read ADC too close to an INA219 probe current check
-    // This avoids interference that could cause switch position detection issues
-    if ((now - lastProbeCurrentCheckTime) < 10) {
-        return;  // Skip this update cycle - too close to INA219 read
-    }
-    
-    // Voltage smoothing using exponential moving average
-    static float smoothedVoltage = 0.0f;
-    static bool firstReading = true;
-    static const float SMOOTHING_FACTOR = 0.3f;  // 0.0-1.0, lower = smoother but slower response
-    
-    // Read voltage from the ADC (more samples for stability)
-    float rawVoltage = readAdcVoltage(measureModeADC, 32);
-    
-    // Apply exponential moving average for smoothing
-    if (firstReading) {
-        smoothedVoltage = rawVoltage;
-        firstReading = false;
-    } else {
-        smoothedVoltage = (SMOOTHING_FACTOR * rawVoltage) + ((1.0f - SMOOTHING_FACTOR) * smoothedVoltage);
-    }
-
-    if (smoothedVoltage == -0.00f) {
-        smoothedVoltage = 0.00f;
-    }
-    
-    // Reset smoothing state when node changes
-    static int lastDisplayedNode = -1;
-    if (measureModeNode != lastDisplayedNode) {
-        smoothedVoltage = rawVoltage;  // Reset to current reading for new node
-        lastDisplayedNode = measureModeNode;
-    }
-    
-    // Format voltage and node info for OLED
-    char oledString[30];
-    sprintf(oledString, "%s\n  % .2f V", definesToChar(measureModeNode, 0), smoothedVoltage);
-    
-    // Update OLED display
-    oled.clearPrintShow(oledString, 2, true, true, true);
-    
-    // Update serial output (clear line first)
-    Serial.print("                                        \r");
-    Serial.print(smoothedVoltage, 2);
-    Serial.print(" V  row ");
-    Serial.print(definesToChar(measureModeNode, 0));
-}
+// The measure mode functionality is now handled by the MeasureMode service,
+// which provides:
+// - Ephemeral connections (never saved to YAML)
+// - Node validation (ignores special function pads)
+// - Optional oscilloscope display
+// - Extensible measurement types for future expansion
+// See MeasureMode.h and MeasureMode.cpp for the implementation.
