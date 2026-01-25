@@ -65,6 +65,14 @@ struct config {
         int rail_priority = 1;
     } routing;
 
+            // USB CDC settings for flow control behavior
+            struct usb_cdc {
+                // When true, ignore DTR line state - allows communication with hosts
+                // that don't set DTR (some industrial software, custom applications)
+                // Default: false (normal behavior - require DTR for connection)
+                bool ignore_dtr = true;
+            } usb_cdc;
+
     struct calibration {
         int top_rail_zero = 1650;
         float top_rail_spread = 21.5;
@@ -164,6 +172,8 @@ struct config {
             int show_in_terminal = 0;
             char startup_message[33] = ""; // Startup message for OLED (max 32 chars + null terminator)
         } top_oled;
+
+
     
 };
 

@@ -34,6 +34,9 @@
 #include "config.h"
 #include "configManager.h"
 
+// Global flag for DTR ignore mode - can be updated at runtime from config
+volatile bool g_usb_ignore_dtr = false;
+
 // Add missing interface name constants
 #define USB_HID_NAME     "JL HID Interface"
 #define USB_MIDI_NAME    "JL MIDI Interface"  
@@ -45,6 +48,9 @@ extern "C" {
 extern uint8_t const * __real_tud_descriptor_device_cb(void);
 extern uint8_t const * __real_tud_descriptor_configuration_cb(uint8_t index);
 extern uint16_t const * __real_tud_descriptor_string_cb(uint8_t index, uint16_t langid);
+
+// Declare the real CDC connected function for linker wrapping
+extern bool __real_tud_cdc_n_connected(uint8_t itf);
 
 //--------------------------------------------------------------------+
 // Device Descriptors
@@ -369,6 +375,56 @@ uint16_t const* __wrap_tud_descriptor_string_cb(uint8_t index, uint16_t langid)
   _desc_str[0] = (TUSB_DESC_STRING << 8 ) | (2*chr_count + 2);
 
   return _desc_str;
+}
+
+//--------------------------------------------------------------------+
+// CDC DTR Ignore Support
+//--------------------------------------------------------------------+
+// Wrapped function that intercepts tud_cdc_n_connected() calls
+// When ignore_dtr is enabled, always returns true if USB device is ready
+// This allows communication with hosts that don't set the DTR line
+__attribute__((used))
+bool __wrap_tud_cdc_n_connected(uint8_t itf)
+{
+  // If DTR ignore mode is enabled, just check if USB is ready
+  // (not if DTR is set by the host)
+  if (g_usb_ignore_dtr) {
+    return tud_ready();
+  }
+  
+  // Otherwise, use the original behavior which requires DTR to be set
+  return __real_tud_cdc_n_connected(itf);
+}
+
+// Initialize CDC configuration based on jumperlessConfig
+// Call this after config is loaded but before USB enumeration if possible
+// Can also be called at runtime to change behavior
+void usb_cdc_apply_config(void)
+{
+  // Update global flag from config
+  // This flag is checked by __wrap_tud_cdc_n_connected() to bypass DTR checking
+  g_usb_ignore_dtr = jumperlessConfig.usb_cdc.ignore_dtr;
+  
+  if (g_usb_ignore_dtr) {
+    Serial.println("USB CDC: DTR ignore mode ENABLED");
+    Serial.println("  - Connection will work without DTR signal from host");
+  }
+}
+
+// Getter for the current DTR ignore state
+bool usb_cdc_get_ignore_dtr(void)
+{
+  return g_usb_ignore_dtr;
+}
+
+// Setter for DTR ignore mode - allows runtime changes
+void usb_cdc_set_ignore_dtr(bool ignore)
+{
+  g_usb_ignore_dtr = ignore;
+  jumperlessConfig.usb_cdc.ignore_dtr = ignore;
+  
+  // Re-apply configuration
+  usb_cdc_apply_config();
 }
 
 } // extern "C" 

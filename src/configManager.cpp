@@ -15,6 +15,7 @@
 #include "Apps.h"
 #include "Jerial.h" // TermControl is now part of Jerial
 #include "externVars.h"  // For fs_mutex filesystem synchronization
+#include "usb_interface_config.h"  // For USB CDC DTR ignore configuration
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -730,6 +731,9 @@ void updateConfigFromFile(const char* filename) {
                     jumperlessConfig.top_oled.startup_message[len] = '\0';
                 }
             }
+        } else if (strcmp(section, "usb_cdc") == 0) {
+            // USB CDC flow control settings
+            if (strcmp(key, "ignore_dtr") == 0) jumperlessConfig.usb_cdc.ignore_dtr = parseBool(value);
         }
     }
     safeFileClose(file, false);  // Read-only, no flush
@@ -1060,6 +1064,12 @@ void saveConfigToFile(const char* filename) {
     file.print("font = "); file.print(jumperlessConfig.top_oled.font); file.println(";");
     file.print("startup_message = "); file.print(jumperlessConfig.top_oled.startup_message); file.println("");
     file.println();
+    
+    // Write usb_cdc section
+    file.println("[usb_cdc]");
+    file.print("ignore_dtr = "); file.print(jumperlessConfig.usb_cdc.ignore_dtr ? 1 : 0); file.println(";");
+    file.println();
+    
     file.flush();
     safeFileClose(file, true);  // Write mode, needs flush
     unpauseCore2ForFlash(was_paused);
@@ -1242,7 +1252,7 @@ static bool configFileIsComplete(const char* fileContent) {
     const char* requiredSections[] = {
         "[config]", "[firmware]", "[hardware]", "[dacs]", "[debug]",
         "[routing]", "[calibration]", "[logo_pads]", "[display]",
-        "[serial_1]", "[serial_2]", "[top_oled]"
+        "[serial_1]", "[serial_2]", "[top_oled]", "[usb_cdc]"
     };
     const int numRequired = sizeof(requiredSections) / sizeof(requiredSections[0]);
     
@@ -1786,6 +1796,13 @@ void saveConfigIncremental(const char* filename) {
                     updated = true;
                 }
             }
+            //! [usb_cdc] section
+            else if (strcmp(currentSection, "usb_cdc") == 0) {
+                if (strcmp(key, "ignore_dtr") == 0) {
+                    snprintf(newLine, sizeof(newLine), "ignore_dtr = %d;", jumperlessConfig.usb_cdc.ignore_dtr ? 1 : 0);
+                    updated = true;
+                }
+            }
             
             if (updated) {
                 int written = snprintf(dstPos, dstEnd - dstPos, "%s\n", newLine);
@@ -2224,6 +2241,10 @@ void loadConfig(void) {
     // This allows saveConfig() to skip writes when nothing has changed
     updateShadowConfig();
     
+    // Apply USB CDC configuration (DTR ignore mode)
+    // This must be called after config is loaded to apply the ignore_dtr setting
+    usb_cdc_apply_config();
+    
     // Defer initChipStatus to reduce startup time - it can be done later
     // initChipStatus();
 }
@@ -2241,6 +2262,7 @@ int parseSectionName(const char* sectionName) {
     else if (strcmp(sectionName, "serial_1") == 0) return 7;
     else if (strcmp(sectionName, "serial_2") == 0) return 8;
     else if (strcmp(sectionName, "top_oled") == 0) return 9;
+    else if (strcmp(sectionName, "usb_cdc") == 0) return 11;
     return -1;
 }
 
@@ -2524,6 +2546,13 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("font = "); Serial.print(getFontString(jumperlessConfig.top_oled.font)); Serial.println(";");
         if (pasteable == true) Serial.print("`[top_oled] ");
         Serial.print("startup_message = "); Serial.print(jumperlessConfig.top_oled.startup_message); Serial.println("");
+    }
+    cycleTerminalColor();
+    // Print usb_cdc section
+    if (section == -1 || section == 11) {
+        Serial.print("\n`[usb_cdc] ");
+        if (pasteable == false) Serial.println();
+        Serial.print("ignore_dtr = "); Serial.print(getStringFromTable(jumperlessConfig.usb_cdc.ignore_dtr, boolTable)); Serial.println(";");
     }
     cycleTerminalColor();
     // if (section == -1) {
@@ -3307,6 +3336,9 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "stack_dacs") == 0) sprintf(oldValue, "%d", jumperlessConfig.routing.stack_dacs);
         else if (strcmp(key, "rail_priority") == 0) sprintf(oldValue, "%d", jumperlessConfig.routing.rail_priority);
     }
+    else if (strcmp(section, "usb_cdc") == 0) {
+        if (strcmp(key, "ignore_dtr") == 0) sprintf(oldValue, "%d", jumperlessConfig.usb_cdc.ignore_dtr);
+    }
     else if (strcmp(section, "calibration") == 0) {
         if (strcmp(key, "top_rail_zero") == 0) sprintf(oldValue, "%d", jumperlessConfig.calibration.top_rail_zero);
         else if (strcmp(key, "top_rail_spread") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.calibration.top_rail_spread);
@@ -3431,6 +3463,13 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "stack_rails") == 0) jumperlessConfig.routing.stack_rails = parseInt(value);
         else if (strcmp(key, "stack_dacs") == 0) jumperlessConfig.routing.stack_dacs = parseInt(value);
         else if (strcmp(key, "rail_priority") == 0) jumperlessConfig.routing.rail_priority = parseInt(value);
+    }
+    else if (strcmp(section, "usb_cdc") == 0) {
+        if (strcmp(key, "ignore_dtr") == 0) {
+            jumperlessConfig.usb_cdc.ignore_dtr = parseBool(value);
+            // Apply USB CDC config immediately so the change takes effect
+            usb_cdc_apply_config();
+        }
     }
     else if (strcmp(section, "calibration") == 0) {
         if (strcmp(key, "top_rail_zero") == 0) jumperlessConfig.calibration.top_rail_zero = parseInt(value);
@@ -3758,7 +3797,8 @@ bool fastParseAndUpdateConfig(const char* configString) {
         strcmp(section, "gpio") != 0 && 
         strcmp(section, "serial_1") != 0 && 
         strcmp(section, "serial_2") != 0 && 
-        strcmp(section, "top_oled") != 0) {
+        strcmp(section, "top_oled") != 0 &&
+        strcmp(section, "usb_cdc") != 0) {
         Serial.println("section not found");
         Serial.println(section);
         return false;

@@ -1,6 +1,7 @@
 #ifndef USB_INTERFACE_CONFIG_H
 #define USB_INTERFACE_CONFIG_H
 #include <stdint.h>
+#include <stdbool.h>  // For bool type in C
 // Note: Don't include config.h here - it causes preprocessor issues
 // We'll handle dynamic naming in the USB descriptor callback
 
@@ -79,5 +80,31 @@ enum {
 
   ITF_NUM_TOTAL
 };
+
+// =============================================================================
+// USB CDC Flow Control Configuration
+// =============================================================================
+// These functions allow ignoring DTR/RTS flow control signals from the host.
+// This is useful for hosts that don't set DTR (industrial software, custom apps).
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Global flag indicating whether to ignore DTR for connection status
+extern volatile bool g_usb_ignore_dtr;
+
+// Apply CDC configuration from jumperlessConfig - call after config is loaded
+void usb_cdc_apply_config(void);
+
+// Get current DTR ignore state
+bool usb_cdc_get_ignore_dtr(void);
+
+// Set DTR ignore mode at runtime (also updates config)
+void usb_cdc_set_ignore_dtr(bool ignore);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // USB_INTERFACE_CONFIG_H 
