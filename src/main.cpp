@@ -118,7 +118,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.3.1"; //! remember to update this
+const char firmwareVersion[] = "5.6.3.2"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -320,10 +320,11 @@ void setup( ) {
     jOS.registerService( &singleCharCommands ); // NORMAL - command execution (synchronous, not periodic)
 
     // LOW priority services - background tasks
-    jOS.registerService( &oledService );       // LOW - display updates
-    jOS.registerService( &probeSwitch );       // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );         // LOW - expensive ADC pad reading
-    jOS.registerService( &configSaveService ); // LOW - background config save (non-blocking)
+    jOS.registerService( &oledService );          // LOW - display updates
+    jOS.registerService( &liveCrossbarService );  // LOW - live crossbar terminal display
+    jOS.registerService( &probeSwitch );          // LOW - switch position (not time-critical)
+    jOS.registerService( &probePads );            // LOW - expensive ADC pad reading
+    jOS.registerService( &configSaveService );    // LOW - background config save (non-blocking)
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts

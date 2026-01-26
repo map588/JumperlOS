@@ -19,6 +19,7 @@ extern size_t strlen(const char *str);
 extern char *strcpy(char *dest, const char *src);
 #endif
 
+#include "CH446Q.h"
 #include "Commands.h"
 #include "Graphics.h"
 #include "JumperlessDefines.h"
@@ -1625,6 +1626,9 @@ void bridgesToPaths(
   unsigned long btp_total = micros() - btp_start;
   Serial.print("  bridgesToPaths TOTAL: "); Serial.print(btp_total); Serial.println(" us");
   #endif
+  
+  // Update live crossbar display if enabled
+  updateLiveCrossbarDisplay();
 }
 
 void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
@@ -4342,6 +4346,8 @@ void couldntFindPath(int forcePrint) {
 }
 
 void resolveUncommittedHops2(void) {}
+
+
   const int freeXSearchOrder[12][16] = {
       // this disallows bounces from sf x pins that would cause problems (5V, GND, etc.)
       {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},        // a
@@ -4450,6 +4456,13 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
                   continue; // Connected chip's X is occupied by different net
                 }
               }
+            } else if (connectedChip >= 8) {
+              // This X connects to an SF chip - check the SF chip's Y position
+              // SF chip Y[bbChipIndex] connects to BB chip[bbChipIndex]
+              int sfYPosition = targetChip; // The BB chip index determines which Y on the SF chip
+              if (!freeOrSameNetY(connectedChip, sfYPosition, globalState.connections.paths[i].net, allowStacking)) {
+                continue; // SF chip's Y is occupied by different net
+              }
             }
           }
           
@@ -4464,7 +4477,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
           if (success) {
             chipSuccess = setChipXStatus(targetChip, sharedX, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip X");
             
-            // For breadboard chips, also mark the connected chip's reciprocal X
+            // For breadboard chips, also mark the connected chip's reciprocal X or SF chip's Y
             if (chipSuccess && targetChip < 8) {
               int connectedChip = globalState.connections.chipStates[targetChip].xMap[sharedX];
               if (connectedChip < 8) {
@@ -4474,6 +4487,13 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
                   if (!reciprocalSuccess) {
                     chipSuccess = false;
                   }
+                }
+              } else if (connectedChip >= 8) {
+                // Mark the SF chip's Y position as used
+                int sfYPosition = targetChip; // The BB chip index determines which Y on the SF chip
+                bool sfYSuccess = setChipYStatusSafe(connectedChip, sfYPosition, globalState.connections.paths[i].net, "resolveUncommittedHops same-chip X->SF Y");
+                if (!sfYSuccess) {
+                  chipSuccess = false;
                 }
               }
             }
@@ -4527,6 +4547,13 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
                       continue; // Connected chip's X is occupied by different net
                     }
                   }
+                } else if (connectedChip >= 8) {
+                  // This X connects to an SF chip - check the SF chip's Y position
+                  // SF chip Y[bbChipIndex] connects to BB chip[bbChipIndex]
+                  int sfYPosition = globalState.connections.paths[i].chip[pos]; // The BB chip index determines which Y on the SF chip
+                  if (!freeOrSameNetY(connectedChip, sfYPosition, globalState.connections.paths[i].net, allowStacking)) {
+                    continue; // SF chip's Y is occupied by different net
+                  }
                 }
               }
               
@@ -4540,7 +4567,7 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
               if (pathXSuccess) {
                 chipXSuccess = setChipXStatus(globalState.connections.paths[i].chip[pos], freeX, globalState.connections.paths[i].net, "resolveUncommittedHops X");
                 
-                // For breadboard chips, also mark the connected chip's reciprocal X
+                // For breadboard chips, also mark the connected chip's reciprocal X or SF chip's Y
                 if (chipXSuccess && globalState.connections.paths[i].chip[pos] < 8) {
                   int connectedChip = globalState.connections.chipStates[globalState.connections.paths[i].chip[pos]].xMap[freeX];
                   if (connectedChip < 8) {
@@ -4550,6 +4577,13 @@ void resolveUncommittedHops(int allowStacking, int powerOnly,
                       if (!reciprocalSuccess) {
                         chipXSuccess = false;
                       }
+                    }
+                  } else if (connectedChip >= 8) {
+                    // Mark the SF chip's Y position as used
+                    int sfYPosition = globalState.connections.paths[i].chip[pos]; // The BB chip index determines which Y on the SF chip
+                    bool sfYSuccess = setChipYStatusSafe(connectedChip, sfYPosition, globalState.connections.paths[i].net, "resolveUncommittedHops X->SF Y");
+                    if (!sfYSuccess) {
+                      chipXSuccess = false;
                     }
                   }
                 }

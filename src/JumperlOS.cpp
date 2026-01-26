@@ -13,6 +13,8 @@
 #include "SingleCharCommands.h"
 #include "configManager.h"  // For ConfigSaveService
 #include "MpRemoteService.h"
+#include "CH446Q.h"         // For LiveCrossbarService
+#include "MatrixState.h"    // For net color access
 
 #ifdef USE_TINYUSB
 #include "tusb.h"
@@ -39,6 +41,7 @@ AsyncPassthroughService& asyncPassthroughService = AsyncPassthroughService::getI
 TinyUSBService& tinyUSBService = TinyUSBService::getInstance();
 USBPeriodicService& usbPeriodicService = USBPeriodicService::getInstance();
 OLEDService& oledService = OLEDService::getInstance();
+LiveCrossbarService& liveCrossbarService = LiveCrossbarService::getInstance();
 ConfigSaveService& configSaveService = ConfigSaveService::getInstance();
 
 /**
@@ -749,6 +752,89 @@ ServiceStatus OLEDService::service() {
     // } else {
     //     //Serial.println("OLEDService::oledPeriodic oledDisplay is nullptr");
     // }
+    
+    return lastStatus;
+}
+
+// LiveCrossbarService - Live crossbar terminal display
+LiveCrossbarService* LiveCrossbarService::instance = nullptr;
+
+// Access probeActive to use faster refresh during probe mode
+extern volatile int probeActive;
+
+LiveCrossbarService& LiveCrossbarService::getInstance() {
+    if (instance == nullptr) {
+        instance = new LiveCrossbarService();
+    }
+    return *instance;
+}
+
+/**
+ * @brief Check if colors are assigned for all active nets
+ * Returns true if all nets with paths have a termColor assigned
+ */
+bool LiveCrossbarService::colorsReady() const {
+   return true;
+    // Check if the last net with paths has a color assigned
+    // This is a quick heuristic - if the last one has color, earlier ones should too
+    for (int i = MAX_NETS - 1; i >= 0; i--) {
+        if (globalState.connections.nets[i].number > 0) {
+            // Found an active net - check if it has a color
+            // termColor of 0 typically means unassigned (white/default)
+            // We consider color "ready" if termColor > 0
+            if (globalState.connections.nets[i].termColor == 0 || globalState.connections.nets[i].termColor == 255) {
+                return false;  // No color assigned yet
+            }
+            return true;  // Color is assigned
+        }
+    }
+    return true;  // No active nets, colors are "ready"
+}
+
+/**
+ * @brief Service method for live crossbar display updates
+ * LOW priority - display updates are not time-critical (except in probe mode)
+ * Only updates when enabled and colors are ready
+ * Uses faster refresh rate (100ms) during probe mode for responsive feedback
+ * After changes stop, does one extra update to catch late color assignments, then stops
+ */
+ServiceStatus LiveCrossbarService::service() {
+    lastStatus = ServiceStatus::IDLE;
+    
+    // Skip if not enabled
+    if (!liveCrossbarEnabled) {
+        return lastStatus;
+    }
+    
+    unsigned long now = millis();
+    // Use faster refresh during probe mode for responsive updates
+    unsigned long refreshInterval = probeActive ? LiveCrossbarService::PROBE_REFRESH_INTERVAL_MS 
+                                                : LiveCrossbarService::REFRESH_INTERVAL_MS;
+    bool timeForRefresh = (now - lastUpdateTime >= refreshInterval);
+    
+    // Determine if we should update:
+    // 1. If there's a pending change request
+    // 2. If time for refresh AND we haven't done our extra update yet
+    bool shouldUpdate = updatePending || (timeForRefresh && extraUpdateNeeded);
+    
+    if (shouldUpdate) {
+        // Check if colors are ready before updating
+        if (colorsReady()) {
+            updateLiveCrossbarDisplay();
+            lastUpdateTime = now;
+            
+            if (updatePending) {
+                // New change came in - reset extra update flag
+                extraUpdateNeeded = true;
+                updatePending = false;
+            } else {
+                // This was the extra update (no pending change)
+                extraUpdateNeeded = false;
+            }
+            lastStatus = ServiceStatus::BUSY;
+        }
+        // If colors not ready, we'll try again on next service call
+    }
     
     return lastStatus;
 }

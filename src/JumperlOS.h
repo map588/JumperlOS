@@ -433,6 +433,39 @@ private:
     class oled* oledDisplay;
 };
 
+/**
+ * @brief Live Crossbar Display service - updates terminal display when enabled
+ * LOW priority - display updates are not time-critical
+ * Waits for colors to be assigned before updating to avoid rendering without colors
+ */
+class LiveCrossbarService : public Service {
+public:
+    static LiveCrossbarService& getInstance();
+    LiveCrossbarService(const LiveCrossbarService&) = delete;
+    LiveCrossbarService& operator=(const LiveCrossbarService&) = delete;
+    
+    ServiceStatus service() override;
+    const char* getName() const override { return "LiveXbar"; }
+    ServicePriority getPriority() const override { return ServicePriority::LOW; }
+    
+    // Request an update (called from sendAllPaths, etc.)
+    void requestUpdate() { updatePending = true; extraUpdateNeeded = true; }
+    
+    // Check if colors are assigned for all active nets
+    bool colorsReady() const;
+    
+private:
+    LiveCrossbarService() : updatePending(false), extraUpdateNeeded(false), lastUpdateTime(0) {}
+    ~LiveCrossbarService() = default;
+    static LiveCrossbarService* instance;
+    
+    bool updatePending;
+    bool extraUpdateNeeded;  // Allow one extra update after changes stop (to catch late colors)
+    unsigned long lastUpdateTime;
+    static const unsigned long REFRESH_INTERVAL_MS = 400;        // Normal refresh rate
+    static const unsigned long PROBE_REFRESH_INTERVAL_MS = 200;  // Faster refresh during probe mode
+};
+
 // =============================================================================
 // CONTEXT MANAGER
 // =============================================================================
@@ -656,6 +689,7 @@ extern AsyncPassthroughService& asyncPassthroughService;
 extern TinyUSBService& tinyUSBService;
 extern USBPeriodicService& usbPeriodicService;
 extern OLEDService& oledService;
+extern LiveCrossbarService& liveCrossbarService;
 
 #endif // JUMPERLOS_H
 

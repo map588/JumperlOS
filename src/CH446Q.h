@@ -59,7 +59,15 @@ void createXYarray(void);
 void refreshPaths(void);
 void sortPathsByChipXY(void);
 void printChipStateArray(void);
+void printChipStateArrayColor(void);  // Color-coded version showing net ownership
+void printChipStateArrayColorCompact(int chipsPerRow = 6, char blankChar = ' ');  // Compact color version
 void updateChipStateArray(void);
+
+// Live crossbar display - shows at top of terminal, updates on connection changes
+// Use LiveCrossbarService for periodic refresh (via jOS.serviceAll())
+extern bool liveCrossbarEnabled;
+void setLiveCrossbarEnabled(bool enabled);
+void updateLiveCrossbarDisplay(void);  // Called by LiveCrossbarService
 void createChipOrderedIndex(void);
 void printLastChipStateArray(void);
 

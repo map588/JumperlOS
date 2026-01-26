@@ -70,7 +70,7 @@ struct config {
                 // When true, ignore DTR line state - allows communication with hosts
                 // that don't set DTR (some industrial software, custom applications)
                 // Default: false (normal behavior - require DTR for connection)
-                bool ignore_dtr = true;
+                bool ignore_dtr = false;
             } usb_cdc;
 
     struct calibration {

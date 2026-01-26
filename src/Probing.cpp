@@ -749,7 +749,7 @@ volatile uint32_t globalEncoderCursorColor = 0x4500e8; // Cursor color
 
 
 unsigned long idleTime = millis( );
-unsigned long idleSaveTime = 1000;
+unsigned long idleSaveTime = 3000;
 
 
 /**
@@ -1615,10 +1615,13 @@ restartProbingNoPrint:
         // Serial.flush();
         // lastLoopTime = millis();
 
-        delayMicroseconds( 200 ); // Reduced from 500 for faster encoder response
+        delayMicroseconds( 20 ); // Reduced from 500 for faster encoder response
 
         // Keep critical services (like ProbeButton) running during blocking probeMode
         jOS.serviceCritical( );
+        
+        // Service live crossbar display during probe mode for real-time updates
+        liveCrossbarService.service( );
         
         // rotaryEncoderStuff();  // Update encoder state
 

@@ -328,7 +328,7 @@ int row = 0;
     // Add 20% buffer zone on each side to ensure reliable detection
     float midpoint = ( measureAvg + selectAvg ) / 2.0;
     float range = fabs( selectAvg - measureAvg );
-    float buffer = range * 0.25; // 5% buffer
+    float buffer = range * 0.05; // 5% buffer
 
     // Ensure MEASURE mode is always the lower value
     float lowerAvg = min( measureAvg, selectAvg );

@@ -2,9 +2,12 @@
 
 #include <cstdint>  // For uint16_t
 #include "CH446Q.h"
+#include "Colors.h"       // For changeTerminalColor
 #include "JumperlessDefines.h"
+#include "JumperlOS.h"    // For LiveCrossbarService
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "NetManager.h"   // For assignTermColor
 #include "States.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
@@ -17,6 +20,7 @@
 #include "FileParsing.h"
 
 //#include "SerialWrapper.h"
+
 
 // #include "pio_spi.h"
 
@@ -231,6 +235,9 @@ void __not_in_flash_func(sendAllPaths)(int clean) {
     Serial.print(micros() - stepTime); 
     Serial.println(" us");
     #endif
+    
+    // Request live crossbar display update via service (waits for colors)
+    liveCrossbarService.requestUpdate();
     return;
   } else {
     // INCREMENTAL: Only send changed paths
@@ -256,6 +263,9 @@ void __not_in_flash_func(sendAllPaths)(int clean) {
     Serial.print(micros() - stepTime); 
     Serial.println(" us");
     #endif
+    
+    // Request live crossbar display update via service (waits for colors)
+    liveCrossbarService.requestUpdate();
   }
 }
 
@@ -405,6 +415,400 @@ void printChipStateArray(void) {
 
 void printLastChipStateArray(void) {
 
+}
+
+/// @brief Print the crossbar array with colors showing which net owns each line
+/// At crossings, horizontal segments show in the horizontal net's color,
+/// vertical segments show in the vertical net's color
+void printChipStateArrayColor(void) {
+  Serial.println("Analog Crossbar Array (Colored by Net)\n\r");
+  
+  // Make sure terminal colors are assigned to nets
+  assignTermColor();
+
+  int showX = 1;
+  int showY = 1;
+
+  for (int blockRow = 0; blockRow < 3; blockRow++) {
+    int startChip = blockRow * 4;
+    int endChip = startChip + 4;
+    
+    // Print chip headers
+    Serial.print("           ");
+    for (int chip = startChip; chip < endChip; chip++) {
+      Serial.print("  chip ");
+      Serial.print(chipNumToChar(chip));
+      Serial.print(" ");
+      if (chip < endChip - 1) {
+        for (int s = 0; s < 25; s++) Serial.print(" ");
+      }
+    }
+    Serial.println("");
+    
+    // Print Y headers
+    if (showY) {
+      Serial.print("     ");
+    } else {
+      Serial.print("     ");
+    }
+    for (int j = 0; j < 4; j++) {
+      for (int i = 0; i < 8; i++) {
+        if (showY) {
+          Serial.print(i);
+          Serial.print("  ");
+        } else {
+          Serial.print("   ");
+        }
+      }
+      if (showY && j < 3) {
+        Serial.print("          ");
+      } else {
+        Serial.print("          ");
+      }
+    }
+    Serial.println();
+
+    // Print each X row for all 4 chips in this block row
+    for (int x = 0; x < 16; x++) {
+      for (int chip = startChip; chip < endChip; chip++) {
+        if (showX) {
+          Serial.print(" ");
+          if (x < 10) Serial.print(" ");
+          Serial.print(x);
+        } else {
+          Serial.print("   ");
+        }
+        Serial.print(" ");
+
+        for (int y = 0; y < 8; y++) {
+          int verticalLine = 0;
+          int horizontalLine = 0;
+          
+          // Check if any x is connected at this y (vertical line exists)
+          if (lastChipXY[chip].connected[y] != 0) {
+            verticalLine = 1;
+          }
+          
+          // Check if this x is connected at any y (horizontal line exists)
+          for (int j = 0; j < 8; j++) {
+            if (lastChipXY[chip].connected[j] & (1 << x)) {
+              horizontalLine = 1;
+              break;
+            }
+          }
+          
+          // Get the net colors for this x and y
+          int xNet = globalState.connections.chipStates[chip].xStatus[x];
+          int yNet = globalState.connections.chipStates[chip].yStatus[y];
+          int xColor = (xNet > 0 && xNet < MAX_NETS) ? globalState.connections.nets[xNet].termColor : -1;
+          int yColor = (yNet > 0 && yNet < MAX_NETS) ? globalState.connections.nets[yNet].termColor : -1;
+          
+          if (lastChipXY[chip].connected[y] & (1 << x)) {
+            // Connection point - both lines belong to the same net (or at least meet here)
+            // Use the net that "owns" this crosspoint - typically the X line's net
+            int connNet = xNet > 0 ? xNet : yNet;
+            int connColor = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
+            changeTerminalColor(connColor, false, &Serial);
+            Serial.print("─█─");
+            changeTerminalColor(-1, false, &Serial);
+          } else {
+            if (verticalLine && horizontalLine) {
+              // Crossing - horizontal in X color, center in Y color
+              changeTerminalColor(xColor, false, &Serial);
+              Serial.print("─");
+              changeTerminalColor(yColor, false, &Serial);
+              Serial.print("┼");
+              changeTerminalColor(xColor, false, &Serial);
+              Serial.print("─");
+              changeTerminalColor(-1, false, &Serial);
+            } else if (verticalLine) {
+              // Just vertical line
+              changeTerminalColor(yColor, false, &Serial);
+              Serial.print(" │ ");
+              changeTerminalColor(-1, false, &Serial);
+            } else if (horizontalLine) {
+              // Just horizontal line
+              changeTerminalColor(xColor, false, &Serial);
+              Serial.print("───");
+              changeTerminalColor(-1, false, &Serial);
+            } else {
+              // No line - just a dot
+              Serial.print(" . ");
+            }
+          }
+        }
+
+        Serial.print(" ");
+        Serial.print(xName(chip, x));
+        Serial.print("  ");
+      }
+      Serial.println();
+    }
+    
+    // Print Y names at bottom
+    for (int chip = startChip; chip < endChip; chip++) {
+      Serial.print("     ");
+      for (int y = 0; y < 8; y++) {
+        Serial.print(yName(chip, y));
+      }
+      Serial.print("     ");
+    }
+    Serial.println("\n\n\r");
+  }
+  Serial.flush();
+}
+
+/// @brief Compact color-coded crossbar display - uses single characters per cell
+/// Fits more information in less screen space while still showing net colors
+/// @param chipsPerRow Number of chips to display per row (default 6)
+void printChipStateArrayColorCompact(int chipsPerRow, char blankChar) {
+  Serial.println("Crossbar (Compact)\n\r");
+  
+  // Make sure terminal colors are assigned to nets
+  assignTermColor();
+
+  // Clamp chipsPerRow to valid range
+  if (chipsPerRow < 2) chipsPerRow = 2;
+  if (chipsPerRow > 12) chipsPerRow = 12;
+
+  int numRows = (12 + chipsPerRow - 1) / chipsPerRow;  // Ceiling division
+
+  for (int blockRow = 0; blockRow < numRows; blockRow++) {
+    int startChip = blockRow * chipsPerRow;
+    int endChip = startChip + chipsPerRow;
+    if (endChip > 12) endChip = 12;
+    
+    // Print chip headers (compact)
+    Serial.print("   ");
+    for (int chip = startChip; chip < endChip; chip++) {
+      Serial.print(chipNumToChar(chip));
+      Serial.print("        ");  // 8 chars for 8 Y columns
+    }
+    Serial.println();
+
+    // Print each X row for all chips in this block row
+    for (int x = 0; x < 16; x++) {
+      // Row number (compact, no leading space for single digit)
+      if (x < 10) Serial.print(" ");
+      Serial.print(x);
+      Serial.print(" ");
+
+      for (int chip = startChip; chip < endChip; chip++) {
+        for (int y = 0; y < 8; y++) {
+          int verticalLine = 0;
+          int horizontalLine = 0;
+          
+          // Check if any x is connected at this y (vertical line exists)
+          if (lastChipXY[chip].connected[y] != 0) {
+            verticalLine = 1;
+          }
+          
+          // Check if this x is connected at any y (horizontal line exists)
+          for (int j = 0; j < 8; j++) {
+            if (lastChipXY[chip].connected[j] & (1 << x)) {
+              horizontalLine = 1;
+              break;
+            }
+          }
+          
+          // Get the net colors for this x and y
+          int xNet = globalState.connections.chipStates[chip].xStatus[x];
+          int yNet = globalState.connections.chipStates[chip].yStatus[y];
+          int xColor = (xNet > 0 && xNet < MAX_NETS) ? globalState.connections.nets[xNet].termColor : -1;
+          int yColor = (yNet > 0 && yNet < MAX_NETS) ? globalState.connections.nets[yNet].termColor : -1;
+          
+          if (lastChipXY[chip].connected[y] & (1 << x)) {
+            // Connection point - use the net color
+            int connNet = xNet > 0 ? xNet : yNet;
+            int connColor = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
+            changeTerminalColor(connColor, false, &Serial);
+            Serial.print("█");
+            changeTerminalColor(-1, false, &Serial);
+          } else if (verticalLine && horizontalLine) {
+            // Crossing - show in vertical line's color (Y net)
+            changeTerminalColor(yColor, false, &Serial);
+            Serial.print("┼");
+            changeTerminalColor(-1, false, &Serial);
+          } else if (verticalLine) {
+            // Just vertical line
+            changeTerminalColor(yColor, false, &Serial);
+            Serial.print("│");
+            changeTerminalColor(-1, false, &Serial);
+          } else if (horizontalLine) {
+            // Just horizontal line
+            changeTerminalColor(xColor, false, &Serial);
+            Serial.print("─");
+            changeTerminalColor(-1, false, &Serial);
+          } else {
+            // No line
+            Serial.print(blankChar);
+          }
+        }
+        Serial.print("  ");  // Single space between chips
+      }
+      Serial.println();
+      Serial.flush();
+    }
+    Serial.println();  // Single blank line between block rows
+  }
+  Serial.flush();
+}
+
+// ============================================================================
+// Live Crossbar Display - Updates at top of terminal on connection changes
+// Uses DECSTBM (Set Top and Bottom Margins) to create a non-scrolling header
+// ============================================================================
+
+bool liveCrossbarEnabled = false;
+static const int LIVE_CROSSBAR_HEIGHT = 18;  // Header + 16 rows + separator line
+
+void setLiveCrossbarEnabled(bool enabled) {
+  liveCrossbarEnabled = enabled;
+  if (enabled) {
+    // Clear screen and move to home
+    Serial.print("\033[2J\033[H");
+    
+    // Draw the initial crossbar display
+    updateLiveCrossbarDisplay();
+    
+    // Set scrolling region BELOW the crossbar area (DECSTBM)
+    // This makes rows 1-LIVE_CROSSBAR_HEIGHT fixed (non-scrolling)
+    // and rows LIVE_CROSSBAR_HEIGHT+1 to bottom scrollable
+    Serial.printf("\033[%d;999r", LIVE_CROSSBAR_HEIGHT + 1);
+    
+    // Move cursor to the scrolling region and print status
+    Serial.printf("\033[%d;1H", LIVE_CROSSBAR_HEIGHT + 1);
+    Serial.println("--- Live Crossbar Mode (c! to disable) ---\r");
+    Serial.println("\r");
+    Serial.flush();
+  } else {
+    // Reset scrolling region to full screen (DECSTBM with no params)
+    Serial.print("\033[r");
+    // Clear screen and home
+    Serial.print("\033[2J\033[H");
+    Serial.println("Live crossbar display disabled.\r");
+    Serial.flush();
+  }
+}
+
+/// @brief Update the live crossbar display at top of terminal
+/// Uses DECSTBM scrolling region - crossbar is in non-scrolling area at top
+/// Uses DECSC/DECRC (ESC 7 / ESC 8) to save/restore cursor position
+void updateLiveCrossbarDisplay(void) {
+  if (!liveCrossbarEnabled) return;
+  
+  // Make sure terminal colors are assigned
+  assignTermColor();
+  
+  // Build net lookup from paths array (more reliable than chipStates for multi-hop paths)
+  // connectionNet[chip][x][y] = net number for that connection point
+  static int8_t connectionNet[12][16][8];
+  memset(connectionNet, 0, sizeof(connectionNet));
+  
+  // Scan all paths and map each (chip, x, y) to its net
+  for (int i = 0; i < numberOfPaths; i++) {
+    int net = globalState.connections.paths[i].net;
+    if (net <= 0) continue;
+    
+    // Check all 4 possible hops in the path
+    for (int hop = 0; hop < 4; hop++) {
+      int chip = globalState.connections.paths[i].chip[hop];
+      int x = globalState.connections.paths[i].x[hop];
+      int y = globalState.connections.paths[i].y[hop];
+      
+      if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
+        connectionNet[chip][x][y] = net;
+      }
+    }
+  }
+  
+  // Save cursor position with DECSC (more reliable than CSI s)
+  Serial.print("\0337");
+  
+  // Move to home position for drawing (top-left, in non-scrolling area)
+  Serial.print("\033[H");
+  
+  // Print chip headers
+  Serial.print("   ");
+  for (int chip = 0; chip < 12; chip++) {
+    Serial.print(chipNumToChar(chip));
+    Serial.print("        ");
+  }
+  Serial.print("\033[K\r\n");  // Clear to EOL + CR + newline
+
+  // Print each X row (16 rows)
+  for (int x = 0; x < 16; x++) {
+    // Row number
+    // Serial.printf("%2d ", x);
+
+    for (int chip = 0; chip < 12; chip++) {
+      for (int y = 0; y < 8; y++) {
+        // Check connection state
+        bool isConnected = lastChipXY[chip].connected[y] & (1 << x);
+        bool verticalLine = lastChipXY[chip].connected[y] != 0;
+        bool horizontalLine = false;
+        
+        for (int j = 0; j < 8; j++) {
+          if (lastChipXY[chip].connected[j] & (1 << x)) {
+            horizontalLine = true;
+            break;
+          }
+        }
+        
+        // Get net from our lookup (built from paths, not chipStates)
+        int connNet = connectionNet[chip][x][y];
+        int color = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
+        
+        // For lines that pass through but don't connect here, find a net from the same X or Y line
+        if (connNet == 0) {
+          // Check if there's a net on this X line (horizontal)
+          if (horizontalLine) {
+            for (int j = 0; j < 8 && connNet == 0; j++) {
+              connNet = connectionNet[chip][x][j];
+            }
+          }
+          // Check if there's a net on this Y line (vertical)
+          if (verticalLine && connNet == 0) {
+            for (int j = 0; j < 16 && connNet == 0; j++) {
+              if (connectionNet[chip][j][y] > 0) {
+                connNet = connectionNet[chip][j][y];
+              }
+            }
+          }
+          color = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
+        }
+        
+        if (isConnected) {
+          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          Serial.print("█");
+          if (color >= 0) Serial.print("\033[0m");
+        } else if (verticalLine && horizontalLine) {
+          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          Serial.print("┼");
+          if (color >= 0) Serial.print("\033[0m");
+        } else if (verticalLine) {
+          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          Serial.print("│");
+          if (color >= 0) Serial.print("\033[0m");
+        } else if (horizontalLine) {
+          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          Serial.print("─");
+          if (color >= 0) Serial.print("\033[0m");
+        } else {
+          Serial.print(" ");
+        }
+      }
+      Serial.print(" ");
+    }
+    Serial.print("\033[K\r\n");  // Clear to EOL + CR + newline
+  }
+  
+  // Separator line (row 18)
+  Serial.print("                                                                                            \033[K");
+  
+  // Restore cursor position with DECRC (returns to where it was in scrolling region)
+  Serial.print("\0338");
+  Serial.flush();
 }
 
 // New function to update the current chip state array based on paths

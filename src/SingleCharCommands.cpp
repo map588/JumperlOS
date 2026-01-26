@@ -6,6 +6,7 @@
 #include "SingleCharCommands.h"
 #include "Apps.h"
 #include "AsyncPassthrough.h"
+#include "CH446Q.h"
 #include "Commands.h"
 #include "Debugs.h"
 #include "FileParsing.h"
@@ -56,6 +57,9 @@ extern const int highSaturationBrightColorsCount;
 extern const int highSaturationSpectrumColorsCount;
 extern const int highSaturationSpectrumColors[];
 extern const int highSaturationBrightColors[];
+
+// Forward declarations for command handlers
+CommandResult cmd_showCrossbarFull( char c, const String& line );
 
 // ============================================================================
 // SingleCharCommands Class Implementation
@@ -192,7 +196,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\tn = show net list\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tb = show bridge array\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tc = show crossbar status\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\ts = show all slot files\n\r" );
+        // shownMenuItems += printMenuLine( showExtraMenu, 1, "\ts = show all slot files\n\r" );
         if ( showExtraMenu >= 0 ) {
             Jerial.println( );
         }
@@ -208,7 +212,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t> = send Python formatted command\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t/ = show filesystem\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\bU/u = enable/disable USB Mass Storage\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
+        // shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
         // Jerial.print("\tu = disable USB Mass Storage drive\n\r");
         // cycleTerminalColor();
@@ -466,9 +470,13 @@ void SingleCharCommands::initializeCommands( ) {
                      "Display the internal bridge array and paths.",
                      cmd_showBridgeArray, MENU_STANDARD, CAT_DISPLAY );
 
-    registerCommand( 'c', "show crossbar status",
-                     "Display the state of all crossbar switches.",
+    registerCommand( 'c', "show crossbar (c! live)",
+                     "Display crossbar - compact view. Use c! to toggle live mode.",
                      cmd_showCrossbar, MENU_STANDARD, CAT_DISPLAY );
+
+    registerCommand( 'C', "show crossbar (full)",
+                     "Display crossbar switches - full color view with details.",
+                     cmd_showCrossbarFull, MENU_STANDARD, CAT_DISPLAY );
 
     registerCommand( 's', "show all slot files",
                      "List all saved connection slots.",
@@ -1256,7 +1264,29 @@ CommandResult cmd_showBridgeArray( char c, const String& line ) {
 }
 
 CommandResult cmd_showCrossbar( char c, const String& line ) {
-    printChipStateArray( );
+    // Check if user typed 'c!' to toggle live mode
+    // Need to peek at serial buffer for the '!' since command system only consumed 'c'
+    
+    // Small delay to let the '!' arrive if user typed quickly
+    delay( 10 );
+    
+    if ( Jerial.available( ) > 0 ) {
+        char nextChar = Jerial.peek( );
+        if ( nextChar == '!' ) {
+            Jerial.read( );  // Consume the '!'
+            extern bool liveCrossbarEnabled;
+            setLiveCrossbarEnabled( !liveCrossbarEnabled );
+            return CMD_SHOW_MENU;
+        }
+    }
+    
+    // Otherwise show compact crossbar view
+    printChipStateArrayColorCompact( 12 );
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_showCrossbarFull( char c, const String& line ) {
+    printChipStateArrayColor( );  // Full detailed view with 3-char symbols
     return CMD_DONT_SHOW_MENU;
 }
 
