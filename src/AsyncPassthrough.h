@@ -62,6 +62,11 @@ namespace AsyncPassthrough {
     
     bool getTagParsingEnabled();
     
+    // Startup protection - call when system initialization is complete
+    // Tag parsing is disabled during startup to prevent crashes from early Arduino commands
+    void signalStartupComplete();
+    bool isStartupComplete();
+    
     // Apply a new UART line coding immediately (baud/data/parity/stop)
     // Keeps passthrough active while updating hardware and timing
     void applyLineCodingOverride(uint32_t baud, uint8_t data_bits, uint8_t parity, uint8_t stop_bits);

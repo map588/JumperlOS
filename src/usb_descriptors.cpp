@@ -405,10 +405,10 @@ void usb_cdc_apply_config(void)
   // This flag is checked by __wrap_tud_cdc_n_connected() to bypass DTR checking
   g_usb_ignore_dtr = jumperlessConfig.usb_cdc.ignore_dtr;
   
-  if (g_usb_ignore_dtr) {
+  // if (g_usb_ignore_dtr) {
     Serial.println("USB CDC: DTR ignore mode ENABLED");
     Serial.println("  - Connection will work without DTR signal from host");
-  }
+  // }
 }
 
 // Getter for the current DTR ignore state

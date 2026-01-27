@@ -3893,7 +3893,7 @@ ServiceStatus SlotManager::service() {
     
     if (hasDirtyState && !usbMountedByHost && !refreshLocalInProgress && !core1busy) {
         unsigned long timeSinceModified = millis() - activeState.getLastModifiedTime();
-        if (timeSinceModified > 1000) {  // 5 second delay for rapid command bursts (Arduino uploads, etc)
+        if (timeSinceModified > 2000) {  // 5 second delay for rapid command bursts (Arduino uploads, etc)
             slowReason = "auto-save";
             unsigned long saveStart = micros();
             

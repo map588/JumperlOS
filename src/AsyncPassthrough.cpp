@@ -61,8 +61,29 @@ extern JerialClass Jerial;
 // External USBSer1 (declared in ArduinoStuff.cpp) - file scope, before namespace
 extern Adafruit_USBD_CDC USBSer1;
 
+// External Arduino connection functions (from ArduinoStuff.cpp)
+extern int checkIfArduinoIsConnected(void);
+extern void connectArduino(int flashOrLocal, int refreshConnections);
+
+// External filesystem mutex (from externVars.h / main.cpp)
+// Used to check if filesystem is busy before accepting commands
+extern bool fs_mutex_try_acquire(void);
+extern void fs_mutex_release(void);
+
 bool asyncPassthroughEnabled = jumperlessConfig.serial_1.async_passthrough;
-bool asyncPassthroughTagParsingEnabled = true; // Enable tag parsing by default
+bool asyncPassthroughTagParsingEnabled = false; // DISABLED during startup - enabled after boot complete
+
+// Startup protection - system must be fully initialized before accepting tag commands
+// This prevents crashes if Arduino sends <j> commands before Jumperless is ready
+static volatile bool s_startup_complete = false;
+static const uint32_t STARTUP_TAG_PARSING_DELAY_MS = 3000;  // Minimum time before tag parsing allowed
+static uint32_t s_arduino_release_time = 0;
+
+// Track when tag parsing was re-enabled after flashing
+// Used for post-flash cooldown to ensure system stability
+static uint32_t s_tag_parsing_reenable_time = 0;
+static const uint32_t POST_FLASH_COOLDOWN_MS = 100;  // 100ms cooldown after re-enable  // When Arduino was released from reset
+static const uint32_t ARDUINO_BOOT_DELAY_MS = 700;  // Wait this long after Arduino reset release before enabling tag parsing
 
 // Tag parsing timeout support (for Arduino flashing, etc.)
 static uint32_t s_tag_parsing_timeout_ms = 0;  // 0 = no timeout
@@ -358,6 +379,32 @@ static inline uint8_t ring_peek_at( uint16_t offset ) {
     return uartReceived[ idx ];
 }
 
+// Clear ring buffer - for use during Arduino reset to discard stale data
+static inline void ring_clear( void ) {
+    uartReceivedHead = 0;
+    uartReceivedTail = 0;
+}
+
+// Flush TinyUSB CDC buffers for a specific interface
+// Used during Arduino reset to ensure clean state
+static inline void flush_cdc_buffers( uint8_t itf ) {
+    if ( !tud_inited() ) return;
+    
+    // Flush TX (anything we queued to send to host)
+    if ( tud_cdc_n_connected( itf ) ) {
+        tud_cdc_n_write_flush( itf );
+    }
+    
+    // Drain RX (discard anything host sent that we haven't processed)
+    uint8_t discard[64];
+    while ( tud_cdc_n_available( itf ) > 0 ) {
+        tud_cdc_n_read( itf, discard, sizeof( discard ) );
+    }
+}
+
+// Forward declaration for clearTagParserState used in checkDTRState
+void clearTagParserState( void );
+
 // Force UART receiver resync by disabling/re-enabling RX
 // This flushes the FIFO and forces the receiver to wait for a new start bit
 // Also clears the ring buffer since it likely contains garbage
@@ -582,6 +629,14 @@ static inline bool process_runtime_command(uint8_t c) {
                 }
                 
                 if (valid_command) {
+                    // SAFETY: Don't allow enabling tag parsing until startup is complete
+                    // This prevents crashes from early commands before system is ready
+                    if (new_state && !s_startup_complete) {
+                        // Silently ignore enable requests during startup
+                        // Tag parsing will be enabled automatically after startup completes
+                        return false;
+                    }
+                    
                     // Update RUNTIME state only (not config file)
                     asyncPassthroughTagParsingEnabled = new_state;
                     
@@ -717,6 +772,72 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                         // NEW: Use CommandBuffer for synchronous command handling
                         // This replaces the complex Jerial injection buffer system
                         if (parser->command_buffer_idx > 0) {
+                            // =========================================================
+                            // SAFETY CHECK: Startup, flashing, and filesystem protection
+                            // =========================================================
+                            // 1. Don't accept commands during startup
+                            // 2. Don't accept commands during Arduino flashing
+                            // 3. Check if filesystem is busy (might cause crash)
+                            // =========================================================
+                            
+                            if ( !s_startup_complete ) {
+                                // System not ready - silently ignore command
+                                // This prevents crashes from early Arduino commands
+                                #if DEBUG_INJECTED_COMMANDS
+                                Serial.println("Tag command ignored (startup not complete)");
+                                #endif
+                                parser->state = TAG_SEARCHING;
+                                parser->command_buffer_idx = 0;
+                                return !should_strip_tags;
+                            }
+                            
+                            // Check if Arduino is being flashed - don't process commands during this
+                            // extern declared in ArduinoStuff.h
+                            extern volatile bool flashingArduino;
+                            if ( flashingArduino ) {
+                                // Flashing in progress - ignore command to prevent crashes
+                                #if DEBUG_INJECTED_COMMANDS
+                                Serial.println("Tag command ignored (flashing in progress)");
+                                #endif
+                                parser->state = TAG_SEARCHING;
+                                parser->command_buffer_idx = 0;
+                                return !should_strip_tags;
+                            }
+                            
+                            // Check post-flash cooldown - ensure system is stable after re-enable
+                            // This prevents race conditions when Arduino sends commands immediately after boot
+                            if ( s_tag_parsing_reenable_time > 0 && 
+                                 (millis() - s_tag_parsing_reenable_time) < POST_FLASH_COOLDOWN_MS ) {
+                                // Wait for Core 2 to be idle before accepting commands
+                                extern volatile bool core2busy;
+                                if ( core2busy ) {
+                                    // Core 2 still busy - defer command
+                                    #if DEBUG_INJECTED_COMMANDS
+                                    Serial.println("Tag command deferred (post-flash cooldown, Core2 busy)");
+                                    #endif
+                                    parser->state = TAG_SEARCHING;
+                                    parser->command_buffer_idx = 0;
+                                    return !should_strip_tags;
+                                }
+                            }
+                            
+                            // Check if filesystem is busy (non-blocking check)
+                            // If busy, defer command - it will be lost but prevents crash
+                            bool fs_available = fs_mutex_try_acquire();
+                            if ( fs_available ) {
+                                // Got mutex - release immediately, we just needed to check
+                                fs_mutex_release();
+                            } else {
+                                // Filesystem is busy - can't safely process command
+                                // Better to lose the command than crash
+                                #if DEBUG_INJECTED_COMMANDS
+                                Serial.println("Tag command deferred (filesystem busy)");
+                                #endif
+                                parser->state = TAG_SEARCHING;
+                                parser->command_buffer_idx = 0;
+                                return !should_strip_tags;
+                            }
+                            
                             s_injected_commands++;
                             
                             // Determine if this is a <p> (Python) or <j> (raw) command
@@ -1166,9 +1287,11 @@ void begin( unsigned long baud ) {
     s_line_coding.stop_bits = 0; // 1 stop
     set_micros_per_byte( &s_line_coding );
     
-    // Initialize tag parsing state from config
-    // 0 = disabled, 1 = enabled, 2 = strip tags (future)
-    asyncPassthroughTagParsingEnabled = (jumperlessConfig.serial_1.tag_parsing > 0);
+    // Initialize tag parsing state - ALWAYS disabled during init
+    // Tag parsing will be enabled by signalStartupComplete() after system is fully initialized
+    // This prevents crashes from early Arduino commands before the system is ready
+    // Note: config setting is respected in signalStartupComplete() when enabling
+    asyncPassthroughTagParsingEnabled = false;
 
     // // Register default forward prefixes
     // registerForwardPrefix( "jcommand:" );
@@ -1207,36 +1330,133 @@ void task( ) {
     }
     #endif
     
-    // Check if tag parsing should be re-enabled
-    if ( !asyncPassthroughTagParsingEnabled ) {
+    // =========================================================================
+    // STARTUP PROTECTION: Auto-enable tag parsing after system is ready
+    // =========================================================================
+    // Tag parsing is DISABLED during startup to prevent crashes from Arduino
+    // commands arriving before the system is fully initialized.
+    // 
+    // Tag parsing is enabled when BOTH conditions are met:
+    //   1. s_startup_complete flag is set (signaled by main loop)
+    //   2. At least STARTUP_TAG_PARSING_DELAY_MS has elapsed (safety margin)
+    // =========================================================================
+    if ( !asyncPassthroughTagParsingEnabled && !s_startup_complete ) {
+        // Check if enough time has passed AND startup is signaled complete
+        // Note: s_startup_complete should be set by main loop when initialization is done
+        // But we also have a time-based fallback in case the signal is never sent
+        if ( millis() > STARTUP_TAG_PARSING_DELAY_MS + 1000 ) {
+            // Fallback: Enable tag parsing after 4 seconds even if not signaled
+            // This ensures tag parsing eventually works even if something goes wrong
+            s_startup_complete = true;
+            #if DEBUG_INJECTED_COMMANDS
+            Serial.println("Tag parsing enabled (fallback timeout)");
+            #endif
+        }
+    }
+    
+    // If startup is complete and tag parsing should be enabled (based on config)
+    // CRITICAL: Wait for ARDUINO_BOOT_DELAY_MS after Arduino was released from reset
+    // This gives the Arduino time to boot before we start parsing its output as commands
+    if ( s_startup_complete && !asyncPassthroughTagParsingEnabled && 
+         jumperlessConfig.serial_1.tag_parsing > 0 &&
+         s_tag_parsing_timeout_ms == 0 &&  // Not in upload/flashing mode
+         s_tag_parsing_inactivity_timeout_ms == 0 &&
+         s_arduino_release_time > 0 &&
+         (millis() - s_arduino_release_time) >= ARDUINO_BOOT_DELAY_MS ) {
+        
+        // CRITICAL: Disable UART RX interrupt during cleanup to prevent race conditions
+        irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
+        
+        // Drain UART hardware FIFO first
+        uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+        while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+            (void)hw->dr;  // Discard data
+        }
+        
+        // Clear ALL software buffers
+        clearTagParserState();
+        ring_clear();
+        CommandBuffer::getInstance().clearPendingCommand();
+        
+        // Re-enable UART RX interrupt
+        irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
+        
+        asyncPassthroughTagParsingEnabled = true;
+        #if DEBUG_INJECTED_COMMANDS
+        Serial.println("Tag parsing enabled (startup complete + boot delay)");
+        #endif
+    }
+    
+    // Check if tag parsing should be re-enabled (after flashing, etc.)
+    if ( !asyncPassthroughTagParsingEnabled && s_startup_complete ) {
         bool should_reenable = false;
         const char* reenable_reason = nullptr;
         
-        // Check absolute timeout (e.g., 10 seconds after disable) - safety fallback
-        if ( s_tag_parsing_timeout_ms > 0 ) {
-            uint32_t elapsed = millis() - s_tag_parsing_disabled_time;
-            if ( elapsed >= s_tag_parsing_timeout_ms ) {
-                should_reenable = true;
-                reenable_reason = "absolute timeout (10s safety)";
-            }
-        }
+        // CRITICAL: Always check Arduino boot delay before re-enabling
+        // After flashing, the Arduino needs time to boot before we parse its output
+        bool boot_delay_ok = (s_arduino_release_time == 0) ||  // No reset tracked (shouldn't happen)
+                            (millis() - s_arduino_release_time >= ARDUINO_BOOT_DELAY_MS);
         
-        // Check inactivity timeout (e.g., 2000ms after last USB->UART data)
-        // This detects when Arduino upload has finished
-        // Increased from 500ms to 2000ms to handle normal pauses during uploads
-        if ( !should_reenable && s_tag_parsing_inactivity_timeout_ms > 0 && s_last_usb_to_uart_data_time > 0 ) {
-            uint32_t inactivity = millis() - s_last_usb_to_uart_data_time;
-            if ( inactivity >= s_tag_parsing_inactivity_timeout_ms ) {
-                should_reenable = true;
-                reenable_reason = "upload complete (2s idle)";
+        if ( !boot_delay_ok ) {
+            // Still waiting for Arduino to boot - don't re-enable yet
+            // Keep checking on next iteration
+        } else {
+            // Check absolute timeout (e.g., 10 seconds after disable) - safety fallback
+            if ( s_tag_parsing_timeout_ms > 0 ) {
+                uint32_t elapsed = millis() - s_tag_parsing_disabled_time;
+                if ( elapsed >= s_tag_parsing_timeout_ms ) {
+                    should_reenable = true;
+                    reenable_reason = "absolute timeout (10s safety)";
+                }
+            }
+            
+            // Check inactivity timeout (e.g., 3000ms after last USB->UART data)
+            // This detects when Arduino upload has finished
+            // IMPORTANT: Only check if we've seen at least SOME data first
+            // This prevents premature re-enable if upload hasn't started yet
+            if ( !should_reenable && s_tag_parsing_inactivity_timeout_ms > 0 && s_last_usb_to_uart_data_time > 0 ) {
+                uint32_t inactivity = millis() - s_last_usb_to_uart_data_time;
+                
+                // Extra safety: Require minimum elapsed time since disable (1 second)
+                // This ensures we don't re-enable during the initial upload handshake
+                uint32_t elapsed_since_disable = millis() - s_tag_parsing_disabled_time;
+                
+                if ( inactivity >= s_tag_parsing_inactivity_timeout_ms && elapsed_since_disable >= 1000 ) {
+                    should_reenable = true;
+                    reenable_reason = "upload complete (3s idle)";
+                }
             }
         }
         
         if ( should_reenable ) {
+            // CRITICAL: Perform full UART resync to handle baud rate transitions
+            // After flashing, the bootloader may have used a different baud rate,
+            // causing garbage when the sketch starts. This resyncs the receiver.
+            uart_force_receiver_resync();
+            
+            // CRITICAL: Disable UART RX interrupt during cleanup to prevent race conditions
+            // Without this, the IRQ could fill the ring buffer between our clear operations
+            irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
+            
+            // Drain UART hardware FIFO again after resync
+            uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+            while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+                (void)hw->dr;  // Discard data
+            }
+            
+            // Now clear all software buffers
+            clearTagParserState();
+            ring_clear();  // Clear UART RX ring buffer
+            CommandBuffer::getInstance().clearPendingCommand();  // Clear any pending commands
+            
+            // Re-enable UART RX interrupt
+            irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
+            
             asyncPassthroughTagParsingEnabled = true;
             s_tag_parsing_timeout_ms = 0;  // Clear timeouts
             s_tag_parsing_inactivity_timeout_ms = 0;
             s_last_usb_to_uart_data_time = 0;
+            s_tag_parsing_reenable_time = millis();  // Track re-enable time for cooldown
             
             // Single clean message when re-enabling (no flush - too slow!)
             #if DEBUG_INJECTED_COMMANDS
@@ -1436,10 +1656,23 @@ void setForwardEndOnNewline( bool enable ) {
 }
 
 void setTagParsingEnabled( bool enable ) {
+    // SAFETY: Don't allow enabling tag parsing until startup is complete
+    // This prevents crashes from early commands before system is ready
+    if ( enable && !s_startup_complete ) {
+        return;  // Silently ignore - will be enabled after startup completes
+    }
+    
     if ( !enable && asyncPassthroughTagParsingEnabled ) {
         // Tag parsing is being disabled - record the time
         s_tag_parsing_disabled_time = millis();
     }
+    
+    // CRITICAL: Clear all buffers on any state change
+    // When disabling: clears any partial tags that might be in progress
+    // When enabling: clears any garbage accumulated during flashing
+    clearTagParserState();
+    ring_clear();
+    CommandBuffer::getInstance().clearPendingCommand();
     
     asyncPassthroughTagParsingEnabled = enable;
     
@@ -1457,6 +1690,13 @@ void disableTagParsingWithTimeout( uint32_t timeout_ms ) {
     s_tag_parsing_timeout_ms = timeout_ms;
     s_tag_parsing_inactivity_timeout_ms = 0;  // Clear inactivity timeout when using absolute timeout
     s_last_usb_to_uart_data_time = 0;
+    
+    // CRITICAL: Clear all buffers and parser state when disabling tag parsing
+    // This prevents garbage from flashing/binary data from being processed as commands
+    // when tag parsing is re-enabled
+    clearTagParserState();
+    ring_clear();
+    CommandBuffer::getInstance().clearPendingCommand();
 }
 
 void disableTagParsingWithInactivityTimeout( uint32_t absolute_timeout_ms, uint32_t inactivity_timeout_ms ) {
@@ -1473,10 +1713,55 @@ void disableTagParsingWithInactivityTimeout( uint32_t absolute_timeout_ms, uint3
     s_tag_parsing_timeout_ms = absolute_timeout_ms;
     s_tag_parsing_inactivity_timeout_ms = inactivity_timeout_ms;
     s_last_usb_to_uart_data_time = 0;  // Will be set when first data arrives
+    
+    // CRITICAL: Clear all buffers and parser state when disabling tag parsing
+    // This prevents garbage from flashing/binary data from being processed as commands
+    // when tag parsing is re-enabled
+    clearTagParserState();
+    ring_clear();
+    CommandBuffer::getInstance().clearPendingCommand();
 }
 
 bool getTagParsingEnabled() {
     return asyncPassthroughTagParsingEnabled;
+}
+
+void signalStartupComplete() {
+    // Called by main loop when system initialization is complete
+    // This enables tag parsing if configured to do so
+    if ( !s_startup_complete ) {
+        s_startup_complete = true;
+        
+        // CRITICAL: Clear ALL buffers BEFORE releasing Arduino from reset
+        // This ensures no garbage is in the system
+        clearTagParserState();
+        ring_clear();
+        CommandBuffer::getInstance().clearPendingCommand();
+        
+        // Drain UART hardware FIFO - any garbage from line noise
+        uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+        while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+            (void)hw->dr;  // Discard data
+        }
+        
+        // CRITICAL: Release Arduino from reset now that system is ready
+        // Arduino was held in reset during boot (see main.cpp setup())
+        // This prevents crashes from early Arduino commands
+        SetArduinoResetLine(HIGH, 2);  // Release both Arduinos from reset
+        s_arduino_release_time = millis();  // Track when we released Arduino
+        
+        // NOTE: Don't enable tag parsing here - let it happen via the normal
+        // task() path after ARDUINO_BOOT_DELAY_MS. This gives the Arduino time to boot.
+        // During this delay, UART data is just passed through (not parsed for tags).
+        
+        #if DEBUG_INJECTED_COMMANDS
+        Serial.println("Startup complete - Arduino released from reset");
+        #endif
+    }
+}
+
+bool isStartupComplete() {
+    return s_startup_complete;
 }
 
 // ============================================================================
@@ -1486,6 +1771,8 @@ bool getTagParsingEnabled() {
 // DTR state tracking
 static bool s_dtr_state[3] = { false, false, false };
 static bool s_dtr_pulse_detected = false;
+static uint32_t s_last_dtr_reset_time = 0;  // Debounce: track last reset time
+#define DTR_RESET_DEBOUNCE_MS 500  // Minimum time between resets
 
 void checkDTRState(Adafruit_USBD_CDC& cdc) {
     bool current_dtr = cdc.dtr();
@@ -1496,43 +1783,105 @@ void checkDTRState(Adafruit_USBD_CDC& cdc) {
         s_dtr_state[1] = s_dtr_state[2];
         s_dtr_state[2] = current_dtr;
         
-        // Detect pulses going either direction (some things invert the DTR line)
-        bool pulse_detected = false;
-        if (s_dtr_state[1] == 1 && s_dtr_state[2] == 0) {
-            pulse_detected = true;  // high-to-low pulse
-        } else if (s_dtr_state[1] == 0 && s_dtr_state[2] == 1) {
-            pulse_detected = true;  // low-to-high pulse
-        }
+        // Trigger on ANY DTR transition (both HIGH→LOW and LOW→HIGH)
+        // This handles both standard and inverted DTR behavior from various tools
+        bool pulse_detected = (s_dtr_state[1] != s_dtr_state[2]);
         
-        if (pulse_detected && millis() > 3000) {  // Ignore pulses during boot
+        // Debounce: Ignore pulses during boot and within debounce window
+        // This prevents rapid DTR toggling from causing multiple resets
+        uint32_t now = millis();
+        bool debounce_ok = (now > 3000) && 
+                          (now - s_last_dtr_reset_time > DTR_RESET_DEBOUNCE_MS);
+        
+        if (pulse_detected && debounce_ok) {
             s_dtr_pulse_detected = true;
+            s_last_dtr_reset_time = now;
             
-            // CRITICAL: Disable tag parsing IMMEDIATELY
-            if (asyncPassthroughEnabled && asyncPassthroughTagParsingEnabled) {
-                disableTagParsingWithInactivityTimeout(5000, 2000);
+            // =====================================================================
+            // ARDUINO FLASH SEQUENCE - Must be precise and non-blocking to USB
+            // =====================================================================
+            
+            // Step 1: IMMEDIATELY disable tag parsing
+            // Use longer inactivity timeout (3s) to handle normal upload pauses
+            // Absolute timeout 10s as safety fallback
+            if (asyncPassthroughEnabled) {
+                disableTagParsingWithInactivityTimeout(10000, 3000);
             }
-            bool esp32 = true;
+            
+            // Step 2: Clear ALL buffers and parser state
+            // This prevents stale data from interfering with flash protocol
+            clearTagParserState();       // Reset tag parser state machines
+            ring_clear();                // Clear UART RX ring buffer
+            CommandBuffer::getInstance().clearPendingCommand();  // Clear pending commands
+            
+            // Step 3: Flush CDC buffers to ensure clean state
+            // Service USB frequently during this to prevent disconnect
+            tud_task();
+            flush_cdc_buffers(ASYNC_PASSTHROUGH_CDC_ITF);
+            tud_task();
+            
+            // Step 4: Assert Arduino reset with proper timing
+            // Standard Arduino auto-reset: DTR LOW triggers reset via RC circuit
+            // We emulate this with GPIO control
+            
+            bool esp32 = false;
             if (esp32) {
-                Serial.println("Doing ESP32 reset\t yeah for now, we're doing this until I make a proper confiLeftg option\n\r(This pulses Nano AREF to GND briefly)");
-               addBridgeToState(NANO_AREF, GND, 0, true);
-               SetArduinoResetLine(LOW, 1);   // Assert reset (both top and bottom)
-               delayMicroseconds(15000);       // Hold reset for 5ms
+                // ESP32 reset sequence (GPIO0 + EN pin control)
+                addBridgeToState(NANO_AREF, GND, 0, true);
+                SetArduinoResetLine(LOW, 1);
+                delayMicroseconds(15000);
                 SetArduinoResetLine(LOW, 0);  
-                delayMicroseconds(15000);       // Hold reset for 5ms
-                SetArduinoResetLine(HIGH, 0);  // Release reset
-                delayMicroseconds(15000);       // Hold reset for 5ms
+                delayMicroseconds(15000);
+                SetArduinoResetLine(HIGH, 0);
+                delayMicroseconds(15000);
                 SetArduinoResetLine(HIGH, 1);  
                 removeBridgeFromState(NANO_AREF, GND, true);
-     
             } else {
-            // CRITICAL: Reset Arduino IMMEDIATELY - don't wait for main loop!
-            // This matches standard Arduino auto-reset timing
-            SetArduinoResetLine(LOW, 0);   // Assert reset (both top and bottom)
-            delayMicroseconds(5000);       // Hold reset for 5ms
-            SetArduinoResetLine(HIGH, 0);  // Release reset
+                // ATmega328P reset sequence
+                // Hold reset LOW for 10-15ms (longer than typical RC time constant)
+                // This ensures reliable reset even with capacitor charging effects
+                
+                unsigned long resetStart = micros();
+                SetArduinoResetLine(LOW, 0);  // Assert reset
+                
+                // Hold reset for 12ms while servicing USB
+                // avrdude expects bootloader to be ready within ~50ms of DTR pulse
+                while (micros() - resetStart < 12000) {
+                    tud_task();  // Keep USB alive - CRITICAL!
+                    delayMicroseconds(100);
+                }
+                
+                SetArduinoResetLine(HIGH, 0);  // Release reset
+                
+                // Track when Arduino was released from reset for boot delay protection
+                s_arduino_release_time = millis();
+                
+                // Step 5: Brief delay for bootloader to initialize
+                // Optiboot starts ~10ms after reset release
+                // Service USB during this window
+                unsigned long bootDelay = micros();
+                while (micros() - bootDelay < 5000) {
+                    tud_task();
+                    delayMicroseconds(100);
+                }
             }
-            // Small delay to let bootloader start before data arrives
-           // delayMicroseconds(50000);  // 50ms for bootloader to initialize
+            
+            // Step 6: Ensure UART connection is established IMMEDIATELY
+            // CRITICAL: avrdude expects to communicate with bootloader right after reset
+            // If UART isn't connected, sync bytes won't reach Arduino and upload fails
+            if (jumperlessConfig.serial_1.autoconnect_flashing == 1) {
+                if (checkIfArduinoIsConnected() == 0) {
+                    // UART not connected - establish connection now
+                    // Use flash mode (1) with refresh (1) for immediate matrix update
+                    connectArduino(1, 1);
+                    
+                    // Service USB during connection to prevent timeout
+                    tud_task();
+                }
+            }
+            
+            // Step 7: Final USB service to ensure host sees clean state
+            tud_task();
         }
     }
 }
@@ -1552,6 +1901,69 @@ void resetArduino(int resetPin) {
     delay(5);
     digitalWrite(resetPin, HIGH);
     pinMode(resetPin, INPUT);
+}
+
+// ============================================================================
+// UART IRQ Control and Tag Parser State Management
+// ============================================================================
+
+// IRQ suspension state
+static volatile bool s_uart_rx_irq_suspended = false;
+
+// Command processing state (prevents new commands during execution)
+static volatile bool s_command_processing_active = false;
+
+void suspendUARTRxIRQ() {
+    if (!s_uart_rx_irq_suspended) {
+        // Disable UART RX interrupt to prevent new bytes during critical operations
+        uart_set_irq_enables(ASYNC_PASSTHROUGH_UART, false, false);
+        s_uart_rx_irq_suspended = true;
+    }
+}
+
+void resumeUARTRxIRQ() {
+    if (s_uart_rx_irq_suspended) {
+        // Re-enable UART RX interrupt
+        uart_set_irq_enables(ASYNC_PASSTHROUGH_UART, true, false);
+        s_uart_rx_irq_suspended = false;
+    }
+}
+
+bool isUARTRxIRQSuspended() {
+    return s_uart_rx_irq_suspended;
+}
+
+void clearTagParserState() {
+    // Reset BOTH parser state machines to clean state
+    // CRITICAL: Called on DTR pulse to ensure no partial tags corrupt flashing
+    
+    // Reset USB->UART parser
+    usb_to_uart_parser.state = TAG_SEARCHING;
+    usb_to_uart_parser.tag_buffer_idx = 0;
+    usb_to_uart_parser.current_tag[0] = '\0';
+    usb_to_uart_parser.command_buffer_idx = 0;
+    usb_to_uart_parser.needs_python_prefix = false;
+    usb_to_uart_parser.seen_first_char = false;
+    
+    // Reset UART->USB parser
+    uart_to_usb_parser.state = TAG_SEARCHING;
+    uart_to_usb_parser.tag_buffer_idx = 0;
+    uart_to_usb_parser.current_tag[0] = '\0';
+    uart_to_usb_parser.command_buffer_idx = 0;
+    uart_to_usb_parser.needs_python_prefix = false;
+    uart_to_usb_parser.seen_first_char = false;
+    
+    // Clear the runtime command ring buffer too
+    memset(s_runtime_cmd_ring, 0, sizeof(s_runtime_cmd_ring));
+    s_runtime_cmd_write_idx = 0;
+}
+
+void setCommandProcessingActive(bool active) {
+    s_command_processing_active = active;
+}
+
+bool isCommandProcessingActive() {
+    return s_command_processing_active;
 }
 
 // ============================================================================

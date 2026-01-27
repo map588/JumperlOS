@@ -425,11 +425,8 @@ void flashArduino( unsigned long timeoutTime ) {
     int arduinoWasConnected = arduinoConnected;
     
     // Auto-connect UART if not already connected and config allows
-    // if ( arduinoConnected == 0 && jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
-        if (jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
-        // if ( debugArduino > 0 ) {
-            Serial.println( "Arduino not connected - connecting UART automatically" );
-        // }
+    if ( arduinoConnected == 0 && jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
+        Serial.println( "Arduino not connected - connecting UART automatically" );
         connectArduino( 1, 1 );
         arduinoConnected = checkIfArduinoIsConnected( );
     }

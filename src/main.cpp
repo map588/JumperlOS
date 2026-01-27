@@ -118,7 +118,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.3.2"; //! remember to update this
+const char firmwareVersion[] = "5.6.3.3"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -130,6 +130,10 @@ void setup( ) {
 
     digitalWrite( RESETPIN, HIGH );
     
+    // CRITICAL: Hold Arduino in reset during JumperlOS boot
+    // This prevents the Arduino from sending commands before the system is ready
+    // The reset will be released in AsyncPassthrough::signalStartupComplete()
+    SetArduinoResetLine(LOW, 0);  // Hold both Arduinos in reset
 
     // FatFS.begin();
     if ( !FatFS.begin( ) ) {
@@ -491,6 +495,13 @@ menu:
         printColorJogoSmall( );
 
         firstLoop = 0;
+        
+        // Signal that startup is complete - enables tag parsing for Arduino commands
+        // This MUST be called after all initialization is done to prevent crashes
+        // from <j> commands arriving before the system is ready
+        #if ASYNC_PASSTHROUGH_ENABLED == 1
+        AsyncPassthrough::signalStartupComplete();
+        #endif
 
 #if SETUP_LOGIC_ANALYZER_ON_BOOT == 1
         goto setupla;
@@ -579,7 +590,6 @@ dontshowmenu:
     connectFromArduino = '\0';
     firstConnection = -1;
 
-
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
     Serial.write( 'I' ); // About to enter busy loop
     tud_task( );
@@ -606,7 +616,7 @@ dontshowmenu:
     while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
               ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
-
+        
         // Heartbeat disabled for production
         heartbeatCounter++;
         bool printHeartbeat = false; // Was: (heartbeatCounter - lastHeartbeatPrint >= 10000)
@@ -679,14 +689,19 @@ dontshowmenu:
         // CRITICAL: Handle Arduino flashing (DTR pulse detection) on Core 0
         // This MUST run on Core 0 because it can call refreshLocalConnections()
         // via flashArduino() -> connectArduino() -> refresh() chain
+        // 
+        // AsyncPassthrough::task() is now handled by asyncPassthroughService (CRITICAL priority)
+        // but secondSerialHandler() is still needed for:
+        //   1. Detecting DTR pulse (checked via wasDTRPulseDetected())
+        //   2. Calling flashArduino() to auto-connect UART and service passthrough
         static unsigned long lastSecondSerialCheck = 0;
         if ( millis( ) - lastSecondSerialCheck > 10 ) {
             lastSecondSerialCheck = millis( );
-
-            // AsyncPassthrough::task() now handled by asyncPassthroughService (CRITICAL priority)
-
-            // Handle Arduino flashing and serial passthrough
-            //  secondSerialHandler();
+            
+            // Handle Arduino flashing - checks DTR pulse and auto-connects UART
+            // Note: DTR detection now happens in AsyncPassthrough::checkDTRState()
+            // but we still need this for the auto-connect and active servicing
+            secondSerialHandler();
         }
         busyTimers[ 2 ] = micros( );
 
@@ -755,17 +770,24 @@ dontshowmenu:
     // This runs BEFORE checking Jerial, ensuring UART commands are processed promptly
     // =========================================================================
     if ( CommandBuffer::getInstance( ).hasPendingCommand( ) ) {
-        String cmdLine = CommandBuffer::getInstance( ).consumePendingCommand( );
-        cmdLine.trim( );
+        // SAFETY: Never execute commands during early startup
+        // This prevents crashes if commands somehow get queued before system is ready
+        if ( firstLoop > 0 ) {
+            // Discard the command - system not ready
+            CommandBuffer::getInstance( ).consumePendingCommand( );  // Consume and discard
+            // Serial.println( "Warning: Command ignored during startup" );
+        } else {
+            String cmdLine = CommandBuffer::getInstance( ).consumePendingCommand( );
+            cmdLine.trim( );
 
-        if ( cmdLine.length( ) > 0 ) {
-            currentCommandLine = cmdLine;
-            input = cmdLine[ 0 ];
+            if ( cmdLine.length( ) > 0 ) {
+                currentCommandLine = cmdLine;
+                input = cmdLine[ 0 ];
 
-            // Execute the command
-            inMainMenu = true;
-            CommandResult cmdResult = singleCharCommands.executeCommand( (char)input, currentCommandLine );
-            inMainMenu = false;
+                // Execute the command
+                inMainMenu = true;
+                CommandResult cmdResult = singleCharCommands.executeCommand( (char)input, currentCommandLine );
+                inMainMenu = false;
 
             // Queue response to UART if command came from there
             if ( CommandBuffer::getInstance( ).shouldRespondToUART( ) ) {
@@ -790,8 +812,9 @@ dontshowmenu:
             }
 
             goto dontshowmenu; // Skip menu display
-        }
-    }
+            }
+        }  // end else (firstLoop == 0)
+    }  // end if (hasPendingCommand)
 
     // Check for completed lines first (includes both injected and buffered input)
     // This works regardless of line buffering mode - injected commands always work
@@ -1214,7 +1237,7 @@ void loop1( ) {
 unsigned long lastForcedShow = 0;
 
 // DEBUG: Set to 1 to disable Core 2 processing for crash debugging
-#define DEBUG_DISABLE_CORE2_PROCESSING 0
+#define DEBUG_DISABLE_CORE2_PROCESSING 0  // TEMP: Testing if crash is in Core 2
 
 void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 {
