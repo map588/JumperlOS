@@ -234,7 +234,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tR = show board LEDs\n\r" );
         // shownMenuItems += printMenuLine( showExtraMenu, 3, "\t% = list all filesystem contents\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tE = don't show this menu\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tC = disable terminal colors\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tW = disable terminal colors\n\r" );
 
         if ( showExtraMenu >= 2 ) {
 
@@ -525,7 +525,7 @@ void SingleCharCommands::initializeCommands( ) {
                      "Display current configuration to serial.",
                      cmd_printConfig, MENU_BASIC, CAT_SETTINGS );
 
-    registerCommand( 'G', "reload config.txt",
+    registerCommand( 'W', "reload config.txt",
                      "Reload configuration from config.txt file.",
                      cmd_reloadConfig, MENU_ADVANCED, CAT_SETTINGS );
 
@@ -592,7 +592,7 @@ void SingleCharCommands::initializeCommands( ) {
                      "Connect/disconnect OLED display.",
                      cmd_toggleOLED, MENU_STANDARD, CAT_SETTINGS );
 
-    registerCommand( 'C', "disable terminal colors",
+    registerCommand( 'G', "disable terminal colors",
                      "Toggle terminal color output on/off.",
                      cmd_toggleTerminalColors, MENU_DEBUG, CAT_SETTINGS );
 
