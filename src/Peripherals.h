@@ -126,6 +126,9 @@ struct gpio_function_name_struct {
     };
 
     extern gpio_function_name_struct gpio_function_names[15];
+    
+    // Pin-aware function name lookup (handles F9 ambiguity per RP2350 GPIO mux)
+    const char* gpio_function_name_for_pin( uint gpio, gpio_function_t function );
 
 // gpioDef[i][0] is the pin number
 // gpioDef[i][1] is the RP_GPIO_x define

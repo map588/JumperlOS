@@ -235,7 +235,7 @@ CommandResult cmd_toggleExtraMenu(char c, const String& line);
 
 // Python commands (JumperlessMicroPythonAPI.cpp)
 CommandResult cmd_pythonREPL(char c, const String& line);
-CommandResult cmd_pythonDeinit(char c, const String& line);
+CommandResult cmd_psramTest(char c, const String& line);
 CommandResult cmd_pythonCommand(char c, const String& line);
 
 // File system commands
@@ -261,6 +261,7 @@ CommandResult cmd_calibrateDACs(char c, const String& line);
 // Debug commands
 CommandResult cmd_showVersion(char c, const String& line);
 CommandResult cmd_setDebugFlags(char c, const String& line);
+CommandResult cmd_statusDiagnosticsMenu(char c, const String& line);
 CommandResult cmd_resourceStatus(char c, const String& line);
 CommandResult cmd_gpioState(char c, const String& line);
 CommandResult cmd_usbDebugMenu(char c, const String& line);

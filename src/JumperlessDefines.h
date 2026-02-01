@@ -349,7 +349,11 @@ extern int probeRev;
 #define RP_GPIO_0 114
 
 #define ARDUINO_RESET_0_PIN 18
-#define ARDUINO_RESET_1_PIN 19
+#define ARDUINO_RESET_1_PIN 19 //! PSRAM
+
+#define PSRAM_CS_PIN 19
+
+
 
 
 #define RP_GPIO_18 118 // these are the reset lines for the arduino

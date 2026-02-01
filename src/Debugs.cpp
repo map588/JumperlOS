@@ -16,8 +16,11 @@
 #include "Graphics.h"
 #include "FakeGpio.h"
 #include "MpRemoteService.h"
+#include <Wire.h>
+#include "oled.h"
+#include "CH446Q.h"
 
-
+#include "SingleCharCommands.h"
 
 
 
@@ -304,3 +307,806 @@ debugFlags:
 
   return true;
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Interactive Status & Diagnostics Menu with Arrow Key Navigation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Menu item structure
+struct StatusMenuItem {
+    const char* label;
+    const char* description;
+    void (*action)();
+};
+
+// Forward declarations for menu actions
+static void action_resourceStatus();
+static void action_psramTest();
+static void action_gpioState();
+static void action_netlist();
+static void action_bridgeArray();
+static void action_crossbar();
+static void action_pioStatus();
+static void action_memoryUsage();
+static void action_i2cScan();
+static void action_speedTest();
+static void action_colorSpectrum();
+
+// Menu items array
+static const StatusMenuItem statusMenuItems[] = {
+    { "Resource Status",    "Show memory, PIO, GPIO overview",        action_resourceStatus },
+    { "PSRAM Test",         "Run PSRAM integrity & speed tests",      action_psramTest },
+    { "GPIO State",         "Show GPIO pin nets and states",          action_gpioState },
+    { "Show Netlist",       "Display current net connections",        action_netlist },
+    { "Bridge Array",       "Show paths and chip status",             action_bridgeArray },
+    { "Crossbar View",      "Compact crossbar chip visualization",    action_crossbar },
+    { "PIO Status",         "Detailed PIO state machine status",      action_pioStatus },
+    { "Memory Usage",       "Detailed heap and stack analysis",       action_memoryUsage },
+    { "I2C Scan",           "Scan I2C bus for devices",               action_i2cScan },
+    { "Speed Test",         "Raw crossbar switch speed test",         action_speedTest },
+    { "Color Spectrum",     "Display terminal color palette",         action_colorSpectrum },
+};
+static const int STATUS_MENU_COUNT = sizeof(statusMenuItems) / sizeof(statusMenuItems[0]);
+
+// Draw the menu with current selection highlighted
+static void drawStatusMenu(int selected, int topVisible, int visibleCount) {
+    // Clear and redraw
+    Serial.print("\033[2J\033[H");  // Clear screen, cursor home
+    Serial.flush();
+    
+    // Rainbow header using color cycling
+    cycleTerminalColor(true, 3.0, false, &Serial, 0, 1);  // Reset to start of rainbow
+    Serial.print("\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("╭──────────────────────────────────────────────────────────────────╮\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("│              ");
+    Serial.print("\033[1m");  // Bold for title
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("S");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("T");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("A");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("T");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("U");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("S");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print(" ");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("&");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print(" ");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("D");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("I");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("A");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("G");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("N");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("O");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("S");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("T");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("I");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("C");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("S");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print(" ");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("M");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("E");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("N");
+    cycleTerminalColor(false, 2.0, false, &Serial, 0, 1);
+    Serial.print("U");
+    Serial.print("\033[0m");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("                           │\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("├──────────────────────────────────────────────────────────────────┤\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("│\033[0m    Use \033[1;32m↑/↓\033[0m or \033[1;32mj/k\033[0m to navigate, \033[1;32mEnter\033[0m to run, \033[1;32mq\033[0m to exit     ");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("      │\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("╰──────────────────────────────────────────────────────────────────╯\033[0m\n\r\n\r");
+    
+    // Menu items with rainbow colored names
+    for (int i = 0; i < visibleCount && (topVisible + i) < STATUS_MENU_COUNT; i++) {
+        int idx = topVisible + i;
+        const StatusMenuItem& item = statusMenuItems[idx];
+        
+        if (idx == selected) {
+            // Highlighted item - inverse with current rainbow color
+            cycleTerminalColor(false, 8.0, false, &Serial, 0, 1);
+            Serial.print("\033[1;7m");  // Bold, inverse
+            Serial.printf("  ▶ %-22s \033[0m\033[1;7m│\033[0m\033[1;7m %-36s  \033[0m\n\r", item.label, item.description);
+        } else {
+            // Regular item with rainbow colored name
+            Serial.print("    ");
+            cycleTerminalColor(false, 8.0, false, &Serial, 0, 1);
+            Serial.printf("%-22s", item.label);
+            Serial.print("\033[0m \033[90m│\033[0m \033[90m");
+            Serial.printf("%-36s\033[0m\n\r", item.description);
+        }
+    }
+    
+    Serial.println();
+    Serial.flush();
+}
+
+// Main interactive status menu function
+bool statusDiagnosticsMenu() {
+    int selected = 0;
+    int topVisible = 0;
+    const int visibleCount = 14;  // Show all items (we have 11)
+    bool exitMenu = false;
+    
+    // Clear screen first
+    Serial.print("\033[2J\033[H");
+    Serial.flush();
+
+        // Enable raw input mode indicator
+        Serial.write(0x0E);  // Interactive mode on
+        delay(10);
+            
+    
+    // Prompt user to press Enter to start interactive mode
+    cycleTerminalColor(true, 3.0, false, &Serial, 0, 1);
+    Serial.println("\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("╭───────────────────────────────────────────────────╮\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("│  ");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("Press ");
+    Serial.print("\033[1;32mEnter\033[0m");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print(" to start status & diagnostics menu");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("   │\n\r");
+    cycleTerminalColor(false, 3.0, false, &Serial, 0, 1);
+    Serial.print("╰───────────────────────────────────────────────────╯\033[0m\n\r");
+    Serial.flush();
+    
+    // Wait for Enter key
+    while (true) {
+        if (Serial.available() > 0) {
+            int ch = Serial.read();
+            if (ch == '\r' || ch == '\n' || ch == ' ') {
+                // Consume any additional newline characters
+                delay(10);
+                while (Serial.available() > 0) {
+                    int peek = Serial.peek();
+                    if (peek == '\r' || peek == '\n') {
+                        Serial.read();
+                    } else {
+                        break;
+                    }
+                }
+                break;
+            }
+            // 'q' to cancel before even starting
+            if (ch == 'q' || ch == 'Q') {
+                Serial.print("\033[0m");  // Reset colors
+                return true;
+            }
+        }
+        delay(10);
+    }
+    
+
+    drawStatusMenu(selected, topVisible, visibleCount);
+    
+    while (!exitMenu) {
+        if (Serial.available() > 0) {
+            int ch = Serial.read();
+            
+            // Handle escape sequences (arrow keys)
+            if (ch == 27) {  // ESC
+                delay(5);
+                if (Serial.available() > 0) {
+                    int ch2 = Serial.read();
+                    if (ch2 == '[') {
+                        delay(5);
+                        if (Serial.available() > 0) {
+                            int ch3 = Serial.read();
+                            switch (ch3) {
+                                case 'A':  // Up arrow
+                                    ch = 'k';
+                                    break;
+                                case 'B':  // Down arrow
+                                    ch = 'j';
+                                    break;
+                                case 'C':  // Right arrow (can be used as enter)
+                                    ch = '\r';
+                                    break;
+                                case 'D':  // Left arrow (can be used as back/quit)
+                                    ch = 'q';
+                                    break;
+                            }
+                        }
+                    }
+                } else {
+                    // Just ESC pressed, exit
+                    ch = 'q';
+                }
+            }
+            
+            // Process the key
+            switch (ch) {
+                case 'k':
+                case 'K':
+                case 'w':
+                case 'W':
+                    // Move up
+                    if (selected > 0) {
+                        selected--;
+                        if (selected < topVisible) {
+                            topVisible = selected;
+                        }
+                        drawStatusMenu(selected, topVisible, visibleCount);
+                    }
+                    break;
+                    
+                case 'j':
+                case 'J':
+                case 's':
+                case 'S':
+                    // Move down
+                    if (selected < STATUS_MENU_COUNT - 1) {
+                        selected++;
+                        if (selected >= topVisible + visibleCount) {
+                            topVisible = selected - visibleCount + 1;
+                        }
+                        drawStatusMenu(selected, topVisible, visibleCount);
+                    }
+                    break;
+                    
+                case '\r':
+                case '\n':
+                case ' ':
+                    // Execute selected item
+                    Serial.print("\033[2J\033[H");  // Clear screen
+                    Serial.flush();
+                    Serial.println("\n\r");
+                    
+                    if (statusMenuItems[selected].action != nullptr) {
+                        statusMenuItems[selected].action();
+                    }
+                    
+                    // Wait for keypress to return to menu
+                    Serial.println("\n\r\033[1;33m─── Press any key to return to menu ───\033[0m");
+                    Serial.flush();
+                    while (Serial.available() == 0) { delay(10); }
+                    Serial.read();  // Consume the key
+                    
+                    drawStatusMenu(selected, topVisible, visibleCount);
+                    break;
+                    
+                case 'q':
+                case 'Q':
+                    exitMenu = true;
+                    break;
+                    
+                case '0': case '1': case '2': case '3': case '4':
+                case '5': case '6': case '7': case '8': case '9':
+                case 'a': case 'A':  // 'a' = 10
+                    // Quick access by number
+                    {
+                        int quickIdx;
+                        if (ch == 'a' || ch == 'A') {
+                            quickIdx = 10;
+                        } else {
+                            quickIdx = ch - '0';
+                        }
+                        
+                        if (quickIdx < STATUS_MENU_COUNT) {
+                            selected = quickIdx;
+                            if (selected < topVisible) {
+                                topVisible = selected;
+                            } else if (selected >= topVisible + visibleCount) {
+                                topVisible = selected - visibleCount + 1;
+                            }
+                            
+                            // Execute immediately
+                            Serial.print("\033[2J\033[H");
+                            Serial.flush();
+                            Serial.println("\n\r");
+                            
+                            if (statusMenuItems[selected].action != nullptr) {
+                                statusMenuItems[selected].action();
+                            }
+                            
+                            Serial.println("\n\r\033[1;38;5;213m─── Press any key to return to menu ───\033[0m");
+                            Serial.flush();
+                            while (Serial.available() == 0) { delay(10); }
+                            Serial.read();
+                            
+                            drawStatusMenu(selected, topVisible, visibleCount);
+                        }
+                    }
+                    break;
+            }
+        }
+        delay(10);
+    }
+    
+    // Clean up
+    Serial.write(0x0F);  // Interactive mode off
+    delay(10);
+    Serial.print("\033[2J\033[H");  // Clear screen
+    Serial.flush();
+    
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Menu Action Implementations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// External function declarations - these are defined in other source files
+extern void printGPIOState();
+extern void printPIOStateMachines();
+extern void printChipStateArrayColor();
+extern void listNets(int);
+extern void printBridgeArray();
+extern void printPathsCompact(int);
+extern void printChipStatus();
+extern void couldntFindPath(int);
+extern int anythingInteractiveConnected(int);
+extern void sendXYraw(int, int, int, int);
+extern volatile bool pauseCore2;
+
+static void action_resourceStatus() {
+  cmd_resourceStatus( 'j', "" );
+    // Serial.println("\n\r╭────────────────────────────────────────────────────────────────────────────╮");
+    // Serial.println("│                         SYSTEM RESOURCE STATUS                             │");
+    // Serial.println("╰────────────────────────────────────────────────────────────────────────────╯\n\r");
+    
+    // // Memory info
+    // size_t sramTotal = rp2040.getTotalHeap();
+    // size_t sramFree = rp2040.getFreeHeap();
+    // size_t sramUsed = sramTotal - sramFree;
+    // int sramPercent = (sramUsed * 100) / sramTotal;
+    
+    // Serial.println("┌─────────────────────────────────────┐");
+    // Serial.println("│           SRAM MEMORY               │");
+    // Serial.println("├─────────────────────────────────────┤");
+    // Serial.printf("│ Total:  %6lu KB (%lu bytes)       │\n\r", sramTotal / 1024, sramTotal);
+    // Serial.printf("│ Free:   %6lu KB                   │\n\r", sramFree / 1024);
+    // Serial.printf("│ Used:   %6lu KB (%d%%)             │\n\r", sramUsed / 1024, sramPercent);
+    // Serial.println("└─────────────────────────────────────┘");
+    
+    // // PSRAM quick check
+    // size_t psramSize = rp2040.getPSRAMSize();
+    // if (psramSize > 0) {
+    //     Serial.println("\n\r┌─────────────────────────────────────┐");
+    //     Serial.println("│           PSRAM MEMORY              │");
+    //     Serial.println("├─────────────────────────────────────┤");
+    //     Serial.printf("│ Chip Size: %lu MB                    │\n\r", psramSize / 1024 / 1024);
+    //     Serial.printf("│ Heap Free: %lu KB                    │\n\r", rp2040.getFreePSRAMHeap() / 1024);
+    //     Serial.println("└─────────────────────────────────────┘");
+    // } else {
+    //     Serial.println("\n\rPSRAM: Not detected");
+    // }
+    
+    // Serial.flush();
+}
+
+static void action_psramTest() {
+  Serial.println( "\n=== PSRAM Test Suite ===" );
+  Serial.flush();
+  Serial.println( "Config psram_installed: " + String( jumperlessConfig.hardware.psram_installed ) );
+  Serial.flush();
+  
+  // Show regular SRAM info first (this is always safe)
+  Serial.println( "\n--- SRAM Info ---" );
+  Serial.println( "SRAM Total: " + String( rp2040.getTotalHeap() / 1024 ) + " KB" );
+  Serial.println( "SRAM Free: " + String( rp2040.getFreeHeap() / 1024 ) + " KB" );
+  Serial.flush();
+  
+  // Try to get PSRAM size - this may crash if no PSRAM is present
+  Serial.println( "\n--- PSRAM Detection ---" );
+  Serial.println( "Checking PSRAM size..." );
+  Serial.flush();
+  
+  size_t psramSize = rp2040.getPSRAMSize();
+  Serial.println( "PSRAM Chip Size: " + String( psramSize / 1024 / 1024 ) + " MB (" + String( psramSize ) + " bytes)" );
+  Serial.flush();
+  
+  if ( psramSize == 0 ) {
+      Serial.println( "\nNo PSRAM detected!" );
+      Serial.println( "If you have installed the PSRAM mod, check:" );
+      Serial.println( "  - PSRAM chip is properly soldered" );
+      Serial.println( "  - CS pin (GPIO 19) connection" );
+      Serial.println( "  - Power and ground connections" );
+      Serial.flush();
+    
+  }
+  
+  // PSRAM detected - get heap info
+  Serial.println( "Getting PSRAM heap info..." );
+  Serial.flush();
+  
+  size_t psramTotal = rp2040.getTotalPSRAMHeap();
+  size_t psramUsed = rp2040.getUsedPSRAMHeap();
+  size_t psramFree = rp2040.getFreePSRAMHeap();
+  
+  Serial.println( "\n--- PSRAM Info ---" );
+  Serial.println( "PSRAM Heap Total: " + String( psramTotal / 1024 ) + " KB" );
+  Serial.println( "PSRAM Heap Used: " + String( psramUsed / 1024 ) + " KB" );
+  Serial.println( "PSRAM Heap Free: " + String( psramFree / 1024 ) + " KB" );
+  Serial.flush();
+  
+  // Memory integrity test - start small
+  Serial.println( "\n--- Memory Integrity Test ---" );
+  Serial.flush();
+  
+  // Try a small allocation first
+  Serial.println( "Testing small allocation (256 bytes)..." );
+  Serial.flush();
+  
+  uint32_t* testSmall = (uint32_t*)pmalloc( 256 );
+  if ( testSmall == nullptr ) {
+      Serial.println( "ERROR: Small pmalloc() failed!" );
+      Serial.flush();
+      
+  }
+  
+  // Quick write/read test
+  testSmall[0] = 0xDEADBEEF;
+  testSmall[1] = 0xCAFEBABE;
+  Serial.flush();
+  
+  if ( testSmall[0] != 0xDEADBEEF || testSmall[1] != 0xCAFEBABE ) {
+      Serial.println( "ERROR: Basic read/write test FAILED!" );
+      Serial.println( "  Wrote: 0xDEADBEEF, Read: 0x" + String( testSmall[0], HEX ) );
+      Serial.println( "  Wrote: 0xCAFEBABE, Read: 0x" + String( testSmall[1], HEX ) );
+      free( testSmall );
+      Serial.flush(); 
+      
+  }
+  Serial.println( "Small allocation test: PASS" );
+  free( testSmall );
+  Serial.flush();
+  
+  // Now try larger test
+  const size_t testSize = 64 * 1024; // 64KB test block
+  Serial.println( "Allocating " + String( testSize / 1024 ) + " KB test block..." );
+  Serial.flush();
+  
+  uint32_t* psramBlock = (uint32_t*)pmalloc( testSize );
+  if ( psramBlock == nullptr ) {
+      Serial.println( "ERROR: Failed to allocate PSRAM test block!" );
+      Serial.flush();
+      
+  }
+  Serial.println( "Allocation successful at address: 0x" + String( (uint32_t)psramBlock, HEX ) );
+  Serial.flush();
+  
+  size_t numWords = testSize / sizeof(uint32_t);
+  int errors = 0;
+  
+  // Test 1: Sequential pattern
+  Serial.print( "Test 1: Sequential pattern... " );
+  Serial.flush();
+  for ( size_t i = 0; i < numWords; i++ ) {
+      psramBlock[i] = i;
+  }
+  for ( size_t i = 0; i < numWords; i++ ) {
+      if ( psramBlock[i] != i ) {
+          errors++;
+          if ( errors <= 5 ) {
+              Serial.println( "Error at " + String(i) + ": expected " + String(i) + ", got " + String(psramBlock[i]) );
+          }
+      }
+  }
+  Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+  Serial.flush();
+  
+  // Test 2: Alternating bits pattern (0x55555555 / 0xAAAAAAAA)
+  errors = 0;
+  Serial.print( "Test 2: Alternating bits (0x55/0xAA)... " );
+  Serial.flush();
+  for ( size_t i = 0; i < numWords; i++ ) {
+      psramBlock[i] = ( i & 1 ) ? 0xAAAAAAAA : 0x55555555;
+  }
+  for ( size_t i = 0; i < numWords; i++ ) {
+      uint32_t expected = ( i & 1 ) ? 0xAAAAAAAA : 0x55555555;
+      if ( psramBlock[i] != expected ) {
+          errors++;
+      }
+  }
+  Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+  Serial.flush();
+  
+  // Test 3: Walking ones
+  errors = 0;
+  Serial.print( "Test 3: Walking ones pattern... " );
+  Serial.flush();
+  for ( size_t i = 0; i < numWords; i++ ) {
+      psramBlock[i] = 1 << ( i % 32 );
+  }
+  for ( size_t i = 0; i < numWords; i++ ) {
+      uint32_t expected = 1 << ( i % 32 );
+      if ( psramBlock[i] != expected ) {
+          errors++;
+      }
+  }
+  Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+  Serial.flush();
+  
+  // Test 4: All zeros and all ones
+  errors = 0;
+  Serial.print( "Test 4: All zeros/ones... " );
+  Serial.flush();
+  for ( size_t i = 0; i < numWords; i++ ) {
+      psramBlock[i] = 0x00000000;
+  }
+  for ( size_t i = 0; i < numWords; i++ ) {
+      if ( psramBlock[i] != 0x00000000 ) {
+          errors++;
+      }
+  }
+  for ( size_t i = 0; i < numWords; i++ ) {
+      psramBlock[i] = 0xFFFFFFFF;
+  }
+  for ( size_t i = 0; i < numWords; i++ ) {
+      if ( psramBlock[i] != 0xFFFFFFFF ) {
+          errors++;
+      }
+  }
+  Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+  Serial.flush();
+  
+  // Speed test
+  Serial.println( "\n--- Speed Comparison Test ---" );
+  Serial.flush();
+  
+  const size_t speedTestSize = 32 * 1024; // 32KB for speed test
+  size_t speedWords = speedTestSize / sizeof(uint32_t);
+  
+  // Allocate SRAM block for comparison
+  uint32_t* sramBlock = (uint32_t*)malloc( speedTestSize );
+  if ( sramBlock == nullptr ) {
+      Serial.println( "Warning: Could not allocate SRAM comparison block" );
+      free( psramBlock );
+      Serial.flush();
+     
+  }
+  
+  unsigned long startTime, endTime;
+  
+  // PSRAM sequential write speed
+  startTime = micros();
+  for ( size_t i = 0; i < speedWords; i++ ) {
+      psramBlock[i] = i;
+  }
+  endTime = micros();
+  unsigned long psramWriteTime = endTime - startTime;
+  float psramWriteSpeed = ( speedTestSize / 1024.0 ) / ( psramWriteTime / 1000000.0 ); // KB/s
+  
+  // PSRAM sequential read speed
+  volatile uint32_t dummy = 0;
+  startTime = micros();
+  for ( size_t i = 0; i < speedWords; i++ ) {
+      dummy += psramBlock[i];
+  }
+  endTime = micros();
+  unsigned long psramReadTime = endTime - startTime;
+  float psramReadSpeed = ( speedTestSize / 1024.0 ) / ( psramReadTime / 1000000.0 ); // KB/s
+  
+  // SRAM sequential write speed
+  startTime = micros();
+  for ( size_t i = 0; i < speedWords; i++ ) {
+      sramBlock[i] = i;
+  }
+  endTime = micros();
+  unsigned long sramWriteTime = endTime - startTime;
+  float sramWriteSpeed = ( speedTestSize / 1024.0 ) / ( sramWriteTime / 1000000.0 ); // KB/s
+  
+  // SRAM sequential read speed  
+  startTime = micros();
+  for ( size_t i = 0; i < speedWords; i++ ) {
+      dummy += sramBlock[i];
+  }
+  endTime = micros();
+  unsigned long sramReadTime = endTime - startTime;
+  float sramReadSpeed = ( speedTestSize / 1024.0 ) / ( sramReadTime / 1000000.0 ); // KB/s
+  
+  Serial.println( "Test block size: " + String( speedTestSize / 1024 ) + " KB" );
+  Serial.println( "" );
+  Serial.println( "PSRAM Write: " + String( psramWriteTime ) + " us (" + String( psramWriteSpeed / 1024, 2 ) + " MB/s)" );
+  Serial.println( "PSRAM Read:  " + String( psramReadTime ) + " us (" + String( psramReadSpeed / 1024, 2 ) + " MB/s)" );
+  Serial.println( "SRAM Write:  " + String( sramWriteTime ) + " us (" + String( sramWriteSpeed / 1024, 2 ) + " MB/s)" );
+  Serial.println( "SRAM Read:   " + String( sramReadTime ) + " us (" + String( sramReadSpeed / 1024, 2 ) + " MB/s)" );
+  Serial.println( "" );
+  Serial.println( "Speed ratio (SRAM/PSRAM):" );
+  Serial.println( "  Write: " + String( sramWriteSpeed / psramWriteSpeed, 2 ) + "x" );
+  Serial.println( "  Read:  " + String( sramReadSpeed / psramReadSpeed, 2 ) + "x" );
+  Serial.flush();
+  
+  // Cleanup
+  free( psramBlock );
+  free( sramBlock );
+  
+  Serial.println( "\n=== PSRAM Test Complete ===" );
+  Serial.flush();
+  
+}
+
+static void action_gpioState() {
+    printGPIOState();
+}
+
+static void action_netlist() {
+    couldntFindPath(1);
+    Serial.println("\n\rnetlist");
+    listNets(anythingInteractiveConnected(-1));
+    Serial.flush();
+}
+
+static void action_bridgeArray() {
+    couldntFindPath(1);
+    Serial.println("\n\rBridge Array");
+    printBridgeArray();
+    Serial.println("\n\n\rPaths");
+    printPathsCompact(1);
+    Serial.println("\n\rChip Status");
+    printChipStatus();
+    Serial.flush();
+}
+
+static void action_crossbar() {
+    printChipStateArrayColor();
+}
+
+static void action_pioStatus() {
+    printPIOStateMachines();
+}
+
+static void action_memoryUsage() {
+    Serial.println("\n\r╭────────────────────────────────────╮");
+    Serial.println("│        DETAILED MEMORY USAGE       │");
+    Serial.println("╰────────────────────────────────────╯\n\r");
+    
+    // SRAM
+    Serial.println("=== SRAM Heap ===");
+    Serial.println("Total Heap:      " + String(rp2040.getTotalHeap()) + " bytes");
+    Serial.println("Free Heap:       " + String(rp2040.getFreeHeap()) + " bytes");
+    Serial.println("Used Heap:       " + String(rp2040.getTotalHeap() - rp2040.getFreeHeap()) + " bytes");
+    
+    // PSRAM if available
+    size_t psramSize = rp2040.getPSRAMSize();
+    if (psramSize > 0) {
+        Serial.println("\n\r=== PSRAM ===");
+        Serial.println("Chip Size:       " + String(psramSize) + " bytes (" + String(psramSize / 1024 / 1024) + " MB)");
+        Serial.println("Heap Total:      " + String(rp2040.getTotalPSRAMHeap()) + " bytes");
+        Serial.println("Heap Used:       " + String(rp2040.getUsedPSRAMHeap()) + " bytes");
+        Serial.println("Heap Free:       " + String(rp2040.getFreePSRAMHeap()) + " bytes");
+    }
+    
+    Serial.flush();
+}
+
+static void action_i2cScan() {
+    Serial.println("\n\rScanning I2C bus...\n\r");
+    
+    int deviceCount = 0;
+    for (int addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        int error = Wire.endTransmission();
+        
+        if (error == 0) {
+            Serial.printf("Device found at 0x%02X", addr);
+            
+            // Identify common devices
+            if (addr == 0x3C || addr == 0x3D) Serial.print(" (OLED display)");
+            else if (addr == 0x60 || addr == 0x61) Serial.print(" (MCP4725 DAC)");
+            else if (addr == 0x48) Serial.print(" (ADS1115 ADC)");
+            else if (addr == 0x27 || addr == 0x3F) Serial.print(" (PCF8574)");
+            else if (addr >= 0x50 && addr <= 0x57) Serial.print(" (EEPROM)");
+            
+            Serial.println();
+            deviceCount++;
+        }
+    }
+    
+    if (deviceCount == 0) {
+        Serial.println("No I2C devices found!");
+    } else {
+        Serial.println("\n\rFound " + String(deviceCount) + " device(s)");
+    }
+    Serial.flush();
+}
+
+static void action_speedTest() {
+    Serial.println("\n\rRaw Crossbar Speed Test...\n\r");
+    
+    pauseCore2 = true;
+    delay(100);
+    unsigned long cycles = 100000;
+    unsigned long start = micros();
+    
+    sendXYraw(10, 0, 4, 1);
+    for (unsigned long i = 0; i < cycles; i++) {
+        sendXYraw(10, 0, 0, 1);
+        sendXYraw(10, 0, 0, 0);
+    }
+    unsigned long end = micros();
+    
+    Serial.print("Time for ");
+    Serial.print(cycles);
+    Serial.print(" on/off cycles: ");
+    Serial.print(end - start);
+    Serial.println(" microseconds");
+    
+    Serial.print("Time per cycle: ");
+    Serial.print((end - start) / cycles);
+    Serial.println(" microseconds");
+    
+    Serial.print("Frequency: ");
+    Serial.print(((float)cycles / (float)(end - start)) * 1000);
+    Serial.println(" kHz");
+    
+    pauseCore2 = false;
+    Serial.flush();
+}
+
+static void action_colorSpectrum() {
+  cmd_printColorSpectrum( 'j', "" );
+  
+    // Serial.println("\n\rTerminal Color Spectrum:\n\r");
+    
+    // // Standard colors
+    // Serial.println("Standard colors:");
+    // for (int i = 0; i < 8; i++) {
+    //     Serial.printf("\033[%dm %d \033[0m", 30 + i, i);
+    // }
+    // Serial.println();
+    
+    // // Bright colors
+    // Serial.println("\n\rBright colors:");
+    // for (int i = 0; i < 8; i++) {
+    //     Serial.printf("\033[%dm %d \033[0m", 90 + i, i);
+    // }
+    // Serial.println();
+    
+    // // 256 color spectrum (first 16 colors)
+    Serial.println("\n\r256-color palette (0-15):");
+    for (int i = 0; i < 16; i++) {
+        Serial.printf("\033[48;5;%dm  \033[0m", i);
+    }
+    Serial.println();
+    
+    // Color cube sample
+    Serial.println("\n\rColor cube:");
+    for (int r = 0; r < 6; r++) {
+        for (int g = 0; g < 6; g++) {
+            for (int b = 0; b < 6; b += 1) {
+                int color = 16 + (r * 36) + (g * 6) + b;
+                Serial.printf("\033[48;5;%dm  \033[0m", color);
+            }
+        }
+        Serial.println();
+    }
+    
+    Serial.println();
+    Serial.flush();
+}
+

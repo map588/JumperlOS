@@ -20,6 +20,24 @@
 #include "JumperlessDefines.h"
 #include "micropython_embed.h"
 
+// =============================================================================
+// PSRAM Support for Extended MicroPython Heap
+// =============================================================================
+// When PSRAM is available, we add it as an additional GC heap region using
+// MICROPY_GC_SPLIT_HEAP. This gives MicroPython access to ~8MB additional memory.
+//
+// The Arduino-Pico framework provides PSRAM detection and initialization.
+// PSRAM is memory-mapped at address 0x11000000 (PSRAM_BASE on RP2350).
+// Detection is done at runtime - the same firmware works with or without PSRAM.
+//
+// The wrapper function jl_get_psram_size() is implemented in the Arduino C++ code
+// and calls rp2040.getPSRAMSize() to detect PSRAM.
+#define PSRAM_BASE 0x11000000
+// C wrapper for Arduino rp2040.getPSRAMSize() - implemented in Python_Proper.cpp
+extern size_t jl_get_psram_size(void);
+// Track PSRAM state for reporting
+static size_t psram_heap_size = 0;
+
 // Forward declaration of Arduino delay function
 void delay(unsigned long ms);
 
@@ -60,7 +78,7 @@ mp_int_t mp_machine_reset_cause(void) { return 0; }
 // Note: HAL functions (arduino_serial_write, arduino_serial_read) are implemented
 // in the Arduino C++ code (Python_Proper.cpp) as extern "C" functions
 
-// Initialize MicroPython runtime
+// Initialize MicroPython runtime with optional PSRAM support
 int mp_embed_init(void *heap, size_t heap_size, void *stack_top) {
     // Use the newer cstack API with proper stack limit initialization
     // Define a reasonable stack size for embedded systems (8KB)
@@ -71,9 +89,36 @@ int mp_embed_init(void *heap, size_t heap_size, void *stack_top) {
     #endif
     mp_cstack_init_with_top(stack_top, stack_size);
     
+    // Initialize primary GC heap (SRAM)
     gc_init(heap, (char*)heap + heap_size);
+    
+    // =============================================================================
+    // PSRAM Heap Extension (Runtime Detection)
+    // =============================================================================
+    // Check if PSRAM is present and add it as additional GC heap.
+    // This uses MICROPY_GC_SPLIT_HEAP feature to maintain multiple heap regions.
+    // The PSRAM is memory-mapped by the Arduino-Pico framework at PSRAM_BASE (0x11000000).
+    // Detection is done at runtime - same firmware works with or without PSRAM.
+    #if MICROPY_GC_SPLIT_HEAP
+    // jl_get_psram_size() wraps rp2040.getPSRAMSize() from Arduino-Pico
+    size_t detected_psram_size = jl_get_psram_size();
+    if (detected_psram_size > 0) {
+        // Add PSRAM region to GC heap
+        // Note: gc_add() handles the region as a separate heap segment
+        void *psram_start = (void *)PSRAM_BASE;
+        void *psram_end = (void *)(PSRAM_BASE + detected_psram_size);
+        gc_add(psram_start, psram_end);
+        psram_heap_size = detected_psram_size;
+    }
+    #endif
+    
     mp_init();
     return 0;
+}
+
+// Get PSRAM heap size (returns 0 if PSRAM not present)
+size_t mp_embed_get_psram_size(void) {
+    return psram_heap_size;
 }
 
 // Deinitialize MicroPython runtime

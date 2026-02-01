@@ -209,6 +209,13 @@ void dumpLEDs(int posX = 50, int posY = 27, int pixelsOrRows = 0,
 
 // Free dumpLEDs screen buffer (call when LED dumping is disabled to save 34KB)
 void freeDumpLEDsBuffer();
+
+// LED dump scrolling region control (similar to live crossbar display)
+void setLedDumpEnabled(bool enabled);
+extern bool ledDumpEnabled;
+
+// Clear any non-scrolling region from previous session (call at startup)
+void clearNonScrollingRegion(void);
 void dumpHeader(int posX = 50, int posY = 20, int absolute = 1, int wide = 0,
                 Stream *stream = &Jerial);
 void dumpHeaderHex(Stream *stream = &Jerial);

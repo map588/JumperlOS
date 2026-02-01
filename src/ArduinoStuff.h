@@ -80,6 +80,7 @@ void uploadArduino(void);
 void setBaudRate(int baudRate);
 void ESPReset(void);
 void SetArduinoResetLine(bool state, int topBottomBoth = 2);
+void applyPsramModeChange(int psramEnabled);
 void flashArduino(unsigned long timeout);
 
 void resetArduino(int topBottomBoth = 1, unsigned long holdMicroseconds = 8500);

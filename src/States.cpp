@@ -3557,7 +3557,7 @@ ServiceStatus SlotManager::service() {
         Serial.flush();
     }
     
-    if (shouldMonitorFiles && timeSinceLastFileCheck > 1000) {
+    if (shouldMonitorFiles && timeSinceLastFileCheck > 1000 && false) {
         lastFileCheckTime = millis();
         slowReason = "file monitoring";
         

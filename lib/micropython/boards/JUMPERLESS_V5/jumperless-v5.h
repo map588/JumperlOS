@@ -89,4 +89,11 @@
 #define PICO_RP2350_A2_SUPPORTED 1
 #endif
 
+// --- PSRAM (Optional) ---
+// 8MB PSRAM can be installed on QSPI CS1 (GPIO 19)
+// Uses APS6404L-3SQR or compatible
+#ifndef PICO_PSRAM_CS_PIN
+#define PICO_PSRAM_CS_PIN 19
+#endif
+
 #endif // _BOARDS_JUMPERLESS_V5_H

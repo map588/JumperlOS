@@ -36,6 +36,27 @@ Safe for use: GPIO 0, 1, 6, 7, 9, 10, 20-27
 Use with caution: GPIO 18, 19 (NANO_RESET pins)
 Reserved: Other GPIOs used by crosspoint switches, display, etc.
 
+## Config Manager - Adding New Config Options
+
+When adding a new config option to JumperlOS, you must update ALL of these sections in `src/configManager.cpp`:
+
+1. **Line ~588** - `loadConfig()` parsing section - parse the new option from file
+2. **Line ~926** - `saveConfig()` writing section - write the new option to file
+3. **Line ~1098** - `hasConfigChanged()` - compare the new option for change detection
+4. **Line ~1459** - `updateConfigInPlace()` - handle in-place config file updates
+5. **Line ~2263** - `printConfig()` sections - print the new option to serial
+6. **Line ~2289** - `printConfig()` options within sections
+7. **Line ~3315** - `updateConfigValue()` GET old value section (for "changed from X to Y" message)
+8. **Line ~3450** - `updateConfigValue()` SET new value section (actually applies the change!)
+
+Also update:
+- `src/config.h` - Add the option to the appropriate struct with default value
+- `resetConfigToDefaults()` in configManager.cpp - Save/restore if it should persist through resets
+
+Look for the `//! this is a place to add new config options` comments to find the right locations.
+
+**IMPORTANT**: `updateConfigValue()` has TWO sections - one for getting the old value (for display) and one for setting the new value. Both must be updated!
+
 # Solutions Repository
 
 ## MicroPython Enhancement (December 2024)

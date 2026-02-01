@@ -118,7 +118,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.3.4"; //! remember to update this
+const char firmwareVersion[] = "5.6.4.0"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -133,7 +133,7 @@ void setup( ) {
     // CRITICAL: Hold Arduino in reset during JumperlOS boot
     // This prevents the Arduino from sending commands before the system is ready
     // The reset will be released in AsyncPassthrough::signalStartupComplete()
-    SetArduinoResetLine(LOW, 0);  // Hold both Arduinos in reset
+
 
     // FatFS.begin();
     if ( !FatFS.begin( ) ) {
@@ -153,6 +153,9 @@ void setup( ) {
     // InjectionBufferStream is automatically prioritized via MultiSourceStream layer
     Jerial.setInputStream( JerialEndpoint::USB_SERIAL );  // Input with terminal control
     Jerial.addOutputStream( JerialEndpoint::USB_SERIAL ); // Output to USB
+    
+
+    
     startupTimers[ 0 ] = millis( );
 
     // Load hardware revision from EEPROM first (survives config resets)
@@ -220,7 +223,7 @@ void setup( ) {
 
     // Serial.println("INA219 initialized");
     // Serial.flush();
-
+    SetArduinoResetLine(LOW, 1);  // Hold both Arduinos in reset
     delayMicroseconds( 100 );
 
     digitalWrite( RESETPIN, LOW );
@@ -343,7 +346,9 @@ void setup( ) {
         closeAllFiles( );
     };
     ContextManager::getInstance( ).pushContext( mainMenuCtx );
-
+    // Clear any non-scrolling region that may persist from a previous session
+    // This resets terminal state in case LED dump or crossbar display was active before reboot
+    clearNonScrollingRegion();
     // Serial.println("Service registration complete");
     // Serial.flush();
 }
@@ -394,6 +399,32 @@ void setup1( ) {
     startupCore2timers[ 8 ] = millis( );
 }
 
+
+#define TEST_PSRAM 0
+
+#if TEST_PSRAM == 1
+
+int buff[4 *1024 ] PSRAM;   // 4MB array
+
+void initBuff() {
+    //bzero(buff, sizeof(buff));
+    for (int i = 0; i < 4 *1024 ; i += 1) {
+        buff[i] = i;
+    }
+}
+
+void printBuff() {
+    for (int i = 0; i < 4 *1024 ; i += 1) {
+        Serial.print(buff[i]);
+        Serial.print(" ");
+        Serial.flush();
+    }
+    Serial.println( );
+    Serial.flush();
+}
+#endif
+
+
 char connectFromArduino = '\0';
 
 int input = '\0';
@@ -435,6 +466,7 @@ int switchPosCount = 0;
 unsigned long core1Timeout = millis( );
 
 #define SETUP_LOGIC_ANALYZER_ON_BOOT 0
+
 
 #define debug_startup_timers 0
 #define debug_busy_timers 0
@@ -493,7 +525,13 @@ menu:
         checkProbeCurrentZero( );
  
         printColorJogoSmall( );
-
+#if TEST_PSRAM == 1
+        while (1) {
+            initBuff( );
+            printBuff( );
+            delay(1000);
+        }
+#endif
         firstLoop = 0;
         
         // Signal that startup is complete - enables tag parsing for Arduino commands
@@ -1048,7 +1086,7 @@ unsigned long la_timer = 0;
 bool debugWaitLoopTimingCore2 = false; // Enable via 'core2timing' command
 unsigned long lastCore2LoopStart = 5000000;
 unsigned long t[ 22 ];
-bool printPowerSupplySense = false;
+
 
 // Core 2 timing stats - smart accumulation
 unsigned long core2LoopIterations = 0;
@@ -1062,8 +1100,13 @@ unsigned long ledShowTotalTime = 0;
 unsigned long ledShowMinTime = 999999;
 unsigned long ledShowMaxTime = 0;
 
+
+#define POWER_SUPPLY_SENSE_ENABLED 0
+
+bool printPowerSupplySense = false;
 unsigned long powerSupplySenseTimer = 0;
 unsigned long powerSupplySenseRate = 1000;
+float supplySense = 9.10F;
 
 #define LED_SHOW_MIN_TIME 14
 
@@ -1150,19 +1193,23 @@ void loop1( ) {
             // Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t[1] - t[0] );
         }
     }
+    
+    #if POWER_SUPPLY_SENSE_ENABLED == 1
 
-    if ( printPowerSupplySense == 1 && millis( ) - powerSupplySenseTimer > powerSupplySenseRate ) {
+    if (  millis( ) - powerSupplySenseTimer > powerSupplySenseRate ) {
 
-        float supplySense = readAdcVoltage( 6, 4 );
+        supplySense = readAdcVoltage( 6, 4 );
 
+        if ( printPowerSupplySense == 1 ) {
         Serial.print( "supplySense = " );
         Serial.println( supplySense );
 
         Serial.flush( );
+        }
 
         powerSupplySenseTimer = millis( );
     }
-
+    #endif
     // OPTIMIZATION: Only service wavegen when it's actually running
     // wavegen.service() contains a blocking while() loop for I2C streaming!
     t[ 2 ] = micros( );

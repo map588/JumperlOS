@@ -48,6 +48,10 @@ const char* mp_embed_get_last_error(void);
 // Hardware control functions
 int getCurrentInterruptChar(void);
 
+// Memory information functions
+// Get PSRAM heap size (returns 0 if PSRAM not enabled or not present)
+size_t mp_embed_get_psram_size(void);
+
 #ifdef __cplusplus
 }
 #endif

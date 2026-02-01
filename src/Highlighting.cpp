@@ -1127,9 +1127,10 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
 
                 if ( lastPrintedNet != netHighlighted ) {
                     if ( print == 1 ) {
-                        // Generic function print using gpio_function_names
+                        // Pin-aware function name lookup
                         gpio_function_t fun = gpio_function_map[ functionOnNetIndex ];
-                        const char* fname = gpio_function_names[ fun ].name;
+                        uint gpioPin = gpioDef[ functionOnNetIndex ][ 0 ];
+                        const char* fname = gpio_function_name_for_pin( gpioPin, fun );
                         Serial.print( fname );
                         Serial.flush( );
 

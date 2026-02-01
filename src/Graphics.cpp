@@ -3687,6 +3687,10 @@ unsigned long clearLEDsInterval = 1000;
 unsigned long lastDumpAttemptTime = 0;
 unsigned long minDumpInterval = 10; // Minimum 50ms between dump attempts
 
+// LED dump scrolling region support (mirrors crossbar display approach)
+bool ledDumpEnabled = false;
+static const int LED_DUMP_HEIGHT = 28;  // Header + logo + LED grid rows + spacing + clear line
+
 // Connection state tracking for clear screen on connect
 bool serial1Connected = false;
 bool serial2Connected = false;
@@ -3713,6 +3717,57 @@ void freeDumpLEDsBuffer() {
     screenLinesBuffer = nullptr;
     screenLinesAllocated = false;
   }
+}
+
+/// @brief Enable/disable LED dump display with scrolling region
+/// Uses DECSTBM scrolling region - LED display is in non-scrolling area at top
+/// Similar to setLiveCrossbarEnabled() in CH446Q.cpp
+void setLedDumpEnabled(bool enabled) {
+  extern int dumpLED;
+  ledDumpEnabled = enabled;
+  dumpLED = enabled ? 1 : 0;
+  
+  if (enabled) {
+    // Clear screen and move to home
+    Serial.print("\033[2J\033[H");
+    
+    // Draw the initial LED display
+    dumpLEDs();
+    
+    // Set scrolling region BELOW the LED display area (DECSTBM)
+    // This makes rows 1-LED_DUMP_HEIGHT fixed (non-scrolling)
+    // and rows LED_DUMP_HEIGHT+1 to bottom scrollable
+    Serial.printf("\033[%d;999r", LED_DUMP_HEIGHT);
+    
+    // Move cursor to the scrolling region
+    Serial.printf("\033[%d;1H", LED_DUMP_HEIGHT);
+    Serial.println("--- LED Display Mode (R to disable) ---\r");
+    Serial.println("\r");
+    Serial.flush();
+  } else {
+    // Reset scrolling region to full screen (DECSTBM with no params)
+    Serial.print("\033[r");
+    // Clear screen and home
+    Serial.print("\033[2J\033[H");
+    Serial.println("LED display disabled.\r");
+    // Free the screen buffer to save memory
+    freeDumpLEDsBuffer();
+    Serial.flush();
+  }
+}
+
+/// @brief Clear any non-scrolling region that may persist from a previous session
+/// Call this at startup to reset terminal state
+void clearNonScrollingRegion(void) {
+  // Reset scrolling region to full screen
+  Serial.print("\033[r");
+  // Clear entire screen
+  Serial.print("\033[2J");
+  // Move cursor to home
+  Serial.print("\033[H");
+  // Show cursor (in case it was hidden)
+  Serial.print("\033[?25h");
+  Serial.flush();
 }
 
 void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
@@ -4071,61 +4126,83 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   // Close LED grid
   snprintf(screenLines[currentLine++], LINE_WIDTH,
            "╰─────────────────────────────────────────────────────────────╯");
+  
+  // Clear line below to remove any leftover content from previous renders
+  snprintf(screenLines[currentLine++], LINE_WIDTH,
+           "                                                                 ");
 
   logoLedAccess = false;
 
-      // Start with cursor reset
-    if (mainSerial == true) {
-
-        // Legacy cursor management for non-windowing mode
-        int clearAbove = 6;
-        Jerial.printf("\033[%dA", 30);
-        Jerial.printf("\033[%dA", clearAbove);
-        for (int i = 0; i < clearAbove; i++) {
-          Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
-        }
-        Jerial.print("\033[0G");
-   
-      // Windowing mode: skip manual positioning
-
-    } else {
-      snprintf(screenLines[currentLine++], LINE_WIDTH, "\033[0;0H\033[0m");
-    }
-
-
-  // Send all lines
-  for (int i = 0; i < currentLine; i++) {
-    // Quick timeout check
-    if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
-      break;
-    }
-
-    // Wait for buffer space if needed
-    int lineLen = strlen(screenLines[i]);
-    if (Jerial.availableForWrite() < lineLen + 3) { // +3 for \r\n\0
-      unsigned long waitStart = millis();
-      while (Jerial.availableForWrite() < lineLen + 3 &&
-             (millis() - waitStart) < 10) {
-        delayMicroseconds(10);
+  // Output handling - use scrolling region approach when ledDumpEnabled
+  if (mainSerial == true && ledDumpEnabled) {
+    // Scrolling region mode: use DECSC/DECRC (ESC 7 / ESC 8) for save/restore cursor
+    // This draws in the non-scrolling area at top without disturbing scrolling region
+    Serial.print("\0337");  // DECSC - save cursor position
+    Serial.print("\033[H"); // Move to home (top-left, non-scrolling area)
+    
+    // Send all lines to the fixed area
+    for (int i = 0; i < currentLine; i++) {
+      if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
+        break;
       }
+      Serial.print(screenLines[i]);
+      Serial.print("\033[K\r\n");  // Clear to EOL + newline
+    }
+    
+    Serial.print("\0338");  // DECRC - restore cursor position
+    Serial.flush();
+  } else if (mainSerial == true) {
+    // Legacy cursor management for non-scrolling-region mode
+    int clearAbove = 6;
+    Jerial.printf("\033[%dA", 30);
+    Jerial.printf("\033[%dA", clearAbove);
+    for (int i = 0; i < clearAbove; i++) {
+      Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
+    }
+    Jerial.print("\033[0G");
+    
+    // Send all lines with offset
+    for (int i = 0; i < currentLine; i++) {
+      if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
+        break;
+      }
+
+      int lineLen = strlen(screenLines[i]);
+      if (Jerial.availableForWrite() < lineLen + 3) {
+        unsigned long waitStart = millis();
+        while (Jerial.availableForWrite() < lineLen + 3 &&
+               (millis() - waitStart) < 10) {
+          delayMicroseconds(10);
+        }
+      }
+
+      Jerial.printf("\033[%dC", xOffset);
+      Jerial.print(screenLines[i]);
+      Jerial.print("\r\n");
     }
 
+    Jerial.printf("\033[%dB", 4);
+  } else {
+    // USBSer1/USBSer2 mode - position at 0,0
+    snprintf(screenLines[currentLine++], LINE_WIDTH, "\033[0;0H\033[0m");
+    
+    for (int i = 0; i < currentLine; i++) {
+      if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
+        break;
+      }
 
-    // Send line with proper line ending
-    if (mainSerial == true) {
+      int lineLen = strlen(screenLines[i]);
+      if (Jerial.availableForWrite() < lineLen + 3) {
+        unsigned long waitStart = millis();
+        while (Jerial.availableForWrite() < lineLen + 3 &&
+               (millis() - waitStart) < 10) {
+          delayMicroseconds(10);
+        }
+      }
 
-        Jerial.printf("\033[%dC", xOffset);
-   
+      Jerial.print(screenLines[i]);
+      Jerial.print("\r\n");
     }
-
-    Jerial.print(screenLines[i]);
-    Jerial.print("\r\n");
-  }
-
-  if (mainSerial == true) {
-
-      Jerial.printf("\033[%dB", 4);
- 
   }
 
 

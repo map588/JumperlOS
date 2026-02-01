@@ -73,6 +73,20 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_PY_BUILTINS_INPUT   (1)
 #define MICROPY_PY_FSTRINGS         (1)
 
+// =============================================================================
+// PSRAM Configuration - Optional External PSRAM Support
+// =============================================================================
+// Jumperless v5 can optionally have 8MB PSRAM installed on GPIO 19 (QSPI CS1).
+// PSRAM detection is done at runtime - the same firmware works with or without PSRAM.
+//
+// CRITICAL: MICROPY_GC_SPLIT_HEAP must ALWAYS be enabled so gc_add() is available
+// for adding PSRAM to the heap at runtime when detected.
+#define MICROPY_GC_SPLIT_HEAP (1)
+// Use 32-bit stack entries for larger heap addresses (PSRAM is at 0x11000000)
+#define MICROPY_GC_STACK_ENTRY_TYPE uint32_t
+// Larger GC stack to avoid slowdowns during full sweeps of PSRAM-backed heap
+#define MICROPY_ALLOC_GC_STACK_SIZE (1024)
+
 
 #define MICROPY_STACK_CHECK (1)
 #define MICROPY_STACK_CHECK_MARGIN (1024)  // 1KB margin for embedded systems

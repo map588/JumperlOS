@@ -89,3 +89,17 @@
 
 // Enable custom modules
 #define MICROPY_PY_MACHINE_JUMPERLESS   (1)
+
+// =============================================================================
+// PSRAM Configuration (Optional 8MB external PSRAM mod)
+// =============================================================================
+// The Jumperless v5 can optionally have an 8MB PSRAM chip installed.
+// When enabled, MicroPython will detect the PSRAM at boot and add it to the
+// garbage collector heap, providing ~8MB additional memory for Python objects.
+//
+// Hardware: APS6404L-3SQR or compatible PSRAM chip on GPIO 19 (QSPI CS1)
+// If no PSRAM is installed, the firmware will run normally with internal SRAM only.
+//
+// To disable PSRAM support (saves a small amount of flash), set to 0:
+#define MICROPY_HW_PSRAM_CS_PIN         (19)
+#define MICROPY_HW_ENABLE_PSRAM         (1)

@@ -5,6 +5,9 @@
 
 bool debugFlagsMenu();
 
+// Interactive status & diagnostics menu with arrow key navigation
+bool statusDiagnosticsMenu();
+
 
 
 

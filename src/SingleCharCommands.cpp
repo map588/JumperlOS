@@ -33,6 +33,7 @@
 #include "USBfs.h"
 #include "WokwiParser.h"
 #include "externVars.h"
+#include "hardware/gpio.h"
 #include "oled.h"
 #include "user_functions.h"
 #include <algorithm>
@@ -214,6 +215,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\bU/u = enable/disable USB Mass Storage\n\r" );
         // shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
+
         // Jerial.print("\tu = disable USB Mass Storage drive\n\r");
         // cycleTerminalColor();
 
@@ -223,7 +225,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t< = cycle slots\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tG = reload config.txt\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\to = load node file by slot\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tP = deinitialize MicroPython (free memory)\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tP = PSRAM test (memory integrity + speed)\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tF = cycle font\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\t_ = print micros per byte\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t@ = scan I2C (@[sda],[scl] or @[row])\n\r" );
@@ -491,9 +493,9 @@ void SingleCharCommands::initializeCommands( ) {
                      "Enter MicroPython REPL interactive mode.",
                      cmd_pythonREPL, MENU_BASIC, CAT_PYTHON );
 
-    registerCommand( 'P', "deinitialize MicroPython (free memory)",
-                     "Shut down MicroPython to free up memory.",
-                     cmd_pythonDeinit, MENU_ADVANCED, CAT_PYTHON );
+    registerCommand( 'P', "PSRAM test (memory integrity + speed)",
+                     "Run comprehensive PSRAM tests: size info, integrity check, speed comparison vs SRAM.",
+                     cmd_psramTest, MENU_ADVANCED, CAT_HARDWARE );
 
     registerCommand( '>', "send Python formatted command",
                      "Execute a single Python command. Usage: > print('hello')",
@@ -582,6 +584,10 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( ';', "print wire status",
                      "Print wire status to terminal.",
                      cmd_printWireStatus, MENU_DEBUG, CAT_DEBUG );
+
+    registerCommand( 'D', "status diagnostics menu",
+                     "Interactive status & diagnostics menu with arrow key navigation.",
+                     cmd_statusDiagnosticsMenu, MENU_STANDARD, CAT_DEBUG );
 
     // Settings commands
     registerCommand( 'l', "LED brightness / test",
@@ -1336,15 +1342,249 @@ CommandResult cmd_pythonREPL( char c, const String& line ) {
     return CMD_SHOW_MENU;
 }
 
-CommandResult cmd_pythonDeinit( char c, const String& line ) {
-    Jerial.println( "Deinitializing MicroPython to free memory... Total memory: " +
-                    String( rp2040.getTotalHeap( ) ) );
-    Jerial.println( "Free memory: " + String( rp2040.getFreeHeap( ) ) );
-    deinitMicroPythonProper( );
-    Jerial.println( "MicroPython deinitialized. Memory freed." );
-    Jerial.println( "Total memory: " + String( rp2040.getTotalHeap( ) ) );
-    Jerial.println( "Free memory: " + String( rp2040.getFreeHeap( ) ) );
-    Jerial.println( "Use 'p' to reinitialize and enter REPL again." );
+CommandResult cmd_psramTest( char c, const String& line ) {
+    Serial.println( "\n=== PSRAM Test Suite ===" );
+    Serial.flush();
+    Serial.println( "Config psram_installed: " + String( jumperlessConfig.hardware.psram_installed ) );
+    Serial.flush();
+    
+    // Show regular SRAM info first (this is always safe)
+    Serial.println( "\n--- SRAM Info ---" );
+    Serial.println( "SRAM Total: " + String( rp2040.getTotalHeap() / 1024 ) + " KB" );
+    Serial.println( "SRAM Free: " + String( rp2040.getFreeHeap() / 1024 ) + " KB" );
+    Serial.flush();
+    
+    // Try to get PSRAM size - this may crash if no PSRAM is present
+    Serial.println( "\n--- PSRAM Detection ---" );
+    Serial.println( "Checking PSRAM size..." );
+    Serial.flush();
+    
+    size_t psramSize = rp2040.getPSRAMSize();
+    Serial.println( "PSRAM Chip Size: " + String( psramSize / 1024 / 1024 ) + " MB (" + String( psramSize ) + " bytes)" );
+    Serial.flush();
+    
+    if ( psramSize == 0 ) {
+        Serial.println( "\nNo PSRAM detected!" );
+        Serial.println( "If you have installed the PSRAM mod, check:" );
+        Serial.println( "  - PSRAM chip is properly soldered" );
+        Serial.println( "  - CS pin (GPIO 19) connection" );
+        Serial.println( "  - Power and ground connections" );
+        Serial.flush();
+        return CMD_DONT_SHOW_MENU;
+    }
+    
+    // PSRAM detected - get heap info
+    Serial.println( "Getting PSRAM heap info..." );
+    Serial.flush();
+    
+    size_t psramTotal = rp2040.getTotalPSRAMHeap();
+    size_t psramUsed = rp2040.getUsedPSRAMHeap();
+    size_t psramFree = rp2040.getFreePSRAMHeap();
+    
+    Serial.println( "\n--- PSRAM Info ---" );
+    Serial.println( "PSRAM Heap Total: " + String( psramTotal / 1024 ) + " KB" );
+    Serial.println( "PSRAM Heap Used: " + String( psramUsed / 1024 ) + " KB" );
+    Serial.println( "PSRAM Heap Free: " + String( psramFree / 1024 ) + " KB" );
+    Serial.flush();
+    
+    // Memory integrity test - start small
+    Serial.println( "\n--- Memory Integrity Test ---" );
+    Serial.flush();
+    
+    // Try a small allocation first
+    Serial.println( "Testing small allocation (256 bytes)..." );
+    Serial.flush();
+    
+    uint32_t* testSmall = (uint32_t*)pmalloc( 256 );
+    if ( testSmall == nullptr ) {
+        Serial.println( "ERROR: Small pmalloc() failed!" );
+        Serial.flush();
+        return CMD_DONT_SHOW_MENU;
+    }
+    
+    // Quick write/read test
+    testSmall[0] = 0xDEADBEEF;
+    testSmall[1] = 0xCAFEBABE;
+    Serial.flush();
+    
+    if ( testSmall[0] != 0xDEADBEEF || testSmall[1] != 0xCAFEBABE ) {
+        Serial.println( "ERROR: Basic read/write test FAILED!" );
+        Serial.println( "  Wrote: 0xDEADBEEF, Read: 0x" + String( testSmall[0], HEX ) );
+        Serial.println( "  Wrote: 0xCAFEBABE, Read: 0x" + String( testSmall[1], HEX ) );
+        free( testSmall );
+        Serial.flush();
+        return CMD_DONT_SHOW_MENU;
+    }
+    Serial.println( "Small allocation test: PASS" );
+    free( testSmall );
+    Serial.flush();
+    
+    // Now try larger test
+    const size_t testSize = 64 * 1024; // 64KB test block
+    Serial.println( "Allocating " + String( testSize / 1024 ) + " KB test block..." );
+    Serial.flush();
+    
+    uint32_t* psramBlock = (uint32_t*)pmalloc( testSize );
+    if ( psramBlock == nullptr ) {
+        Serial.println( "ERROR: Failed to allocate PSRAM test block!" );
+        Serial.flush();
+        return CMD_DONT_SHOW_MENU;
+    }
+    Serial.println( "Allocation successful at address: 0x" + String( (uint32_t)psramBlock, HEX ) );
+    Serial.flush();
+    
+    size_t numWords = testSize / sizeof(uint32_t);
+    int errors = 0;
+    
+    // Test 1: Sequential pattern
+    Serial.print( "Test 1: Sequential pattern... " );
+    Serial.flush();
+    for ( size_t i = 0; i < numWords; i++ ) {
+        psramBlock[i] = i;
+    }
+    for ( size_t i = 0; i < numWords; i++ ) {
+        if ( psramBlock[i] != i ) {
+            errors++;
+            if ( errors <= 5 ) {
+                Serial.println( "Error at " + String(i) + ": expected " + String(i) + ", got " + String(psramBlock[i]) );
+            }
+        }
+    }
+    Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+    Serial.flush();
+    
+    // Test 2: Alternating bits pattern (0x55555555 / 0xAAAAAAAA)
+    errors = 0;
+    Serial.print( "Test 2: Alternating bits (0x55/0xAA)... " );
+    Serial.flush();
+    for ( size_t i = 0; i < numWords; i++ ) {
+        psramBlock[i] = ( i & 1 ) ? 0xAAAAAAAA : 0x55555555;
+    }
+    for ( size_t i = 0; i < numWords; i++ ) {
+        uint32_t expected = ( i & 1 ) ? 0xAAAAAAAA : 0x55555555;
+        if ( psramBlock[i] != expected ) {
+            errors++;
+        }
+    }
+    Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+    Serial.flush();
+    
+    // Test 3: Walking ones
+    errors = 0;
+    Serial.print( "Test 3: Walking ones pattern... " );
+    Serial.flush();
+    for ( size_t i = 0; i < numWords; i++ ) {
+        psramBlock[i] = 1 << ( i % 32 );
+    }
+    for ( size_t i = 0; i < numWords; i++ ) {
+        uint32_t expected = 1 << ( i % 32 );
+        if ( psramBlock[i] != expected ) {
+            errors++;
+        }
+    }
+    Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+    Serial.flush();
+    
+    // Test 4: All zeros and all ones
+    errors = 0;
+    Serial.print( "Test 4: All zeros/ones... " );
+    Serial.flush();
+    for ( size_t i = 0; i < numWords; i++ ) {
+        psramBlock[i] = 0x00000000;
+    }
+    for ( size_t i = 0; i < numWords; i++ ) {
+        if ( psramBlock[i] != 0x00000000 ) {
+            errors++;
+        }
+    }
+    for ( size_t i = 0; i < numWords; i++ ) {
+        psramBlock[i] = 0xFFFFFFFF;
+    }
+    for ( size_t i = 0; i < numWords; i++ ) {
+        if ( psramBlock[i] != 0xFFFFFFFF ) {
+            errors++;
+        }
+    }
+    Serial.println( errors == 0 ? "PASS" : "FAIL (" + String(errors) + " errors)" );
+    Serial.flush();
+    
+    // Speed test
+    Serial.println( "\n--- Speed Comparison Test ---" );
+    Serial.flush();
+    
+    const size_t speedTestSize = 32 * 1024; // 32KB for speed test
+    size_t speedWords = speedTestSize / sizeof(uint32_t);
+    
+    // Allocate SRAM block for comparison
+    uint32_t* sramBlock = (uint32_t*)malloc( speedTestSize );
+    if ( sramBlock == nullptr ) {
+        Serial.println( "Warning: Could not allocate SRAM comparison block" );
+        free( psramBlock );
+        Serial.flush();
+        return CMD_DONT_SHOW_MENU;
+    }
+    
+    unsigned long startTime, endTime;
+    
+    // PSRAM sequential write speed
+    startTime = micros();
+    for ( size_t i = 0; i < speedWords; i++ ) {
+        psramBlock[i] = i;
+    }
+    endTime = micros();
+    unsigned long psramWriteTime = endTime - startTime;
+    float psramWriteSpeed = ( speedTestSize / 1024.0 ) / ( psramWriteTime / 1000000.0 ); // KB/s
+    
+    // PSRAM sequential read speed
+    volatile uint32_t dummy = 0;
+    startTime = micros();
+    for ( size_t i = 0; i < speedWords; i++ ) {
+        dummy += psramBlock[i];
+    }
+    endTime = micros();
+    unsigned long psramReadTime = endTime - startTime;
+    float psramReadSpeed = ( speedTestSize / 1024.0 ) / ( psramReadTime / 1000000.0 ); // KB/s
+    
+    // SRAM sequential write speed
+    startTime = micros();
+    for ( size_t i = 0; i < speedWords; i++ ) {
+        sramBlock[i] = i;
+    }
+    endTime = micros();
+    unsigned long sramWriteTime = endTime - startTime;
+    float sramWriteSpeed = ( speedTestSize / 1024.0 ) / ( sramWriteTime / 1000000.0 ); // KB/s
+    
+    // SRAM sequential read speed  
+    startTime = micros();
+    for ( size_t i = 0; i < speedWords; i++ ) {
+        dummy += sramBlock[i];
+    }
+    endTime = micros();
+    unsigned long sramReadTime = endTime - startTime;
+    float sramReadSpeed = ( speedTestSize / 1024.0 ) / ( sramReadTime / 1000000.0 ); // KB/s
+    
+    Serial.println( "Test block size: " + String( speedTestSize / 1024 ) + " KB" );
+    Serial.println( "" );
+    Serial.println( "PSRAM Write: " + String( psramWriteTime ) + " us (" + String( psramWriteSpeed / 1024, 2 ) + " MB/s)" );
+    Serial.println( "PSRAM Read:  " + String( psramReadTime ) + " us (" + String( psramReadSpeed / 1024, 2 ) + " MB/s)" );
+    Serial.println( "SRAM Write:  " + String( sramWriteTime ) + " us (" + String( sramWriteSpeed / 1024, 2 ) + " MB/s)" );
+    Serial.println( "SRAM Read:   " + String( sramReadTime ) + " us (" + String( sramReadSpeed / 1024, 2 ) + " MB/s)" );
+    Serial.println( "" );
+    Serial.println( "Speed ratio (SRAM/PSRAM):" );
+    Serial.println( "  Write: " + String( sramWriteSpeed / psramWriteSpeed, 2 ) + "x" );
+    Serial.println( "  Read:  " + String( sramReadSpeed / psramReadSpeed, 2 ) + "x" );
+    Serial.flush();
+    
+    // Cleanup
+    free( psramBlock );
+    free( sramBlock );
+    
+    Serial.println( "\n=== PSRAM Test Complete ===" );
+    Serial.flush();
+    
+    // Use dummy to prevent optimizer from removing the reads
+    (void)dummy;
+    
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1857,54 +2097,209 @@ CommandResult cmd_setDebugFlags( char c, const String& line ) {
     return CMD_SHOW_MENU;
 }
 
+CommandResult cmd_statusDiagnosticsMenu( char c, const String& line ) {
+    statusDiagnosticsMenu( );
+    return CMD_SHOW_MENU;
+}
+
+
+
+const char* pinNames[48] = {
+    "UART_Tx",
+    "UART_Rx",
+    "LED_PROBE",
+    "LED_TOP",
+    "I2C0_SDA",
+    "I2C0_SCL",
+    "RP6",
+    "RP7",
+    "LDAC",
+    "PROBE_BUTTON",
+    "PROBE_PROBE",
+    "ENC_PUSH",
+    "ENC_A",
+    "ENC_B",
+    "CH_DATA",
+    "CH_CLK",
+    "CH_RESET",
+    "LED_BB",
+    "NANO_RESET_0",
+    "NANO_RESET_1",
+    "GPIO_1",
+    "GPIO_2",
+    "GPIO_3",
+    "GPIO_4",
+    "GPIO_5",
+    "GPIO_6",
+    "GPIO_7",
+    "GPIO_8",
+    "CH_CS_A",
+    "CH_CS_B",
+    "CH_CS_C",
+    "CH_CS_D",
+    "CH_CS_E",
+    "CH_CS_F",
+    "CH_CS_G",
+    "CH_CS_H",
+    "CH_CS_I",
+    "CH_CS_J",
+    "CH_CS_K",
+    "CH_CS_L",
+    "ADC_0",
+    "ADC_1",
+    "ADC_2",
+    "ADC_3",
+    "ADC_4_5V",
+    "PROBE_PAD_SENS",
+    "SUPPLY_MONITOR",
+    "ADC_PROBE"
+};
+const char* PSRAM_CS = "PSRAM_CS";
+
+
+
+
 CommandResult cmd_resourceStatus( char c, const String& line ) {
-    Jerial.println( "Resource Allocation Status:" );
-    Jerial.println( "==========================" );
+    Jerial.println( "\n\r╭──────────────────────────────────────────────────────────────────────╮" );
+    Jerial.println( "│                      SYSTEM RESOURCE STATUS                          │" );
+    Jerial.println( "╰──────────────────────────────────────────────────────────────────────╯\n\r" );
 
-    Jerial.print( "Free Heap: " );
-    Jerial.println( rp2040.getFreeHeap( ) );
-
-    Jerial.println( "Total memory: " + String( rp2040.getTotalHeap( ) ) );
-    Jerial.println( "Free memory: " + String( rp2040.getFreeHeap( ) ) );
-
-    if ( isRotaryEncoderInitialized( ) ) {
-        Jerial.println( "✓ Rotary Encoder: Initialized" );
-        printRotaryEncoderStatus( );
-    } else {
-        Jerial.println( "✗ Rotary Encoder: Not initialized" );
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MEMORY STATUS (2-column layout)
+    // ═══════════════════════════════════════════════════════════════════════════
+    Jerial.println( "┌──────────────────────────────────┬───────────────────────────────────┐" );
+    Jerial.println( "│         SRAM MEMORY (Heap)       │         PSRAM MEMORY              │" );
+    Jerial.println( "├──────────────────────────────────┼───────────────────────────────────┤" );
+    
+    // Get SRAM info
+    size_t sramTotal = rp2040.getTotalHeap( );
+    size_t sramFree = rp2040.getFreeHeap( );
+    size_t sramUsed = sramTotal - sramFree;
+    int sramPercent = ( sramUsed * 100 ) / sramTotal;
+    
+    // Get PSRAM info
+    size_t psramSize = rp2040.getPSRAMSize( );
+    size_t psramTotal = 0, psramFree = 0, psramUsed = 0;
+    int psramPercent = 0;
+    bool hasPSRAM = ( psramSize > 0 && jumperlessConfig.hardware.psram_installed == 1 );
+    
+    if ( hasPSRAM ) {
+        psramTotal = rp2040.getTotalPSRAMHeap( );
+        psramFree = rp2040.getFreePSRAMHeap( );
+        psramUsed = rp2040.getUsedPSRAMHeap( );
+        psramPercent = psramTotal > 0 ? ( psramUsed * 100 ) / psramTotal : 0;
     }
+    
+    // Memory rows with fixed-width formatting
+    if ( hasPSRAM ) {
+        Jerial.printf( "│ Total: %6u KB (%6u bytes)  │ Chip:     %4u MB (%7u bytes) │\n\r",
+                       (unsigned)(sramTotal / 1024), (unsigned)sramTotal,
+                       (unsigned)(psramSize / 1024 / 1024), (unsigned)psramSize );
+        Jerial.printf( "│ Free:  %6u KB (%6u bytes)  │ Total: %6u KB                  │\n\r",
+                       (unsigned)(sramFree / 1024), (unsigned)sramFree,
+                       (unsigned)(psramTotal / 1024) );
+        Jerial.printf( "│ Used:  %6u KB (%3d%%)          │ Free:  %6u KB (%3d%% used)      │\n\r",
+                       (unsigned)(sramUsed / 1024), sramPercent,
+                       (unsigned)(psramFree / 1024), psramPercent );
+    } else {
+        Jerial.printf( "│ Total: %6u KB (%6u bytes)  │ Not installed                     │\n\r",
+                       (unsigned)(sramTotal / 1024), (unsigned)sramTotal );
+        Jerial.printf( "│ Free:  %6u KB (%6u bytes)  │ Config: psram_installed=%d         │\n\r",
+                       (unsigned)(sramFree / 1024), (unsigned)sramFree,
+                       jumperlessConfig.hardware.psram_installed );
+        Jerial.printf( "│ Used:  %6u KB (%3d%%)          │                                   │\n\r",
+                       (unsigned)(sramUsed / 1024), sramPercent );
+    }
+    
+    Jerial.println( "└──────────────────────────────────┴───────────────────────────────────┘" );
 
-    Jerial.println( "\nConflict Detection:" );
-    Jerial.println( "Logic Analyzer conflicts: N/A (removed)" );
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PERIPHERALS STATUS (2-column layout)
+    // ═══════════════════════════════════════════════════════════════════════════
+    Jerial.println( "\n\r┌──────────────────────────────────┬───────────────────────────────────┐" );
+    Jerial.println( "│         OLED DISPLAY             │           PIO STATUS              │" );
+    Jerial.println( "├──────────────────────────────────┼───────────────────────────────────┤" );
+    
+    // OLED connection type names
+    const char* connTypes[] = { "GPIO 7/8 (crossbar)", "RP6/RP7 (hardwired)", "I2C0 (internal)", "Custom" };
+    int connType = jumperlessConfig.top_oled.connection_type;
+    const char* connName = (connType >= 0 && connType <= 3) ? connTypes[connType] : "Unknown";
+    
+    Jerial.printf( "│ Status: %-23s  │ PIO0: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
+                   oled.isConnected( ) ? "Connected" : "Not connected",
+                   pio_sm_is_claimed( pio0, 0 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio0, 1 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio0, 2 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio0, 3 ) ? "●" : "○" );
+    
+    Jerial.printf( "│ Type: %-25s  │ PIO1: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
+                   connName,
+                   pio_sm_is_claimed( pio1, 0 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio1, 1 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio1, 2 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio1, 3 ) ? "●" : "○" );
+    
+    Jerial.printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
+                   jumperlessConfig.top_oled.sda_pin,
+                   jumperlessConfig.top_oled.scl_pin,
+                   pio_sm_is_claimed( pio2, 0 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio2, 1 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio2, 2 ) ? "●" : "○",
+                   pio_sm_is_claimed( pio2, 3 ) ? "●" : "○" );
+    
+    // Show rows if using crossbar connection
+    if ( jumperlessConfig.top_oled.sda_row >= 0 ) {
+        Jerial.printf( "│ SDA Row: %3s  SCL Row: %3s       │                                   │\n\r",
+                       definesToChar(jumperlessConfig.top_oled.sda_row, 0),
+                       definesToChar(jumperlessConfig.top_oled.scl_row, 0));
+    }
+    
+    Jerial.println( "└──────────────────────────────────┴───────────────────────────────────┘" );
 
-    printPIOStateMachines( );
-    extern int rotaryDivider;
-    Jerial.print( "rotary divider = " );
-    Jerial.println( rotaryDivider );
-
-    Jerial.println( "gpio    up dn\tfunction\tfunction_hex" );
-    for ( int i = 0; i < 48; i++ ) {
-        int pull = gpio_is_pulled_up( i );
-        Jerial.print( "gpio " );
-        Jerial.print( i );
-        Jerial.print( ":  " );
-        if ( i < 10 ) {
-            Jerial.print( " " );
-        }
-        Jerial.print( pull );
-        Jerial.print( "  " );
-
-        pull = gpio_is_pulled_down( i );
-        Jerial.print( pull );
-
-        Jerial.print( "\t" );
-        Jerial.print( gpio_function_names[ gpio_get_function( i ) ].name );
-        Jerial.print( "\t" );
-        Jerial.print( gpio_get_function( i ), HEX );
-        Jerial.println( );
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GPIO PIN STATUS (2-column layout with hex values)
+    // ═══════════════════════════════════════════════════════════════════════════
+    Jerial.println( "\n\rgpio  up dn  func      hex  name            gpio  up dn  func      hex  name" );
+    Jerial.println(     "────  ─────  ────────  ───  ────────────    ────  ─────  ────────  ───  ────────────" );
+    
+    for ( int row = 0; row < 24; row++ ) {
+        int gpio1 = row;
+        int gpio2 = row + 24;
+        
+        // Get actual pull status from hardware registers
+        uint32_t pad1 = pads_bank0_hw->io[gpio1];
+        uint32_t pad2 = pads_bank0_hw->io[gpio2];
+        
+        bool up1 = gpio_is_pulled_up(gpio1);
+        bool dn1 = gpio_is_pulled_down(gpio1);
+        bool up2 = gpio_is_pulled_up(gpio2);
+        bool dn2 = gpio_is_pulled_down(gpio2);
+        
+        gpio_function_t func1 = gpio_get_function( gpio1 );
+        gpio_function_t func2 = gpio_get_function( gpio2 );
+        const char* funcName1 = gpio_function_name_for_pin( gpio1, func1 );
+        const char* funcName2 = gpio_function_name_for_pin( gpio2, func2 );
+        
+        // Both columns with fixed-width formatting
+        Jerial.printf( "%4d   %c  %c  %-8s  %-2X   %-14s  %4d   %c  %c  %-8s  %-2X   %-14s\n\r",
+                       gpio1,
+                       up1 ? '^' : ' ',
+                       dn1 ? 'v' : ' ',
+                       funcName1,
+                       (int)func1,
+                       (gpio1 == 19 && jumperlessConfig.hardware.psram_installed == 1) ? "PSRAM_CS" : pinNames[gpio1],
+                       gpio2,
+                       up2 ? '^' : ' ',
+                       dn2 ? 'v' : ' ',
+                       funcName2,
+                       (int)func2,
+                       pinNames[gpio2] );
+        
         Jerial.flush( );
     }
-    Jerial.println( );
+    
+    Jerial.println( "\n\r          ^ = pull-up  v = pull-down     ● = claimed, ○ = free\n\r" );
+    
     return CMD_SHOW_MENU;
 }
 
@@ -2047,12 +2442,9 @@ CommandResult cmd_logicAnalyzer( char c, const String& line ) {
 }
 
 CommandResult cmd_showBoardLEDs( char c, const String& line ) {
-    extern int dumpLED;
-    if ( dumpLED == 1 ) {
-        dumpLED = 0;
-    } else {
-        dumpLED = 1;
-    }
+    // Use scrolling region approach for LED dump display
+    // ledDumpEnabled is defined in Graphics.cpp
+    setLedDumpEnabled( !ledDumpEnabled );
     return CMD_DONT_SHOW_MENU;
 }
 

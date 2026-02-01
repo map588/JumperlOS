@@ -22,6 +22,9 @@
 #include "States.h"
 #include "Jerial.h"
 
+#include "hardware/structs/io_bank0.h"
+#include "hardware/structs/xip.h"
+
 // #include "SerialWrapper.h"
 
 // #include <SoftwareSerial.h>
@@ -136,7 +139,7 @@ void initArduino( void ) // if the UART is set up, the Arduino won't flash from
     // delay(1);
 
     pinMode( 18, INPUT );
-    pinMode( 19, INPUT );
+   // pinMode( 19, INPUT );
 }
 
 bool ManualArduinoReset = false;
@@ -591,6 +594,10 @@ int checkArduinoResetPin0( void ) {
 }
 
 int checkArduinoResetPin1( void ) {
+    // Skip if PSRAM mod is installed - GPIO 19 is used for PSRAM CS
+    if ( jumperlessConfig.hardware.psram_installed ) {
+        return -1; // Return -1 to indicate pin not available
+    }
     // Arduino reset pin 1 should be pulled high when Arduino is present
     pinMode( ARDUINO_RESET_1_PIN, INPUT );
     delayMicroseconds( 10 ); // Brief delay for pin to stabilize
@@ -601,11 +608,12 @@ int checkArduinoPresence( void ) {
     // Check if either Arduino (top or bottom slot) is present
     // Returns: 1 if Arduino detected, 0 if not
     int pin0 = checkArduinoResetPin0( );
-    int pin1 = checkArduinoResetPin1( );
+    int pin1 = checkArduinoResetPin1( ); // Returns -1 if PSRAM mod installed
     
     // Arduino pulls reset line high via internal pullup
     // If both are low, no Arduino is present
-    if ( pin0 == HIGH || pin1 == HIGH ) {
+    // pin1 == -1 means PSRAM mod installed, only check pin0
+    if ( pin0 == HIGH || ( pin1 != -1 && pin1 == HIGH ) ) {
         
         return 1;
     }
@@ -627,7 +635,8 @@ void SetArduinoResetLine( bool state, int topBottomBoth ) {
             digitalWrite( ARDUINO_RESET_0_PIN, LOW );
             rstColors[ 1 ] = 0x002a10;
         }
-        if ( topBottomBoth == 0 || topBottomBoth == 2 ) {
+        // Skip RESET_1 if PSRAM mod installed - GPIO 19 is used for PSRAM CS
+        if ( !jumperlessConfig.hardware.psram_installed && ( topBottomBoth == 0 || topBottomBoth == 2 ) ) {
             pinMode( ARDUINO_RESET_1_PIN, OUTPUT_12MA );
             digitalWrite( ARDUINO_RESET_1_PIN, LOW );
             rstColors[ 0 ] = 0x002a10;
@@ -645,7 +654,8 @@ void SetArduinoResetLine( bool state, int topBottomBoth ) {
         if ( topBottomBoth == 1 || topBottomBoth == 2 ) {
             pinMode( ARDUINO_RESET_0_PIN, INPUT );
         }
-        if ( topBottomBoth == 0 || topBottomBoth == 2 ) {
+        // Skip RESET_1 if PSRAM mod installed - GPIO 19 is used for PSRAM CS
+        if ( !jumperlessConfig.hardware.psram_installed && ( topBottomBoth == 0 || topBottomBoth == 2 ) ) {
             pinMode( ARDUINO_RESET_1_PIN, INPUT );
         }
         // headerColors[0] = 0x2000b9;
@@ -657,13 +667,42 @@ void SetArduinoResetLine( bool state, int topBottomBoth ) {
 void ESPReset( ) {
     Serial.println( "ESP Boot Mode" );
     pinMode( ARDUINO_RESET_0_PIN, OUTPUT );
-    pinMode( ARDUINO_RESET_1_PIN, OUTPUT );
     digitalWrite( ARDUINO_RESET_0_PIN, LOW );
-    digitalWrite( ARDUINO_RESET_1_PIN, LOW );
-    delay( 1 );
-    digitalWrite( ARDUINO_RESET_1_PIN, HIGH );
-    delay( 2 );
+    
+    // Skip RESET_1 if PSRAM mod installed - GPIO 19 is used for PSRAM CS
+    if ( !jumperlessConfig.hardware.psram_installed ) {
+        pinMode( ARDUINO_RESET_1_PIN, OUTPUT );
+        digitalWrite( ARDUINO_RESET_1_PIN, LOW );
+        delay( 1 );
+        digitalWrite( ARDUINO_RESET_1_PIN, HIGH );
+        delay( 2 );
+    } else {
+        delay( 3 ); // Equivalent delay when PSRAM mod is installed
+    }
     digitalWrite( ARDUINO_RESET_0_PIN, HIGH );
+}
+
+void applyPsramModeChange( int psramEnabled ) {
+    // Called when psram_installed config changes at runtime
+    // GPIO 19 is shared between NANO_RESET_1 and PSRAM_CS
+    
+    if ( psramEnabled ) {
+        // PSRAM mode enabled - release GPIO 19 from reset line duty
+        // Set to INPUT (high-Z) to avoid interfering with PSRAM chip select
+        // The PSRAM hardware will take control of this pin
+        //pinMode( ARDUINO_RESET_1_PIN, INPUT );
+        gpio_set_function( ARDUINO_RESET_1_PIN, GPIO_FUNC_XIP_CS1 );
+        xip_ctrl_hw->ctrl|=XIP_CTRL_WRITABLE_M1_BITS;
+        
+        Serial.println( "PSRAM mode enabled - GPIO 19 released for PSRAM CS" );
+        Serial.println( "Note: Top Arduino slot reset (NANO_RESET_1) is now disabled" );
+    } else {
+        // PSRAM mode disabled - reconfigure GPIO 19 as reset line
+        // Set to INPUT initially (high-Z, reset line pulled high by Arduino)
+        pinMode( ARDUINO_RESET_1_PIN, INPUT );
+        Serial.println( "PSRAM mode disabled - GPIO 19 restored as NANO_RESET_1" );
+        Serial.println( "Note: Top Arduino slot reset is now available" );
+    }
 }
 
 void setBaudRate( int baudRate ) {}

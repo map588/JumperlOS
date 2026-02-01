@@ -4377,7 +4377,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             // Serial.print("bufferPowerConnected dac 0 = "); Serial.println(bufferPowerConnected);
             bufferPowerConnected = false;
             needToRefresh = true;
-        } else if ( getDacVoltage( 0 ) < jumperlessConfig.calibration.measure_mode_output_voltage - 0.02 || getDacVoltage( 0 ) > jumperlessConfig.calibration.measure_mode_output_voltage + 0.02 && offOn == 1 ) {
+        } else if ( /*getDacVoltage( 0 ) < jumperlessConfig.calibration.measure_mode_output_voltage - 0.02 || getDacVoltage( 0 ) > jumperlessConfig.calibration.measure_mode_output_voltage + 0.02 && */ offOn == 1 ) {
             // Serial.println("DAC 0 voltage is out of range, setting to 3.30 V");
             // Serial.print("getDacVoltage(0) = ");
             // Serial.println(getDacVoltage(0));
@@ -4395,7 +4395,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             //   Serial.print("bufferPowerConnected dac 1 = "); Serial.println(bufferPowerConnected);
             bufferPowerConnected = false;
             needToRefresh = true;
-        } else if ( getDacVoltage( 1 ) < 2.9 || getDacVoltage( 1 ) > 3.64 && offOn == 1 ) {
+        } else if ( /*getDacVoltage( 1 ) < 2.9 || getDacVoltage( 1 ) > 3.64 && */offOn == 1 ) {
             // Serial.println("DAC 1 voltage is out of range, setting to 3.30 V");
             // Serial.print("getDacVoltage(1) = ");
             // Serial.println(getDacVoltage(1));
@@ -4414,7 +4414,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
         // Serial.println("power on\n\r");
         //  delay(10);
         if ( probePowerDAC == 0 ) {
-            setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
+            setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 1, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
                 addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
@@ -4422,7 +4422,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
                 needToRefresh = false; // Already refreshed by state functions
             }
         } else if ( probePowerDAC == 1 ) {
-            setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 0, 0 );
+            setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 1, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
                 addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );

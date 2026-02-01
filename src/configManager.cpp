@@ -410,6 +410,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     int saved_generation = jumperlessConfig.hardware.generation;
     int saved_revision = jumperlessConfig.hardware.revision;
     int saved_probe_revision = jumperlessConfig.hardware.probe_revision;
+    int saved_psram_installed = jumperlessConfig.hardware.psram_installed;
 
     //save calibration values
     int saved_top_rail_zero = jumperlessConfig.calibration.top_rail_zero;
@@ -452,6 +453,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     jumperlessConfig.hardware.generation = saved_generation;
     jumperlessConfig.hardware.revision = saved_revision;
     jumperlessConfig.hardware.probe_revision = saved_probe_revision;
+    jumperlessConfig.hardware.psram_installed = saved_psram_installed;
     }
     // Restore calibration values
 
@@ -594,6 +596,7 @@ void updateConfigFromFile(const char* filename) {
             if (strcmp(key, "generation") == 0) jumperlessConfig.hardware.generation = parseInt(value);
             else if (strcmp(key, "revision") == 0) jumperlessConfig.hardware.revision = parseInt(value);
             else if (strcmp(key, "probe_revision") == 0) jumperlessConfig.hardware.probe_revision = parseInt(value);
+            else if (strcmp(key, "psram_installed") == 0) jumperlessConfig.hardware.psram_installed = parseBool(value);
         } else if (strcmp(section, "dacs") == 0) {
             // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
             if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
@@ -937,6 +940,7 @@ void saveConfigToFile(const char* filename) {
     file.print("generation = "); file.print(jumperlessConfig.hardware.generation); file.println(";");
     file.print("revision = "); file.print(jumperlessConfig.hardware.revision); file.println(";");
     file.print("probe_revision = "); file.print(jumperlessConfig.hardware.probe_revision); file.println(";");
+    file.print("psram_installed = "); file.print(jumperlessConfig.hardware.psram_installed); file.println(";");
     file.println();
 
     // Write DAC settings section (voltage state moved to globalState.power in YAML files)
@@ -1090,6 +1094,8 @@ void updateShadowConfig() {
     shadowConfigValid = true;
 }
 
+
+//! This is where we add new config options
 // Compare current config with last saved to detect changes
 // Returns true if config has been modified since last save
 bool configHasChanges() {
@@ -1106,6 +1112,7 @@ bool configHasChanges() {
     if (jumperlessConfig.hardware.generation != lastSavedConfig.hardware.generation) return true;
     if (jumperlessConfig.hardware.revision != lastSavedConfig.hardware.revision) return true;
     if (jumperlessConfig.hardware.probe_revision != lastSavedConfig.hardware.probe_revision) return true;
+    if (jumperlessConfig.hardware.psram_installed != lastSavedConfig.hardware.psram_installed) return true;
     
     // DACs section
     if (jumperlessConfig.dacs.set_dacs_on_boot != lastSavedConfig.dacs.set_dacs_on_boot) return true;
@@ -1449,6 +1456,7 @@ void saveConfigIncremental(const char* filename) {
             trim(key);
             toLower(key);
             
+//! This is where we add new config options
             // Generate updated line based on section and key
             char newLine[256];
             bool updated = false;
@@ -1481,6 +1489,9 @@ void saveConfigIncremental(const char* filename) {
                     updated = true;
                 } else if (strcmp(key, "probe_revision") == 0) {
                     snprintf(newLine, sizeof(newLine), "probe_revision = %d;", jumperlessConfig.hardware.probe_revision);
+                    updated = true;
+                } else if (strcmp(key, "psram_installed") == 0) {
+                    snprintf(newLine, sizeof(newLine), "psram_installed = %d;", jumperlessConfig.hardware.psram_installed);
                     updated = true;
                 }
             }
@@ -2249,6 +2260,7 @@ void loadConfig(void) {
     // initChipStatus();
 }
 
+//! This is where we add new config SECTIONS
 int parseSectionName(const char* sectionName) {
     if (strcmp(sectionName, "config") == 0) return -2; // Special case for config section
     else if (strcmp(sectionName, "firmware") == 0) return -3; // Firmware tracking section
@@ -2298,6 +2310,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("revision = "); Serial.print(jumperlessConfig.hardware.revision); Serial.println(";");
         if (pasteable == true) Serial.print("`[hardware] ");
         Serial.print("probe_revision = "); Serial.print(jumperlessConfig.hardware.probe_revision); Serial.println(";");
+        if (pasteable == true) Serial.print("`[hardware] ");
+        Serial.print("psram_installed = "); Serial.print(jumperlessConfig.hardware.psram_installed); Serial.println(";");
     }
     cycleTerminalColor();
     // Print DAC settings section
@@ -3308,6 +3322,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         if (strcmp(key, "generation") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.generation);
         else if (strcmp(key, "revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.revision);
         else if (strcmp(key, "probe_revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.probe_revision);
+        else if (strcmp(key, "psram_installed") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.psram_installed);
     }
     else if (strcmp(section, "dacs") == 0) {
         // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
@@ -3436,6 +3451,12 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         if (strcmp(key, "generation") == 0) jumperlessConfig.hardware.generation = parseInt(value);
         else if (strcmp(key, "revision") == 0) jumperlessConfig.hardware.revision = parseInt(value);
         else if (strcmp(key, "probe_revision") == 0) jumperlessConfig.hardware.probe_revision = parseInt(value);
+        else if (strcmp(key, "psram_installed") == 0) {
+            int newValue = parseBool(value);
+            jumperlessConfig.hardware.psram_installed = newValue;
+            // Apply GPIO 19 mode change immediately
+            applyPsramModeChange(newValue);
+        }
     }
     else if (strcmp(section, "dacs") == 0) {
         // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power

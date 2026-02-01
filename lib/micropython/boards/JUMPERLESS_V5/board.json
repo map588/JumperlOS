@@ -6,6 +6,7 @@
     "features": [
         "Dual-core",
         "External Flash",
+        "External RAM",
         "USB"
     ],
     "images": [

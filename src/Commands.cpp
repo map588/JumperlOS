@@ -374,8 +374,8 @@ void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
     
     // Timeout safety: If Core 2 is taking too long, force proceed
     // This can happen if Core 2 is stuck waiting for mutex or other resources
-    if (micros() - core2_wait_start > 5000) {  // 5ms timeout
-      Serial.println("WARNING: Core 2 timeout! Forcing proceed.");
+    if (micros() - core2_wait_start > 20000) {  // 5ms timeout
+      //Serial.println("WARNING: Core 2 timeout! Forcing proceed.");
       // Force clear busy flag to prevent permanent deadlock
       core2busy = false;
       __dmb();

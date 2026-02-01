@@ -195,7 +195,7 @@ float adcRange[ 8 ][ 2 ] = { { -8, 8 }, { -8, 8 }, { -8, 8 }, { -8, 8 }, { 0, 5 
 float dacSpread[ 4 ] = { 20.2, 20.2, 20.2, 20.2 };
 int dacZero[ 4 ] = { 1650, 1650, 1650, 1650 };
 
-float adcSpread[ 8 ] = { 18.28, 18.28, 18.28, 18.28, 5.0, 17.28, 17.28, 17.28 };
+float adcSpread[ 8 ] = { 18.28, 18.28, 18.28, 18.28, 5.0, 17.28, 21.6, 17.28 };
 float adcZero[ 8 ] = { 8.0, 8.0, 8.0, 8.0, 0.0, 8.0, 8.0, 8.0 };
 
 /// GPIO states: 0=output low, 1=output high, 2=input, 3=input pullup, 
@@ -798,6 +798,81 @@ char* gpio_function_name( gpio_function_t function ) {
     return name;
 }
 
+// Pin-aware function name lookup for RP2350
+// Function code 9 maps to different peripherals depending on the GPIO pin:
+// - XIP_CS1n:    GPIO 0, 8, 19, 47
+// - TRACECLK:    GPIO 1
+// - TRACEDATA0:  GPIO 2
+// - TRACEDATA1:  GPIO 3
+// - TRACEDATA2:  GPIO 4
+// - TRACEDATA3:  GPIO 5
+// - GPIN0:       GPIO 12, 20
+// - GPIN1:       GPIO 22
+// - GPOUT0:      GPIO 13, 21
+// - GPOUT1:      GPIO 14, 23
+// - GPOUT2:      GPIO 24
+// - GPOUT3:      GPIO 25
+const char* gpio_function_name_for_pin( uint gpio, gpio_function_t function ) {
+    // Handle function code 9 which has multiple meanings per pin
+    if ( function == 9 ) {
+        // XIP_CS1 pins
+        if ( gpio == 0 || gpio == 8 || gpio == 19 || gpio == 47 ) {
+            return "XIP_CS1";
+        }
+        // Trace pins
+        if ( gpio == 1 ) {
+            return "TRACECLK";
+        }
+        if ( gpio == 2 ) {
+            return "TRACEDAT0";
+        }
+        if ( gpio == 3 ) {
+            return "TRACEDAT1";
+        }
+        if ( gpio == 4 ) {
+            return "TRACEDAT2";
+        }
+        if ( gpio == 5 ) {
+            return "TRACEDAT3";
+        }
+        // Clock input pins
+        if ( gpio == 12 || gpio == 20 ) {
+            return "GPIN0";
+        }
+        if ( gpio == 22 ) {
+            return "GPIN1";
+        }
+        // Clock output pins
+        if ( gpio == 13 || gpio == 21 ) {
+            return "GPOUT0";
+        }
+        if ( gpio == 14 || gpio == 23 ) {
+            return "GPOUT1";
+        }
+        if ( gpio == 24 ) {
+            return "GPOUT2";
+        }
+        if ( gpio == 25 ) {
+            return "GPOUT3";
+        }
+        // Default for F9 on other pins (shouldn't happen, but fallback)
+        return "F9_UNK";
+    }
+
+    // For all other function codes, use the simple lookup
+    // Function codes 0-8 and 10+ have unique meanings
+    if ( function < 15 ) {
+        return gpio_function_names[ function ].name;
+    }
+
+    // GPIO_FUNC_NULL (0x1f) or other special values
+    if ( function == GPIO_FUNC_NULL ) {
+        return "";
+    }
+
+    return "UNKNOWN";
+}
+
 void printGPIOState( void ) {
 
     
@@ -821,7 +896,7 @@ void printGPIOState( void ) {
     for ( int i = 0; i < 10; i++ ) {
         gpio_function_map[ i ] = gpio_get_function( gpioDef[ i ][ 0 ] );
 
-        Serial.print( gpio_function_names[ gpio_get_function( gpioDef[ i ][ 0 ] ) ].name );
+        Serial.print( gpio_function_name_for_pin( gpioDef[ i ][ 0 ], gpio_function_map[ i ] ) );
 
     
         Serial.print( "\t" );

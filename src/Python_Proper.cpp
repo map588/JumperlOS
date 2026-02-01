@@ -114,6 +114,27 @@ unsigned int arduino_millis(void);
 
 // Export global_mp_stream for C code
 extern void *global_mp_stream_ptr;
+
+// =============================================================================
+// PSRAM Support Wrapper for MicroPython
+// =============================================================================
+// Wrapper function to access Arduino-Pico PSRAM API from C code
+// Used by micropython_embed.c to detect PSRAM and add it to GC heap
+//
+// IMPORTANT: This function checks jumperlessConfig.hardware.psram_installed first.
+// If psram_installed is 0, we skip PSRAM detection entirely to avoid crashes
+// on boards where PSRAM isn't installed or the framework crashes on detection.
+size_t jl_get_psram_size(void) {
+    // Check config first - if psram_installed is 0, skip detection entirely
+    // This prevents crashes on boards without PSRAM hardware
+    if (jumperlessConfig.hardware.psram_installed == 0) {
+        return 0;
+    }
+    
+    // rp2040.getPSRAMSize() returns the PSRAM chip size in bytes
+    // Returns 0 if no PSRAM is detected
+    return rp2040.getPSRAMSize();
+}
 }
 
 /**

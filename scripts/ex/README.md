@@ -96,6 +96,9 @@ while True:
 - **`voltage_monitor.py`** - Real-time voltage monitoring with OLED
 - **`stylophone.py`** - Musical instrument using probe and GPIO
 
+### System & Hardware Tests
+- **`psram_test.py`** - Test PSRAM availability and run memory diagnostics
+
 ## 🛠️ Creating New Examples
 
 1. Create a new `.py` file in `pythonStuff/ex/`

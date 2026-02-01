@@ -33,6 +33,7 @@ struct config {
         int generation = 5;
         int revision = 7;
         int probe_revision = 5;
+        int psram_installed = 0;
     } hardware;
 
     struct dacs {
