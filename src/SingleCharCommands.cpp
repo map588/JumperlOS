@@ -1287,7 +1287,7 @@ CommandResult cmd_showCrossbar( char c, const String& line ) {
     }
     
     // Otherwise show compact crossbar view
-    printChipStateArrayColorCompact( 12 );
+    printChipStateArrayColorCompact( 12 , '.');
     return CMD_DONT_SHOW_MENU;
 }
 

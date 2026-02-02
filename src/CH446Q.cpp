@@ -508,32 +508,34 @@ void printChipStateArrayColor(void) {
             // Use the net that "owns" this crosspoint - typically the X line's net
             int connNet = xNet > 0 ? xNet : yNet;
             int connColor = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
-            changeTerminalColor(connColor, false, &Serial);
+            changeTerminalColor(connColor, false, &Serial, false);
             Serial.print("─█─");
-            changeTerminalColor(-1, false, &Serial);
+            changeTerminalColor(-1, false, &Serial, false);
           } else {
             if (verticalLine && horizontalLine) {
               // Crossing - horizontal in X color, center in Y color
-              changeTerminalColor(xColor, false, &Serial);
+              changeTerminalColor(xColor, false, &Serial, false);
               Serial.print("─");
-              changeTerminalColor(yColor, false, &Serial);
+              changeTerminalColor(yColor, false, &Serial, false);
               Serial.print("┼");
-              changeTerminalColor(xColor, false, &Serial);
+              changeTerminalColor(xColor, false, &Serial, false );
               Serial.print("─");
-              changeTerminalColor(-1, false, &Serial);
+              changeTerminalColor(-1, false, &Serial, false);
             } else if (verticalLine) {
               // Just vertical line
-              changeTerminalColor(yColor, false, &Serial);
+              changeTerminalColor(yColor, false, &Serial, false);
               Serial.print(" │ ");
-              changeTerminalColor(-1, false, &Serial);
+              changeTerminalColor(-1, false, &Serial, false);
             } else if (horizontalLine) {
               // Just horizontal line
-              changeTerminalColor(xColor, false, &Serial);
+              changeTerminalColor(xColor, false, &Serial, false);
               Serial.print("───");
-              changeTerminalColor(-1, false, &Serial);
+              changeTerminalColor(-1, false, &Serial, false);
             } else {
               // No line - just a dot
+              changeTerminalColor( 238 , false, &Serial, false);
               Serial.print(" . ");
+              changeTerminalColor(-1, false, &Serial, false);
             }
           }
         }
@@ -582,7 +584,7 @@ void printChipStateArrayColorCompact(int chipsPerRow, char blankChar) {
     Serial.print("   ");
     for (int chip = startChip; chip < endChip; chip++) {
       Serial.print(chipNumToChar(chip));
-      Serial.print("        ");  // 8 chars for 8 Y columns
+      Serial.print("         ");  // 8 chars for 8 Y columns
     }
     Serial.println();
 
@@ -621,27 +623,29 @@ void printChipStateArrayColorCompact(int chipsPerRow, char blankChar) {
             // Connection point - use the net color
             int connNet = xNet > 0 ? xNet : yNet;
             int connColor = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
-            changeTerminalColor(connColor, false, &Serial);
+            changeTerminalColor(connColor, false, &Serial, false);
             Serial.print("█");
-            changeTerminalColor(-1, false, &Serial);
+            changeTerminalColor(-1, false, &Serial, false);
           } else if (verticalLine && horizontalLine) {
             // Crossing - show in vertical line's color (Y net)
-            changeTerminalColor(yColor, false, &Serial);
+            changeTerminalColor(yColor, false, &Serial, false);
             Serial.print("┼");
-            changeTerminalColor(-1, false, &Serial);
+            changeTerminalColor(-1, false, &Serial, false);
           } else if (verticalLine) {
             // Just vertical line
-            changeTerminalColor(yColor, false, &Serial);
+            changeTerminalColor(yColor, false, &Serial, false);
             Serial.print("│");
-            changeTerminalColor(-1, false, &Serial);
+            changeTerminalColor(-1, false, &Serial, false);
           } else if (horizontalLine) {
             // Just horizontal line
-            changeTerminalColor(xColor, false, &Serial);
+            changeTerminalColor(xColor, false, &Serial, false);
             Serial.print("─");
-            changeTerminalColor(-1, false, &Serial);
+            changeTerminalColor(-1, false, &Serial, false);
           } else {
             // No line
+            changeTerminalColor( 238 , false, &Serial, false);
             Serial.print(blankChar);
+            changeTerminalColor(-1, false, &Serial, false);
           }
         }
         Serial.print("  ");  // Single space between chips
@@ -729,7 +733,7 @@ void updateLiveCrossbarDisplay(void) {
   Serial.print("\033[H");
   
   // Print chip headers
-  Serial.print("   ");
+ // Serial.print("   ");
   for (int chip = 0; chip < 12; chip++) {
     Serial.print(chipNumToChar(chip));
     Serial.print("        ");
@@ -780,22 +784,32 @@ void updateLiveCrossbarDisplay(void) {
         
         if (isConnected) {
           if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          changeTerminalColor(color, false, &Serial, false);
           Serial.print("█");
+          changeTerminalColor(-1, false, &Serial, false);
           if (color >= 0) Serial.print("\033[0m");
         } else if (verticalLine && horizontalLine) {
           if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          changeTerminalColor(color, false, &Serial, false);
           Serial.print("┼");
+          changeTerminalColor(-1, false, &Serial, false);
           if (color >= 0) Serial.print("\033[0m");
         } else if (verticalLine) {
           if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          changeTerminalColor(color, false, &Serial, false);
           Serial.print("│");
+          changeTerminalColor(-1, false, &Serial, false);
           if (color >= 0) Serial.print("\033[0m");
         } else if (horizontalLine) {
           if (color >= 0) Serial.printf("\033[38;5;%dm", color);
+          changeTerminalColor(color, false, &Serial, false);
           Serial.print("─");
+          changeTerminalColor(-1, false, &Serial, false);
           if (color >= 0) Serial.print("\033[0m");
         } else {
-          Serial.print(" ");
+          changeTerminalColor( 238 , false, &Serial, false);
+          Serial.print(".");
+          changeTerminalColor(-1, false, &Serial, false);
         }
       }
       Serial.print(" ");

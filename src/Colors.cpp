@@ -666,17 +666,24 @@ int colorToAnsi(uint32_t color) {
 
 extern bool disableTerminalColors;
 
-void changeTerminalColor(int termColor, bool flush, Stream *stream) {
+int currentTerminalColor = -1;
+
+void changeTerminalColor(int termColor, bool flush, Stream *stream, bool force) {
     if (disableTerminalColors) {
+        return;
+    }
+    if (currentTerminalColor == termColor && !force) {
         return;
     }
     
     // Output the color escape sequence - only flush ONCE at the end if requested
     // Previously this was flushing before AND after, causing double-flush overhead
     if (termColor != -1) {
+        currentTerminalColor = termColor;
         stream->printf("\033[38;5;%dm", termColor);
     } else {
         stream->print("\033[0m"); // Reset all colors and formatting
+        currentTerminalColor = -1;
     }
     
     // Single flush at the end if requested
@@ -739,6 +746,10 @@ void cycleTerminalColor(bool reset, float step, bool flush, Stream *stream, int 
     if (bright == 1) {
         color = highSaturationBrightColors[currentColor];
     }
+    if (currentTerminalColor == color) {
+        return;
+    }
+    currentTerminalColor = color;
     stream->printf("\033[38;5;%dm", color);
     if (flush) {
         stream->flush();
@@ -765,7 +776,10 @@ void changeTerminalColorHighSat(int colorIndex, bool flush, Stream *stream, int 
     if (bright == 1) {
         color = highSaturationBrightColors[colorIndex];
     }
-    
+    if (currentTerminalColor == color) {
+        return;
+    }
+    currentTerminalColor = color;
     stream->printf("\033[38;5;%dm", color);
     if (flush) {
         stream->flush();

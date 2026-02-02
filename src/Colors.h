@@ -142,7 +142,7 @@ int closestPaletteHueIdx(int hue);
  * @param flush Whether to flush the stream after changing color
  * @param stream Output stream
  */
-void changeTerminalColor(int termColor, bool flush, Stream *stream);
+void changeTerminalColor(int termColor, bool flush, Stream *stream, bool force = true);
 
 /**
  * @brief Cycle through high saturation spectrum colors
