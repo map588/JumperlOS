@@ -125,6 +125,8 @@ void updateFakeGpioAfterConnectionChange(int node1, int node2);
 int fakeGpioDisconnect(int node1, int node2);
 int fakeGpioReconnect(int node1, int node2);
 
+int fakeGpioRemoveInput(int node);
+
 // ============================================================================
 // Legacy Compatibility Wrappers
 // ============================================================================

@@ -131,15 +131,46 @@ static int8_t extractPathHopsForNode(int node, int8_t* outChips, int8_t* outX, i
 }
 
 // Find net index for a node from current routed paths
+// For FakeGPIO inputs, the userNode is in node1 position, node2 is the shared ADC
 static int findNetForNode(int node) {
+    // First pass: look for exact match in node1 (breadboard node position)
     for (int i = 0; i < globalState.connections.numPaths; i++) {
         const pathStruct& path = globalState.connections.paths[i];
-        if (path.node1 == node || path.node2 == node) {
+        if (path.node1 == node) {
+            if (debugFakeGpio) {
+                Serial.print("  findNetForNode: node=");
+                Serial.print(node);
+                Serial.print(" found at path ");
+                Serial.print(i);
+                Serial.print(" (node1), net=");
+                Serial.println(path.net);
+            }
             return path.net;
         }
     }
+    // Second pass: check node2 as fallback
+    for (int i = 0; i < globalState.connections.numPaths; i++) {
+        const pathStruct& path = globalState.connections.paths[i];
+        if (path.node2 == node) {
+            if (debugFakeGpio) {
+                Serial.print("  findNetForNode: node=");
+                Serial.print(node);
+                Serial.print(" found at path ");
+                Serial.print(i);
+                Serial.print(" (node2), net=");
+                Serial.println(path.net);
+            }
+            return path.net;
+        }
+    }
+    if (debugFakeGpio) {
+        Serial.print("  findNetForNode: node=");
+        Serial.print(node);
+        Serial.println(" NOT FOUND");
+    }
     return -1;
 }
+
 
 // Check if a DAC is connected to anything (except exclude_node)
 static bool isDacConnected(int dac_node, int exclude_node = -1) {
@@ -598,6 +629,29 @@ int fakeGpioReadOutput(int node) {
 // ============================================================================
 // Input Configuration
 // ============================================================================
+int fakeGpioRemoveInput(int node) {
+    int slot = findFakeGpioInputSlot(node);
+    if (slot == -1) return 0;
+
+    FakeGpioInput& in = fakeGpioInputs[slot];
+    int virtualNode = FAKE_GP_IN_0 + slot;
+
+    tdmInputs.removeChannel(in.userNode);
+    removeBridgeFromState(in.userNode, virtualNode, false);
+
+    in.active = false;
+    in.userNode = -1;
+    in.tdmSlot = -1;
+    in.currentState = -1;
+    in.netIndex = -1;
+    gpioReadingColors[slot] = 0;
+
+    clearInputDisplay(slot);
+    refreshLocalConnections(0, 1, 0);
+    syncAliases();
+    return 1;
+}
+
 
 int fakeGpioConfigInput(int node, float thresholdHigh, float thresholdLow) {
     if (!initialized) initFakeGpio();
@@ -632,11 +686,26 @@ int fakeGpioConfigInput(int node, float thresholdHigh, float thresholdLow) {
     FakeGpioInput& in = fakeGpioInputs[slot];
     int virtualNode = FAKE_GP_IN_0 + slot;
 
-    // Remove old bridge if reconfiguring
-    if (isReconfig && in.userNode > 0) {
-        tdmInputs.removeChannel(in.userNode);
-        removeBridgeFromState(in.userNode, FAKE_GP_IN_0 + slot, true);
-    }
+    // Remove old bridge if reconfiguring - do a full cleanup
+  //  if (isReconfig && in.userNode >= 0) {
+        // tdmInputs.removeChannel(in.userNode);
+        // Serial.print("  Removing old bridge for node ");
+        // Serial.println(in.userNode);
+        // Serial.print("  Removing old bridge for virtual node ");
+        // Serial.println(FAKE_GP_IN_0 + slot);
+        // Serial.flush();
+       // fakeGpioRemoveInput(in.userNode);
+        // removeBridgeFromState(in.userNode, FAKE_GP_IN_0 + slot, true);
+        // // Clear the slot completely
+        // in.active = false;
+        // in.userNode = -1;
+        // in.netIndex = -1;
+        // in.tdmSlot = -1;
+
+        // Refresh connections to clean up paths before re-adding
+        // refreshLocalConnections(0, 1, 0);
+        // waitCore2();
+   // }
 
     // Initialize slot BEFORE adding bridge
     in.active = true;
@@ -705,26 +774,7 @@ int fakeGpioConfigInput(int node, float thresholdHigh, float thresholdLow) {
     return slot;
 }
 
-int fakeGpioRemoveInput(int node) {
-    int slot = findFakeGpioInputSlot(node);
-    if (slot == -1) return 0;
 
-    FakeGpioInput& in = fakeGpioInputs[slot];
-    int virtualNode = FAKE_GP_IN_0 + slot;
-
-    tdmInputs.removeChannel(in.userNode);
-    removeBridgeFromState(in.userNode, virtualNode, false);
-
-    in.active = false;
-    in.userNode = -1;
-    in.tdmSlot = -1;
-    in.currentState = -1;
-
-    clearInputDisplay(slot);
-    refreshLocalConnections(0, 1, 0);
-    syncAliases();
-    return 1;
-}
 
 // ============================================================================
 // Input Read
@@ -762,7 +812,7 @@ int fakeGpioRead(int node) {
 // ============================================================================
 
 static unsigned long lastReadFakeGPIO = 0;
-static unsigned long readFakeGPIOInterval = 5;  // microseconds
+static unsigned long readFakeGPIOInterval = 50;  // microseconds
 static unsigned long updateFakeGpioCrossbarInterval = 111111;  // microseconds
 static unsigned long lastUpdateFakeGpioCrossbar = 0;  // microseconds
 
@@ -773,7 +823,7 @@ void readFakeGPIO(void) {
     if (tdmInputs.activeCount <= 0) return;
 
     // Round-robin: read next TDM channel
-    int tdmSlot = tdmInputs.pollNext(8);
+    int tdmSlot = tdmInputs.pollNext(4);
     if (tdmSlot < 0) return;
 
     syncAliases();
@@ -1035,15 +1085,22 @@ void initializeFakeGpioFromLoadedState() {
             int userNode = (virtualNode == n1) ? n2 : n1;
             if (!IS_FAKE_GP_IN(userNode)) {
                 int slot = FAKE_GP_IN_SLOT(virtualNode);
-                if (slot >= 0 && slot < MAX_FAKE_GP_IN && !fakeGpioInputs[slot].active) {
-                    FakeGpioInput& in = fakeGpioInputs[slot];
-                    in.active = true;
-                    in.userNode = userNode;
-                    in.thresholdHigh = 2.0f;
-                    in.thresholdLow = 0.8f;
-                    in.currentState = 0;
-                    in.netIndex = -1;
-                    in.tdmSlot = -1;
+                if (slot >= 0 && slot < MAX_FAKE_GP_IN) {
+                    // Check if we should init this slot:
+                    // - If inactive, init it
+                    // - If active but same userNode, reinit it (reuse)
+                    bool shouldInit = !fakeGpioInputs[slot].active || 
+                                     fakeGpioInputs[slot].userNode == userNode;
+                    if (shouldInit) {
+                        FakeGpioInput& in = fakeGpioInputs[slot];
+                        in.active = true;
+                        in.userNode = userNode;
+                        in.thresholdHigh = 2.0f;
+                        in.thresholdLow = 0.8f;
+                        in.currentState = 0;
+                        in.netIndex = -1;
+                        in.tdmSlot = -1;
+                    }
                 }
             }
         }

@@ -50,6 +50,8 @@ extern SafeString nodeFileString;
 #include "JulseView.h"
 #include "MpRemoteService.h"
 #include "Jerial.h"  // For OLEDOut stream
+#include "JsonState.h"
+
 
 // MicroPython includes for soft reset
 extern "C" {
@@ -729,6 +731,8 @@ int jl_set_net_color( int netNum, const char* colorStr ) {
 
     return 1; // Success
 }
+
+
 
 // Set the color of a net by RGB values
 int jl_set_net_color_rgb( int netNum, int r, int g, int b ) {
@@ -2690,6 +2694,28 @@ int jl_fs_used_bytes( void ) {
 
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
     return result;
+}
+
+
+const char* jl_get_state() {
+    static String jsonCache;
+    jsonCache = JsonState::getJumperlessStateJSON();
+    return jsonCache.c_str();
+}
+
+int jl_set_state(const char* jsonState, int clearFirst) {
+    if (jsonState == nullptr) return -1;
+    
+    String json = String(jsonState);
+    bool success = JsonStateParser::applyJSONState(json, clearFirst != 0);
+    
+    if (!success) {
+        Serial.print("set_state error: ");
+        Serial.println(JsonStateParser::getLastError());
+        return -1;
+    }
+    
+    return 0; // Success
 }
 
 } // extern "C"

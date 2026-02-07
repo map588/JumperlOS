@@ -86,6 +86,8 @@ void jl_send_raw_str( const char* chip_str, int x, int y, int setOrClear );
 int jl_switch_slot( int slot );
 void jl_restore_micropython_entry_state( void );
 int jl_has_unsaved_changes( void );
+const char* jl_get_state( void );
+int jl_set_state( const char* jsonState, int clearFirst );
 
 // Net Information API Functions
 const char* jl_get_net_name( int netNum );
@@ -2572,6 +2574,17 @@ static mp_obj_t jl_get_net_info_func( mp_obj_t net_num_obj ) {
     return dict;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_get_net_info_obj, jl_get_net_info_func );
+
+// get_all_nets() - Returns list of dicts for all active nets
+static mp_obj_t mp_jl_get_all_nets( void ) {
+    int num_nets = jl_get_num_nets( );
+    mp_obj_t list = mp_obj_new_list( 0, NULL );
+    for ( int i = 0; i < num_nets; i++ ) {
+        mp_obj_list_append( list, jl_get_net_info_func( mp_obj_new_int( i ) ) );
+    }
+    return list;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_get_all_nets_obj, mp_jl_get_all_nets );
 
 // get_path_info(path_idx) - Returns path info as dict
 static mp_obj_t jl_get_path_info_func( mp_obj_t idx_obj ) {
@@ -5619,6 +5632,25 @@ static MP_DEFINE_CONST_FUN_OBJ_1( jl_la_get_control_digital_obj, jl_la_get_contr
 
 // Module globals table
 
+// get_state() -> String
+static mp_obj_t mp_jl_get_state( void ) {
+    return mp_obj_new_str( jl_get_state( ), strlen( jl_get_state( ) ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_get_state_obj, mp_jl_get_state );
+
+// set_state(json, clear_first=True) -> int
+static mp_obj_t mp_jl_set_state( size_t n_args, const mp_obj_t* args ) {
+    const char* json = mp_obj_str_get_str( args[ 0 ] );
+    int clear_first = 1;
+    if ( n_args > 1 ) {
+        clear_first = mp_obj_is_true( args[ 1 ] ) ? 1 : 0;
+    }
+    
+    int result = jl_set_state( json, clear_first );
+    return mp_obj_new_int( result );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_set_state_obj, 1, 2, mp_jl_set_state );
+
 static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR___name__ ), MP_ROM_QSTR( MP_QSTR_jumperless ) },
 
@@ -5985,7 +6017,8 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     
     // Aliases for net API
     { MP_ROM_QSTR( MP_QSTR_net_name ), MP_ROM_PTR( &jl_get_net_name_obj ) },
-    { MP_ROM_QSTR( MP_QSTR_net_color ), MP_ROM_PTR( &jl_get_net_color_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_get_net_info ), MP_ROM_PTR( &jl_get_net_info_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_get_all_nets ), MP_ROM_PTR( &jl_get_all_nets_obj ) },
     { MP_ROM_QSTR( MP_QSTR_net_info ), MP_ROM_PTR( &jl_get_net_info_obj ) },
 
     // Raw hardware functions
@@ -5995,6 +6028,10 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     // Session management functions
     { MP_ROM_QSTR( MP_QSTR_nodes_discard ), MP_ROM_PTR( &jl_nodes_discard_obj ) },
     { MP_ROM_QSTR( MP_QSTR_nodes_has_changes ), MP_ROM_PTR( &jl_nodes_has_changes_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_switch_slot ), MP_ROM_PTR( &jl_switch_slot_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_get_state ), MP_ROM_PTR( &jl_get_state_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_set_state ), MP_ROM_PTR( &jl_set_state_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_nodes_clear ), MP_ROM_PTR( &jl_nodes_clear_obj ) },
 
     // OLED functions
     { MP_ROM_QSTR( MP_QSTR_oled_print ), MP_ROM_PTR( &jl_oled_print_obj ) },

@@ -1189,7 +1189,7 @@ CommandResult cmd_fakeGpioDebug(char c, const String& line) {
                 const char* stateStr = (in.currentState == 1) ? "HIGH" :
                                         (in.currentState == 0) ? "LOW " : "??? ";
 
-                Serial.printf("  %-4d  %-4d  %s  %+7.3fV  %5.2f    %5.2f    %-3d  %-6d  %d\n\r",
+                Serial.printf("  %-4d  %-4d  %s  %+7.3fV  %5.2f    %5.2f     %-3d  %-6d  %d\n\r",
                               i, in.userNode, stateStr,
                               voltage, in.thresholdHigh, in.thresholdLow,
                               in.tdmSlot, chipKY, in.netIndex);

@@ -36,6 +36,7 @@
 #include "hardware/gpio.h"
 #include "oled.h"
 #include "user_functions.h"
+#include "JsonState.h"
 #include <algorithm>
 
 // Global instance
@@ -198,6 +199,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\tn = show net list\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tb = show bridge array\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tc = show crossbar status\n\r" );
+
         // shownMenuItems += printMenuLine( showExtraMenu, 1, "\ts = show all slot files\n\r" );
         if ( showExtraMenu >= 0 ) {
             Jerial.println( );
@@ -220,13 +222,18 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         // Jerial.print("\tu = disable USB Mass Storage drive\n\r");
         // cycleTerminalColor();
 
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tJ = print JSON state\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tL = load JSON state (paste)\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tY = print YAML slot file\n\r" );
+// shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
+
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\ty = refresh connections\n\r" );
         // shownMenuItems++;
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t< = cycle slots\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tG = reload config.txt\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\to = load node file by slot\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tP = PSRAM test (memory integrity + speed)\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tP = PSRAM test\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tF = cycle font\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\t_ = print micros per byte\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t@ = scan I2C (@[sda],[scl] or @[row])\n\r" );
@@ -469,6 +476,7 @@ void SingleCharCommands::initializeCommands( ) {
                      "Display current network connections and routing.",
                      cmd_showNetlist, MENU_BASIC, CAT_DISPLAY );
 
+
     registerCommand( 'b', "show bridge array",
                      "Display the internal bridge array and paths.",
                      cmd_showBridgeArray, MENU_STANDARD, CAT_DISPLAY );
@@ -619,10 +627,17 @@ void SingleCharCommands::initializeCommands( ) {
                      "Cycle through available OLED fonts.",
                      cmd_cycleFont, MENU_DEBUG, CAT_SETTINGS );
 
-    // App/Special mode commands
-    registerCommand( 'L', "enable logic analyzer",
-                     "Enable logic analyzer mode.",
-                     cmd_logicAnalyzer, MENU_STANDARD, CAT_APPS );
+    // // App/Special mode commands
+    // registerCommand( 'L', "enable logic analyzer",
+    //                  "Enable logic analyzer mode.",
+    //                  cmd_logicAnalyzer, MENU_STANDARD, CAT_APPS );
+    registerCommand( 'J', "show JSON state",
+                     "Display current board state as JSON (for LLM/tools).",
+                     cmd_showJsonState, MENU_STANDARD, CAT_DISPLAY );
+
+    registerCommand( 'L', "load JSON state",
+                     "Load board state from JSON input. Paste JSON, end with empty line.",
+                     cmd_loadJsonState, MENU_STANDARD, CAT_CONNECTIONS );
 
     registerCommand( 'R', "show board LEDs",
                      "Display board LEDs in terminal.",
@@ -633,9 +648,9 @@ void SingleCharCommands::initializeCommands( ) {
                      cmd_startupAnimation, MENU_ADVANCED, CAT_APPS );
 
     // Advanced commands
-    registerCommand( 'J', "test States system",
-                     "Test the new States system. Usage: J 1-2,3-4",
-                     cmd_testStates, MENU_DEBUG, CAT_ADVANCED );
+    // registerCommand( 'J', "test States system",
+    //                  "Test the new States system. Usage: J 1-2,3-4",
+    //                  cmd_testStates, MENU_DEBUG, CAT_ADVANCED );
 
     registerCommand( 'Y', "print current YAML state",
                      "Display current state in YAML format.",
@@ -1241,6 +1256,59 @@ CommandResult cmd_showNetlist( char c, const String& line ) {
   
     Jerial.print( "\n\n\rnetlist\n\r" );
     listNets( anythingInteractiveConnected( -1 ) );
+    return CMD_SHOW_MENU;
+}
+
+CommandResult cmd_showJsonState( char c, const String& line ) {
+    Jerial.print( "\n\n\r" );
+    Jerial.print( JsonState::getJumperlessStateJSON() );
+    Jerial.print( "\n\r" );
+    return CMD_SHOW_MENU;
+}
+
+CommandResult cmd_loadJsonState( char c, const String& line ) {
+    Jerial.print( "\n\rPaste JSON state (end with empty line):\n\r" );
+    
+    String jsonBuffer;
+    jsonBuffer.reserve(8192);
+    
+    // Read lines until empty line or timeout
+    unsigned long startTime = millis();
+    const unsigned long timeout = 30000; // 30 second timeout
+    
+    while (millis() - startTime < timeout) {
+        if (Serial.available()) {
+            String inputLine = Serial.readStringUntil('\n');
+            inputLine.trim();
+            
+            // Empty line signals end of input
+            if (inputLine.length() == 0 && jsonBuffer.length() > 0) {
+                break;
+            }
+            
+            jsonBuffer += inputLine + "\n";
+            startTime = millis(); // Reset timeout on each line
+        }
+        delay(1);
+    }
+    
+    if (jsonBuffer.length() == 0) {
+        Jerial.print( "\r\nNo JSON received\n\r" );
+        return CMD_SHOW_MENU;
+    }
+    
+    Jerial.print( "\r\nApplying state...\n\r" );
+    
+    bool success = JsonStateParser::applyJSONState(jsonBuffer, true);
+    
+    if (success) {
+        Jerial.print( "State applied successfully!\n\r" );
+    } else {
+        Jerial.print( "Error: " );
+        Jerial.print( JsonStateParser::getLastError() );
+        Jerial.print( "\n\r" );
+    }
+    
     return CMD_SHOW_MENU;
 }
 
@@ -2603,7 +2671,7 @@ CommandResult cmd_testStates( char c, const String& line ) {
 CommandResult cmd_printYAML( char c, const String& line ) {
     extern JumperlessState globalState;
     Jerial.println( "\n\r╭────────────────────────────────────╮" );
-    Jerial.println( "│      Current YAML State (RAM)     │" );
+    Jerial.println( "│      Current YAML State (RAM)      │" );
     Jerial.println( "╰────────────────────────────────────╯\n\r" );
 
     Jerial.print( "Active Slot: " );

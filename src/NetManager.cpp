@@ -1993,7 +1993,20 @@ int printNodeOrName(
   // --- FakeGPIO Input: shared ADC node → FGPIx ---
   // All inputs share one ADC (TDM). When router expands FAKE_GP_IN_x, path
   // nodes become ADCn. Use netIndex to find the correct input slot.
-  if (node >= ADC0 && node <= ADC3 || node >= FAKE_GP_IN_0 && node <= FAKE_GP_IN_31) {
+  // Also handle raw FAKE_GP_IN_x nodes directly.
+  if (node >= FAKE_GP_IN_0 && node <= FAKE_GP_IN_31) {
+    // Direct FAKE_GP_IN_x node - extract slot number
+    int slot = node - FAKE_GP_IN_0;
+    if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
+      char name[8];
+      snprintf(name, sizeof(name), "FGPI%d", slot);
+      return Serial.print(name);
+    }
+    // Fallback if slot not active
+    return Serial.print("FGPI?");
+  }
+  
+  if (node >= ADC0 && node <= ADC3) {
     extern int fakeGpioInputAdcChannel;
     int expectedAdcNode = (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : -1;
     if (node == expectedAdcNode) {
@@ -2007,8 +2020,22 @@ int printNodeOrName(
           }
         }
       }
-      // Fallback: no net index or no match -- show generic label
-      return Serial.print("FGPI?");
+      // Fallback: no netIndex - check if only one slot is active for this ADC
+      int activeCount = 0;
+      int lastActiveSlot = -1;
+      for (int slot = 0; slot < MAX_FAKE_GP_IN; slot++) {
+        if (fakeGpioInputs[slot].active) {
+          activeCount++;
+          lastActiveSlot = slot;
+        }
+      }
+      if (activeCount == 1 && lastActiveSlot >= 0) {
+        char name[8];
+        snprintf(name, sizeof(name), "FGPI%d", lastActiveSlot);
+        return Serial.print(name);
+      }
+      // Multiple active - show generic label indicating TDM
+      return Serial.print("FGPI*");
     }
   }
 

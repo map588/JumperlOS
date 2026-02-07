@@ -227,6 +227,8 @@ CommandResult cmd_parseWokwi(char c, const String& line);
 // Display commands (main.cpp / Display related)
 CommandResult cmd_showMenu(char c, const String& line);
 CommandResult cmd_showNetlist(char c, const String& line);
+CommandResult cmd_showJsonState(char c, const String& line);
+CommandResult cmd_loadJsonState(char c, const String& line);
 CommandResult cmd_showBridgeArray(char c, const String& line);
 CommandResult cmd_showCrossbar(char c, const String& line);
 CommandResult cmd_showSlots(char c, const String& line);

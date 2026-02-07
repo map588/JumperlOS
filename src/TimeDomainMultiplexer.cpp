@@ -120,6 +120,7 @@ int TimeDomainMultiplexer::removeChannel(int userNode) {
     channels[slot].chipKY = -1;
     channels[slot].netIndex = -1;
     channels[slot].lastVoltage = 0.0f;
+
     clearChannelHops(channels[slot]);
     activeCount--;
 
