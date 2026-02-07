@@ -1151,7 +1151,7 @@ int jl_nodes_clear( void ) {
     // and needs Core 2 to be running to process sendAllPathsCore2/showLEDsCore2
     pauseCore2 = was_paused;
 
-    refreshConnections( -1, 1, 1 );
+    refreshConnections( -1, 1, 0 );
     // waitCore2 is called internally by refreshConnections
 
     return 1;

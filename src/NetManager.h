@@ -41,7 +41,7 @@ int findNodeInNet(int node);
 
 void writeJSONtoFile();
 
-int printNodeOrName(int node, int longOrShort = 0); //0 = short, 1 = long
+int printNodeOrName(int node, int longOrShort = 0, int netIndex = -1); //0 = short, 1 = long; netIndex disambiguates shared ADC/voltage-source nodes
 
 void loadBridgesFromState(); //load bridges from globalState into newBridge[] array
 void loadBridgesFromStateIncremental(int startIndex); //INCREMENTAL: load only NEW bridges starting from startIndex

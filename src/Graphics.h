@@ -137,7 +137,7 @@ extern char defconString[16];
 extern const uint8_t font[][3];
 extern volatile int doomOn;
 
-extern uint32_t gpioReadingColors[42];  // 10 real + 32 fake GPIO
+extern uint32_t gpioReadingColors[50];  // 10 real + 8 fake out + 32 fake in
 extern uint8_t gpioAnimationBaseHues[10];
 
 extern int menuBrightnessSetting;

@@ -28,6 +28,7 @@ extern char *strcpy(char *dest, const char *src);
 #include "NetManager.h"
 #include "Peripherals.h"
 #include "Probing.h"
+#include "FakeGpio.h"
 //#include "SerialWrapper.h"
 
 //#define Serial SerialWrap
@@ -103,6 +104,167 @@ extern char *strcpy(char *dest, const char *src);
   #define DEBUG_NTCC6_PRINTLN(x)
   #define DEBUG_NTCC6_PRINTF(fmt, ...)
 #endif
+
+// ============================================================================
+// Fake GPIO Input TDM Net Merging
+// ============================================================================
+// Since fake GPIO inputs are time-domain multiplexed (only one connected at a 
+// time via chip K Y switching), they can share paths. To allow this, we
+// temporarily merge all FAKE_GP_IN paths into a single net during routing,
+// then restore their original net numbers afterward for proper LED coloring.
+
+// Forward declarations for variables defined later in this file
+extern bool debugNTCC5;
+extern volatile int numberOfPaths;
+
+// Storage for original net numbers of fake GPIO input paths
+static int fakeGpioInputOriginalNets[MAX_BRIDGES];
+static int fakeGpioInputPathIndices[MAX_BRIDGES];
+static int numFakeGpioInputPaths = 0;
+
+// Check if a path is a FAKE_GP_IN path by checking its node endpoints directly.
+// IMPORTANT: Only checks the path's own node1/node2 - does NOT do a bridge lookup.
+// A bridge lookup would false-positive on paths like 49-52 where node 49 also
+// appears in a separate FGPI bridge (49-FGPI). We only want to merge actual
+// FGPI paths (where one endpoint IS a FAKE_GP_IN virtual node).
+// This is safe because the merge runs right after sortPathsByNet() but before
+// findStartAndEndChips(), so node values haven't been expanded yet.
+static bool pathIsFakeGpioInput(int pathIdx) {
+    int pathNode1 = globalState.connections.paths[pathIdx].node1;
+    int pathNode2 = globalState.connections.paths[pathIdx].node2;
+    return IS_FAKE_GP_IN(pathNode1) || IS_FAKE_GP_IN(pathNode2);
+}
+
+// Temporarily merge all fake GPIO input paths into FAKE_GPIO_TDM_NET for routing
+// This allows TDM paths to share Y positions since same-net paths don't conflict
+static void mergeFakeGpioInputNets(void) {
+    numFakeGpioInputPaths = 0;
+    
+    // Find all fake GPIO input paths and collect their net numbers
+    for (int i = 0; i < numberOfPaths; i++) {
+        if (pathIsFakeGpioInput(i)) {
+            // Store original net number
+            fakeGpioInputOriginalNets[numFakeGpioInputPaths] = globalState.connections.paths[i].net;
+            fakeGpioInputPathIndices[numFakeGpioInputPaths] = i;
+            numFakeGpioInputPaths++;
+            
+            if (numFakeGpioInputPaths >= MAX_BRIDGES) break;
+        }
+    }
+    
+    // Merge all fake GPIO input paths to use the special TDM net
+    if (numFakeGpioInputPaths > 1) {
+        if (debugNTCC5) {
+            Serial.print("TDM merge: merging ");
+            Serial.print(numFakeGpioInputPaths);
+            Serial.print(" fake GPIO input paths into TDM net ");
+            Serial.println(FAKE_GPIO_TDM_NET);
+        }
+        
+        for (int i = 0; i < numFakeGpioInputPaths; i++) {
+            int pathIdx = fakeGpioInputPathIndices[i];
+            globalState.connections.paths[pathIdx].net = FAKE_GPIO_TDM_NET;
+        }
+    }
+}
+
+// Restore original net numbers after routing is complete,
+// and fix chip status entries that were written with the TDM net number
+static void restoreFakeGpioInputNets(void) {
+    if (numFakeGpioInputPaths <= 1) {
+        return;  // Nothing to restore (0 or 1 FGPI paths don't need merging)
+    }
+    
+    if (debugNTCC5) {
+        Serial.print("TDM restore: restoring ");
+        Serial.print(numFakeGpioInputPaths);
+        Serial.println(" fake GPIO input paths to original nets");
+    }
+    
+    // Phase 1: Restore original FGPI path net numbers
+    for (int i = 0; i < numFakeGpioInputPaths; i++) {
+        int pathIdx = fakeGpioInputPathIndices[i];
+        globalState.connections.paths[pathIdx].net = fakeGpioInputOriginalNets[i];
+        
+        if (debugNTCC5) {
+            Serial.print("  path ");
+            Serial.print(pathIdx);
+            Serial.print(" -> net ");
+            Serial.println(fakeGpioInputOriginalNets[i]);
+        }
+    }
+    
+    // Phase 2: Fix any remaining paths with TDM net (duplicates created during routing)
+    for (int i = 0; i < numberOfPaths; i++) {
+        if (globalState.connections.paths[i].net == FAKE_GPIO_TDM_NET) {
+            // Find the real net by matching node1/node2 against original FGPI paths
+            int realNet = -1;
+            for (int j = 0; j < numFakeGpioInputPaths; j++) {
+                int origIdx = fakeGpioInputPathIndices[j];
+                if (globalState.connections.paths[i].node1 == globalState.connections.paths[origIdx].node1 &&
+                    globalState.connections.paths[i].node2 == globalState.connections.paths[origIdx].node2) {
+                    realNet = fakeGpioInputOriginalNets[j];
+                    break;
+                }
+            }
+            if (realNet > 0) {
+                globalState.connections.paths[i].net = realNet;
+                if (debugNTCC5) {
+                    Serial.print("  duplicate path ");
+                    Serial.print(i);
+                    Serial.print(" -> net ");
+                    Serial.println(realNet);
+                }
+            }
+        }
+    }
+    
+    // Phase 3: Fix ALL chip status entries that still show FAKE_GPIO_TDM_NET
+    // Routing may set xStatus and yStatus entries through intermediate hops, 
+    // alt paths, etc. that aren't captured by the path's 4-hop arrays.
+    // Brute-force scan all 12 chips' xStatus[16] and yStatus[8].
+    for (int chip = 0; chip < 12; chip++) {
+        for (int x = 0; x < 16; x++) {
+            if (globalState.connections.chipStates[chip].xStatus[x] == FAKE_GPIO_TDM_NET) {
+                // Find which restored path uses this chip+x position
+                int realNet = -1;
+                for (int p = 0; p < numberOfPaths; p++) {
+                    if (globalState.connections.paths[p].net == FAKE_GPIO_TDM_NET) continue;
+                    for (int hop = 0; hop < 4; hop++) {
+                        if (globalState.connections.paths[p].chip[hop] == chip &&
+                            globalState.connections.paths[p].x[hop] == x) {
+                            realNet = globalState.connections.paths[p].net;
+                            break;
+                        }
+                    }
+                    if (realNet >= 0) break;
+                }
+                globalState.connections.chipStates[chip].xStatus[x] = realNet;
+            }
+        }
+        for (int y = 0; y < 8; y++) {
+            if (globalState.connections.chipStates[chip].yStatus[y] == FAKE_GPIO_TDM_NET) {
+                // Find which restored path uses this chip+y position
+                int realNet = -1;
+                for (int p = 0; p < numberOfPaths; p++) {
+                    if (globalState.connections.paths[p].net == FAKE_GPIO_TDM_NET) continue;
+                    for (int hop = 0; hop < 4; hop++) {
+                        if (globalState.connections.paths[p].chip[hop] == chip &&
+                            globalState.connections.paths[p].y[hop] == y) {
+                            realNet = globalState.connections.paths[p].net;
+                            break;
+                        }
+                    }
+                    if (realNet >= 0) break;
+                }
+                globalState.connections.chipStates[chip].yStatus[y] = realNet;
+            }
+        }
+    }
+    
+    // Clear state
+    numFakeGpioInputPaths = 0;
+}
 
 // Convenience macro for any NTCC debug output
 #if DEBUG_NTCC1_ENABLED || DEBUG_NTCC2_ENABLED || DEBUG_NTCC3_ENABLED || DEBUG_NTCC5_ENABLED || DEBUG_NTCC6_ENABLED
@@ -1414,6 +1576,11 @@ void bridgesToPaths(
     Serial.print("  sortPathsByNet: "); Serial.print(micros() - btp_step); Serial.println(" us");
     btp_step = micros();
     #endif
+    
+    // TDM OPTIMIZATION: Merge all fake GPIO input paths into a single net
+    // Since they're time-domain multiplexed (only one connected at a time),
+    // they can share paths. After routing, we restore their original nets.
+    mergeFakeGpioInputNets();
   }
 
   // Frontload connections by priority routing
@@ -1447,14 +1614,9 @@ void bridgesToPaths(
       continue;
     }
     
-    // Detect and mark virtual paths early (before any routing)
-    int node1 = globalState.connections.paths[i].node1;
-    int node2 = globalState.connections.paths[i].node2;
-    if ((node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32) ||
-        (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32)) {
-      globalState.connections.paths[i].pathType = VIRTUAL;
-      continue;  // Skip all routing for virtual paths
-    }
+    // NOTE: FakeGPIO virtual nodes (FAKE_GP_OUT_x, FAKE_GP_IN_x) are expanded
+    // to real voltage sources/ADCs in findStartAndEndChips() below.
+    // The path's node1/node2 will be updated to the expanded values there.
 
     if (debugNTCC5) {
       delay(10);
@@ -1583,6 +1745,10 @@ void bridgesToPaths(
 
     resolveUncommittedHops(0, -1, 1);
   }
+  
+  // TDM OPTIMIZATION: Restore original net numbers after routing completes
+  // This ensures correct LED colors and net display while allowing path sharing
+  restoreFakeGpioInputNets();
   
   couldntFindPath(1);
   // couldntFindPath();
@@ -4974,6 +5140,32 @@ int checkForOverlappingPaths() {
       if (globalState.connections.paths[i].net == globalState.connections.paths[j].net) {
         continue;
       }
+      
+      //! 
+      // Check if both paths are fake GPIO input paths (they share ADC via time-multiplexing)
+      // This check is done once per i,j pair (outside f,s loops) for efficiency
+      // Path nodes have been expanded from FAKE_GP_IN_x to ADCx, so we check bridges
+      auto isFakeGpioInputPath = [](int pathIdx) -> bool {
+        int pathNode1 = globalState.connections.paths[pathIdx].node1;
+        // Search bridges for one that matches this path's node1 and has a FAKE_GP_IN
+        for (int b = 0; b < globalState.connections.numBridges; b++) {
+          int bridgeNode1 = globalState.connections.bridges[b][0];
+          int bridgeNode2 = globalState.connections.bridges[b][1];
+          if (bridgeNode1 == pathNode1 && IS_FAKE_GP_IN(bridgeNode2)) {
+            return true;
+          }
+          if (bridgeNode2 == pathNode1 && IS_FAKE_GP_IN(bridgeNode1)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      
+      if (isFakeGpioInputPath(i) && isFakeGpioInputPath(j)) {
+        // Both paths are fake GPIO inputs sharing the same ADC - skip overlap check
+        continue;
+      }
+      
       int schip[4] = {globalState.connections.paths[j].chip[0], globalState.connections.paths[j].chip[1], globalState.connections.paths[j].chip[2],
                       globalState.connections.paths[j].chip[3]};
 
@@ -4986,6 +5178,64 @@ int checkForOverlappingPaths() {
             if (globalState.connections.paths[i].y[f] <= 0 || globalState.connections.paths[j].y[s] <= 0) {
               continue;
             }
+            // Skip overlap check for power rails - multiple nets can share power rails
+            // Check both node1 and node2 of each path for power rail nodes
+            // Also expand FakeGPIO virtual nodes to their actual voltage sources
+            int node1_i = globalState.connections.paths[i].node1;
+            int node2_i = globalState.connections.paths[i].node2;
+            int node1_j = globalState.connections.paths[j].node1;
+            int node2_j = globalState.connections.paths[j].node2;
+            
+            // Expand FakeGPIO virtual nodes to actual voltage sources for power rail check
+            auto expandNode = [](int node) -> int {
+              if (IS_FAKE_GP_OUT(node)) {
+                int slot = FAKE_GP_OUT_SLOT(node);
+                if (slot >= 0 && slot < MAX_FAKE_GP_OUT && fakeGpioOutputs[slot].active) {
+                  return (fakeGpioOutputs[slot].currentState == 1) 
+                      ? fakeGpioOutputs[slot].highVoltageNode 
+                      : fakeGpioOutputs[slot].lowVoltageNode;
+                }
+              }
+              if (IS_FAKE_GP_IN(node)) {
+                int slot = FAKE_GP_IN_SLOT(node);
+                if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
+                  // All inputs share a single ADC (dynamically selected)
+                  return (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : ADC0;
+                }
+              }
+              return node;
+            };
+            
+            node1_i = expandNode(node1_i);
+            node2_i = expandNode(node2_i);
+            node1_j = expandNode(node1_j);
+            node2_j = expandNode(node2_j);
+            
+            auto isPowerRail = [](int node) {
+              return (node == TOP_RAIL || node == BOTTOM_RAIL || node == GND || 
+                      node == TOP_RAIL_GND || node == BOTTOM_RAIL_GND);
+            };
+            
+            // Check if both paths connect to the same power rail
+            bool sharesPowerRail = false;
+            if (isPowerRail(node2_i) && isPowerRail(node2_j) && node2_i == node2_j) {
+              sharesPowerRail = true;  // Both paths have same power rail as node2
+            }
+            if (isPowerRail(node1_i) && isPowerRail(node1_j) && node1_i == node1_j) {
+              sharesPowerRail = true;  // Both paths have same power rail as node1
+            }
+            if (isPowerRail(node2_i) && isPowerRail(node1_j) && node2_i == node1_j) {
+              sharesPowerRail = true;
+            }
+            if (isPowerRail(node1_i) && isPowerRail(node2_j) && node1_i == node2_j) {
+              sharesPowerRail = true;
+            }
+            
+            if (sharesPowerRail) {
+              // Both paths connect to the same power rail - this is allowed
+              continue;
+            }
+            
             if (globalState.connections.paths[i].x[f] == globalState.connections.paths[j].x[s] && globalState.connections.paths[i].skip <= 0 &&
                 globalState.connections.paths[j].skip <= 0) {
               // if (debugNTCC3) {
@@ -5322,7 +5572,7 @@ void printPathsCompact(int showCullDupes) {
 
       printNetOrNumber(globalState.connections.paths[i].net);
       Serial.print("\t");
-      printNodeOrName(globalState.connections.paths[i].node1);
+      printNodeOrName(globalState.connections.paths[i].node1, 0, globalState.connections.paths[i].net);
       // Serial.print("\t");
       // Serial.print(globalState.connections.paths[i].nodeType[0]);
       Serial.print("\t");
@@ -5332,7 +5582,7 @@ void printPathsCompact(int showCullDupes) {
       Serial.print("\t");
       Serial.print(globalState.connections.paths[i].y[0]);
       Serial.print("\t");
-      printNodeOrName(globalState.connections.paths[i].node2);
+      printNodeOrName(globalState.connections.paths[i].node2, 0, globalState.connections.paths[i].net);
       // Serial.print("\t");
       // Serial.print(globalState.connections.paths[i].nodeType[1]);
       Serial.print("\t");
@@ -5531,6 +5781,58 @@ void findStartAndEndChips(int node1, int node2, int pathIdx) {
       }
       break;
     }
+    // Virtual node expansion for FakeGPIO outputs
+    // Expands FAKE_GP_OUT_x to actual voltage source based on currentState
+    // NOTE: We update path.node1/node2 so routing can find x/y coordinates
+    // Display functions will convert back to virtual names for display
+    case FAKE_GP_OUT_0 ... FAKE_GP_OUT_7: {
+      int slot = FAKE_GP_OUT_SLOT(bothNodes[twice]);
+      if (slot >= 0 && slot < MAX_FAKE_GP_OUT && fakeGpioOutputs[slot].active) {
+        int expandedNode = (fakeGpioOutputs[slot].currentState == 1) 
+            ? fakeGpioOutputs[slot].highVoltageNode 
+            : fakeGpioOutputs[slot].lowVoltageNode;
+        if (debugNTCC5) {
+          Serial.print("FakeGPIO OUT slot ");
+          Serial.print(slot);
+          Serial.print(" expanded to node ");
+          Serial.println(expandedNode);
+        }
+        bothNodes[twice] = expandedNode;
+        // Update path node so routing can find xMap coordinates
+        if (twice == 0) {
+          globalState.connections.paths[pathIdx].node1 = expandedNode;
+        } else {
+          globalState.connections.paths[pathIdx].node2 = expandedNode;
+        }
+      }
+      // Fall through to handle expanded node as special function
+    }
+    // Virtual node expansion for FakeGPIO inputs
+    // All inputs expand to ADC0 - only one is connected at a time via chip K switching
+    case FAKE_GP_IN_0 ... FAKE_GP_IN_31: {
+      // Check if this is actually a FakeGPIO input (not fallthrough from output)
+      if (IS_FAKE_GP_IN(bothNodes[twice])) {
+        int slot = FAKE_GP_IN_SLOT(bothNodes[twice]);
+        if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
+          // All inputs share a single ADC (dynamically selected)
+          int expandedNode = (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : ADC0;
+          if (debugNTCC5) {
+            Serial.print("FakeGPIO IN slot ");
+            Serial.print(slot);
+            Serial.print(" expanded to ADC");
+            Serial.println(fakeGpioInputAdcChannel);
+          }
+          bothNodes[twice] = expandedNode;
+          // Update path node so routing can find xMap coordinates
+          if (twice == 0) {
+            globalState.connections.paths[pathIdx].node1 = expandedNode;
+          } else {
+            globalState.connections.paths[pathIdx].node2 = expandedNode;
+          }
+        }
+      }
+      // Fall through to handle expanded node as special function
+    }
     case GND ... 141: {
       if (debugNTCC5) {
         Serial.print("special function candidate chips: ");
@@ -5663,15 +5965,40 @@ void mergeOverlappingCandidates(
 }
 
 void assignPathType(int pathIndex) {
-  // Check if this path contains FAKE_GPIO nodes - if so, mark as VIRTUAL
+  // Get nodes - expand FakeGPIO virtual nodes to actual voltage sources/ADCs for path type determination
   int node1 = globalState.connections.paths[pathIndex].node1;
   int node2 = globalState.connections.paths[pathIndex].node2;
   
-  if ((node1 >= FAKE_GPIO_1 && node1 <= FAKE_GPIO_32) ||
-      (node2 >= FAKE_GPIO_1 && node2 <= FAKE_GPIO_32)) {
-    globalState.connections.paths[pathIndex].pathType = VIRTUAL;
-    globalState.connections.paths[pathIndex].sameChip = false;
-    return;  // Skip normal path type assignment
+  // Expand virtual nodes for path type determination
+  // (path.node1/node2 still contain virtual nodes for display)
+  if (IS_FAKE_GP_OUT(node1)) {
+    int slot = FAKE_GP_OUT_SLOT(node1);
+    if (slot >= 0 && slot < MAX_FAKE_GP_OUT && fakeGpioOutputs[slot].active) {
+      node1 = (fakeGpioOutputs[slot].currentState == 1) 
+          ? fakeGpioOutputs[slot].highVoltageNode 
+          : fakeGpioOutputs[slot].lowVoltageNode;
+    }
+  } else if (IS_FAKE_GP_IN(node1)) {
+    int slot = FAKE_GP_IN_SLOT(node1);
+    if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
+      // All inputs share a single ADC (dynamically selected)
+      node1 = (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : ADC0;
+    }
+  }
+  
+  if (IS_FAKE_GP_OUT(node2)) {
+    int slot = FAKE_GP_OUT_SLOT(node2);
+    if (slot >= 0 && slot < MAX_FAKE_GP_OUT && fakeGpioOutputs[slot].active) {
+      node2 = (fakeGpioOutputs[slot].currentState == 1) 
+          ? fakeGpioOutputs[slot].highVoltageNode 
+          : fakeGpioOutputs[slot].lowVoltageNode;
+    }
+  } else if (IS_FAKE_GP_IN(node2)) {
+    int slot = FAKE_GP_IN_SLOT(node2);
+    if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
+      // All inputs share a single ADC (dynamically selected)
+      node2 = (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : ADC0;
+    }
   }
   
   if (globalState.connections.paths[pathIndex].chip[0] == globalState.connections.paths[pathIndex].chip[1]) {

@@ -1048,7 +1048,7 @@ loadfile:
     }
 
     // Initialize fake GPIO pins from loaded state (before refreshing connections)
-    // This reconstructs FakeGpioPinConfig entries from FAKE_GPIO bridges in the state
+    // This restores FakeGpioOutput/Input entries from FAKE_GPIO bridges in the state
     initializeFakeGpioFromLoadedState( );
 
     slotChanged = 0;
@@ -1058,6 +1058,11 @@ loadfile:
     } else {
         refreshConnections( -1, 1, 0 );
     }
+
+    // Phase 2: now that paths are routed, finalize FakeGPIO (extract chipKY,
+    // register TDM channels, disconnect input paths for TDM isolation)
+    finalizeFakeGpioAfterRouting( );
+
     startupTimers[ 14 ] = millis( );
     // refreshConnections( -1, 1, 0 );
 }
@@ -1101,7 +1106,7 @@ unsigned long ledShowMinTime = 999999;
 unsigned long ledShowMaxTime = 0;
 
 
-#define POWER_SUPPLY_SENSE_ENABLED 0
+#define POWER_SUPPLY_SENSE_ENABLED 1
 
 bool printPowerSupplySense = false;
 unsigned long powerSupplySenseTimer = 0;
@@ -1434,7 +1439,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                     t[ 8 ] = micros( );
                     readGPIO( );     // if want, I can make this update the LEDs like 10 times
                                      // faster by putting outside this loop,
-                    readFakeGPIO( ); // Background reading for fake GPIO pins with visual updates
+                    readFakeGPIO( ); // Background reading for fake GPIO inputs with visual updates
                     t[ 9 ] = micros( );
 
                     // CRITICAL: Update ADC/GPIO mappings before reading measurements

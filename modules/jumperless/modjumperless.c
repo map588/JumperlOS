@@ -2888,7 +2888,7 @@ static mp_obj_t fake_gpio_pin_make_new( const mp_obj_type_t* type, size_t n_args
         if ( n_args > 2 ) threshold_high = mp_obj_get_float( args[ 2 ] );
         if ( n_args > 3 ) threshold_low = mp_obj_get_float( args[ 3 ] );
         
-        if ( !jl_fake_gpio_config_input( self->node, threshold_high, threshold_low ) ) {
+        if ( jl_fake_gpio_config_input( self->node, threshold_high, threshold_low ) < 0 ) {
             mp_raise_ValueError( MP_ERROR_TEXT( "Failed to configure fake GPIO INPUT pin" ) );
         }
     } else {
@@ -2938,7 +2938,7 @@ static mp_obj_t fake_gpio_pin_make_new( const mp_obj_type_t* type, size_t n_args
             result = jl_fake_gpio_config_output( self->node, v_high, v_low, threshold_high, threshold_low );
         }
         
-        if ( !result ) {
+        if ( result < 0 ) {
             mp_raise_ValueError( MP_ERROR_TEXT( "Failed to configure fake GPIO OUTPUT pin" ) );
         }
     }

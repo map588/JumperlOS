@@ -61,6 +61,7 @@ extern const int highSaturationBrightColors[];
 
 // Forward declarations for command handlers
 CommandResult cmd_showCrossbarFull( char c, const String& line );
+CommandResult cmd_fakeGpioDebug( char c, const String& line );
 
 // ============================================================================
 // SingleCharCommands Class Implementation
@@ -585,6 +586,10 @@ void SingleCharCommands::initializeCommands( ) {
                      "Print wire status to terminal.",
                      cmd_printWireStatus, MENU_DEBUG, CAT_DEBUG );
 
+    registerCommand( 'H', "fakeGPIO debug (live)",
+                     "Live-updating FakeGPIO status showing TDM voltages and pin states.",
+                     cmd_fakeGpioDebug, MENU_ADVANCED, CAT_DEBUG );
+
     registerCommand( 'D', "status diagnostics menu",
                      "Interactive status & diagnostics menu with arrow key navigation.",
                      cmd_statusDiagnosticsMenu, MENU_STANDARD, CAT_DEBUG );
@@ -811,8 +816,9 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
 // Connection commands
 CommandResult cmd_clearConnections( char c, const String& line ) {
     // RESETPIN is a macro defined in JumperlessDefines.h
+    pinMode( RESETPIN, OUTPUT );
     digitalWrite( RESETPIN, HIGH );
-    delay( 1 );
+    delay( 6 );
     refreshPaths( );
     clearAllNTCC( );
     clearNodeFile( netSlot, 0 );

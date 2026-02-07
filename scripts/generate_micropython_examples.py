@@ -68,6 +68,9 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
         'lipo_char.py',      # Incomplete battery test
         'listFiles.py',      # ViperIDE utility, not a demo
         'viperide_reinit.py', # ViperIDE connection script, handled separately
+        'simple_fake_gpio_test.py', # Simple fake GPIO test, not a demo
+        'fake_gpio.py', # Fake GPIO test, not a demo
+        
     }
     
     # Scan for Python files

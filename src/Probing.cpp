@@ -4311,6 +4311,8 @@ float Probing::checkProbeCurrentZero( void ) {
     bool bridgeExists = checkIfBridgeExistsLocal( DAC0, -1 );
     if ( bridgeExists == true ) {
         removeBridgeFromState( DAC0, -1, true );
+        waitCore2();
+        delayMicroseconds( 10000 );
     }
     int div = 1;
     // Serial.println("bridgeExists = true");
@@ -4348,7 +4350,9 @@ float Probing::checkProbeCurrentZero( void ) {
 
     // saveConfig();
 
-    if ( bridgeExists == true ) {
+    //!!!!!!!!!!!!!!!
+
+     if ( bridgeExists == true ) {
         addBridgeToState( DAC0, ROUTABLE_BUFFER_IN, 0 );
     }
 

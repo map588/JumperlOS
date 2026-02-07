@@ -145,7 +145,7 @@ namespace {
       }
     }
 
-    saveConfig(); refreshConnections(-1,1,1);
+    saveConfig(); refreshConnections(-1,1,0);
     if (res.truncated)
       TUI::log(String("  Note: input truncated to first ") + tuiNetHelpers::MAX_NET_PAIRS + " pairs.");
     TUI::setStatus(String("Remove: ") + (int)st.applied + " applied, " + (int)(st.errors+st.failed+st.notfound) + " skipped/err.");

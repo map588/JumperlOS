@@ -4101,7 +4101,7 @@ int doMenuAction( int menuPosition, int selection ) {
         // Serial.print("\n\n\r");
 
         // Serial.print("Routing Action\n\r");
-        refreshConnections( -1, 1, 1 );
+        refreshConnections( -1, 1, 0 );
         configChanged = true;
         // saveDuplicateSettings(0);
 

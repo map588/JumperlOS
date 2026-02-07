@@ -49,7 +49,7 @@ extern volatile bool core1busy;
 extern volatile bool core2busy;
 extern int netSlot;  // Global slot number (defined in RotaryEncoder.cpp)
 extern const int gpioDef[10][3];  // GPIO pin definitions (defined in Peripherals.h)
-extern uint8_t gpioState[42];  // GPIO state for animations - 10 real + 32 fake (defined in Peripherals.cpp)
+extern uint8_t gpioState[50];  // GPIO state for animations - 10 real + 8 fake out + 32 fake in (defined in Peripherals.cpp)
 extern bool debugFP;  // Debug flag for file parsing (defined in FileParsing.cpp)
 
 // Forward declarations for YAML parsing helpers
@@ -613,6 +613,9 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
     connections.bridges[idx][2] = numDuplicates;  // Store duplicates
     connections.numBridges++;
     
+    // Update FakeGPIO state - reassigns ADC if we just claimed one that was in use
+    updateFakeGpioAfterConnectionChange(node1, node2);
+    
     // Invalidate caches - paths need to be recalculated
     connections.invalidateCache(config.autoRefreshOnChange);
     markDirty();
@@ -646,6 +649,10 @@ bool JumperlessState::removeConnection(int node1, int node2, String& errorMsg) {
     connections.numBridges--;
     connections.bridgeColors[connections.numBridges] = 0xFFFFFFFF;  // Clear the last color slot
     
+    // Update FakeGPIO state - deactivates any fake GPIO that was using this connection
+    // This ensures removed fake GPIOs won't be serialized to YAML
+    updateFakeGpioAfterConnectionChange(node1, node2);
+    
     // Invalidate caches
     connections.invalidateCache(config.autoRefreshOnChange);
     markDirty();
@@ -665,6 +672,10 @@ bool JumperlessState::hasConnection(int node1, int node2) const {
 
 void JumperlessState::clearAllConnections() {
     connections.clear();
+    
+    // Clear all fake GPIO state so they won't be serialized to YAML
+    clearAllFakeGpio();
+    
     markDirty();
     
     // Restore locked connections after clearing
@@ -1972,15 +1983,13 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
 }
 
 void JumperlessState::serializeFakeGpio(String& output) const {
-    // Include FakeGpio.h for access to fakeGpioPins array
-    extern FakeGpioPinConfig fakeGpioPins[];
-    
-    // Count active fake GPIO pins
+    // Count active fake GPIO pins (outputs + inputs)
     int activeCount = 0;
-    for (int i = 0; i < MAX_FAKE_GPIO; i++) {
-        if (fakeGpioPins[i].active) {
-            activeCount++;
-        }
+    for (int i = 0; i < MAX_FAKE_GP_OUT; i++) {
+        if (fakeGpioOutputs[i].active) activeCount++;
+    }
+    for (int i = 0; i < MAX_FAKE_GP_IN; i++) {
+        if (fakeGpioInputs[i].active) activeCount++;
     }
     
     if (activeCount == 0) {
@@ -1989,28 +1998,37 @@ void JumperlessState::serializeFakeGpio(String& output) const {
     
     output += "  fakeGpio:\n";
     
-    for (int slot = 0; slot < MAX_FAKE_GPIO; slot++) {
-        if (!fakeGpioPins[slot].active) continue;
-        
-        const FakeGpioPinConfig& pin = fakeGpioPins[slot];
+    // Serialize outputs
+    for (int slot = 0; slot < MAX_FAKE_GP_OUT; slot++) {
+        if (!fakeGpioOutputs[slot].active) continue;
+        const FakeGpioOutput& out = fakeGpioOutputs[slot];
         
         output += "    - {slot: " + String(slot);
-        output += ", node: " + String(pin.node);
-        output += ", mode: " + String(pin.mode);
+        output += ", node: " + String(out.userNode);
+        output += ", mode: 1";
+        output += ", high_node: " + String(out.highVoltageNode);
+        output += ", low_node: " + String(out.lowVoltageNode);
+        output += ", th_high: " + String(out.thresholdHigh, 2);
+        output += ", th_low: " + String(out.thresholdLow, 2);
+        output += "}\n";
+    }
+    
+    // Serialize inputs
+    for (int slot = 0; slot < MAX_FAKE_GP_IN; slot++) {
+        if (!fakeGpioInputs[slot].active) continue;
+        const FakeGpioInput& in = fakeGpioInputs[slot];
         
-        if (pin.mode == 1) {  // OUTPUT
-            output += ", v_high: " + String(pin.v_high, 2);
-            output += ", v_low: " + String(pin.v_low, 2);
-        }
-        
-        output += ", th_high: " + String(pin.threshold_high, 2);
-        output += ", th_low: " + String(pin.threshold_low, 2);
+        output += "    - {slot: " + String(MAX_FAKE_GP_OUT + slot);
+        output += ", node: " + String(in.userNode);
+        output += ", mode: 0";
+        output += ", th_high: " + String(in.thresholdHigh, 2);
+        output += ", th_low: " + String(in.thresholdLow, 2);
         output += "}\n";
     }
 }
 
 bool JumperlessState::deserializeFakeGpio(const char* yamlContent, String& errorMsg) {
-    // Parse fake GPIO entry: - {slot: 0, node: 20, mode: 1, v_high: 8.0, v_low: -8.0, th_high: 2.0, th_low: 0.8}
+    // Parse fake GPIO entry: - {slot: 0, node: 20, mode: 1, v_high: 8.0, v_low: -8.0, high_node: 101, low_node: 102, th_high: 2.0, th_low: 0.8}
     String line = String(yamlContent);
     line.trim();
     
@@ -2021,6 +2039,8 @@ bool JumperlessState::deserializeFakeGpio(const char* yamlContent, String& error
     float v_low = 0.0;
     float th_high = 2.0;
     float th_low = 0.8;
+    int high_voltage_node = -1;
+    int low_voltage_node = -1;
     
     // Parse slot field
     int slotIdx = line.indexOf("slot:");
@@ -2070,6 +2090,26 @@ bool JumperlessState::deserializeFakeGpio(const char* yamlContent, String& error
         v_low = val.toFloat();
     }
     
+    // Parse high_node field (optional, for OUTPUT mode - voltage source node ID)
+    int highNodeIdx = line.indexOf("high_node:");
+    if (highNodeIdx >= 0) {
+        int commaIdx = line.indexOf(',', highNodeIdx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', highNodeIdx);
+        String val = line.substring(highNodeIdx + 10, commaIdx);
+        val.trim();
+        high_voltage_node = val.toInt();
+    }
+    
+    // Parse low_node field (optional, for OUTPUT mode - voltage source node ID)
+    int lowNodeIdx = line.indexOf("low_node:");
+    if (lowNodeIdx >= 0) {
+        int commaIdx = line.indexOf(',', lowNodeIdx);
+        if (commaIdx == -1) commaIdx = line.indexOf('}', lowNodeIdx);
+        String val = line.substring(lowNodeIdx + 9, commaIdx);
+        val.trim();
+        low_voltage_node = val.toInt();
+    }
+    
     // Parse th_high field
     int thHighIdx = line.indexOf("th_high:");
     if (thHighIdx >= 0) {
@@ -2101,6 +2141,8 @@ bool JumperlessState::deserializeFakeGpio(const char* yamlContent, String& error
         info.v_low = v_low;
         info.threshold_high = th_high;
         info.threshold_low = th_low;
+        info.high_voltage_node = high_voltage_node;
+        info.low_voltage_node = low_voltage_node;
         
         // Add to restoration list
         pendingFakeGpioRestorations.push_back(info);
@@ -2592,11 +2634,19 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
         // Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
         // Serial.flush();
         
+        // Populate FakeGPIO slot structs BEFORE routing so the router can expand
+        // FAKE_GP_OUT_x/FAKE_GP_IN_x virtual nodes to real voltage sources/ADCs.
+        // Without this, the router sees inactive slots and can't find chip positions.
+        initializeFakeGpioFromLoadedState();
+        
         // Compute nets from bridges and commit to hardware
         // refreshLocalConnections does: loadBridgesFromState, getNodesToConnect, 
         // bridgesToPaths, commitPaths, sendPaths, and LED updates
         extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
-        refreshConnections(-1, 1, 0);  // Update connections, show LEDs, clean commit
+        refreshConnections(-1, 1, 1);  // Update connections, show LEDs, clean commit
+        
+        // Finalize FakeGPIO after routing (extract chipKY, register TDM, disconnect paths)
+        finalizeFakeGpioAfterRouting();
         
         // In normal mode (not preview), also apply DAC/GPIO settings
         if (!previewModeActive) {

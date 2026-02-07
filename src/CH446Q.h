@@ -75,4 +75,9 @@ void printLastChipStateArray(void);
 void applyChipXYState(const chipXYBitfield targetState[12]);
 void captureCurrentChipXYState(chipXYBitfield snapshot[12]);
 
+// Chip K-safe versions for INPUT FakeGPIO pins
+// These exclude chip K (index 10) to prevent interference with OUTPUT pin voltage switching
+void applyChipXYStateExcludeChipK(const chipXYBitfield targetState[12]);
+void captureCurrentChipXYStateExcludeChipK(chipXYBitfield snapshot[12]);
+
 #endif

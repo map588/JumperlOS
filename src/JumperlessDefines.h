@@ -403,38 +403,106 @@ extern int probeRev;
 #define GPIO_8_PIN 27
 
 
-#define FAKE_GPIO_1 150
-#define FAKE_GPIO_2 151
-#define FAKE_GPIO_3 152
-#define FAKE_GPIO_4 153
-#define FAKE_GPIO_5 154
-#define FAKE_GPIO_6 155
-#define FAKE_GPIO_7 156
-#define FAKE_GPIO_8 157
-#define FAKE_GPIO_9 158
-#define FAKE_GPIO_10 159
-#define FAKE_GPIO_11 160
-#define FAKE_GPIO_12 161
-#define FAKE_GPIO_13 162
-#define FAKE_GPIO_14 163
-#define FAKE_GPIO_15 164
-#define FAKE_GPIO_16 165
-#define FAKE_GPIO_17 166
-#define FAKE_GPIO_18 167
-#define FAKE_GPIO_19 168
-#define FAKE_GPIO_20 169
-#define FAKE_GPIO_21 170
-#define FAKE_GPIO_22 171
-#define FAKE_GPIO_23 172
-#define FAKE_GPIO_24 173
-#define FAKE_GPIO_25 174
-#define FAKE_GPIO_26 175
-#define FAKE_GPIO_27 176
-#define FAKE_GPIO_28 177
-#define FAKE_GPIO_29 178
-#define FAKE_GPIO_30 179
-#define FAKE_GPIO_31 180
-#define FAKE_GPIO_32 181
+// ============================================================================
+// Fake GPIO Node Definitions
+// ============================================================================
+
+// Fake GPIO Output nodes (8 total) - nodes 150-157
+// Used for software-emulated outputs that switch between voltage sources
+#define FAKE_GP_OUT_0  150
+#define FAKE_GP_OUT_1  151
+#define FAKE_GP_OUT_2  152
+#define FAKE_GP_OUT_3  153
+#define FAKE_GP_OUT_4  154
+#define FAKE_GP_OUT_5  155
+#define FAKE_GP_OUT_6  156
+#define FAKE_GP_OUT_7  157
+
+// Fake GPIO Input nodes (32 total) - nodes 158-189
+// Used for software-emulated inputs that read via ADC
+#define FAKE_GP_IN_0   158
+#define FAKE_GP_IN_1   159
+#define FAKE_GP_IN_2   160
+#define FAKE_GP_IN_3   161
+#define FAKE_GP_IN_4   162
+#define FAKE_GP_IN_5   163
+#define FAKE_GP_IN_6   164
+#define FAKE_GP_IN_7   165
+#define FAKE_GP_IN_8   166
+#define FAKE_GP_IN_9   167
+#define FAKE_GP_IN_10  168
+#define FAKE_GP_IN_11  169
+#define FAKE_GP_IN_12  170
+#define FAKE_GP_IN_13  171
+#define FAKE_GP_IN_14  172
+#define FAKE_GP_IN_15  173
+#define FAKE_GP_IN_16  174
+#define FAKE_GP_IN_17  175
+#define FAKE_GP_IN_18  176
+#define FAKE_GP_IN_19  177
+#define FAKE_GP_IN_20  178
+#define FAKE_GP_IN_21  179
+#define FAKE_GP_IN_22  180
+#define FAKE_GP_IN_23  181
+#define FAKE_GP_IN_24  182
+#define FAKE_GP_IN_25  183
+#define FAKE_GP_IN_26  184
+#define FAKE_GP_IN_27  185
+#define FAKE_GP_IN_28  186
+#define FAKE_GP_IN_29  187
+#define FAKE_GP_IN_30  188
+#define FAKE_GP_IN_31  189
+
+// Fake GPIO helper macros
+#define MAX_FAKE_GP_OUT  8
+#define MAX_FAKE_GP_IN   32
+#define FAKE_GP_OUT_BASE 150
+#define FAKE_GP_IN_BASE  158
+
+#define IS_FAKE_GP_OUT(n) ((n) >= FAKE_GP_OUT_0 && (n) <= FAKE_GP_OUT_7)
+#define IS_FAKE_GP_IN(n)  ((n) >= FAKE_GP_IN_0 && (n) <= FAKE_GP_IN_31)
+#define FAKE_GP_OUT_SLOT(n) ((n) - FAKE_GP_OUT_BASE)
+#define FAKE_GP_IN_SLOT(n)  ((n) - FAKE_GP_IN_BASE)
+
+// Special net number for TDM-merged fake GPIO inputs during routing
+// All FAKE_GP_IN paths temporarily use this net so they can share paths,
+// then get restored to their individual nets after routing completes.
+// Must be < MAX_NETS to fit in int8_t yStatus and pass bounds checks.
+#define FAKE_GPIO_TDM_NET  (MAX_NETS - 2)  // 58
+
+// Legacy compatibility - map old names to new (will be removed after migration)
+#define FAKE_GPIO_1  FAKE_GP_OUT_0
+#define FAKE_GPIO_2  FAKE_GP_OUT_1
+#define FAKE_GPIO_3  FAKE_GP_OUT_2
+#define FAKE_GPIO_4  FAKE_GP_OUT_3
+#define FAKE_GPIO_5  FAKE_GP_OUT_4
+#define FAKE_GPIO_6  FAKE_GP_OUT_5
+#define FAKE_GPIO_7  FAKE_GP_OUT_6
+#define FAKE_GPIO_8  FAKE_GP_OUT_7
+#define FAKE_GPIO_9  FAKE_GP_IN_0
+#define FAKE_GPIO_10 FAKE_GP_IN_1
+#define FAKE_GPIO_11 FAKE_GP_IN_2
+#define FAKE_GPIO_12 FAKE_GP_IN_3
+#define FAKE_GPIO_13 FAKE_GP_IN_4
+#define FAKE_GPIO_14 FAKE_GP_IN_5
+#define FAKE_GPIO_15 FAKE_GP_IN_6
+#define FAKE_GPIO_16 FAKE_GP_IN_7
+#define FAKE_GPIO_17 FAKE_GP_IN_8
+#define FAKE_GPIO_18 FAKE_GP_IN_9
+#define FAKE_GPIO_19 FAKE_GP_IN_10
+#define FAKE_GPIO_20 FAKE_GP_IN_11
+#define FAKE_GPIO_21 FAKE_GP_IN_12
+#define FAKE_GPIO_22 FAKE_GP_IN_13
+#define FAKE_GPIO_23 FAKE_GP_IN_14
+#define FAKE_GPIO_24 FAKE_GP_IN_15
+#define FAKE_GPIO_25 FAKE_GP_IN_16
+#define FAKE_GPIO_26 FAKE_GP_IN_17
+#define FAKE_GPIO_27 FAKE_GP_IN_18
+#define FAKE_GPIO_28 FAKE_GP_IN_19
+#define FAKE_GPIO_29 FAKE_GP_IN_20
+#define FAKE_GPIO_30 FAKE_GP_IN_21
+#define FAKE_GPIO_31 FAKE_GP_IN_22
+#define FAKE_GPIO_32 FAKE_GP_IN_23
 
 
 

@@ -22,6 +22,7 @@
 
 #include "SingleCharCommands.h"
 
+extern bool printPowerSupplySense;
 
 
 
@@ -53,6 +54,7 @@ debugFlags:
   bool temp_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
   bool temp_debugFakeGpio = getDebugFakeGpio();
   int temp_printReceivedPython = mpRemoteService.getPrintReceivedPython();
+  bool temp_printPowerSupplySense = printPowerSupplySense;
   // Track originals for diffing on commit
   bool orig_debugFP = debugFP;
   bool orig_debugNM = debugNM;
@@ -67,6 +69,7 @@ debugFlags:
   bool orig_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
   bool orig_debugFakeGpio = getDebugFakeGpio();
   int orig_printReceivedPython = mpRemoteService.getPrintReceivedPython();
+  bool orig_printPowerSupplySense = printPowerSupplySense;
   
   int lines = 0;
   int last_bulk_cmd = -1; // 0 for all off, 9 for all on; reset to -1 on individual changes
@@ -111,6 +114,8 @@ debugFlags:
     Serial.print("\n\rg. fake GPIO debug            =    "); Serial.print(temp_debugFakeGpio); lines_printed++; cycleTerminalColor();
 
     Serial.print("\n\rm. print received Python      =    "); Serial.print(temp_printReceivedPython); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rv. print power supply sense   =    "); Serial.print(temp_printPowerSupplySense ? 1 : 0); lines_printed++; cycleTerminalColor();
 
     Serial.print("\n\r\n\r\n\r"); lines_printed += 2;
     Serial.flush();
@@ -162,6 +167,9 @@ debugFlags:
         }
         if (temp_printReceivedPython != orig_printReceivedPython) {
           mpRemoteService.setPrintReceivedPython(temp_printReceivedPython);
+        }
+        if (temp_printPowerSupplySense != orig_printPowerSupplySense) {
+          printPowerSupplySense = temp_printPowerSupplySense;
         }
         // Persist Arduino debug level if changed via menu
         saveConfig();
@@ -236,6 +244,7 @@ debugFlags:
       temp_debugFakeGpio = false;
       temp_showProbeCurrent = 0;
       temp_printReceivedPython = 0;
+      temp_printPowerSupplySense = false;
       last_bulk_cmd = 0;
     } else if (sel == 'z' || sel == 'Z') {
       temp_debugFP = true;
@@ -243,12 +252,13 @@ debugFlags:
       temp_debugNTCC = true;
       temp_debugNTCC2 = true;
       temp_debugLEDs = true;
-      temp_debugLA = true;
-      temp_debugWaitLoopTiming = true;
-      temp_debugUSB = true;
-      temp_debugFakeGpio = true;
-      temp_showProbeCurrent = 1;
-      temp_printReceivedPython = 1;
+    //   temp_debugLA = true;
+    //   temp_debugWaitLoopTiming = true;
+    //   temp_debugUSB = true;
+    //   temp_debugFakeGpio = true;
+    //   temp_showProbeCurrent = 1;
+    //   temp_printReceivedPython = 1;
+    //   temp_printPowerSupplySense = true;
       last_bulk_cmd = 9;
     } else if (sel == 'u' || sel == 'U') {
       // Cycle passthrough: 0 -> 2 -> 1 -> 0
@@ -266,6 +276,7 @@ debugFlags:
     else if (sel == 'm' || sel == 'M') { temp_printReceivedPython = temp_printReceivedPython ? 0 : 1; last_bulk_cmd = -1; }
     else if (sel == 'p' || sel == 'P') { temp_asyncPassthrough = !temp_asyncPassthrough; last_bulk_cmd = -1; }
     else if (sel == 's' || sel == 'S') { temp_showProbeCurrent = temp_showProbeCurrent ? 0 : 1; last_bulk_cmd = -1; }
+    else if (sel == 'v' || sel == 'V') { temp_printPowerSupplySense = !temp_printPowerSupplySense; last_bulk_cmd = -1; }
     else {
       // not a recognized toggle key; fall through to next handlers
     }
@@ -275,7 +286,8 @@ debugFlags:
         sel == 'f' || sel == 'F' || sel == 'n' || sel == 'N' || sel == 'c' || sel == 'C' ||
         sel == 'h' || sel == 'H' || sel == 'e' || sel == 'E' || sel == 'l' || sel == 'L' || 
         sel == 'w' || sel == 'W' || sel == 'b' || sel == 'B' || sel == 'g' || sel == 'G' ||
-        sel == 'm' || sel == 'M' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S') {
+        sel == 'm' || sel == 'M' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S' ||
+        sel == 'v' || sel == 'V') {
       Serial.printf("\033[%dA", lines);
       for (int i = 0; i < lines; i++) { Serial.print("\033[2K\r\n\r"); }
       Serial.printf("\033[%dA", lines);
@@ -1108,5 +1120,109 @@ static void action_colorSpectrum() {
     
     Serial.println();
     Serial.flush();
+}
+
+// ============================================================================
+// FakeGPIO Live Debug Display
+// ============================================================================
+
+CommandResult cmd_fakeGpioDebug(char c, const String& line) {
+    extern TimeDomainMultiplexer tdmInputs;
+
+    Serial.println("\n\r\033[1m=== FakeGPIO Live Debug ===\033[0m");
+    Serial.println("  (send any key to exit)\n\r");
+
+    int lineCount = 0;
+
+    do {
+        lineCount = 0;
+
+        // --- OUTPUTS ---
+        int numOuts = 0;
+        for (int i = 0; i < MAX_FAKE_GP_OUT; i++) {
+            if (fakeGpioOutputs[i].active) numOuts++;
+        }
+        if (numOuts > 0) {
+            Serial.print("\033[1mOutputs\033[0m  ");
+            Serial.printf("(%d active)\n\r", numOuts);
+            lineCount++;
+            Serial.println("  Slot  Node  State  HighSrc  LowSrc  ChipKY  FastPath  Net");
+            lineCount++;
+            for (int i = 0; i < MAX_FAKE_GP_OUT; i++) {
+                if (!fakeGpioOutputs[i].active) continue;
+                FakeGpioOutput& out = fakeGpioOutputs[i];
+                Serial.printf("  %-4d  %-4d  %-5s  ", i, out.userNode,
+                              out.currentState ? "HIGH" : "LOW");
+                printNodeOrName(out.highVoltageNode);
+                Serial.print("\t ");
+                printNodeOrName(out.lowVoltageNode);
+                Serial.printf("\t %-6d  %-8s  %d\n\r",
+                              out.chipKY,
+                              out.fastPathReady ? "yes" : "no",
+                              out.netIndex);
+                lineCount++;
+            }
+        }
+
+        // --- INPUTS ---
+        int numIns = 0;
+        for (int i = 0; i < MAX_FAKE_GP_IN; i++) {
+            if (fakeGpioInputs[i].active) numIns++;
+        }
+        if (numIns > 0) {
+            Serial.printf("\n\r\033[1mInputs\033[0m   (%d active, ADC%d, TDM channels: %d)\n\r",
+                          numIns, tdmInputs.adcChannel, tdmInputs.activeCount);
+            lineCount += 2;
+            Serial.println("  Slot  Node  State  Voltage   ThreshH  ThreshL  TDM  ChipKY  Net");
+            lineCount++;
+            for (int i = 0; i < MAX_FAKE_GP_IN; i++) {
+                if (!fakeGpioInputs[i].active) continue;
+                FakeGpioInput& in = fakeGpioInputs[i];
+
+                float voltage = 0.0f;
+                int8_t chipKY = -1;
+                if (in.tdmSlot >= 0 && in.tdmSlot < TDM_MAX_CHANNELS) {
+                    voltage = tdmInputs.channels[in.tdmSlot].lastVoltage;
+                    chipKY = tdmInputs.channels[in.tdmSlot].chipKY;
+                }
+
+                const char* stateStr = (in.currentState == 1) ? "HIGH" :
+                                        (in.currentState == 0) ? "LOW " : "??? ";
+
+                Serial.printf("  %-4d  %-4d  %s  %+7.3fV  %5.2f    %5.2f    %-3d  %-6d  %d\n\r",
+                              i, in.userNode, stateStr,
+                              voltage, in.thresholdHigh, in.thresholdLow,
+                              in.tdmSlot, chipKY, in.netIndex);
+                lineCount++;
+            }
+        }
+
+        if (numOuts == 0 && numIns == 0) {
+            Serial.println("  No FakeGPIO pins configured.");
+            lineCount++;
+        }
+
+        Serial.flush();
+
+        // Wait for change or keypress
+        unsigned long startTime = millis();
+        while (Serial.available() == 0) {
+            if (millis() - startTime > 150) break;  // Refresh ~6-7 Hz
+        }
+
+        if (Serial.available() > 0) {
+            while (Serial.available() > 0) Serial.read();
+            break;
+        }
+
+        // Move cursor up to overwrite (ANSI escape)
+        Serial.printf("\033[%dA\033[J", lineCount);
+        Serial.flush();
+
+    } while (true);
+
+    Serial.println("\n\r\033[0m");
+    Serial.flush();
+    return CMD_DONT_SHOW_MENU;
 }
 

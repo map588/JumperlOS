@@ -147,6 +147,11 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
   chooseShownReadings();
   t[ti++] = millis(); // t[5] = after checkChangedNetColors + chooseShownReadings
   
+    
+  // extern void updateAllFakeGPIOAfterConnectionChange(void);
+  // updateAllFakeGPIOAfterConnectionChange();
+
+  
   pauseCore2 = false;
   core1busy = false;
 
@@ -202,7 +207,7 @@ void refreshConnections(int ledShowOption, int fillUnused, int clean) {
     refreshPending = false;
     refreshConnections(ledShowOption, fillUnused, clean);
   }
-  
+
   // sendPaths();
 }
 
@@ -426,6 +431,11 @@ unsigned long start2 = millis();
   Serial.print("refreshLocalConnections time = ");
   Serial.println(millis() - start2);
 #endif
+
+// extern void updateAllFakeGPIOAfterConnectionChange(void);
+// updateAllFakeGPIOAfterConnectionChange();
+
+
   core1busy = false;
   //pauseCore2 = false;
 
@@ -473,6 +483,8 @@ unsigned long start2 = millis();
    // refreshLocalConnections(ledShowOption, fillUnused, clean);
   }
 
+
+  //!
   // Serial.print("Free heap = ");
   // Serial.println(rp2040.getFreeHeap());
 

@@ -17,6 +17,7 @@
 #include "Probing.h"
 //#include "SerialWrapper.h"
 #include "Highlighting.h"
+#include "FakeGpio.h"
 
 ///#define Serial SerialWrap
 
@@ -139,38 +140,38 @@ const DefineInfo specialDefines[] = {
     {"GP_8",     "RP_GPIO_8",   RP_GPIO_8},     // 138
     {"BUF_IN",   "BUFFER_IN",   ROUTABLE_BUFFER_IN}, // 139
     {"BUF_OUT",  "BUFFER_OUT",  ROUTABLE_BUFFER_OUT}, // 140
-    {"FGP_1",    "FAKE_GPIO_1", FAKE_GPIO_1},   // 150
-    {"FGP_2",    "FAKE_GPIO_2", FAKE_GPIO_2},   // 151
-    {"FGP_3",    "FAKE_GPIO_3", FAKE_GPIO_3},   // 152
-    {"FGP_4",    "FAKE_GPIO_4", FAKE_GPIO_4},   // 153
-    {"FGP_5",    "FAKE_GPIO_5", FAKE_GPIO_5},   // 154
-    {"FGP_6",    "FAKE_GPIO_6", FAKE_GPIO_6},   // 155
-    {"FGP_7",    "FAKE_GPIO_7", FAKE_GPIO_7},   // 156
-    {"FGP_8",    "FAKE_GPIO_8", FAKE_GPIO_8},   // 157
-    {"FGP_9",    "FAKE_GPIO_9", FAKE_GPIO_9},   // 158
-    {"FGP_10",   "FAKE_GPIO_10", FAKE_GPIO_10}, // 159
-    {"FGP_11",   "FAKE_GPIO_11", FAKE_GPIO_11}, // 160
-    {"FGP_12",   "FAKE_GPIO_12", FAKE_GPIO_12}, // 161
-    {"FGP_13",   "FAKE_GPIO_13", FAKE_GPIO_13}, // 162
-    {"FGP_14",   "FAKE_GPIO_14", FAKE_GPIO_14}, // 163
-    {"FGP_15",   "FAKE_GPIO_15", FAKE_GPIO_15}, // 164
-    {"FGP_16",   "FAKE_GPIO_16", FAKE_GPIO_16}, // 165
-    {"FGP_17",   "FAKE_GPIO_17", FAKE_GPIO_17}, // 166
-    {"FGP_18",   "FAKE_GPIO_18", FAKE_GPIO_18}, // 167
-    {"FGP_19",   "FAKE_GPIO_19", FAKE_GPIO_19}, // 168
-    {"FGP_20",   "FAKE_GPIO_20", FAKE_GPIO_20}, // 169
-    {"FGP_21",   "FAKE_GPIO_21", FAKE_GPIO_21}, // 170
-    {"FGP_22",   "FAKE_GPIO_22", FAKE_GPIO_22}, // 171
-    {"FGP_23",   "FAKE_GPIO_23", FAKE_GPIO_23}, // 172
-    {"FGP_24",   "FAKE_GPIO_24", FAKE_GPIO_24}, // 173
-    {"FGP_25",   "FAKE_GPIO_25", FAKE_GPIO_25}, // 174
-    {"FGP_26",   "FAKE_GPIO_26", FAKE_GPIO_26}, // 175
-    {"FGP_27",   "FAKE_GPIO_27", FAKE_GPIO_27}, // 176
-    {"FGP_28",   "FAKE_GPIO_28", FAKE_GPIO_28}, // 177
-    {"FGP_29",   "FAKE_GPIO_29", FAKE_GPIO_29}, // 178
-    {"FGP_30",   "FAKE_GPIO_30", FAKE_GPIO_30}, // 179
-    {"FGP_31",   "FAKE_GPIO_31", FAKE_GPIO_31}, // 180
-    {"FGP_32",   "FAKE_GPIO_32", FAKE_GPIO_32}  // 181
+    {"FGPO0",    "FAKE_GP_OUT_0", FAKE_GPIO_1},   // 150
+    {"FGPO1",    "FAKE_GP_OUT_1", FAKE_GPIO_2},   // 151
+    {"FGPO2",    "FAKE_GP_OUT_2", FAKE_GPIO_3},   // 152
+    {"FGPO3",    "FAKE_GP_OUT_3", FAKE_GPIO_4},   // 153
+    {"FGPO4",    "FAKE_GP_OUT_4", FAKE_GPIO_5},   // 154
+    {"FGPO5",    "FAKE_GP_OUT_5", FAKE_GPIO_6},   // 155
+    {"FGPO6",    "FAKE_GP_OUT_6", FAKE_GPIO_7},   // 156
+    {"FGPO7",    "FAKE_GP_OUT_7", FAKE_GPIO_8},   // 157
+    {"FGPI0",    "FAKE_GP_IN_0", FAKE_GPIO_9},    // 158
+    {"FGPI1",    "FAKE_GP_IN_1", FAKE_GPIO_10},   // 159
+    {"FGPI2",    "FAKE_GP_IN_2", FAKE_GPIO_11},   // 160
+    {"FGPI3",    "FAKE_GP_IN_3", FAKE_GPIO_12},   // 161
+    {"FGPI4",    "FAKE_GP_IN_4", FAKE_GPIO_13},   // 162
+    {"FGPI5",    "FAKE_GP_IN_5", FAKE_GPIO_14},   // 163
+    {"FGPI6",    "FAKE_GP_IN_6", FAKE_GPIO_15},   // 164
+    {"FGPI7",    "FAKE_GP_IN_7", FAKE_GPIO_16},   // 165
+    {"FGPI8",    "FAKE_GP_IN_8", FAKE_GPIO_17},   // 166
+    {"FGPI9",    "FAKE_GP_IN_9", FAKE_GPIO_18},   // 167
+    {"FGPI10",   "FAKE_GP_IN_10", FAKE_GPIO_19},  // 168
+    {"FGPI11",   "FAKE_GP_IN_11", FAKE_GPIO_20},  // 169
+    {"FGPI12",   "FAKE_GP_IN_12", FAKE_GPIO_21},  // 170
+    {"FGPI13",   "FAKE_GP_IN_13", FAKE_GPIO_22},  // 171
+    {"FGPI14",   "FAKE_GP_IN_14", FAKE_GPIO_23},  // 172
+    {"FGPI15",   "FAKE_GP_IN_15", FAKE_GPIO_24},  // 173
+    {"FGPI16",   "FAKE_GP_IN_16", FAKE_GPIO_25},  // 174
+    {"FGPI17",   "FAKE_GP_IN_17", FAKE_GPIO_26},  // 175
+    {"FGPI18",   "FAKE_GP_IN_18", FAKE_GPIO_27},  // 176
+    {"FGPI19",   "FAKE_GP_IN_19", FAKE_GPIO_28},  // 177
+    {"FGPI20",   "FAKE_GP_IN_20", FAKE_GPIO_29},  // 178
+    {"FGPI21",   "FAKE_GP_IN_21", FAKE_GPIO_30},  // 179
+    {"FGPI22",   "FAKE_GP_IN_22", FAKE_GPIO_31},  // 180
+    {"FGPI23",   "FAKE_GP_IN_23", FAKE_GPIO_32}   // 181
   };
 
 // Similarly, create an array for Nano defines
@@ -1141,13 +1142,22 @@ void listNets(int liveUpdate)
 
   int lastGPIO[10];
   float lastADC[8];
+  float lastFakeGpioVoltage[MAX_FAKE_GP_IN];  // Track fake GPIO input voltages for live update
   for (int i = 0; i < 10; i++) {
     lastGPIO[i] = gpioReading[i];
     }
   for (int i = 0; i < 8; i++) {
     lastADC[i] = adcReadings[i];
     }
+  for (int i = 0; i < MAX_FAKE_GP_IN; i++) {
+    if (fakeGpioInputs[i].active && fakeGpioInputs[i].tdmSlot >= 0 && fakeGpioInputs[i].tdmSlot < TDM_MAX_CHANNELS) {
+      lastFakeGpioVoltage[i] = tdmInputs.channels[fakeGpioInputs[i].tdmSlot].lastVoltage;
+    } else {
+      lastFakeGpioVoltage[i] = 0.0f;
+    }
+  }
 
+    int showFakeGPIO = 0;
 
   if (liveUpdate < 0) {
     liveUpdate = 0;
@@ -1158,13 +1168,15 @@ void listNets(int liveUpdate)
     // Serial.print("liveUpdate: ");
     // Serial.println(liveUpdate);
 
-    ///0 = none, 1 = adc, 2 = gpio input, 3 = gpio output, 4 = uart tx, 5 = uart rx, 6 = other
+    ///0 = none, 1 = adc, 2 = gpio input, 3 = gpio output, 4 = uart tx, 5 = uart rx, 6 = fake gpio input
     int netsShowingSpecial[MAX_NETS];
+    int netsFakeGpioSlot[MAX_NETS];  // Track fake GPIO slot for type 6
     // int netsShowingSpecialIndex = 0;
     int showVoltage = 0;
     int showGPIO = 0;
     for (int i = 0; i <= numberOfNets; i++) {
       netsShowingSpecial[i] = 0;
+      netsFakeGpioSlot[i] = -1;
       }
     // First scan all nets to check for ADC and GPIO nodes
     for (int i = 6; i <= numberOfNets; i++) {
@@ -1176,11 +1188,19 @@ void listNets(int liveUpdate)
         // Check for ADC nodes (ADC0-ADC7)
         // Values from JumperlessDefines.h: ADC0(110), ADC1(111), ADC2(112), ADC3(113), ADC4(114), ADC7(115)
         if ((globalState.connections.nets[i].nodes[j] >= ADC0 && globalState.connections.nets[i].nodes[j] <= ADC4) ||
-            globalState.connections.nets[i].nodes[j] == ADC7) {
+            globalState.connections.nets[i].nodes[j] == ADC7 ) {
           // Serial.print("adc  ");
           // Serial.println(globalState.connections.nets[i].nodes[j]);
           showVoltage = 1;
           netsShowingSpecial[i] = 1;
+          }
+
+        if (globalState.connections.nets[i].nodes[j] >= FAKE_GP_IN_0 && globalState.connections.nets[i].nodes[j] <= FAKE_GP_IN_31) {
+          // Fake GPIO input - use type 6 and track the slot
+          showVoltage = 1;
+          showFakeGPIO = 1;
+          netsShowingSpecial[i] = 6;  // New type for fake GPIO inputs
+          netsFakeGpioSlot[i] = globalState.connections.nets[i].nodes[j] - FAKE_GP_IN_0;
           }
 
         // Check for GPIO nodes (RP_GPIO_1-RP_GPIO_8)
@@ -1520,7 +1540,7 @@ void listNets(int liveUpdate)
             if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
               Serial.printf("\033[7m");
               }
-            tabs += printNodeOrName(globalState.connections.nets[i].nodes[j]);
+            tabs += printNodeOrName(globalState.connections.nets[i].nodes[j], 0, i);
             if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
               Serial.printf("\033[27m");
               }
@@ -1549,16 +1569,47 @@ void listNets(int liveUpdate)
 
           if (netsShowingSpecial[i] != 0) {
             if (netsShowingSpecial[i] == 1) {
+              // Regular ADC - display with color
               float voltage = adcReadings[gpioOrAdcNumber];
               if (voltage < 0.03 && voltage > -0.03) {
                 voltage = 0.00;
                 }
+              // Apply voltage color using measurementToColor
+              uint32_t vColor = measurementToColor(voltage, -8.0, 8.0);
+              if (TERM_SUPPORTS_ANSI_COLORS == 1) {
+                Serial.printf("\033[38;5;%dm", colorToAnsi(vColor));
+              }
               if (voltage < 0.0) {
                 Serial.print("\b");
-
                 }
               Serial.print(voltage, 2);
               Serial.print(" V");
+
+              } else if (netsShowingSpecial[i] == 6) {
+                // Fake GPIO input - get voltage from TDM and display with color
+                int slot = netsFakeGpioSlot[i];
+                float voltage = 0.0f;
+                if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
+                  int tdmSlot = fakeGpioInputs[slot].tdmSlot;
+                  if (tdmSlot >= 0 && tdmSlot < TDM_MAX_CHANNELS) {
+                    voltage = tdmInputs.channels[tdmSlot].lastVoltage;
+                    }
+                  }
+                if (voltage < 0.03 && voltage > -0.03) {
+                  voltage = 0.00;
+                  }
+                // Apply voltage color using measurementToColor
+                uint32_t vColor = measurementToColor(voltage, -8.0, 8.0);
+                if (TERM_SUPPORTS_ANSI_COLORS == 1) {
+                  Serial.printf("\033[38;5;%dm", colorToAnsi(vColor));
+                }
+                if (voltage < 0.0) {
+                  Serial.print("\b");
+                  }
+                Serial.print(voltage, 2);
+                Serial.print(" V");
+
+
 
               } else if (netsShowingSpecial[i] == 2) {
                 if (gpioReading[gpioOrAdcNumber] == 0) {
@@ -1632,6 +1683,16 @@ void listNets(int liveUpdate)
               lastADC[i] = adcReadings[i];
               }
             }
+          // Check fake GPIO input voltage changes
+          for (int i = 0; i < MAX_FAKE_GP_IN; i++) {
+            if (fakeGpioInputs[i].active && fakeGpioInputs[i].tdmSlot >= 0 && fakeGpioInputs[i].tdmSlot < TDM_MAX_CHANNELS) {
+              float currentVoltage = tdmInputs.channels[fakeGpioInputs[i].tdmSlot].lastVoltage;
+              if (fabs(lastFakeGpioVoltage[i] - currentVoltage) > 0.02) {
+                changed = 1;
+                lastFakeGpioVoltage[i] = currentVoltage;
+              }
+            }
+          }
           if (millis() - startTime > 100) {
             // Use state-based check in loop (doesn't consume event)
             if (checkProbeButtonState() != 0) {
@@ -1801,7 +1862,7 @@ void listSpecialNets() {
 
     tabs = 0;
     for (int j = 0; j < MAX_NODES; j++) {
-      tabs += printNodeOrName(globalState.connections.nets[i].nodes[j]);
+      tabs += printNodeOrName(globalState.connections.nets[i].nodes[j], 0, i);
       // tabs += Serial.print(definesToChar(globalState.connections.nets[i].nodes[j]));
 
       if (globalState.connections.nets[i].nodes[j + 1] == 0) {
@@ -1831,7 +1892,8 @@ void printBridgeArray(void) {
   Serial.print("\n\r");
   int tabs = 0;
   int lineCount = 0;
-  for (int i = 0; i < numberOfPaths; i++) {
+  // Print from the actual bridge array (not paths) so virtual nodes show correctly
+  for (int i = 0; i < globalState.connections.numBridges; i++) {
     tabs += Serial.print(i);
     if (i < 10) {
       tabs += Serial.print(" ");
@@ -1840,15 +1902,45 @@ void printBridgeArray(void) {
       tabs += Serial.print(" ");
       }
     tabs += Serial.print("[");
-    tabs += printNodeOrName(globalState.connections.paths[i].node1);
+    tabs += printNodeOrName(globalState.connections.bridges[i][0]);
     tabs += Serial.print(",");
-    tabs += printNodeOrName(globalState.connections.paths[i].node2);
+    tabs += printNodeOrName(globalState.connections.bridges[i][1]);
+    // Find the net for this bridge from paths
+    int bridgeNet = -1;
+    for (int p = 0; p < numberOfPaths; p++) {
+      int pn1 = globalState.connections.paths[p].node1;
+      int pn2 = globalState.connections.paths[p].node2;
+      int bn1 = globalState.connections.bridges[i][0];
+      int bn2 = globalState.connections.bridges[i][1];
+      // Match bridge nodes to path nodes (path nodes may be expanded from virtual nodes)
+      if ((pn1 == bn1 && pn2 == bn2) || (pn1 == bn2 && pn2 == bn1)) {
+        bridgeNet = globalState.connections.paths[p].net;
+        break;
+      }
+      // Also check if either bridge node is a virtual node that got expanded in the path
+      if (IS_FAKE_GP_OUT(bn2) || IS_FAKE_GP_IN(bn2)) {
+        if (pn1 == bn1 || pn2 == bn1) {
+          bridgeNet = globalState.connections.paths[p].net;
+          break;
+        }
+      }
+      if (IS_FAKE_GP_OUT(bn1) || IS_FAKE_GP_IN(bn1)) {
+        if (pn1 == bn2 || pn2 == bn2) {
+          bridgeNet = globalState.connections.paths[p].net;
+          break;
+        }
+      }
+    }
     tabs += Serial.print(",Net ");
-    tabs += printNodeOrName(globalState.connections.paths[i].net);
+    if (bridgeNet >= 0) {
+      tabs += Serial.print(bridgeNet);
+    } else {
+      tabs += Serial.print("?");
+    }
     tabs += Serial.print("],");
     lineCount++;
     // Serial.print(tabs);
-    for (int i = 0; i < 24 - (tabs); i++) {
+    for (int j = 0; j < 24 - (tabs); j++) {
       Serial.print(" ");
       }
     tabs = 0;
@@ -1874,8 +1966,52 @@ void printBridgeArray(void) {
 //returns the number of characters printed (for tabs)
 int printNodeOrName(
     int node,
-    int longOrShort) // returns number of characters printed (for tabs)
+    int longOrShort,
+    int netIndex) // returns number of characters printed (for tabs)
+                  // netIndex: when >= 0, used to disambiguate shared ADC/voltage nodes
   {
+  // --- FakeGPIO Output: voltage source node → FGPOx ---
+  // When router expands FAKE_GP_OUT_x, path nodes become the voltage source
+  // (TOP_RAIL, BOTTOM_RAIL, etc.). Match by netIndex to avoid false positives
+  // on rail nets that legitimately contain those nodes.
+  if (node == TOP_RAIL || node == BOTTOM_RAIL || node == DAC0 ||
+      node == DAC1 || node == GND) {
+    for (int slot = 0; slot < MAX_FAKE_GP_OUT; slot++) {
+      if (!fakeGpioOutputs[slot].active) continue;
+      int currentVoltage = (fakeGpioOutputs[slot].currentState == 1)
+          ? fakeGpioOutputs[slot].highVoltageNode
+          : fakeGpioOutputs[slot].lowVoltageNode;
+      if (node != currentVoltage) continue;
+      // If we have a net index, require it to match the output's net
+      if (netIndex >= 0 && fakeGpioOutputs[slot].netIndex != netIndex) continue;
+      char name[8];
+      snprintf(name, sizeof(name), "FGPO%d", slot);
+      return Serial.print(name);
+    }
+  }
+
+  // --- FakeGPIO Input: shared ADC node → FGPIx ---
+  // All inputs share one ADC (TDM). When router expands FAKE_GP_IN_x, path
+  // nodes become ADCn. Use netIndex to find the correct input slot.
+  if (node >= ADC0 && node <= ADC3 || node >= FAKE_GP_IN_0 && node <= FAKE_GP_IN_31) {
+    extern int fakeGpioInputAdcChannel;
+    int expectedAdcNode = (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : -1;
+    if (node == expectedAdcNode) {
+      // If we have a net index, find the exact FGPI slot for this net
+      if (netIndex >= 0) {
+        for (int slot = 0; slot < MAX_FAKE_GP_IN; slot++) {
+          if (fakeGpioInputs[slot].active && fakeGpioInputs[slot].netIndex == netIndex) {
+            char name[8];
+            snprintf(name, sizeof(name), "FGPI%d", slot);
+            return Serial.print(name);
+          }
+        }
+      }
+      // Fallback: no net index or no match -- show generic label
+      return Serial.print("FGPI?");
+    }
+  }
+
   if (node >= 100) {
     return Serial.print(definesToChar(node, longOrShort));
     } else if (node >= NANO_D0) {

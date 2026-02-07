@@ -22,6 +22,7 @@
 //#include <Adafruit_MCP4728.h>  // Old blocking library
 
 #include "PersistentStuff.h"
+#include "FakeGpio.h"
 #include <Wire.h>
 #include "Commands.h"
 #include "Graphics.h"
@@ -200,30 +201,35 @@ float adcZero[ 8 ] = { 8.0, 8.0, 8.0, 8.0, 0.0, 8.0, 8.0, 8.0 };
 
 /// GPIO states: 0=output low, 1=output high, 2=input, 3=input pullup, 
 ///              4=input pulldown, 5=unknown, 6=I2C, 7=bus keeper
-/// Indices 0-9: Real GPIO pins (RP2040 GPIO 20-27 + UART)
-/// Indices 10-41: Fake GPIO pins (32 slots)
-uint8_t gpioState[ 42 ] = {
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Real GPIO
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GPIO 0-9
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GPIO 10-19
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GPIO 20-29
-    0xff, 0xff  // Fake GPIO 30-31
+/// GPIO array layout (50 total):
+/// Indices 0-9:   Real GPIO pins (RP2040 GPIO 20-27 + UART)
+/// Indices 10-17: Fake GP Outputs (FAKE_GP_OUT_0 through FAKE_GP_OUT_7)
+/// Indices 18-49: Fake GP Inputs (FAKE_GP_IN_0 through FAKE_GP_IN_31)
+uint8_t gpioState[ 50 ] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Real GPIO (0-9)
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,              // Fake GP Out (10-17)
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GP In 0-9 (18-27)
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GP In 10-19 (28-37)
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,  // Fake GP In 20-29 (38-47)
+    0xff, 0xff                                                   // Fake GP In 30-31 (48-49)
 };
 
-uint8_t gpioReading[ 42 ] = {
+uint8_t gpioReading[ 50 ] = {
     3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Real GPIO (3 = unknown)
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GPIO 0-9
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GPIO 10-19
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GPIO 20-29
-    3, 3  // Fake GPIO 30-31
+    3, 3, 3, 3, 3, 3, 3, 3,        // Fake GP Out
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GP In 0-9
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GP In 10-19
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Fake GP In 20-29
+    3, 3                           // Fake GP In 30-31
 };
 
-int gpioNet[ 42 ] = {
+int gpioNet[ 50 ] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Real GPIO
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GPIO 0-9
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GPIO 10-19
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GPIO 20-29
-    -1, -1  // Fake GPIO 30-31
+    -1, -1, -1, -1, -1, -1, -1, -1,          // Fake GP Out
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GP In 0-9
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GP In 10-19
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  // Fake GP In 20-29
+    -1, -1                                   // Fake GP In 30-31
 };
 
 int revisionNumber = 0;
@@ -989,12 +995,13 @@ void printGPIOState( void ) {
     Serial.println( );
 }
 
-uint32_t gpioReadingColors[ 42 ] = { 
+uint32_t gpioReadingColors[ 50 ] = { 
     0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Real GPIO
-    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GPIO 0-9
-    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GPIO 10-19
-    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GPIO 20-29
-    0x050507, 0x050507  // Fake GPIO 30-31
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,                      // Fake GP Out
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GP In 0-9
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GP In 10-19
+    0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507, 0x050507,  // Fake GP In 20-29
+    0x050507, 0x050507                                                                                   // Fake GP In 30-31
 };
 
 // Debug flag for fake GPIO visual integration
@@ -1148,124 +1155,8 @@ void __not_in_flash_func(readGPIO)( ) {
 // ============================================================================
 // Fake GPIO Background Reading
 // ============================================================================
-
-// Forward declarations for fake GPIO types from JumperlessMicroPythonAPI.cpp
-#define MAX_FAKE_GPIO 32
-
-// Fake GPIO pin configuration structure (defined in JumperlessMicroPythonAPI.cpp)
-struct FakeGpioPinConfig {
-    bool active;
-    int node;
-    float v_high;
-    float v_low;
-    float threshold_high;
-    float threshold_low;
-    int mode;  // INPUT=0, OUTPUT=1
-    int chip_k_x;
-    int chip_k_y;
-    int current_state;
-    int high_voltage_node;
-    int low_voltage_node;
-    chipXYBitfield chipXYState[12];
-    bool hasStoredState;
-    int path_chips[4];
-    int path_x[4];
-    int path_y[4];
-    int path_length;
-};
-
-// External linkage to fake GPIO state from JumperlessMicroPythonAPI.cpp
-extern FakeGpioPinConfig fakeGpioPins[MAX_FAKE_GPIO];
-extern int adcCurrentlyConnectedPin;
-
-// Background reading for fake GPIO pins (indices 10-41)
-// Uses stored chipXY snapshots for INPUT pins, reads OUTPUT state directly
-// Rotates through pins to avoid blocking main loop
-unsigned long lastReadFakeGPIOTime = 0;
-void __not_in_flash_func(readFakeGPIO)( void ) {
-
-    // lastReadFakeGPIOTime = micros( );
-    // Skip during high-priority operations
-    if ( logicAnalyzer.is_running( ) || logicAnalyzer.is_armed( ) || flashingArduino == true ) {
-        return;
-    }
-    
-    // Memory barrier for multicore safety
-    __dmb();
-    
-    // Rotate through active pins - only read a few per cycle to avoid blocking
-    // This counter determines which subset of pins we read this cycle
-    static int readCycleOffset = 0;
-    const int pinsPerCycle = 4;  // Read 4 pins per cycle for responsive updates
-    
-    int pinsRead = 0;
-    
-    // Start from offset and wrap around, reading only pinsPerCycle pins
-    for ( int cycleIdx = 0; cycleIdx < MAX_FAKE_GPIO && pinsRead < pinsPerCycle; cycleIdx++ ) {
-        int slot = ( readCycleOffset + cycleIdx ) % MAX_FAKE_GPIO;
-        
-        FakeGpioPinConfig& pin = fakeGpioPins[ slot ];
-        
-        if ( !pin.active ) continue;
-        
-        int arrayIndex = 10 + slot;  // Fake GPIO uses indices 10-41 in gpioReading arrays
-        
-        // Skip if owned by MicroPython
-        if ( arrayIndex < MAX_FAKE_GPIO + 10 && globalState.config.gpioPythonOwned[ arrayIndex ] ) {
-            continue;
-        }
-        
-        pinsRead++;  // Count this as an attempted read even if skipped
-        
-        if ( pin.mode == 0 ) {  // INPUT mode - needs ADC reading
-            // Use stored chipXY snapshot for multiplexed ADC reading
-            if ( !pin.hasStoredState ) continue;
-            
-            // Only switch hardware if different from last read (optimization)
-            if ( adcCurrentlyConnectedPin != pin.node ) {
-                // Apply this pin's complete chipXY state snapshot
-                // This automatically "undoes" the previous pin's state
-                // applyChipXYState is declared in CH446Q.h
-                applyChipXYState( pin.chipXYState );
-                adcCurrentlyConnectedPin = pin.node;
-                
-                // Brief settling time for analog switches (50us is typical)
-                delayMicroseconds( 50 );
-            }
-            
-            // Read ADC0 with fast sampling (4 samples for ~30us read time)
-            float voltage = readAdcVoltage( 0, 1 );
-            
-            // Apply thresholds with hysteresis (keep previous state in dead zone)
-            int newState = pin.current_state;  // Default: keep previous
-            if ( voltage >= pin.threshold_high ) {
-                newState = 1;  // HIGH
-            } else if ( voltage <= pin.threshold_low ) {
-                newState = 0;  // LOW
-            }
-            // else: in hysteresis zone - keep previous state
-            
-            // Update if state changed
-            if ( newState != pin.current_state ) {
-                pin.current_state = newState;
-            }
-            
-            // Update visual arrays (always update for smooth animations)
-            gpioReading[ arrayIndex ] = newState;
-            gpioReadingColors[ arrayIndex ] = ( newState == 1 ) ? 0x230205 : 0x052302;
-            
-        } else if ( pin.mode == 1 ) {  // OUTPUT mode - just update visual from current state
-            // OUTPUT state is maintained by write operations, just sync visual
-            gpioReading[ arrayIndex ] = pin.current_state;
-            gpioReadingColors[ arrayIndex ] = ( pin.current_state == 1 ) ? 0x230205 : 0x052302;
-        }
-    }
-    
-    // Advance offset for next cycle (rotate through all pins over multiple calls)
-    readCycleOffset = ( readCycleOffset + pinsPerCycle ) % MAX_FAKE_GPIO;
-
-    // Serial.println(micros( ) - lastReadFakeGPIOTime);
-}
+// Moved to FakeGpio.cpp -- readFakeGPIO() is now defined there.
+// This section was legacy dead code (immediately returned without doing anything).
 
 void setRailsAndDACs( int saveEEPROM ) {
 
@@ -1638,22 +1529,46 @@ void __not_in_flash_func(rebuildShownReadings)() {
 
     // Scan paths to find which net each ADC/ISENSE node is connected to
     // We can't use nodeToNetIndex because ADC nodes might not be in nets[].nodes[] arrays
+    //
+    // Skip paths that belong to FakeGPIO inputs -- they share an ADC via TDM
+    // and should not be treated as user-facing ADC measurements. Path nodes are
+    // already expanded from FAKE_GP_IN_x to ADCn, so we detect them by checking
+    // if the path's net matches any active fakeGpioInput's netIndex.
+    // fakeGpioInputAdcChannel and fakeGpioInputs are declared in FakeGpio.h
+    int tdmAdcNode = (fakeGpioInputAdcChannel >= 0) ? (ADC0 + fakeGpioInputAdcChannel) : -1;
+
     for ( int i = 0; i < numberOfPaths && i < MAX_BRIDGES; i++ ) {
+        int n1 = globalState.connections.paths[ i ].node1;
+        int n2 = globalState.connections.paths[ i ].node2;
+        int pathNet = globalState.connections.paths[ i ].net;
+
+        // If this path uses the TDM's ADC, check if it belongs to a fake GPIO input
+        if ( tdmAdcNode >= 0 && ( n1 == tdmAdcNode || n2 == tdmAdcNode ) ) {
+            bool isFakeGpioNet = false;
+            for ( int s = 0; s < MAX_FAKE_GP_IN; s++ ) {
+                if ( fakeGpioInputs[ s ].active && fakeGpioInputs[ s ].netIndex == pathNet ) {
+                    isFakeGpioNet = true;
+                    break;
+                }
+            }
+            if ( isFakeGpioNet ) continue;  // Skip -- TDM handles this, not regular ADC display
+        }
+
         // Check ADC channels
-        if ( globalState.connections.paths[ i ].node1 == ADC0 || globalState.connections.paths[ i ].node2 == ADC0 ) {
-            showADCreadings[ 0 ] = globalState.connections.paths[ i ].net;
+        if ( n1 == ADC0 || n2 == ADC0 ) {
+            showADCreadings[ 0 ] = pathNet;
         }
-        if ( globalState.connections.paths[ i ].node1 == ADC1 || globalState.connections.paths[ i ].node2 == ADC1 ) {
-            showADCreadings[ 1 ] = globalState.connections.paths[ i ].net;
+        if ( n1 == ADC1 || n2 == ADC1 ) {
+            showADCreadings[ 1 ] = pathNet;
         }
-        if ( globalState.connections.paths[ i ].node1 == ADC2 || globalState.connections.paths[ i ].node2 == ADC2 ) {
-            showADCreadings[ 2 ] = globalState.connections.paths[ i ].net;
+        if ( n1 == ADC2 || n2 == ADC2 ) {
+            showADCreadings[ 2 ] = pathNet;
         }
-        if ( globalState.connections.paths[ i ].node1 == ADC3 || globalState.connections.paths[ i ].node2 == ADC3 ) {
-            showADCreadings[ 3 ] = globalState.connections.paths[ i ].net;
+        if ( n1 == ADC3 || n2 == ADC3 ) {
+            showADCreadings[ 3 ] = pathNet;
         }
-        if ( globalState.connections.paths[ i ].node1 == ADC4 || globalState.connections.paths[ i ].node2 == ADC4 ) {
-            showADCreadings[ 4 ] = globalState.connections.paths[ i ].net;
+        if ( n1 == ADC4 || n2 == ADC4 ) {
+            showADCreadings[ 4 ] = pathNet;
         }
         
         // Check current sense channels

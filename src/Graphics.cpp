@@ -2221,71 +2221,6 @@ void __not_in_flash_func(assignRowAnimations)(void) {
       }
     }
 
-    // Handle fake GPIO (indices 10-41)
-    for (int fakeIdx = 10; fakeIdx < 42; fakeIdx++) {
-      if (gpioNet[fakeIdx] > numberOfNets) {
-        // Clear out-of-range nets
-        gpioNet[fakeIdx] = -1;
-        continue;
-      }
-      
-      if (gpioNet[fakeIdx] > 0) {
-        int fakeSlot = fakeIdx - 10;  // Convert to 0-31 slot number
-        
-        // if (debugFakeGpio && fakeSlot < 12) {  // Only debug first 12 to avoid spam
-        //   Serial.print("assignRowAnimations: fakeIdx=");
-        //   Serial.print(fakeIdx);
-        //   Serial.print(" net=");
-        //   Serial.print(gpioNet[fakeIdx]);
-        //   Serial.print(" state=");
-        //   Serial.print(gpioState[fakeIdx]);
-        //   Serial.print(" reading=");
-        //   Serial.println(gpioReading[fakeIdx]);
-        // }
-        
-        // Check if fake GPIO is in bus keeper mode (INPUT with state)
-        if (gpioState[fakeIdx] == 7) {
-          // Assign keeper animation based on reading
-          // Reuse real GPIO keeper animations by cycling through them
-          int keeperAnimationBase = 13 + ((fakeSlot % 10) * 2);  // Cycle through 10 keeper animations
-          
-          if (keeperAnimationBase + 1 < 50) {  // Bounds check
-            if (gpioReading[fakeIdx] == 1) {
-              // HIGH state - keeper high animation
-              assignedAnimations[gpioNet[fakeIdx]] = keeperAnimationBase;
-              rowAnimations[keeperAnimationBase].net = gpioNet[fakeIdx];
-            } else {
-              // LOW state - keeper low animation
-              assignedAnimations[gpioNet[fakeIdx]] = keeperAnimationBase + 1;
-              rowAnimations[keeperAnimationBase + 1].net = gpioNet[fakeIdx];
-            }
-            
-            // if (debugFakeGpio && fakeSlot < 12) {
-            //   Serial.print("  Assigned keeper animation ");
-            //   Serial.print(keeperAnimationBase);
-            //   Serial.print(" to net ");
-            //   Serial.println(gpioNet[fakeIdx]);
-            // }
-          }
-        } else if (gpioState[fakeIdx] == 0 || gpioState[fakeIdx] == 1) {
-          // OUTPUT mode - use idle animation with color based on state
-          // Reuse real GPIO idle animations by cycling through them
-          int idleAnimBase = 3 + (fakeSlot % 10);  // Cycle through 10 idle animations
-          if (idleAnimBase < 50) {
-            assignedAnimations[gpioNet[fakeIdx]] = idleAnimBase;
-            rowAnimations[idleAnimBase].net = gpioNet[fakeIdx];
-            
-            // if (debugFakeGpio && fakeSlot < 12) {
-            //   Serial.print("  Assigned idle animation ");
-            //   Serial.print(idleAnimBase);
-            //   Serial.print(" to net ");
-            //   Serial.println(gpioNet[fakeIdx]);
-            // }
-          }
-        }
-      }
-    }
-
     if (brightenedNet > 0) {
       assignedAnimations[brightenedNet] = 34; // Updated index after keeper animations
       rowAnimations[34].net = brightenedNet;
@@ -2294,6 +2229,32 @@ void __not_in_flash_func(assignRowAnimations)(void) {
     if (warningNet > 0) {
       assignedAnimations[warningNet] = 33; // Updated index after keeper animations  
       rowAnimations[33].net = warningNet;
+    }
+  }
+
+  // Handle fake GPIO OUTSIDE the net loop (was incorrectly inside, causing
+  // it to run numberOfNets times and overwrite all assignments to the last net)
+  // Fake GPIO outputs (indices 10-17): assign idle animation for their net
+  // Fake GPIO inputs (indices 18-49): no animation assignment needed -- their
+  // nets use voltage-based color override in showRowAnimation() instead
+  for (int fakeIdx = 10; fakeIdx < 50; fakeIdx++) {
+    if (gpioNet[fakeIdx] > numberOfNets) {
+      gpioNet[fakeIdx] = -1;
+      continue;
+    }
+    
+    if (gpioNet[fakeIdx] > 0) {
+      int fakeSlot = fakeIdx - 10;
+      int idleAnimBase = 3 + (fakeSlot % 10);
+      if (idleAnimBase < 50) {
+        // Assign a base idle animation for all fake GPIO nets so they pass
+        // the assignedAnimations != -1 check in showRowAnimation().
+        // For INPUTS, the voltage-based color override in showRowAnimation()
+        // will replace these animation colors with gpioReadingColors.
+        // For OUTPUTS, this gives them the standard idle animation.
+        assignedAnimations[gpioNet[fakeIdx]] = idleAnimBase;
+        rowAnimations[idleAnimBase].net = gpioNet[fakeIdx];
+      }
     }
   }
   // Jerial.println(" ");
@@ -2365,10 +2326,23 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   // }
 
   // Check if this net is connected to an ADC - if so, use the ADC voltage-based color
+  // BUT: skip if this net belongs to a FakeGPIO input (they share an ADC via TDM,
+  // and showADCreadings[] only stores the last net that matched, causing the last
+  // fake GPIO input's net to be treated as a real ADC net with rapidly cycling colors).
   extern int anyAdcConnected(int net);
   extern uint32_t adcReadingColors[8];
   int adcChannel = anyAdcConnected(actualNet);
   bool isAdcNet = (adcChannel >= 0 && adcChannel < 8);
+
+  // Check if this net is actually a fake GPIO input net (not a real user ADC connection)
+  if (isAdcNet) {
+    for (int fakeIdx = 18; fakeIdx < 50; fakeIdx++) {  // 18-49 = fake GPIO inputs
+      if (gpioNet[fakeIdx] == actualNet && gpioNet[fakeIdx] > 0) {
+        isAdcNet = false;  // Let the fake GPIO color override handle it instead
+        break;
+      }
+    }
+  }
 
   if (rowAnimations[index].net == warningNet) {
     // Jerial.print("warningNet: ");
@@ -2520,6 +2494,24 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
       for (int i = 0; i < 5; i++) {
         frameColors[i] = adcColor;
         brightenedNodeColors[i] = adcColor;
+      }
+    }
+  }
+
+  // If this is a FakeGPIO input net, override with voltage-based color from TDM reading
+  // (gpioReadingColors stores measurementToColor() result, similar to ADC display)
+  if (!isAdcNet) {
+    for (int fakeIdx = 18; fakeIdx < 50; fakeIdx++) {  // 18-49 = fake GPIO inputs
+      if (gpioNet[fakeIdx] == actualNet && gpioNet[fakeIdx] > 0) {
+        __dmb();
+        uint32_t fakeColor = gpioReadingColors[fakeIdx];
+        if (fakeColor != 0) {
+          for (int i = 0; i < 5; i++) {
+            frameColors[i] = fakeColor;
+            brightenedNodeColors[i] = fakeColor;
+          }
+        }
+        break;  // Found the matching input, no need to keep searching
       }
     }
   }

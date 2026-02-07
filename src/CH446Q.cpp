@@ -945,6 +945,15 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
   uint32_t chAddress = 0;
   chipSelect = chip;
 
+    // are sent to the same chip K Y position within a single batch.
+    if (chip >= 0 && chip < 12 && x >= 0 && x < 16 && y >= 0 && y < 8) {
+      if (setOrClear == 1) {
+        lastChipXY[chip].connected[y] |= (1 << x);   // Set bit
+      } else {
+        lastChipXY[chip].connected[y] &= ~(1 << x);  // Clear bit
+      }
+    }
+
   // CRITICAL SAFETY: Chip K voltage source protection
   // Chip K X positions: 4=TOP_RAIL, 5=BOTTOM_RAIL, 6=DAC1, 7=DAC0, 15=GND
   // NEVER allow multiple voltage sources on the same Y (would short them together!)
@@ -954,17 +963,14 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
   if (chip == CHIP_K && setOrClear == 1 && x >= 0 && x < 16 && y >= 0 && y < 8) {
     // Check if this X is a voltage source
     if ((1 << x) & CHIP_K_VOLTAGE_SOURCES) {
-      // FAST CHECK: Are any OTHER voltage sources already connected to this Y?
-      // Use bitwise AND to check all voltage positions at once (single instruction!)
-      uint16_t otherVoltages = CHIP_K_VOLTAGE_SOURCES & ~(1 << x);  // All voltages except the one we're setting
+      // Check lastChipXY for conflicts (handles most cases)
+      uint16_t otherVoltages = CHIP_K_VOLTAGE_SOURCES & ~(1 << x);
       uint16_t conflicting = lastChipXY[CHIP_K].connected[y] & otherVoltages;
       
       if (conflicting) {
-        // SAFETY VIOLATION: Another voltage source is connected to this Y
-        // Disconnect ALL conflicting voltage sources before connecting the new one
+        // Disconnect conflicting voltage sources before connecting the new one
         for (int conflictX = 0; conflictX < 16; conflictX++) {
           if (conflicting & (1 << conflictX)) {
-            // Recursively disconnect (this won't recurse further since setOrClear=0)
             sendXYraw(CHIP_K, conflictX, y, 0);
           }
         }
@@ -993,6 +999,9 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
 
 
   pio_sm_put(pio, sm, chAddress);
+
+  // CRITICAL: Update lastChipXY IMMEDIATELY so subsequent calls in the same batch
+  // see this connection. This prevents voltage source shorts when multiple paths
 
 
 
@@ -1129,3 +1138,53 @@ void applyChipXYState(const chipXYBitfield targetState[12]) {
   }
 }
 
+// Capture chipXY state, EXCLUDING entire chip K
+// Used by INPUT FakeGPIO pins to avoid capturing OUTPUT pin voltage switching state
+// We exclude ALL of chip K because OUTPUT pins use chip K for voltage source switching,
+// and any interference (even on different Y rows) can cause timing/state issues.
+void captureCurrentChipXYStateExcludeChipK(chipXYBitfield snapshot[12]) {
+  for (int chip = 0; chip < 12; chip++) {
+    if (chip == CHIP_K) {
+      // Clear chip K in snapshot - don't capture its state at all
+      for (int y = 0; y < 8; y++) {
+        snapshot[chip].connected[y] = 0;
+      }
+    } else {
+      // Copy current state for all other chips
+      snapshot[chip] = lastChipXY[chip];
+    }
+  }
+}
+
+// Apply chipXY state, EXCLUDING entire chip K
+// Used by INPUT FakeGPIO pins to route to ADC without disturbing OUTPUT pin voltage switching
+// We skip ALL of chip K to avoid any interference with OUTPUT pin operations.
+void applyChipXYStateExcludeChipK(const chipXYBitfield targetState[12]) {
+  for (int chip = 0; chip < 12; chip++) {
+    // CRITICAL: Skip chip K entirely to preserve OUTPUT pin voltage switching state
+    if (chip == CHIP_K) continue;
+    
+    for (int y = 0; y < 8; y++) {
+      uint16_t currentRow = lastChipXY[chip].connected[y];
+      uint16_t targetRow = targetState[chip].connected[y];
+      
+      // Find differences using XOR
+      uint16_t changes = currentRow ^ targetRow;
+      if (changes) {
+        // Send only changed connections
+        for (int x = 0; x < 16; x++) {
+          if (changes & (1 << x)) {
+            bool newState = (targetRow & (1 << x)) != 0;
+            sendXYraw(chip, x, y, newState ? 1 : 0);
+            // Update lastChipXY bitfield
+            if (newState) {
+              lastChipXY[chip].connected[y] |= (1 << x);   // Set bit
+            } else {
+              lastChipXY[chip].connected[y] &= ~(1 << x);  // Clear bit
+            }
+          }
+        }
+      }
+    }
+  }
+}

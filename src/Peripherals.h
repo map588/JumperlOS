@@ -76,10 +76,20 @@ extern uint32_t adcReadingColors[8];
 extern float adcReadingRanges[8][2];
 
 extern float adcRange[8][2];
-extern uint8_t gpioState[42];    // 10 real + 32 fake GPIO
-extern uint8_t gpioReading[42];  // 10 real + 32 fake GPIO
-extern int gpioNet[42];          // 10 real + 32 fake GPIO
+// GPIO arrays: 10 real RP2040 GPIOs + 8 fake outputs + 32 fake inputs = 50 total
+// Index layout:
+//   0-9:   Real RP2040 GPIOs (RP_GPIO_20 through RP_GPIO_27, etc.)
+//   10-17: Fake GP Outputs (FAKE_GP_OUT_0 through FAKE_GP_OUT_7)
+//   18-49: Fake GP Inputs (FAKE_GP_IN_0 through FAKE_GP_IN_31)
+extern uint8_t gpioState[50];
+extern uint8_t gpioReading[50];
+extern int gpioNet[50];
 extern bool debugFakeGpio;       // Debug flag for fake GPIO visual integration
+
+// Helper macros for GPIO array indexing
+#define GPIO_INDEX_REAL(pin)       (pin)              // 0-9 for real GPIOs
+#define GPIO_INDEX_FAKE_OUT(slot)  (10 + (slot))      // 0-7 -> 10-17
+#define GPIO_INDEX_FAKE_IN(slot)   (18 + (slot))      // 0-31 -> 18-49
 
 extern float adcSpread[8];
 extern float adcZero[8];
@@ -87,7 +97,7 @@ extern float dacSpread[4];
 extern int dacZero[4];
 
 
-extern uint32_t gpioReadingColors[42];  // 10 real + 32 fake GPIO
+extern uint32_t gpioReadingColors[50];  // 10 real + 8 fake out + 32 fake in
 extern int revisionNumber;
 extern int probeRevision;
 

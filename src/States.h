@@ -69,6 +69,8 @@ struct FakeGpioRestorationInfo {
     float v_low;
     float threshold_high;
     float threshold_low;
+    int high_voltage_node;  // For OUTPUT: TOP_RAIL, BOTTOM_RAIL, DAC0, DAC1, GND (-1 if not specified)
+    int low_voltage_node;   // For OUTPUT: TOP_RAIL, BOTTOM_RAIL, DAC0, DAC1, GND (-1 if not specified)
 };
 
 // Source of truth for state reconciliation
