@@ -66,8 +66,7 @@ String JsonState::getJumperlessStateJSON() {
 
     json = "{\n";
     
-    // --- Nets ---
-    json += "  \"nets\": [\n";
+
 
     bool firstNet = true;
         // --- Power Rails & DACs ---
@@ -77,7 +76,8 @@ String JsonState::getJumperlessStateJSON() {
     json += "    \"dac0\": " + String(globalState.power.dac0, 3) + ",\n";
     json += "    \"dac1\": " + String(globalState.power.dac1, 3) + "\n";
     json += "  },\n";
-
+    // --- Nets ---
+    json += "  \"nets\": [\n";
     // Iterate nets similarly to listNets
     // We iterate up to MAX_NETS but stop when we hit an unallocated one
     // Note: numberOfNets is not extern, so we rely on the loop condition used in listNets
