@@ -46,6 +46,7 @@ KevinC@ppucc.io
 #include "JumperlOS.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
+#include "GraphicOverlays.h"
 #include "LogicAnalyzer.h"
 #include "MatrixState.h"
 #include "Menus.h"
@@ -1451,6 +1452,9 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
                     t[ 10 ] = micros( );
                     showAllRowAnimations( );
+
+                    // Render graphic overlays on top of all other LED visualizations
+                    renderGraphicOverlays( );
 
                     t[ 11 ] = micros( );
 

@@ -10,6 +10,7 @@
 #include "Commands.h"
 #include "Debugs.h"
 #include "FileParsing.h"
+#include "GraphicOverlays.h"
 #include "Graphics.h"
 #include "HelpDocs.h"
 #include "Highlighting.h"
@@ -37,6 +38,7 @@
 #include "oled.h"
 #include "user_functions.h"
 #include "JsonState.h"
+
 #include <algorithm>
 
 // Global instance
@@ -218,6 +220,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\bU/u = enable/disable USB Mass Storage\n\r" );
         // shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tj = graphic overlay test menu\n\r" );
 
         // Jerial.print("\tu = disable USB Mass Storage drive\n\r");
         // cycleTerminalColor();
@@ -660,9 +663,9 @@ void SingleCharCommands::initializeCommands( ) {
                      "Run raw crossbar switching speed test.",
                      cmd_rawSpeedTest, MENU_DEBUG, CAT_ADVANCED );
 
-    registerCommand( 'j', "print color spectrum",
-                     "Display color spectrum codes.",
-                     cmd_printColorSpectrum, MENU_DEBUG, CAT_ADVANCED );
+    // registerCommand( 'j', "print color spectrum",
+    //                  "Display color spectrum codes.",
+    //                  cmd_printColorSpectrum, MENU_DEBUG, CAT_ADVANCED );
 
     registerCommand( '=', "dump oled frame buffer",
                      "Dump OLED frame buffer contents.",
@@ -698,6 +701,10 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( 'T', "show switch position",
                      "Show switch position.",
                      cmd_showSwitchPosition, MENU_DEBUG, CAT_ADVANCED );
+
+    registerCommand( 'j', "Test overlay",
+                     "Test overlay.",
+                     cmd_testOverlay, MENU_DEBUG, CAT_ADVANCED );
 }
 
 CommandResult cmd_showSwitchPosition( char c, const String& line ) {
@@ -717,6 +724,11 @@ CommandResult cmd_showSwitchPosition( char c, const String& line ) {
     }
 }
         
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_testOverlay( char c, const String& line ) {
+    graphicOverlayState.debugMenu();
     return CMD_DONT_SHOW_MENU;
 }
 

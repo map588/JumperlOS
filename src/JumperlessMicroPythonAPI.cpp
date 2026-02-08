@@ -51,6 +51,7 @@ extern SafeString nodeFileString;
 #include "MpRemoteService.h"
 #include "Jerial.h"  // For OLEDOut stream
 #include "JsonState.h"
+#include "GraphicOverlays.h"
 
 
 // MicroPython includes for soft reset
@@ -2716,6 +2717,108 @@ int jl_set_state(const char* jsonState, int clearFirst) {
     }
     
     return 0; // Success
+}
+
+// ============================================================================
+// Graphic Overlay Functions (10x30 Coordinate System)
+// ============================================================================
+//
+// The breadboard is addressed as a 10-row × 30-column grid:
+//   Row 1-5 = Top half (E, D, C, B, A)
+//   Row 6-10 = Bottom half (F, G, H, I, J)
+//   Column 1-30 = Breadboard columns 1-30
+
+/**
+ * @brief Add a 2D graphic overlay on the breadboard LEDs
+ * @param name Unique identifier for the overlay (max 31 chars)
+ * @param startRow Starting row (1-10)
+ * @param startCol Starting column (1-30)
+ * @param width Width in columns
+ * @param height Height in rows
+ * @param colors Array of RGB colors in row-major order (0 = transparent)
+ * @return Overlay index on success, -1 on failure
+ */
+int jl_overlay_set(const char* name, int startRow, int startCol,
+                   int width, int height, const uint32_t* colors) {
+    if (!name || !colors || width <= 0 || height <= 0) {
+        return -1;
+    }
+    return graphicOverlayState.addOverlay(name, startRow, startCol, width, height, colors);
+}
+
+/**
+ * @brief Clear a specific overlay by name
+ * @param name Overlay identifier
+ * @return 1 if found and removed, 0 otherwise
+ */
+int jl_overlay_clear(const char* name) {
+    if (!name) return 0;
+    return graphicOverlayState.removeOverlay(name) ? 1 : 0;
+}
+
+/**
+ * @brief Clear all overlays
+ */
+void jl_overlay_clear_all(void) {
+    graphicOverlayState.clearAll();
+}
+
+/**
+ * @brief Set a single pixel on the breadboard (via direct overlay)
+ * @param row Breadboard row (1-10)
+ * @param col Column (1-30)
+ * @param color RGB color (0 = transparent/off)
+ */
+void jl_overlay_set_pixel(int row, int col, uint32_t color) {
+    graphicOverlayState.setPixel(row, col, color);
+}
+
+/**
+ * @brief Get the number of active overlays
+ * @return Number of active overlays
+ */
+int jl_overlay_count(void) {
+    return graphicOverlayState.numOverlays;
+}
+
+/**
+ * @brief Move an overlay by a relative offset
+ * @param name Overlay identifier
+ * @param dRow Row delta
+ * @param dCol Column delta
+ * @return 1 if found and moved, 0 otherwise
+ */
+int jl_overlay_shift(const char* name, int dRow, int dCol) {
+    if (!name) return 0;
+    return graphicOverlayState.shiftOverlay(name, dRow, dCol) ? 1 : 0;
+}
+
+/**
+ * @brief Move an overlay to an absolute position
+ * @param name Overlay identifier
+ * @param row New row
+ * @param col New column
+ * @return 1 if found and moved, 0 otherwise
+ */
+int jl_overlay_place(const char* name, int row, int col) {
+    if (!name) return 0;
+    return graphicOverlayState.placeOverlay(name, row, col) ? 1 : 0;
+}
+
+/**
+ * @brief Serialize all overlays to JSON string
+ * @return Pointer to static string buffer containing JSON
+ */
+char* jl_overlay_serialize(void) {
+    static char overlayBuffer[4096];
+    String json;
+    serializeOverlaysToJSON(json);
+    
+    // Copy to static buffer
+    strncpy(overlayBuffer, json.c_str(), sizeof(overlayBuffer) - 1);
+    overlayBuffer[sizeof(overlayBuffer) - 1] = '\0';
+    
+    return overlayBuffer;
 }
 
 } // extern "C"

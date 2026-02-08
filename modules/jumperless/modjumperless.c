@@ -227,6 +227,7 @@ void jl_set_switch_position( int position );
 int jl_check_switch_position( void );
 
 // Clickwheel (rotary encoder) functions
+// Clickwheel (rotary encoder) functions
 long jl_clickwheel_get_position( void );
 void jl_clickwheel_reset_position( void );
 int jl_clickwheel_get_direction( int consume );
@@ -235,6 +236,16 @@ bool jl_clickwheel_is_initialized( void );
 int jl_pwm_set_duty_cycle( int gpio_pin, float duty_cycle );
 int jl_pwm_set_frequency( int gpio_pin, float frequency );
 int jl_pwm_stop( int gpio_pin );
+
+// Overlay functions
+int jl_overlay_set(const char* name, int startRow, int startCol, int width, int height, const uint32_t* colors);
+int jl_overlay_clear(const char* name);
+void jl_overlay_clear_all(void);
+void jl_overlay_set_pixel(int row, int col, uint32_t color);
+int jl_overlay_count(void);
+int jl_overlay_shift(const char* name, int dRow, int dCol);
+int jl_overlay_place(const char* name, int row, int col);
+char* jl_overlay_serialize(void);
 
 //=============================================================================
 // Custom Boolean-like Types for Jumperless
@@ -5651,6 +5662,123 @@ static mp_obj_t mp_jl_set_state( size_t n_args, const mp_obj_t* args ) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_set_state_obj, 1, 2, mp_jl_set_state );
 
+// Overlay functions
+
+// overlay_set(name, x, y, width, height, colors_list)
+static mp_obj_t jl_overlay_set_func(size_t n_args, const mp_obj_t* args) {
+    const char* name = mp_obj_str_get_str(args[0]);
+    // Swap row/col and w/h to match user expectations (x, y, w, h)
+    int col = mp_obj_get_int(args[1]);
+    int row = mp_obj_get_int(args[2]);
+    int height = mp_obj_get_int(args[3]);
+    int width = mp_obj_get_int(args[4]);
+    
+    mp_obj_t colors_obj = args[5];
+    size_t len;
+    mp_obj_t* items;
+    mp_obj_get_array(colors_obj, &len, &items);
+
+    // Allocate exact buffer needed
+    size_t required_pixels = (size_t)(width * height);
+    uint32_t* colors = (uint32_t*)malloc(required_pixels * sizeof(uint32_t));
+    if (!colors) {
+        mp_raise_OSError(12); // ENOMEM
+    }
+
+    size_t current_pixel = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        mp_obj_t item = items[i];
+        
+        // Check for nested list/tuple (2D array row)
+        if (mp_obj_is_type(item, &mp_type_list) || mp_obj_is_type(item, &mp_type_tuple)) {
+             size_t row_len;
+             mp_obj_t* row_items;
+             mp_obj_get_array(item, &row_len, &row_items);
+             
+             for (size_t j = 0; j < row_len; j++) {
+                 if (current_pixel < required_pixels) {
+                     colors[current_pixel++] = (uint32_t)mp_obj_get_int(row_items[j]);
+                 }
+             }
+        } else {
+             // Assume flat list item (int)
+             if (current_pixel < required_pixels) {
+                 colors[current_pixel++] = (uint32_t)mp_obj_get_int(item);
+             }
+        }
+    }
+    
+    if (current_pixel < required_pixels) {
+        free(colors);
+        mp_raise_ValueError("Color array too small");
+    }
+    
+    int result = jl_overlay_set(name, row, col, width, height, colors);
+    free(colors);
+    
+    return mp_obj_new_int(result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(jl_overlay_set_obj, 6, 6, jl_overlay_set_func);
+
+// overlay_clear(name)
+static mp_obj_t jl_overlay_clear_func(mp_obj_t name_obj) {
+    const char* name = mp_obj_str_get_str(name_obj);
+    int result = jl_overlay_clear(name);
+    return mp_obj_new_int(result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(jl_overlay_clear_obj, jl_overlay_clear_func);
+
+// overlay_clear_all()
+static mp_obj_t jl_overlay_clear_all_func(void) {
+    jl_overlay_clear_all();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_overlay_clear_all_obj, jl_overlay_clear_all_func);
+
+// overlay_set_pixel(x, y, color)
+static mp_obj_t jl_overlay_set_pixel_func(mp_obj_t x_obj, mp_obj_t y_obj, mp_obj_t color_obj) {
+    int col = mp_obj_get_int(x_obj);
+    int row = mp_obj_get_int(y_obj);
+    uint32_t color = (uint32_t)mp_obj_get_int(color_obj);
+    jl_overlay_set_pixel(row, col, color);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(jl_overlay_set_pixel_obj, jl_overlay_set_pixel_func);
+
+// overlay_count()
+static mp_obj_t jl_overlay_count_func(void) {
+    return mp_obj_new_int(jl_overlay_count());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_overlay_count_obj, jl_overlay_count_func);
+
+// overlay_shift(name, dx, dy)
+static mp_obj_t jl_overlay_shift_func(mp_obj_t name_obj, mp_obj_t dx_obj, mp_obj_t dy_obj) {
+    const char* name = mp_obj_str_get_str(name_obj);
+    int dCol = mp_obj_get_int(dx_obj);
+    int dRow = mp_obj_get_int(dy_obj);
+    int result = jl_overlay_shift(name, dRow, dCol);
+    return mp_obj_new_int(result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(jl_overlay_shift_obj, jl_overlay_shift_func);
+
+// overlay_place(name, x, y)
+static mp_obj_t jl_overlay_place_func(mp_obj_t name_obj, mp_obj_t x_obj, mp_obj_t y_obj) {
+    const char* name = mp_obj_str_get_str(name_obj);
+    int col = mp_obj_get_int(x_obj);
+    int row = mp_obj_get_int(y_obj);
+    int result = jl_overlay_place(name, row, col);
+    return mp_obj_new_int(result);
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(jl_overlay_place_obj, jl_overlay_place_func);
+
+// overlay_serialize()
+static mp_obj_t jl_overlay_serialize_func(void) {
+    char* yaml = jl_overlay_serialize();
+    return mp_obj_new_str(yaml, strlen(yaml));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(jl_overlay_serialize_obj, jl_overlay_serialize_func);
+
 static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR___name__ ), MP_ROM_QSTR( MP_QSTR_jumperless ) },
 
@@ -6067,6 +6195,16 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_print_crossbars ), MP_ROM_PTR( &jl_nodes_print_crossbars_obj ) },
     { MP_ROM_QSTR( MP_QSTR_print_nets ), MP_ROM_PTR( &jl_nodes_print_nets_obj ) },
     { MP_ROM_QSTR( MP_QSTR_print_chip_status ), MP_ROM_PTR( &jl_nodes_print_chip_status_obj ) },
+
+    // Overlay functions
+    { MP_ROM_QSTR( MP_QSTR_overlay_set ), MP_ROM_PTR( &jl_overlay_set_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_clear ), MP_ROM_PTR( &jl_overlay_clear_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_clear_all ), MP_ROM_PTR( &jl_overlay_clear_all_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_set_pixel ), MP_ROM_PTR( &jl_overlay_set_pixel_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_count ), MP_ROM_PTR( &jl_overlay_count_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_shift ), MP_ROM_PTR( &jl_overlay_shift_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_place ), MP_ROM_PTR( &jl_overlay_place_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_overlay_serialize ), MP_ROM_PTR( &jl_overlay_serialize_obj ) },
 
     // Probe functions
     { MP_ROM_QSTR( MP_QSTR_probe_tap ), MP_ROM_PTR( &jl_probe_tap_obj ) },

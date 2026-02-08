@@ -1,0 +1,848 @@
+// SPDX-License-Identifier: MIT
+/**
+ * @file GraphicOverlays.cpp
+ * @brief Graphic overlay system for breadboard LED visualization
+ * 
+ * Uses a 10x30 coordinate system for the breadboard:
+ *   Rows 0-4 = Top half (E, D, C, B, A)
+ *   Rows 5-9 = Bottom half (F, G, H, I, J)
+ *   Columns 0-29 = Breadboard columns 1-30
+ */
+
+#include "GraphicOverlays.h"
+#include "Commands.h"
+#include "Graphics.h"
+#include "LEDs.h"
+#include "JumperlessDefines.h"
+#include "RotaryEncoder.h"
+
+// Global overlay state
+GraphicOverlayState graphicOverlayState;
+
+// External screen mapping
+extern const int screenMap[445];
+
+// ============================================================================
+// LED Mapping Helper
+// ============================================================================
+
+/**
+ * @brief Convert 10x30 coordinate to LED index
+ * @param row Row (0-9)
+ * @param col Column (0-29)
+ * @return LED index, or -1 if invalid
+ * 
+ * screenMap layout:
+ *   [0-59]    = Top rail (60 LEDs)
+ *   [60-209]  = Top half breadboard, rows E-A (5 rows x 30 cols = 150)
+ *   [210-359] = Bottom half breadboard, rows F-J (5 rows x 30 cols = 150)
+ *   [360-419] = Bottom rail (60 LEDs)
+ */
+static int coordToLedIndex(int row, int col) {
+    if (row < 1 || row > 10 || col < 1 || col > 30) {
+        return -1;
+    }
+    
+    int screenIdx;
+    if (row <= 5) {
+        // Top half: rows 1-5 map to rows A,B,C,D,E
+        // row 1 = E (index 4 in 0-based), row 5 = A (index 0 in 0-based) ?? 
+        // Wait, original: 0=A, 1=B.. 4=E.
+        // User map: 1=A? No, "1 indexed breadboard labels". 
+        // Breadboard rows are usually A-E (top), F-J (bottom).
+        // Jumperless convention: Row 1 is top?
+        // Let's assume Row 1 = Topmost row (A or E depending on view, but consistent with 0=Top).
+        // Original code: row 0 = top half.
+        
+        // Let's stick to the arithmetic:
+        // Input 1-10. 
+        // Top half 1-5. Input 1 -> Old 0. Input 5 -> Old 4.
+        screenIdx = 60 + ((row - 1) * 30) + (col - 1);
+    } else {
+        // Bottom half: rows 6-10 map to rows F,G,H,I,J
+        screenIdx = 210 + ((row - 6) * 30) + (col - 1);
+    }
+    
+    if (screenIdx >= 0 && screenIdx < 445) {
+        return screenMap[screenIdx];
+    }
+    return -1;
+}
+
+// ============================================================================
+// GraphicOverlay Methods
+// ============================================================================
+
+void GraphicOverlay::clear() {
+    memset(name, 0, sizeof(name));
+    startRow = 0;
+    startCol = 0;
+    width = 0;
+    height = 0;
+    memset(colors, 0, sizeof(colors));
+    enabled = false;
+    showLEDsCore2 = -2;
+}
+
+// ============================================================================
+// GraphicOverlayState Methods
+// ============================================================================
+
+void GraphicOverlayState::clear() {
+    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+        overlays[i].clear();
+    }
+    numOverlays = 0;
+    needsRender = false;
+}
+
+int GraphicOverlayState::addOverlay(const char* name, int startRow, int startCol,
+                                     int width, int height, const uint32_t* colors) {
+    if (!name || width <= 0 || height <= 0) {
+        return -1;
+    }
+    
+    // Validate range (1-based)
+    if (startRow < 1 || startRow > 10 || startCol < 1 || startCol > 30) {
+        return -1;
+    }
+    if (width > MAX_OVERLAY_WIDTH || height > MAX_OVERLAY_HEIGHT) {
+        return -1;
+    }
+    int numPixels = width * height;
+    if (numPixels > MAX_OVERLAY_PIXELS) {
+        return -1;
+    }
+    
+    // Check if overlay with this name already exists
+    int existing = findByName(name);
+    if (existing >= 0) {
+        // Update existing overlay
+        overlays[existing].startRow = startRow;
+        overlays[existing].startCol = startCol;
+        overlays[existing].width = width;
+        overlays[existing].height = height;
+        memcpy(overlays[existing].colors, colors, numPixels * sizeof(uint32_t));
+        overlays[existing].enabled = true;
+        needsRender = true;
+        return existing;
+    }
+    
+    // Find free slot
+    if (numOverlays >= MAX_GRAPHIC_OVERLAYS) {
+        return -1;  // No room
+    }
+    
+    int slot = -1;
+    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+        if (!overlays[i].enabled && overlays[i].name[0] == '\0') {
+            slot = i;
+            break;
+        }
+    }
+    
+    if (slot < 0) {
+        return -1;
+    }
+    
+    // Initialize overlay
+    strncpy(overlays[slot].name, name, sizeof(overlays[slot].name) - 1);
+    overlays[slot].name[sizeof(overlays[slot].name) - 1] = '\0';
+    overlays[slot].startRow = startRow;
+    overlays[slot].startCol = startCol;
+    overlays[slot].width = width;
+    overlays[slot].height = height;
+    memcpy(overlays[slot].colors, colors, numPixels * sizeof(uint32_t));
+    overlays[slot].enabled = true;
+    
+    numOverlays++;
+    needsRender = true;
+    
+    return slot;
+}
+
+bool GraphicOverlayState::removeOverlay(const char* name) {
+    int idx = findByName(name);
+    if (idx >= 0) {
+        return removeOverlay(idx);
+    }
+    return false;
+}
+
+bool GraphicOverlayState::removeOverlay(int index) {
+    if (index < 0 || index >= MAX_GRAPHIC_OVERLAYS) {
+        return false;
+    }
+    
+    if (overlays[index].enabled || overlays[index].name[0] != '\0') {
+        overlays[index].clear();
+        numOverlays--;
+        if (numOverlays < 0) numOverlays = 0;
+        needsRender = true;
+        return true;
+    }
+    
+    return false;
+}
+
+void GraphicOverlayState::clearAll() {
+    clear();
+    needsRender = true;
+}
+
+int GraphicOverlayState::findByName(const char* name) const {
+    if (!name) return -1;
+    
+    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+        if (overlays[i].enabled && strcmp(overlays[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void GraphicOverlayState::setPixel(int row, int col, uint32_t color) {
+    if (row < 1 || row > 10 || col < 1 || col > 30) {
+        return;
+    }
+    
+
+    // Find or create a "direct" overlay for single pixel control
+    const char* directName = "_DIRECT_PIXELS_";
+    int idx = findByName(directName);
+    
+    if (idx < 0) {
+        // Create the direct pixel overlay covering entire breadboard
+        uint32_t emptyColors[MAX_OVERLAY_PIXELS] = {0};
+        idx = addOverlay(directName, 1, 1, 30, 10, emptyColors);
+        if (idx < 0) return;
+    }
+    
+    // Calculate pixel index: (row-1) * 30 + (col-1)
+    int pixelIdx = (row - 1) * 30 + (col - 1);
+    if (pixelIdx >= 0 && pixelIdx < MAX_OVERLAY_PIXELS) {
+        overlays[idx].colors[pixelIdx] = color;
+        needsRender = true;
+    }
+}
+
+bool GraphicOverlayState::shiftOverlay(const char* name, int deltaRow, int deltaCol) {
+    int idx = findByName(name);
+    if (idx < 0) return false;
+    
+    int newRow = overlays[idx].startRow + deltaRow;
+    int newCol = overlays[idx].startCol + deltaCol;
+    
+    // Wrap around edges (1-based)
+    while (newRow < 1) newRow += 10;
+    while (newRow > 10) newRow -= 10;
+    while (newCol < 1) newCol += 30;
+    while (newCol > 30) newCol -= 30;
+    
+    // Trigger LED refresh to clear old position
+    showLEDsCore2 = -2;
+    
+    overlays[idx].startRow = newRow;
+    overlays[idx].startCol = newCol;
+    needsRender = true;
+    
+    return true;
+}
+
+bool GraphicOverlayState::placeOverlay(const char* name, int newRow, int newCol) {
+    int idx = findByName(name);
+    if (idx < 0) return false;
+    
+
+    
+    // Wrap around edges (1-based)
+    while (newRow < 1) newRow += 10;
+    while (newRow > 10) newRow -= 10;
+    while (newCol < 1) newCol += 30;
+    while (newCol > 30) newCol -= 30;
+
+
+    
+    // Trigger LED refresh to clear old position
+    showLEDsCore2 = -2;
+    
+    overlays[idx].startRow = newRow;
+    overlays[idx].startCol = newCol;
+    needsRender = true;
+    
+    return true;
+}
+
+// ============================================================================
+// Global Functions
+// ============================================================================
+
+void initGraphicOverlays() {
+    graphicOverlayState.clear();
+}
+
+/**
+ * @brief Render all overlays on top of existing LED state
+ */
+void __not_in_flash_func(renderGraphicOverlays)() {
+    if (graphicOverlayState.numOverlays == 0) {
+        return;
+    }
+    
+    for (int o = 0; o < MAX_GRAPHIC_OVERLAYS; o++) {
+        GraphicOverlay& overlay = graphicOverlayState.overlays[o];
+        if (!overlay.enabled) continue;
+        
+        int colorIdx = 0;
+        for (int r = 0; r < overlay.height; r++) {
+            int row = overlay.startRow + r;
+            // Wrap row around (1-10)
+            while (row > 10) row -= 10;
+            while (row < 1) row += 10;
+            
+            for (int c = 0; c < overlay.width; c++) {
+                int col = overlay.startCol + c;
+                // Wrap column around (1-30)
+                while (col > 30) col -= 30;
+                while (col < 1) col += 30;
+                
+                uint32_t color = overlay.colors[colorIdx++];
+                if (color == 0) continue;  // Transparent
+                
+                int ledIndex = coordToLedIndex(row, col);
+                if (ledIndex >= 0 && ledIndex < 400) {
+                    leds.setPixelColor(ledIndex, color);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// YAML Serialization
+// ============================================================================
+
+void serializeOverlaysToYAML(String& output) {
+    if (graphicOverlayState.numOverlays == 0) {
+        return;
+    }
+    
+    output += "\noverlays:\n";
+    
+    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+        const GraphicOverlay& overlay = graphicOverlayState.overlays[i];
+        if (!overlay.enabled) continue;
+        
+        output += "  - name: \"";
+        output += overlay.name;
+        output += "\"\n";
+        output += "    row: ";
+        output += String(overlay.startRow);
+        output += "\n";
+        output += "    col: ";
+        output += String(overlay.startCol);
+        output += "\n";
+        output += "    width: ";
+        output += String(overlay.width);
+        output += "\n";
+        output += "    height: ";
+        output += String(overlay.height);
+        output += "\n";
+        output += "    colors: [";
+        int numPixels = overlay.width * overlay.height;
+        for (int j = 0; j < numPixels; j++) {
+            if (j > 0) output += ", ";
+            output += "0x";
+            output += String(overlay.colors[j], HEX);
+        }
+        output += "]\n";
+    }
+}
+
+bool deserializeOverlaysFromYAML(const char* yamlContent, String& errorMsg) {
+    graphicOverlayState.clearAll();
+    
+    const char* overlaysSection = strstr(yamlContent, "overlays:");
+    if (!overlaysSection) {
+        return true;  // No overlays is fine
+    }
+    
+    const char* pos = overlaysSection;
+    
+    while ((pos = strstr(pos, "- name:")) != nullptr) {
+        char name[32] = {0};
+        int startRow = 0, startCol = 0, width = 1, height = 1;
+        uint32_t colors[MAX_OVERLAY_PIXELS] = {0};
+        int numColors = 0;
+        
+        // Parse name
+        const char* nameStart = strstr(pos, "\"");
+        if (nameStart) {
+            nameStart++;
+            const char* nameEnd = strchr(nameStart, '\"');
+            if (nameEnd) {
+                int len = nameEnd - nameStart;
+                if (len > 31) len = 31;
+                strncpy(name, nameStart, len);
+            }
+        }
+        
+        // Parse row/col/width/height
+        const char* rowPos = strstr(pos, "row:");
+        if (rowPos && rowPos < pos + 200) startRow = atoi(rowPos + 4);
+        
+        const char* colPos = strstr(pos, "col:");
+        if (colPos && colPos < pos + 200) startCol = atoi(colPos + 4);
+        
+        const char* widthPos = strstr(pos, "width:");
+        if (widthPos && widthPos < pos + 200) width = atoi(widthPos + 6);
+        
+        const char* heightPos = strstr(pos, "height:");
+        if (heightPos && heightPos < pos + 250) height = atoi(heightPos + 7);
+        
+        // Parse colors
+        const char* colorsPos = strstr(pos, "colors:");
+        if (colorsPos && colorsPos < pos + 500) {
+            const char* bracketStart = strchr(colorsPos, '[');
+            if (bracketStart) {
+                const char* p = bracketStart + 1;
+                while (*p && *p != ']' && numColors < MAX_OVERLAY_PIXELS) {
+                    while (*p == ' ' || *p == ',' || *p == '\n') p++;
+                    if (*p == ']') break;
+                    if (*p == '0' && (*(p+1) == 'x' || *(p+1) == 'X')) {
+                        colors[numColors++] = strtoul(p, nullptr, 16);
+                    }
+                    while (*p && *p != ',' && *p != ']') p++;
+                }
+            }
+        }
+        
+        if (name[0] != '\0' && width > 0 && height > 0) {
+            graphicOverlayState.addOverlay(name, startRow, startCol, width, height, colors);
+        }
+        
+        pos++;
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// JSON Serialization
+// ============================================================================
+
+void serializeOverlaysToJSON(String& output) {
+    output += "  \"overlays\": [";
+    
+    bool first = true;
+    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+        const GraphicOverlay& overlay = graphicOverlayState.overlays[i];
+        if (!overlay.enabled) continue;
+        
+        if (!first) output += ",";
+        first = false;
+        
+        output += "\n    {";
+        output += "\"name\":\"";
+        output += overlay.name;
+        output += "\",\"row\":";
+        output += String(overlay.startRow);
+        output += ",\"col\":";
+        output += String(overlay.startCol);
+        output += ",\"width\":";
+        output += String(overlay.width);
+        output += ",\"height\":";
+        output += String(overlay.height);
+        output += ",\"colors\":[";
+        int numPixels = overlay.width * overlay.height;
+        for (int j = 0; j < numPixels; j++) {
+            if (j > 0) output += ",";
+            char hexBuf[12];
+            snprintf(hexBuf, sizeof(hexBuf), "\"%06X\"", overlay.colors[j] & 0xFFFFFF);
+            output += hexBuf;
+        }
+        output += "]}";
+    }
+    
+    output += "\n  ]";
+}
+
+
+
+void GraphicOverlayState::debugMenu(void) {
+    
+        Jerial.println( "\n\r╭────────────────────────────────────╮" );
+    Jerial.println( "│     Overlay Debug Menu             │" );
+    Jerial.println( "├────────────────────────────────────┤" );
+    Jerial.println( "│ Static Patterns:                   │" );
+    Jerial.println( "│   1 - Cross-gap test (row 4→5)     │" );
+    Jerial.println( "│   2 - Full row test (row 0)        │" );
+    Jerial.println( "│   3 - Full column test (col 0)     │" );
+    Jerial.println( "│   4 - Rainbow gradient             │" );
+    Jerial.println( "│   5 - Checkerboard pattern         │" );
+    Jerial.println( "│   6 - Border outline               │" );
+    Jerial.println( "├────────────────────────────────────┤" );
+    Jerial.println( "│ Animations (q to stop):            │" );
+    Jerial.println( "│   b - Bouncing ball                │" );
+    Jerial.println( "│   w - Wave animation               │" );
+    Jerial.println( "│   n - Snake game                   │" );
+    Jerial.println( "├────────────────────────────────────┤" );
+    Jerial.println( "│ m - Move overlay (arrow keys)      │" );
+    Jerial.println( "│ c - Clear all    s - Status        │" );
+    Jerial.println( "│ q - Quit                           │" );
+    Jerial.println( "╰────────────────────────────────────╯\n\r" );
+    Jerial.write( 0x0E );
+    Jerial.flush();
+    
+    // Track currently selected overlay for arrow key movement
+    int selectedOverlay = -1;
+    
+    while (true) {
+        if (Jerial.available() > 0) {
+            char choice = Jerial.read();
+            
+            // Check for ESC sequence (arrow keys)
+            if (choice == 27) {
+                delay(2);  // Wait for rest of sequence
+                if (Jerial.available() > 0 && Jerial.read() == '[') {
+                    if (Jerial.available() > 0) {
+                        char arrow = Jerial.read();
+                        // Move selected overlay with arrow keys
+                        if (selectedOverlay >= 0 && selectedOverlay < MAX_GRAPHIC_OVERLAYS &&
+                            graphicOverlayState.overlays[selectedOverlay].enabled) {
+                            const char* name = graphicOverlayState.overlays[selectedOverlay].name;
+                            switch (arrow) {
+                                case 'A':  // Up
+                                    graphicOverlayState.shiftOverlay(name, -1, 0);
+                                    // Jerial.print("\r↑ "); Jerial.print(name);
+                                    // Jerial.print(" → row "); Jerial.println(graphicOverlayState.overlays[selectedOverlay].startRow);
+                                    break;
+                                case 'B':  // Down
+                                    graphicOverlayState.shiftOverlay(name, 1, 0);
+                                    // Jerial.print("\r↓ "); Jerial.print(name);
+                                    // Jerial.print(" → row "); Jerial.println(graphicOverlayState.overlays[selectedOverlay].startRow);
+                                    break;
+                                case 'C':  // Right
+                                    graphicOverlayState.shiftOverlay(name, 0, 1);
+                                    // Jerial.print("\r→ "); Jerial.print(name);
+                                    // Jerial.print(" → col "); Jerial.println(graphicOverlayState.overlays[selectedOverlay].startCol);
+                                    break;
+                                case 'D':  // Left
+                                    graphicOverlayState.shiftOverlay(name, 0, -1);
+                                    // Jerial.print("\r← "); Jerial.print(name);
+                                    // Jerial.print(" → col "); Jerial.println(graphicOverlayState.overlays[selectedOverlay].startCol);
+                                    break;
+                            }
+                            Jerial.flush();
+                        } else {
+                            Jerial.println( "No overlay selected. Press 'm' first." );
+                            Jerial.flush();
+                        }
+                    }
+                }
+                continue;
+            }
+            
+            if (choice == 'q') {
+                Jerial.println( "Exiting overlay debug menu" );
+                break;
+            }
+            
+            switch (choice) {
+                case '1': {
+                    uint32_t colors[] = {
+                        0x440000, 0x004400, 0x000044, 0x444400, 0x004444,
+                        0x440044, 0x444444, 0x222222, 0x111111, 0x333333
+                    };
+                    // Row 4->5 (Row E), Col 12->13
+                    graphicOverlayState.addOverlay("cross_gap", 5, 13, 5, 2, colors);
+                    Jerial.println( "✓ Cross-gap overlay at row 5-6, col 13-17" );
+                    Jerial.flush();
+                    selectedOverlay = graphicOverlayState.findByName("cross_gap");
+                    break;
+                }
+                case '2': {
+                    uint32_t colors[30];
+                    for (int i = 0; i < 30; i++) {
+                        colors[i] = 0x220000 + (i * 0x000808);
+                    }
+                    // Row 0->1
+                    graphicOverlayState.addOverlay("full_row", 1, 1, 30, 1, colors);
+                    Jerial.println( "✓ Full row overlay at row 1" );
+                    Jerial.flush();
+                    selectedOverlay = graphicOverlayState.findByName("full_row");
+                    break;
+                }
+                case '3': {
+                    uint32_t colors[10];
+                    for (int i = 0; i < 10; i++) {
+                        colors[i] = 0x002200 + (i * 0x001100);
+                    }
+                    // Col 0->1
+                    graphicOverlayState.addOverlay("full_col", 1, 1, 1, 10, colors);
+                    Jerial.println( "✓ Full column overlay at col 1" );
+                    Jerial.flush();
+                    selectedOverlay = graphicOverlayState.findByName("full_col");
+                    break;
+                }
+                case '4': {
+                    uint32_t rainbowColors[] = {
+                        0x440000, 0x442200, 0x444400, 0x004400, 0x000044, 0x220044,
+                        0x440000, 0x000000, 0x000000, 0x000000, 0x000000, 0x220044,
+                        0x440000, 0x000000, 0x000000, 0x000000, 0x000000, 0x220044,
+                        0x440000, 0x000000, 0x000000, 0x000000, 0x000000, 0x220044,
+                        0x440000, 0x442200, 0x444400, 0x004400, 0x000044, 0x220044
+                    };
+                    // Row 2->3, Col 12->13
+                    graphicOverlayState.addOverlay("rainbow", 3, 13, 6, 5, rainbowColors);
+                    Jerial.println( "✓ Rainbow gradient at center" );
+                    Jerial.flush();
+                    selectedOverlay = graphicOverlayState.findByName("rainbow");
+                    break;
+                }
+                case '5': {
+                    uint32_t checkColors[36];
+                    for (int r = 0; r < 6; r++) {
+                        for (int co = 0; co < 6; co++) {
+                            checkColors[r * 6 + co] = ((r + co) % 2) ? 0x333333 : 0x000000;
+                        }
+                    }
+                    // Row 2->3, Col 12->13
+                    graphicOverlayState.addOverlay("checker", 3, 13, 6, 6, checkColors);
+                    Jerial.println( "✓ Checkerboard at center" );
+                    Jerial.flush();
+                    selectedOverlay = graphicOverlayState.findByName("checker");
+                    break;
+                }
+                case '6': {
+                    uint32_t borderColors[300] = {0};
+                    for (int col = 0; col < 30; col++) {
+                        // Top row 1
+                        borderColors[col] = 0x003333;
+                        // Bottom row 10 (index 9 -> 270)
+                        borderColors[9 * 30 + col] = 0x003333;
+                    }
+                    for (int r = 0; r < 10; r++) {
+                        // Left col 1
+                        borderColors[r * 30] = 0x003333;
+                        // Right col 30
+                        borderColors[r * 30 + 29] = 0x003333;
+                    }
+                    graphicOverlayState.addOverlay("border", 1, 1, 30, 10, borderColors);
+                    Jerial.println( "✓ Border outline" );
+                    Jerial.flush();
+                    selectedOverlay = graphicOverlayState.findByName("border");
+                    break;
+                }
+                case 'm':
+                case 'M': {
+                    // Select overlay to move
+                    if (graphicOverlayState.numOverlays == 0) {
+                        Jerial.println( "No overlays to move. Create one first!" );
+                        Jerial.flush();
+                        break;
+                    }
+                    Jerial.println( "Select overlay to move:" );
+                    int count = 0;
+                    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+                        if (graphicOverlayState.overlays[i].enabled) {
+                            Jerial.print( "  " );
+                            Jerial.print( count );
+                            Jerial.print( " - " );
+                            Jerial.println( graphicOverlayState.overlays[i].name );
+                            count++;
+                        }
+                    }
+                    Jerial.println( "Use arrow keys to move, any number to select" );
+                    Jerial.flush();
+                    
+                    // Wait for selection
+                    while (!Jerial.available()) delay(10);
+                    char sel = Jerial.read();
+                    if (sel >= '0' && sel <= '9') {
+                        int target = sel - '0';
+                        count = 0;
+                        for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+                            if (graphicOverlayState.overlays[i].enabled) {
+                                if (count == target) {
+                                    selectedOverlay = i;
+                                    Jerial.print( "✓ Selected: " );
+                                    Jerial.println( graphicOverlayState.overlays[i].name );
+                                    Jerial.println( "  Use arrow keys to move" );
+                                    Jerial.flush();
+                                    break;
+                                }
+                                count++;
+                            }
+                        }
+                    }
+                    break;
+                }
+                case 'b':
+                case 'B': {
+                    Jerial.println( "▶ Bouncing ball - q to stop" );
+                    uint32_t ballColor = 0x00FF00;
+                    graphicOverlayState.addOverlay("ball", 1, 1, 1, 1, &ballColor);
+                    
+                    int row = 1, col = 1;
+                    int dRow = 1, dCol = 1;
+                    
+                    while (true) {
+                        if (Jerial.available() > 0) break;
+                        
+                        row += dRow;
+                        col += dCol;
+                        
+                        if (row <= 1 || row >= 10) dRow = -dRow;
+                        if (col <= 1 || col >= 30) dCol = -dCol;
+                        
+                        row = constrain(row, 1, 10);
+                        col = constrain(col, 1, 30);
+                        
+                        graphicOverlayState.placeOverlay("ball", row, col);
+                        delay(50);
+                    }
+                    graphicOverlayState.removeOverlay("ball");
+                    Jerial.println( "✓ Ball stopped" );
+                    Jerial.flush();
+                    break;
+                }
+                case 'w':
+                case 'W': {
+                    Jerial.println( "▶ Wave animation - q to stop" );
+                    uint32_t waveColors[30];
+                    for (int i = 0; i < 30; i++) waveColors[i] = 0x0044FF;
+                    // Row 4->5 (Row E)
+                    graphicOverlayState.addOverlay("wave", 5, 1, 30, 1, waveColors);
+                    
+                    float phase = 0;
+                    while (true) {
+                        if (Jerial.available() > 0 && Jerial.read() == 'q') break;
+                        
+                        for (int i = 0; i < 30; i++) {
+                            int brightness = (int)(127 + 127 * sin(phase + i * 0.3));
+                            waveColors[i] = (brightness << 16) | (brightness / 2);
+                        }
+                        graphicOverlayState.addOverlay("wave", 5, 1, 30, 1, waveColors);
+                        phase += 0.2;
+                        delay(30);
+                    }
+                    graphicOverlayState.removeOverlay("wave");
+                    Jerial.println( "✓ Wave stopped" );
+                    Jerial.flush();
+                    break;
+                }
+                case 'n':
+                case 'N': {
+                    Jerial.println( "▶ Snake - WASD or Arrow keys to move, encoder to change speed, q to quit" );
+                    int snakeX[30], snakeY[30];
+                    int snakeLen = 5;
+                    snakeX[0] = 16; snakeY[0] = 6;
+                    snakeX[1] = 15; snakeY[1] = 6;
+                    snakeX[2] = 14; snakeY[2] = 6;
+                    int dx = 1, dy = 0;
+                    int foodX = random(1, 31), foodY = random(1, 11);
+                    
+                    uint8_t baseHue = 0;
+                    uint32_t foodColor = 0xFF6060;
+                    int speed = 120;
+                    while (true) {
+                        if (Jerial.available() > 0) {
+                            char key = Jerial.read();
+                            if (key == 'q') break;
+                            if (key == 27) {
+                                char key2 = Jerial.read();
+                                if (key2 == '[') {
+                                    char arrow = Jerial.read();
+                                    if (arrow == 'A' && dy != 1) { dx = 0; dy = -1; }
+                                    if (arrow == 'B' && dy != -1) { dx = 0; dy = 1; }
+                                    if (arrow == 'D' && dx != 1) { dx = -1; dy = 0; }
+                                    if (arrow == 'C' && dx != -1) { dx = 1; dy = 0; }
+                                }
+                            }
+                            if (key == 'w' && dy != 1) { dx = 0; dy = -1; }
+                            if (key == 's' && dy != -1) { dx = 0; dy = 1; }
+                            if (key == 'a' && dx != 1) { dx = -1; dy = 0; }
+                            if (key == 'd' && dx != -1) { dx = 1; dy = 0; }
+                        }
+                        
+                        for (int i = snakeLen - 1; i > 0; i--) {
+                            snakeX[i] = snakeX[i-1];
+                            snakeY[i] = snakeY[i-1];
+                        }
+                        snakeX[0] += dx;
+                        snakeY[0] += dy;
+                        
+                        if (snakeX[0] < 1) snakeX[0] = 30;
+                        if (snakeX[0] > 30) snakeX[0] = 1;
+                        if (snakeY[0] < 1) snakeY[0] = 10;
+                        if (snakeY[0] > 10) snakeY[0] = 1;
+                        
+                        if (snakeX[0] == foodX && snakeY[0] == foodY) {
+                            if (snakeLen < 30) snakeLen++;
+                            foodX = random(1, 31);
+                            foodY = random(1, 11);
+                        }
+                        
+                        graphicOverlayState.clearAll();
+                        for (int i = 0; i < snakeLen; i++) {
+                            uint8_t segmentHue = (int)(baseHue + (((float)i / (float)snakeLen ) * 255.0)) % 255;
+                            uint32_t segmentColor = HsvToRaw({segmentHue, 255, 100});
+                            graphicOverlayState.setPixel(snakeY[i], snakeX[i], segmentColor);
+                        }
+                        graphicOverlayState.setPixel(foodY, foodX, foodColor);
+                        if (encoderDirectionState == UP) {
+                            speed -= 5;
+                            if (speed < 2) speed = 2;
+                            encoderDirectionState = NONE;
+                        } else if (encoderDirectionState == DOWN) {
+                            speed += 5;
+                            encoderDirectionState = NONE;
+                        }
+                        //baseHue += 5; // Cycle colors
+                        delay(speed);
+                    }
+                    graphicOverlayState.clearAll();
+                    Jerial.println( "✓ Snake ended" );
+                    Jerial.flush();
+                    break;
+                }
+                case 'c':
+                case 'C':
+                    graphicOverlayState.clearAll();
+                    selectedOverlay = -1;
+                    Jerial.println( "✓ All overlays cleared" );
+                    Jerial.flush();
+                    break;
+                case 's':
+                case 'S':
+                    Jerial.print( "Active overlays: " );
+                    Jerial.println( graphicOverlayState.numOverlays );
+                    if (selectedOverlay >= 0) {
+                        Jerial.print( "  Selected: " );
+                        Jerial.println( graphicOverlayState.overlays[selectedOverlay].name );
+                    }
+                    Jerial.flush();
+                    for (int i = 0; i < MAX_GRAPHIC_OVERLAYS; i++) {
+                        if (graphicOverlayState.overlays[i].enabled) {
+                            Jerial.print( "  - " );
+                            Jerial.print( graphicOverlayState.overlays[i].name );
+                            Jerial.print( " @ (" );
+                            Jerial.print( graphicOverlayState.overlays[i].startRow );
+                            Jerial.print( "," );
+                            Jerial.print( graphicOverlayState.overlays[i].startCol );
+                            Jerial.print( ") " );
+                            Jerial.print( graphicOverlayState.overlays[i].width );
+                            Jerial.print( "x" );
+                            Jerial.println( graphicOverlayState.overlays[i].height );
+                        }
+                    }
+                    break;
+            }
+        }
+        delay(10);
+    }
+    Jerial.write( 0x0F );
+    Jerial.flush();
+    
+}

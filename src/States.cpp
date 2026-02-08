@@ -10,6 +10,7 @@
 #include "Colors.h"
 #include "config.h"
 #include "FakeGpio.h"
+#include "GraphicOverlays.h"
 #include <string.h>
 #include <vector>
 #include <FatFS.h>
@@ -1179,6 +1180,9 @@ bool JumperlessState::toYAML(String& output) const {
     // Config section
     serializeConfig(output);
     
+    // Graphic overlays section
+    serializeOverlaysToYAML(output);
+    
     return true;
 }
 
@@ -1234,6 +1238,9 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
         else if (line.startsWith("fakeGpio:")) {
             currentSection = "fakeGpio";
         }
+        else if (line.startsWith("overlays:")) {
+            currentSection = "overlays";
+        }
         // Parse section content
         else if (line.startsWith("- {") || line.startsWith("-{")) {
             // Try to parse line even if incomplete (missing closing brace)
@@ -1262,6 +1269,9 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
                     lineStart = lineEnd + 1;
                     continue;
                 }
+            } else if (currentSection == "overlays") {
+                // Overlays are parsed in a single pass from the entire YAML content
+                // after the main parsing loop - skip individual lines here
             }
         }
         else if (currentSection == "power") {
@@ -1283,6 +1293,11 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
     
         lineStart = lineEnd + 1;
     }
+    
+    // Parse graphic overlays from the entire YAML content
+    String overlayError;
+    deserializeOverlaysFromYAML(input.c_str(), overlayError);
+    // Ignore overlay parsing errors - overlays are optional
     
     // Reconcile bridges and nets based on source of truth
     if (config.sourceOfTruth == NETS_PRIMARY) {
