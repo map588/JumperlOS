@@ -2198,25 +2198,21 @@ void __not_in_flash_func(assignRowAnimations)(void) {
         continue;
       }
       if (gpioNet[i] > 0) {
-        // Check if GPIO is in bus keeper mode (state 7)
-        if (gpioState[i] == 7) {
-          // Assign keeper animation based on current reading
-          int keeperAnimationIndex = 13 + (i * 2); // Start after idle animations
-          if (keeperAnimationIndex + 1 < 50) { // Bounds check
-            if (gpioReading[i] == 1) {
-              // High state - use keeper high animation
-              assignedAnimations[gpioNet[i]] = keeperAnimationIndex;
-              rowAnimations[keeperAnimationIndex].net = gpioNet[i];
-            } else {
-              // Low state - use keeper low animation  
-              assignedAnimations[gpioNet[i]] = keeperAnimationIndex + 1;
-              rowAnimations[keeperAnimationIndex + 1].net = gpioNet[i];
-            }
+        // Assign animation from gpioReading for all input/output modes (not only bus keeper).
+        // gpioReading: 0=low, 1=high, 2/3=float. Reuse keeper high/low animations for any mode.
+        int keeperAnimationIndex = 13 + (i * 2);
+        if (keeperAnimationIndex + 1 < 50) {
+          if (gpioReading[i] == 1) {
+            assignedAnimations[gpioNet[i]] = keeperAnimationIndex;
+            rowAnimations[keeperAnimationIndex].net = gpioNet[i];
+          } else if (gpioReading[i] == 0) {
+            assignedAnimations[gpioNet[i]] = keeperAnimationIndex + 1;
+            rowAnimations[keeperAnimationIndex + 1].net = gpioNet[i];
+          } else {
+            // 2 or 3 = float: use idle (type 2) animation
+            assignedAnimations[gpioNet[i]] = i + 3;
+            rowAnimations[i + 3].net = gpioNet[i];
           }
-        } else {
-          // Regular idle animation for non-keeper modes
-          assignedAnimations[gpioNet[i]] = i + 3;
-          rowAnimations[i + 3].net = gpioNet[i];
         }
       }
     }
@@ -2282,6 +2278,9 @@ void __not_in_flash_func(showRowAnimation)(int net) {
     return;
   }
 
+// Serial.print("assignedAnimations[");
+// Serial.println(assignedAnimations[net]);
+// Serial.flush();
   showRowAnimation(assignedAnimations[net], net);
 }
 
@@ -2301,7 +2300,8 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   //   return;
   //   }
   if (rowAnimations[index].net < 0) {
-   ///Serial.println("rowAnimations[index].net < 0");
+  //  Serial.println("rowAnimations[index].net < 0");
+  //  Serial.flush();
     return;
   }
   // if (rowAnimations[index].type == 3) {
@@ -2314,6 +2314,8 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   actualNet = net; // findNodeInNet(net);
 
   if (actualNet <= 0) {
+    // Serial.println("actualNet <= 0");
+    // Serial.flush();
     return;
   }
 
@@ -2343,7 +2345,9 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
       }
     }
   }
-
+// Serial.print("rowAnimations[index].net: ");
+// Serial.println(rowAnimations[index].net);
+// Serial.flush();
   if (rowAnimations[index].net == warningNet) {
     // Jerial.print("warningNet: ");
     // Jerial.println(warningNet);
@@ -2523,7 +2527,7 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
           gpioReading[gpioIndex] == 1) { // if any gpio is low or high, don't
                                          // show the animation, let gpioRead()
 
-        return;
+        //return;
         // continue;
       }
     }
@@ -2537,10 +2541,12 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
         bool gpioIsHigh = (gpioReading[gpioIndex] == 1);
         
         if (shouldShowHigh != gpioIsHigh) {
-          return; // Don't show wrong state animation
+          //break;
+          //return; // Don't show wrong state animation
         }
       } else {
-        return; // Not in keeper mode anymore
+        //break;
+        //return; // Not in keeper mode anymore
       }
     }
   }
@@ -2621,11 +2627,11 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
           if (i == probeHighlight) {
 
           } else if (brightenedNode > 0 && i == brightenedNode) {
-            leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j], 1);
+            leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j], 0);
             // Jerial.print("brightenedNode: ");
             // Jerial.println(brightenedNode);
           } else {
-            leds.setPixelColor(((i - 1) * 5) + j, frameColors[j], 1);
+            leds.setPixelColor(((i - 1) * 5) + j, frameColors[j], 0);
           }
         }
       }
@@ -2645,7 +2651,7 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
-                               scaleBrightness(frameColors[2], brightness), 1);
+                               scaleBrightness(frameColors[2], brightness), 0);
           }
         }
       }
@@ -2656,7 +2662,7 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
-                               scaleBrightness(frameColors[2], brightness), 1);
+                               scaleBrightness(frameColors[2], brightness), 0);
           }
         }
       }
@@ -2692,6 +2698,9 @@ void __not_in_flash_func(showAllRowAnimations)() {
       // Jerial.println(millis());
     }
   }
+  // Serial.println("showAllRowAnimations");
+  // Serial.println(numberOfNets);
+  // Serial.flush();
 }
 
 

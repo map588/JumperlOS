@@ -5,6 +5,7 @@
 #include "Commands.h"
 #include "FileParsing.h"
 #include "FilesystemStuff.h"
+#include "GraphicOverlays.h"
 #include "Graphics.h"
 #include "JumperlOS.h" // For ContextManager
 #include "JumperlessDefines.h"
@@ -76,6 +77,7 @@ struct app apps[ NUM_APPS ] = {
     { "Probe  Calib", 11, 1, probeCalibApp },
     { "JDI MIPdisplay", 12, 1, jdiMIPdisplay },
     { "DOOM", 16, 1, playDoom },
+    { "Snake", 17, 1, runSnakeGame },
     { "DMX Serial", 13, 1, DMXSerialApp },
     { "OLED Images", 14, 1, imagesAppLauncher },
     { "Switch Calib", 15, 1, calibrateProbeSwitchThresholds },

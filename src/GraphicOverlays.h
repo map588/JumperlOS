@@ -136,11 +136,15 @@ void initGraphicOverlays();
 void renderGraphicOverlays();
 
 // YAML serialization helpers (called from States.cpp)
-void serializeOverlaysToYAML(String& output);
+void serializeOverlaysToYAML(String& output, int injectANSI = 0);
 bool deserializeOverlaysFromYAML(const char* yamlContent, String& errorMsg);
 
 // JSON serialization helper (called from JsonState.cpp)
 void serializeOverlaysToJSON(String& output);
+
+// Run the Snake game (breadboard LED overlay). Used as app and from overlay debug menu.
+// Exit: serial 'q', or hold clickwheel.
+void runSnakeGame(void);
 
 // TODO: Future enhancements
 // - Support for rails (power rail LEDs)

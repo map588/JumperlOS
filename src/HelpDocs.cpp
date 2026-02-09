@@ -1,6 +1,7 @@
 #include "HelpDocs.h"
 #include "Graphics.h"
 #include "configManager.h"
+#include "SingleCharCommands.h"
 #include <string.h>
 
 #include "Jerial.h"
@@ -165,12 +166,22 @@ void showGeneralHelp() {
 }
 
 void showCommandHelp(char command) {
+    // Use registered command help when available (e.g. Y?, d?, etc.)
+    const Command* cmd = singleCharCommands.getCommand(command);
+    if (cmd != nullptr) {
+        singleCharCommands.printCommandHelp(command);
+        changeTerminalColor(HELP_NORMAL_COLOR, true);
+        Jerial.println();
+        return;
+    }
+
+    // Fallback: hardcoded verbose help for commands not in registry
     changeTerminalColor(HELP_TITLE_COLOR, true);
     Jerial.print("\nHelp for command: ");
     changeTerminalColor(HELP_COMMAND_COLOR, false);
     Jerial.println(command);
     Jerial.println();
-    
+
     switch (command) {
         case 'f':
             changeTerminalColor(HELP_DESC_COLOR, true);

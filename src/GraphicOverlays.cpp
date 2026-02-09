@@ -10,11 +10,15 @@
  */
 
 #include "GraphicOverlays.h"
+#include "Colors.h"
 #include "Commands.h"
 #include "Graphics.h"
 #include "LEDs.h"
 #include "JumperlessDefines.h"
+#include "JumperlOS.h"
 #include "RotaryEncoder.h"
+#include "States.h"
+#include "Probing.h"
 
 // Global overlay state
 GraphicOverlayState graphicOverlayState;
@@ -125,6 +129,7 @@ int GraphicOverlayState::addOverlay(const char* name, int startRow, int startCol
         memcpy(overlays[existing].colors, colors, numPixels * sizeof(uint32_t));
         overlays[existing].enabled = true;
         needsRender = true;
+        globalState.markDirty();
         return existing;
     }
     
@@ -158,6 +163,8 @@ int GraphicOverlayState::addOverlay(const char* name, int startRow, int startCol
     numOverlays++;
     needsRender = true;
     
+    globalState.markDirty();
+
     return slot;
 }
 
@@ -179,6 +186,7 @@ bool GraphicOverlayState::removeOverlay(int index) {
         numOverlays--;
         if (numOverlays < 0) numOverlays = 0;
         needsRender = true;
+        globalState.markDirty();
         return true;
     }
     
@@ -188,6 +196,7 @@ bool GraphicOverlayState::removeOverlay(int index) {
 void GraphicOverlayState::clearAll() {
     clear();
     needsRender = true;
+    globalState.markDirty();
 }
 
 int GraphicOverlayState::findByName(const char* name) const {
@@ -322,7 +331,7 @@ void __not_in_flash_func(renderGraphicOverlays)() {
 // YAML Serialization
 // ============================================================================
 
-void serializeOverlaysToYAML(String& output) {
+void serializeOverlaysToYAML(String& output, int injectANSI ) {
     if (graphicOverlayState.numOverlays == 0) {
         return;
     }
@@ -348,14 +357,36 @@ void serializeOverlaysToYAML(String& output) {
         output += "    height: ";
         output += String(overlay.height);
         output += "\n";
-        output += "    colors: [";
+        output += "    colors:\n           ";
+        if (injectANSI != 2) output += "[";
         int numPixels = overlay.width * overlay.height;
+        const char* block = "\xE2\x96\x88";  // UTF-8 FULL BLOCK (█)
         for (int j = 0; j < numPixels; j++) {
-            if (j > 0) output += ", ";
-            output += "0x";
-            output += String(overlay.colors[j], HEX);
+            if (j > 0) {
+                if (j % overlay.width == 0)
+                    output += (injectANSI == 2) ? "\n           " : ",\n            ";
+                else if (injectANSI != 2)
+                    output += ", ";
+            }
+            uint32_t rgb = overlay.colors[j] & 0xFFFFFF;
+            if (injectANSI) {
+                int ansi = colorToAnsi(rgb);
+                output += "\033[38;5;";
+                output += String(ansi);
+                output += "m";
+            }
+            if (injectANSI == 2) {
+                output += block;
+            } else {
+                char hexBuf[8];
+                snprintf(hexBuf, sizeof(hexBuf), "%06lX", (unsigned long)rgb);
+                output += "0x";
+                output += hexBuf;
+            }
+            if (injectANSI) output += "\033[0m";
         }
-        output += "]\n";
+        if (injectANSI != 2) output += "]";
+        output += "\n";
     }
 }
 
@@ -387,28 +418,32 @@ bool deserializeOverlaysFromYAML(const char* yamlContent, String& errorMsg) {
             }
         }
         
-        // Parse row/col/width/height
+        // Find extent of this overlay entry (next "- name:" or end of overlays section)
+        const char* nextEntry = strstr(pos + 7, "- name:");
+        const char* entryEnd = nextEntry ? nextEntry : overlaysSection + strlen(overlaysSection);
+
+        // Parse row/col/width/height (must be within this overlay)
         const char* rowPos = strstr(pos, "row:");
-        if (rowPos && rowPos < pos + 200) startRow = atoi(rowPos + 4);
+        if (rowPos && rowPos < entryEnd) startRow = atoi(rowPos + 4);
         
         const char* colPos = strstr(pos, "col:");
-        if (colPos && colPos < pos + 200) startCol = atoi(colPos + 4);
+        if (colPos && colPos < entryEnd) startCol = atoi(colPos + 4);
         
         const char* widthPos = strstr(pos, "width:");
-        if (widthPos && widthPos < pos + 200) width = atoi(widthPos + 6);
+        if (widthPos && widthPos < entryEnd) width = atoi(widthPos + 6);
         
         const char* heightPos = strstr(pos, "height:");
-        if (heightPos && heightPos < pos + 250) height = atoi(heightPos + 7);
+        if (heightPos && heightPos < entryEnd) height = atoi(heightPos + 7);
         
         // Parse colors
         const char* colorsPos = strstr(pos, "colors:");
-        if (colorsPos && colorsPos < pos + 500) {
+        if (colorsPos && colorsPos < entryEnd) {
             const char* bracketStart = strchr(colorsPos, '[');
-            if (bracketStart) {
+            if (bracketStart && bracketStart < entryEnd) {
                 const char* p = bracketStart + 1;
-                while (*p && *p != ']' && numColors < MAX_OVERLAY_PIXELS) {
-                    while (*p == ' ' || *p == ',' || *p == '\n') p++;
-                    if (*p == ']') break;
+                while (*p && *p != ']' && numColors < MAX_OVERLAY_PIXELS && p < entryEnd) {
+                    while (*p && (*p == ' ' || *p == ',' || *p == '\n' || *p == '\r' || *p == '\t')) p++;
+                    if (*p == ']' || !*p) break;
                     if (*p == '0' && (*(p+1) == 'x' || *(p+1) == 'X')) {
                         colors[numColors++] = strtoul(p, nullptr, 16);
                     }
@@ -467,7 +502,181 @@ void serializeOverlaysToJSON(String& output) {
     output += "\n  ]";
 }
 
+// ---------------------------------------------------------------------------
+// Snake game - runnable as app or from overlay debug menu
+// Exit: 'q' on serial, or hold clickwheel (encoder button HELD)
+// ---------------------------------------------------------------------------
+void runSnakeGame(void) {
+    Jerial.println( "▶ Snake - WASD/Arrows, encoder turn left/right, probe (connect=right/remove=left), hold clickwheel or q to quit" );
+    oled.showMultiLineSmallText("WASD / Arrows / encoder to turn\nq or hold clickwheel to quit");
+    Jerial.flush();
 
+    int snakeX[30], snakeY[30];
+    int snakeLen = 5;
+    snakeX[0] = 16; snakeY[0] = 6;
+    snakeX[1] = 15; snakeY[1] = 6;
+    snakeX[2] = 14; snakeY[2] = 6;
+    snakeX[3] = 13; snakeY[3] = 6;
+    snakeX[4] = 12; snakeY[4] = 6;
+    int dx = 1, dy = 0;
+    int foodX = random(1, 31), foodY = random(1, 11);
+
+    uint8_t baseHue = 0;
+    uint32_t foodColor = 0xFFFFFF;
+    int speed = 120;
+    const unsigned long ENCODER_TURN_COOLDOWN_MS = 250;
+    unsigned long lastEncoderTurnMs = 0;
+    long lastEncoderPosition = encoderPosition;  // raw position for left/right
+    int lastRotaryDivider = rotaryDivider;
+    // rotaryDivider = 2;
+    Jerial.write(0x0E);
+    Jerial.flush();
+
+    while (true) {
+        // rotaryEncoderStuff();  // updates encoderPosition and button
+        if (encoderButtonState == HELD) {
+            encoderButtonState = IDLE;
+            break;
+        }
+        if (Jerial.available() > 0) {
+            char key = Jerial.read();
+            if (key == 'q') break;
+            if (key == 27) {
+                if (Jerial.available() > 0 && Jerial.read() == '[' && Jerial.available() > 0) {
+                    char arrow = Jerial.read();
+                    if (arrow == 'A' && dy != 1) { dx = 0; dy = -1; }
+                    if (arrow == 'B' && dy != -1) { dx = 0; dy = 1; }
+                    if (arrow == 'D' && dx != 1) { dx = -1; dy = 0; }
+                    if (arrow == 'C' && dx != -1) { dx = 1; dy = 0; }
+                }
+            }
+            if (key == 'w' && dy != 1) { dx = 0; dy = -1; }
+            if (key == 's' && dy != -1) { dx = 0; dy = 1; }
+            if (key == 'a' && dx != 1) { dx = -1; dy = 0; }
+            if (key == 'd' && dx != -1) { dx = 1; dy = 0; }
+        }
+        int probeBtn = ProbeButton::getInstance().getButtonPress(true);
+        if (probeBtn == 2) {
+            int ndx = -dy, ndy = dx;
+            if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+        } else if (probeBtn == 1) {
+            int ndx = dy, ndy = -dx;
+            if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+        }
+
+        for (int i = snakeLen - 1; i > 0; i--) {
+            snakeX[i] = snakeX[i-1];
+            snakeY[i] = snakeY[i-1];
+        }
+        snakeX[0] += dx;
+        snakeY[0] += dy;
+
+        if (snakeX[0] < 1) snakeX[0] = 30;
+        if (snakeX[0] > 30) snakeX[0] = 1;
+        if (snakeY[0] < 1) snakeY[0] = 10;
+        if (snakeY[0] > 10) snakeY[0] = 1;
+
+        if (snakeX[0] == foodX && snakeY[0] == foodY) {
+            if (snakeLen < 30) snakeLen++;
+            foodX = random(1, 31);
+            foodY = random(1, 11);
+        }
+
+        graphicOverlayState.clearAll();
+        for (int i = 0; i < snakeLen; i++) {
+            uint8_t segmentHue = (int)(baseHue + (((float)i / (float)snakeLen) * 255.0)) % 255;
+            uint32_t segmentColor = HsvToRaw({segmentHue, 255, 100});
+            graphicOverlayState.setPixel(snakeY[i], snakeX[i], segmentColor);
+        }
+        graphicOverlayState.setPixel(foodY, foodX, foodColor);
+
+        // Encoder: use raw position delta for left/right turn, with cooldown
+        unsigned long now = millis();
+        long pos = encoderPosition;
+        long delta = pos - lastEncoderPosition;
+       
+        // if (now - lastEncoderTurnMs >= ENCODER_TURN_COOLDOWN_MS &&( delta > 4 || delta < -4)) {
+        //     Serial.print("delta: ");
+        //     Serial.print(delta);
+        //     Serial.print("   encoderPosition: ");
+        //     Serial.println(encoderPosition);
+        //     if (delta > 0) {
+        //         int ndx = -dy, ndy = dx;
+        //         if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+        //     } else {
+        //         int ndx = dy, ndy = -dx;
+        //         if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+        //     }
+        //     lastEncoderTurnMs = now;
+        //     lastEncoderPosition = pos;
+        // }
+
+        unsigned long startTime = millis();
+        while (millis() - startTime < (unsigned long)speed) {
+            jOS.serviceCritical();
+            // rotaryEncoderStuff();
+            if (encoderButtonState == HELD) break;
+            now = millis();
+
+
+rotaryEncoderStuff();
+            pos = encoderPosition;
+            delta = pos - lastEncoderPosition;
+            if (( delta > 2 || delta < -2) && millis() - lastEncoderTurnMs > ENCODER_TURN_COOLDOWN_MS) {
+                if (delta > 0) {
+                    int ndx = -dy, ndy = dx;
+                    if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+                } else {
+                    int ndx = dy, ndy = -dx;
+                    if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+                }
+                lastEncoderTurnMs = now;
+                lastEncoderPosition = pos;
+                break;
+            } else if (millis() - lastEncoderTurnMs > ENCODER_TURN_COOLDOWN_MS) {
+                lastEncoderTurnMs = now;
+                lastEncoderPosition = pos;
+                
+            }
+
+            if (Jerial.available() > 0) {
+                char k = Jerial.read();
+                if (k == 'q') goto snake_exit;
+                if (k == 27 && Jerial.available() > 0 && Jerial.read() == '[' && Jerial.available() > 0) {
+                    char arrow = Jerial.read();
+                    if (arrow == 'A' && dy != 1) { dx = 0; dy = -1; }
+                    if (arrow == 'B' && dy != -1) { dx = 0; dy = 1; }
+                    if (arrow == 'D' && dx != 1) { dx = -1; dy = 0; }
+                    if (arrow == 'C' && dx != -1) { dx = 1; dy = 0; }
+                }
+                if (k == 'w' && dy != 1) { dx = 0; dy = -1; }
+                if (k == 's' && dy != -1) { dx = 0; dy = 1; }
+                if (k == 'a' && dx != 1) { dx = -1; dy = 0; }
+                if (k == 'd' && dx != -1) { dx = 1; dy = 0; }
+                break;
+            }
+            probeBtn = ProbeButton::getInstance().getButtonPress(true);
+            if (probeBtn == 2) {
+                int ndx = -dy, ndy = dx;
+                if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+                break;
+            }
+            if (probeBtn == 1) {
+                int ndx = dy, ndy = -dx;
+                if (ndx != 0 || ndy != 0) { dx = ndx; dy = ndy; }
+                break;
+            }
+        }
+    }
+snake_exit:
+    rotaryDivider = lastRotaryDivider;
+    Jerial.write(0x0F);
+    Jerial.flush();
+    if (encoderButtonState == HELD) encoderButtonState = IDLE;
+    graphicOverlayState.clearAll();
+    Jerial.println( "✓ Snake ended" );
+    Jerial.flush();
+}
 
 void GraphicOverlayState::debugMenu(void) {
     
@@ -485,7 +694,7 @@ void GraphicOverlayState::debugMenu(void) {
     Jerial.println( "│ Animations (q to stop):            │" );
     Jerial.println( "│   b - Bouncing ball                │" );
     Jerial.println( "│   w - Wave animation               │" );
-    Jerial.println( "│   n - Snake game                   │" );
+    Jerial.println( "│   n - Snake                        │" );
     Jerial.println( "├────────────────────────────────────┤" );
     Jerial.println( "│ m - Move overlay (arrow keys)      │" );
     Jerial.println( "│ c - Clear all    s - Status        │" );
@@ -681,7 +890,7 @@ void GraphicOverlayState::debugMenu(void) {
                 case 'b':
                 case 'B': {
                     Jerial.println( "▶ Bouncing ball - q to stop" );
-                    uint32_t ballColor = 0x00FF00;
+                    uint32_t ballColor = 0xaaaaaa;
                     graphicOverlayState.addOverlay("ball", 1, 1, 1, 1, &ballColor);
                     
                     int row = 1, col = 1;
@@ -700,7 +909,7 @@ void GraphicOverlayState::debugMenu(void) {
                         col = constrain(col, 1, 30);
                         
                         graphicOverlayState.placeOverlay("ball", row, col);
-                        delay(50);
+                        delay(80);
                     }
                     graphicOverlayState.removeOverlay("ball");
                     Jerial.println( "✓ Ball stopped" );
@@ -733,80 +942,9 @@ void GraphicOverlayState::debugMenu(void) {
                     break;
                 }
                 case 'n':
-                case 'N': {
-                    Jerial.println( "▶ Snake - WASD or Arrow keys to move, encoder to change speed, q to quit" );
-                    int snakeX[30], snakeY[30];
-                    int snakeLen = 5;
-                    snakeX[0] = 16; snakeY[0] = 6;
-                    snakeX[1] = 15; snakeY[1] = 6;
-                    snakeX[2] = 14; snakeY[2] = 6;
-                    int dx = 1, dy = 0;
-                    int foodX = random(1, 31), foodY = random(1, 11);
-                    
-                    uint8_t baseHue = 0;
-                    uint32_t foodColor = 0xFF6060;
-                    int speed = 120;
-                    while (true) {
-                        if (Jerial.available() > 0) {
-                            char key = Jerial.read();
-                            if (key == 'q') break;
-                            if (key == 27) {
-                                char key2 = Jerial.read();
-                                if (key2 == '[') {
-                                    char arrow = Jerial.read();
-                                    if (arrow == 'A' && dy != 1) { dx = 0; dy = -1; }
-                                    if (arrow == 'B' && dy != -1) { dx = 0; dy = 1; }
-                                    if (arrow == 'D' && dx != 1) { dx = -1; dy = 0; }
-                                    if (arrow == 'C' && dx != -1) { dx = 1; dy = 0; }
-                                }
-                            }
-                            if (key == 'w' && dy != 1) { dx = 0; dy = -1; }
-                            if (key == 's' && dy != -1) { dx = 0; dy = 1; }
-                            if (key == 'a' && dx != 1) { dx = -1; dy = 0; }
-                            if (key == 'd' && dx != -1) { dx = 1; dy = 0; }
-                        }
-                        
-                        for (int i = snakeLen - 1; i > 0; i--) {
-                            snakeX[i] = snakeX[i-1];
-                            snakeY[i] = snakeY[i-1];
-                        }
-                        snakeX[0] += dx;
-                        snakeY[0] += dy;
-                        
-                        if (snakeX[0] < 1) snakeX[0] = 30;
-                        if (snakeX[0] > 30) snakeX[0] = 1;
-                        if (snakeY[0] < 1) snakeY[0] = 10;
-                        if (snakeY[0] > 10) snakeY[0] = 1;
-                        
-                        if (snakeX[0] == foodX && snakeY[0] == foodY) {
-                            if (snakeLen < 30) snakeLen++;
-                            foodX = random(1, 31);
-                            foodY = random(1, 11);
-                        }
-                        
-                        graphicOverlayState.clearAll();
-                        for (int i = 0; i < snakeLen; i++) {
-                            uint8_t segmentHue = (int)(baseHue + (((float)i / (float)snakeLen ) * 255.0)) % 255;
-                            uint32_t segmentColor = HsvToRaw({segmentHue, 255, 100});
-                            graphicOverlayState.setPixel(snakeY[i], snakeX[i], segmentColor);
-                        }
-                        graphicOverlayState.setPixel(foodY, foodX, foodColor);
-                        if (encoderDirectionState == UP) {
-                            speed -= 5;
-                            if (speed < 2) speed = 2;
-                            encoderDirectionState = NONE;
-                        } else if (encoderDirectionState == DOWN) {
-                            speed += 5;
-                            encoderDirectionState = NONE;
-                        }
-                        //baseHue += 5; // Cycle colors
-                        delay(speed);
-                    }
-                    graphicOverlayState.clearAll();
-                    Jerial.println( "✓ Snake ended" );
-                    Jerial.flush();
+                case 'N':
+                    runSnakeGame();
                     break;
-                }
                 case 'c':
                 case 'C':
                     graphicOverlayState.clearAll();

@@ -1157,7 +1157,7 @@ size_t JumperlessState::estimateRAMUsage() const {
 // YAML Serialization
 // ============================================================================
 
-bool JumperlessState::toYAML(String& output) const {
+bool JumperlessState::toYAML(String& output, int showANSI) const {
     output = "";
     
     // Pre-allocate buffer to avoid repeated reallocations during concatenation
@@ -1181,7 +1181,7 @@ bool JumperlessState::toYAML(String& output) const {
     serializeConfig(output);
     
     // Graphic overlays section
-    serializeOverlaysToYAML(output);
+    serializeOverlaysToYAML(output, showANSI);
     
     return true;
 }
@@ -1306,7 +1306,11 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
         connections.syncNetsFromBridges();
     }
     
-    return validate(errorMsg);
+    bool isValid = validate(errorMsg);
+    if (isValid) {
+        clearDirty();
+    }
+    return isValid;
 }
 
 // YAML serialization helpers

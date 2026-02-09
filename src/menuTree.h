@@ -91,6 +91,7 @@ String menuLines[] = {
   "-OLED \31Images",
 
 
+
   //"-Show   Image",
  
 
@@ -118,7 +119,7 @@ String menuLines[] = {
    "-Scan",
    "-I2C    \31Scan",
 
-
+   "-Snake",
    "Calib  ration",
   "-Probe  \31Pads",
   "-Switch \31Thresh",

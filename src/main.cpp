@@ -119,7 +119,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.4.3"; //! remember to update this
+const char firmwareVersion[] = "5.6.4.5"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -490,6 +490,7 @@ void loop( ) {
     // Declare variables at function scope to avoid goto scope issues
     bool useLineBuffering = false;
     bool hasInjectedData = false;
+    static const unsigned int HELP_WAIT_MS = 100;
 
 menu:
 
@@ -905,17 +906,15 @@ dontshowmenu:
     // Serial.println(input);
     // Serial.flush();
 
-    // Handle multi-character help commands
+    // -------- Help: "help", "help <category>", and "[command]?" --------
+    // All help reads use Jerial (same stream as the first character).
     if ( input == 'h' ) {
-        // Check if next character is available (for "help" command)
         unsigned long helpTimer = millis( );
-        while ( Serial.available( ) == 0 && millis( ) - helpTimer < 100 ) {
-            // Small timeout for typing "help"
-        }
-        if ( Serial.available( ) > 0 ) {
+        while ( Jerial.available( ) == 0 && millis( ) - helpTimer < HELP_WAIT_MS ) {}
+        if ( Jerial.available( ) > 0 ) {
             String helpString = "h";
-            while ( Serial.available( ) > 0 && helpString.length( ) < 50 ) {
-                char c = Serial.read( );
+            while ( Jerial.available( ) > 0 && helpString.length( ) < 50 ) {
+                char c = Jerial.read( );
                 if ( c == '\n' || c == '\r' )
                     break;
                 helpString += c;
@@ -923,31 +922,26 @@ dontshowmenu:
             if ( helpString == "help" ) {
                 showGeneralHelp( );
                 goto dontshowmenu;
-            } else if ( helpString.startsWith( "help " ) ) {
+            }
+            if ( helpString.startsWith( "help " ) ) {
                 String category = helpString.substring( 5 );
                 category.trim( );
                 showCategoryHelp( category.c_str( ) );
                 goto dontshowmenu;
             }
-        } else {
-            // Just 'h' alone, let it fall through to normal processing
         }
+        // Just 'h' alone: fall through to normal processing
     }
 
-    // Handle command? help requests
-    if ( input != '\n' && input != '\r' && input != ' ' ) {
-        // Check if next character is '?' for command-specific help
+    // [command]? → show help for that command (registry first, then HelpDocs fallback)
+    if ( input != '\n' && input != '\r' && input != ' ' &&
+         ( input != 'A' && input != 'a' ) ) {
         unsigned long helpTimer = millis( );
-        while ( Serial.available( ) == 0 && millis( ) - helpTimer < 100 ) {
-            // Small timeout for typing command?
-        }
-        if ( Serial.available( ) > 0 ) {
-            char nextChar = Serial.peek( );
-            if ( nextChar == '?' && ( input != 'A' && input != 'a' ) ) {
-                Serial.read( ); // consume the '?'
-                showCommandHelp( input );
-                goto dontshowmenu;
-            }
+        while ( Jerial.available( ) == 0 && millis( ) - helpTimer < HELP_WAIT_MS ) {}
+        if ( Jerial.available( ) > 0 && Jerial.peek( ) == '?' ) {
+            Jerial.read( ); // consume '?'
+            showCommandHelp( input );
+            goto dontshowmenu;
         }
     }
 
@@ -1459,6 +1453,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                     t[ 11 ] = micros( );
 
                     core2busy = false;
+                    // needsLedShow = true;
                     netUpdateRefreshCount = 0;
                 }
             } else if ( rails == 2 && ( inClickMenu == 1 || inPadMenu == 1 ) ) {

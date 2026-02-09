@@ -334,7 +334,8 @@ public:
     bool validate(String& errorMsg) const;
     
     // Serialization (YAML format)
-    bool toYAML(String& output) const;
+    // showANSI: 0=plain, 1=colored hex, 2=colored blocks only (for terminal preview)
+    bool toYAML(String& output, int showANSI = 0) const;
     bool fromYAML(const String& input, String& errorMsg);
     
     // Legacy format support

@@ -221,6 +221,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         // shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tj = graphic overlay test menu\n\r" );
+ 
 
         // Jerial.print("\tu = disable USB Mass Storage drive\n\r");
         // cycleTerminalColor();
@@ -228,7 +229,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tJ = print JSON state\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tL = load JSON state (paste)\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tY = print YAML slot file\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tY = print YAML (0/1/2)\n\r" );
 // shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
 
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\ty = refresh connections\n\r" );
@@ -343,7 +344,7 @@ void SingleCharCommands::printCommandHelp( char cmdChar ) {
     Jerial.println( "\n\r╭────────────────────────────────────╮" );
     Jerial.print( "│   Command: " );
     Jerial.print( cmd->trigger );
-    Jerial.println( "                      │" );
+    Jerial.println( "                       │" );
     Jerial.println( "╰────────────────────────────────────╯\n\r" );
 
     Jerial.print( "Description: " );
@@ -351,7 +352,7 @@ void SingleCharCommands::printCommandHelp( char cmdChar ) {
     Jerial.println( );
 
     if ( cmd->helpText != nullptr && cmd->helpText[ 0 ] != '\0' ) {
-        Jerial.println( "Details:" );
+        Jerial.print( "Details: " );
         Jerial.println( cmd->helpText );
     }
 
@@ -655,7 +656,7 @@ void SingleCharCommands::initializeCommands( ) {
     //                  "Test the new States system. Usage: J 1-2,3-4",
     //                  cmd_testStates, MENU_DEBUG, CAT_ADVANCED );
 
-    registerCommand( 'Y', "print current YAML state",
+    registerCommand( 'Y', "print YAML (Y0=plain Y1=colored hex Y2=colored blocks)",
                      "Display current state in YAML format.",
                      cmd_printYAML, MENU_DEBUG, CAT_ADVANCED );
 
@@ -2700,8 +2701,18 @@ CommandResult cmd_printYAML( char c, const String& line ) {
 
     Jerial.println( "\n\r─── YAML Output ───\n\r" );
 
+    // Parse Y0/Y1/Y2: 0=no color, 1=colored hex (default), 2=colored blocks (read from serial)
+    int showANSI = 2;
+    if ( Jerial.available( ) > 0 ) {
+        char arg = Jerial.read( );
+        if ( arg == '0' ) showANSI = 0;
+        else if ( arg == '2' ) showANSI = 2;
+        else if ( arg == '1' ) showANSI = 1;
+        // else: newline/space/other - keep default 1, arg already consumed
+    }
+
     String yamlOutput;
-    if ( globalState.toYAML( yamlOutput ) ) {
+    if ( globalState.toYAML( yamlOutput, showANSI ) ) {
         Jerial.println( yamlOutput );
     } else {
         Jerial.println( "✗ Failed to generate YAML" );

@@ -1459,7 +1459,7 @@ void Probing::handleEncoderCursorNavigation(
         // Clear inPadMenu flag
         inPadMenu = 0;
 
-        showLEDsCore2 = 2; // Update LEDs to show cleared state
+        showLEDsCore2 = -2; // Update LEDs to show cleared state
         // Note: Caller should detect the HELD state and break from main loop
     }
 

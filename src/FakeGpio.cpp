@@ -262,7 +262,7 @@ void updateFakeGpioInputDisplay(int slot) {
     if (in.tdmSlot >= 0 && in.tdmSlot < TDM_MAX_CHANNELS && in.netIndex > 0) {
         float voltage = tdmInputs.channels[in.tdmSlot].lastVoltage;
 
-        uint32_t color = measurementToColor(voltage, -8.0f, 8.0f);
+        uint32_t color = measurementToColor(voltage, -7.0f, 7.0f);
 
         int brightness = LEDbrightnessSpecial + (int)fabsf(voltage * 2.0f);
         if (brightness <= 4) brightness = 4;
