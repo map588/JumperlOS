@@ -404,6 +404,8 @@ public:
     
     // Slot management
     bool loadSlot(int slotNum, String& errorMsg);
+    /** Load slot state from an arbitrary YAML file path (e.g. /slots/slot3.yaml or any path). */
+    bool loadSlotFromPath(const String& path, String& errorMsg);
     bool saveSlot(int slotNum, String& errorMsg, bool skipValidation = false);  // skipValidation for faster auto-saves
     bool saveActiveSlot(String& errorMsg, bool skipValidation = false);
     bool slotExists(int slotNum) const;

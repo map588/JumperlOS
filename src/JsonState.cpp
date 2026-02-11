@@ -24,6 +24,7 @@
 #include "FakeGpio.h"
 #include "TimeDomainMultiplexer.h"
 #include "hardware/gpio.h"
+#include "GraphicOverlays.h"
 
 // Helper to escape JSON strings
 String escapeJson(String s) {
@@ -58,7 +59,7 @@ static const char* getReadingName(int reading) {
     }
 }
 
-String JsonState::getJumperlessStateJSON() {
+String JsonState::getJumperlessStateJSON(const char* section) {
     String json;
     // Reserve specific memory to avoid frequent reallocations
     // An empty state is ~1KB, a full state could be 10-20KB
@@ -273,9 +274,31 @@ String JsonState::getJumperlessStateJSON() {
         
         json += "\n    }";
     }
-    json += "\n  ]\n";
-    
-    json += "}";
+    json += "\n  ],\n";
+    // --- Graphic overlays ---
+    serializeOverlaysToJSON(json);
+    json += "\n}";
+
+    // If only one section requested, return that slice
+    if (section && section[0] != '\0') {
+        String key = String("\"") + section + "\"";
+        int keyPos = json.indexOf(key);
+        if (keyPos >= 0) {
+            if (strcmp(section, "power") == 0) {
+                String part = JsonStateParser::extractObject(json, "power");
+                if (part.length() > 0) return "{\n  \"power\": " + part + "\n}";
+            } else if (strcmp(section, "nets") == 0) {
+                String part = JsonStateParser::extractArray(json, "nets");
+                if (part.length() > 0) return "{\n  \"nets\": " + part + "\n}";
+            } else if (strcmp(section, "gpio") == 0) {
+                String part = JsonStateParser::extractArray(json, "gpio");
+                if (part.length() > 0) return "{\n  \"gpio\": " + part + "\n}";
+            } else if (strcmp(section, "overlays") == 0) {
+                String part = JsonStateParser::extractArray(json, "overlays");
+                if (part.length() > 0) return "{\n  \"overlays\": " + part + "\n}";
+            }
+        }
+    }
     return json;
 }
 
@@ -408,6 +431,17 @@ int JsonStateParser::extractInt(const String& json, const char* key, int default
     
     String numStr = json.substring(numStart, numEnd);
     return numStr.toInt();
+}
+
+// Helper: Get next quoted string from JSON array (e.g. "440000")
+static String getNextStringInArray(const String& array, int& startPos) {
+    if (startPos >= (int)array.length()) return "";
+    int q = array.indexOf('"', startPos);
+    if (q < 0) return "";
+    int q2 = array.indexOf('"', q + 1);
+    if (q2 < 0) return "";
+    startPos = q2 + 1;
+    return array.substring(q + 1, q2);
 }
 
 // Helper: Get next element from JSON array
@@ -565,6 +599,39 @@ bool JsonStateParser::parsePowerSection(const String& json) {
     return true;
 }
 
+// Parse overlays section and apply to graphic overlay state
+bool JsonStateParser::parseOverlaysSection(const String& json) {
+    String overlaysArray = extractArray(json, "overlays");
+    if (overlaysArray.length() == 0) return true;
+
+    graphicOverlayState.clearAll();
+    int pos = 0;
+    String overlayObj;
+    while ((overlayObj = getNextArrayElement(overlaysArray, pos)).length() > 0) {
+        String name = extractString(overlayObj, "name");
+        int startRow = extractInt(overlayObj, "row", 0);
+        int startCol = extractInt(overlayObj, "col", 0);
+        int width = extractInt(overlayObj, "width", 1);
+        int height = extractInt(overlayObj, "height", 1);
+        if (name.length() == 0 || width <= 0 || height <= 0) continue;
+
+        String colorsArray = extractArray(overlayObj, "colors");
+        uint32_t colors[MAX_OVERLAY_PIXELS] = {0};
+        int numColors = 0;
+        int colorPos = 0;
+        while (numColors < MAX_OVERLAY_PIXELS) {
+            String hexStr = getNextStringInArray(colorsArray, colorPos);
+            if (hexStr.length() == 0) break;
+            colors[numColors++] = (uint32_t)strtoul(hexStr.c_str(), nullptr, 16);
+        }
+        char nameBuf[32];
+        strncpy(nameBuf, name.c_str(), 31);
+        nameBuf[31] = '\0';
+        graphicOverlayState.addOverlay(nameBuf, startRow, startCol, width, height, colors);
+    }
+    return true;
+}
+
 // Parse GPIO section and apply configuration
 bool JsonStateParser::parseGpioSection(const String& json) {
     String gpioArray = extractArray(json, "gpio");
@@ -602,7 +669,7 @@ bool JsonStateParser::parseGpioSection(const String& json) {
     return true;
 }
 
-// Main entry point
+// Main entry point - supports partial JSON (only apply sections that are present)
 bool JsonStateParser::applyJSONState(const String& json, bool clearFirst) {
     lastError = "";
     
@@ -619,42 +686,40 @@ bool JsonStateParser::applyJSONState(const String& json, bool clearFirst) {
         return false;
     }
     
-    // Must contain at least one expected section
+    // Must contain at least one expected section (partial sections OK)
     bool hasNets = (json.indexOf("\"nets\"") >= 0);
     bool hasPower = (json.indexOf("\"power\"") >= 0);
     bool hasGpio = (json.indexOf("\"gpio\"") >= 0);
+    bool hasOverlays = (json.indexOf("\"overlays\"") >= 0);
     
-    if (!hasNets && !hasPower && !hasGpio) {
-        lastError = "Invalid JSON: no recognized sections (nets, power, gpio)";
+    if (!hasNets && !hasPower && !hasGpio && !hasOverlays) {
+        lastError = "Invalid JSON: no recognized sections (nets, power, gpio, overlays)";
         return false;
     }
     
-    // Clear existing connections and FakeGPIO state if requested
-    if (clearFirst) {
-        clearAllFakeGpio();  // Clear FakeGPIO first
+    // Clear only what we're about to replace
+    if (hasNets && clearFirst) {
+        clearAllFakeGpio();
         globalState.clearAllConnections();
     }
     
     // Capture old power state for conflict resolution
     PowerState oldPower = globalState.power;
 
-    // Parse each section
-    // Parse Power FIRST so it establishes the baseline for conflict resolution
-    if (!parsePowerSection(json)) return false;
+    // Parse each section that is present
+    if (hasPower && !parsePowerSection(json)) return false;
+    if (hasNets && !parseNetsSection(json, oldPower)) return false;
+    if (hasGpio && !parseGpioSection(json)) return false;
+    if (hasOverlays && !parseOverlaysSection(json)) return false;
     
-    // Parse Nets (might override power if power section didn't change it)
-    if (!parseNetsSection(json, oldPower)) return false;
-    
-    if (!parseGpioSection(json)) return false;
-    
-    // Initialize FakeGPIO from loaded state (before routing)
-    initializeFakeGpioFromLoadedState();
-    
-    // Apply connections to hardware
-    refreshConnections(-1, 1, 1);
-    
-    // Finalize FakeGPIO after routing
-    finalizeFakeGpioAfterRouting();
+    if (hasNets) {
+        // Initialize FakeGPIO from loaded state (before routing)
+        initializeFakeGpioFromLoadedState();
+        // Apply connections to hardware
+        refreshConnections(-1, 1, 1);
+        // Finalize FakeGPIO after routing
+        finalizeFakeGpioAfterRouting();
+    }
     
     return true;
 }

@@ -77,6 +77,7 @@ String menuLines[] = {
 
   "Apps",
   "-Bounce \31Startup",
+  "-Snake",
   "-Calib  \31DACs",
   "-Custom \31App",
   // "-XLSX   GUI",
@@ -89,7 +90,6 @@ String menuLines[] = {
   "-JDI MIP\31display",
   "-DMX \31Serial",  
   "-OLED \31Images",
-
 
 
   //"-Show   Image",
@@ -119,12 +119,15 @@ String menuLines[] = {
    "-Scan",
    "-I2C    \31Scan",
 
-   "-Snake",
+  
    "Calib  ration",
   "-Probe  \31Pads",
   "-Switch \31Thresh",
   "-DACs   \31Calib",
 
+
+  "Files",
+  //auto populate from python_scripts and examples directory
   
    "Slots",
    "-$Load$",

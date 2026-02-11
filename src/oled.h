@@ -219,6 +219,8 @@ public:
     void clearLine(int line);
     void showFileStatus(const char* currentPath, int fileCount, const char* selectedFile);
     void showFileStatusScrolled(const char* visibleText, int fileCount, int cursorPosition);
+    /** Breadboard-style: two lines of up to 7 chars each (top and bottom) */
+    void showFileStatusBreadboard(const char* lineTop7, const char* lineBottom7);
     void showMultiLineSmallText(const char* text, bool clear = true, bool show = true);
     void resetMultiLineSmallText(); // Reset scroll position for showMultiLineSmallText
     

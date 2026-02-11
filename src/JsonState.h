@@ -14,7 +14,8 @@ struct PowerState;
 
 class JsonState {
 public:
-    static String getJumperlessStateJSON();
+    /** Full state if section is nullptr or empty; else single section: "power", "nets", "gpio", "overlays". */
+    static String getJumperlessStateJSON(const char* section = nullptr);
 };
 
 
@@ -27,6 +28,10 @@ public:
     
     // Get last error message
     static const char* getLastError();
+
+    // JSON helpers (public for section-only output in JsonState)
+    static String extractArray(const String& json, const char* key);
+    static String extractObject(const String& json, const char* key);
     
 private:
     static String lastError;
@@ -35,10 +40,9 @@ private:
     static bool parseNetsSection(const String& json, const struct PowerState& oldPower);
     static bool parsePowerSection(const String& json);
     static bool parseGpioSection(const String& json);
+    static bool parseOverlaysSection(const String& json);
     
-    // JSON helpers
-    static String extractArray(const String& json, const char* key);
-    static String extractObject(const String& json, const char* key);
+    // JSON helpers (internal)
     static String extractString(const String& json, const char* key);
     static float extractFloat(const String& json, const char* key, float defaultVal = 0.0f);
     static int extractInt(const String& json, const char* key, int defaultVal = -1);

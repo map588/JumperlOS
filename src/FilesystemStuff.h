@@ -89,6 +89,13 @@ private:
     // REPL mode and positioning
     bool replMode = false;
     bool shouldExitForREPL = false;  // Flag to exit file manager when content is ready for REPL
+    // Click-menu mode: show 7+7 breadboard OLED, run .py / load slot / open image on select
+    bool fromClickMenu = false;
+    
+    // Deferred script execution: when a .py file is selected in click-menu mode,
+    // store the path and exit the file manager so the script runs with a clean terminal
+    String pendingScriptPath;
+    bool shouldExitForScript = false;
     int originalCursorRow;
     int originalCursorCol;
     int startRow;
@@ -186,12 +193,15 @@ public:
     // File content tracking
     String getLastSavedFileContent();
     void setREPLMode(bool isREPLMode = false) { replMode = isREPLMode; }
+    void setFromClickMenu(bool fromMenu = false) { fromClickMenu = fromMenu; }
     
     // Getters
     String getCurrentPath() const { return currentPath; }
     int getFileCount() const { return fileCount; }
     FileEntry* getCurrentFile();
     bool getShouldExitForREPL() const { return shouldExitForREPL; }
+    bool getShouldExitForScript() const { return shouldExitForScript; }
+    String getPendingScriptPath() const { return pendingScriptPath; }
     
     // Interactive input helpers
     String promptForFilename(const String& prompt);
@@ -217,6 +227,8 @@ public:
 // Global functions
 void filesystemApp(bool waitForEnter = true);
 void filesystemAppPythonScripts(); // Start file manager in python_scripts directory
+/** Pick a .py file from click menu; returns path or "" if user quit. Caller runs the file. */
+String pickPythonScriptFromClickMenu();
 String filesystemAppPythonScriptsREPL(); // REPL mode - returns content if file saved
 void eKiloApp();
 String launchEkilo(const char* filename, bool replMode); // Unified eKilo launcher

@@ -76,9 +76,15 @@ int TermControl::available( ) {
     return stream->available( );
 }
 
+#define ECHO_TERMINAL_INPUT 0
+
 int TermControl::read( ) {
     if ( !stream )
         return -1;
+    #if ECHO_TERMINAL_INPUT == 1
+    Serial.print((char)stream->read());
+    Serial.flush();
+    #endif
     return stream->read( );
 }
 

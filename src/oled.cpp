@@ -1870,6 +1870,40 @@ void oled::showFileStatus( const char* currentPath, int fileCount, const char* s
     usingSmallFont = false;
 }
 
+void oled::showFileStatusBreadboard( const char* lineTop7, const char* lineBottom7 ) {
+    if ( !oledConnected )
+        return;
+
+    getDisplay().clearDisplay( );
+
+    const GFXfont* savedFont = currentFont;
+    FontFamily savedFamily = currentFontFamily;
+    setSmallFont( SMALL_FONT_ANDALE_MONO );
+    getDisplay().setTextWrap( false );
+
+    static const int BREADBOARD_CHARS = 7;
+    char top[ BREADBOARD_CHARS + 1 ] = { 0 };
+    char bot[ BREADBOARD_CHARS + 1 ] = { 0 };
+    if ( lineTop7 ) {
+        strncpy( top, lineTop7, BREADBOARD_CHARS );
+        top[ BREADBOARD_CHARS ] = '\0';
+    }
+    if ( lineBottom7 ) {
+        strncpy( bot, lineBottom7, BREADBOARD_CHARS );
+        bot[ BREADBOARD_CHARS ] = '\0';
+    }
+
+    drawText( 0, 8, top );
+    drawText( 0, 20, bot );
+
+    getDisplay().display( );
+
+    currentFont = savedFont;
+    currentFontFamily = savedFamily;
+    getDisplay().setFont( currentFont );
+    usingSmallFont = false;
+}
+
 void oled::showFileStatusScrolled( const char* visibleText, int fileCount, int cursorPosition ) {
     if ( !oledConnected && stillWriteToFramebuffer == false )
         return;

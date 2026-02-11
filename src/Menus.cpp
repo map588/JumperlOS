@@ -3574,6 +3574,13 @@ actionCategories getActionCategory( void ) {
                     "Calib" ) != -1 ) {
         return CALIBRATIONACTION;
 
+    } else if ( menuLines[ currentAction.previousMenuPositions[ 0 ] ].indexOf(
+                    "Files" ) != -1 ) {
+        return APPSACTION;  // Files = file manager (python_scripts, run .py / load slot / images)
+    } else if ( menuLines[ currentAction.previousMenuPositions[ 0 ] ].indexOf(
+                    "Python" ) != -1 ) {
+        return APPSACTION;  // Python = same as Files (click-menu file browser)
+
     } else {
         return NOCATEGORY;
     }
@@ -3960,8 +3967,12 @@ int doMenuAction( int menuPosition, int selection ) {
 
         // Serial.print( "Apps Action\n\r" ); //! Apps Action
 
-        if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Games" ) !=
-             -1 ) {
+        // Use last valid menu position for app name (Files/Python are single-level; Apps subitems use [1])
+        int appNameIdx = ( currentAction.previousMenuIndex > 1 && currentAction.previousMenuPositions[ 1 ] >= 0 )
+                             ? currentAction.previousMenuPositions[ 1 ]
+                             : currentAction.previousMenuPositions[ 0 ];
+
+        if ( appNameIdx >= 0 && menuLines[ appNameIdx ].indexOf( "Games" ) != -1 ) {
             doomOn = 1;
             // Serial.println( "\n\n\n\rGames\n\r" );
         }
@@ -3979,7 +3990,7 @@ int doMenuAction( int menuPosition, int selection ) {
         // slotChanged = 0;
         inClickMenu = 0;
 
-        runApp( -1, (char*)menuLines[ currentAction.previousMenuPositions[ 1 ] ].c_str( ) );
+        runApp( -1, (char*)menuLines[ appNameIdx ].c_str( ) );
         // showLEDsCore2 = -1;
         refreshConnections( -1, 0 );
 

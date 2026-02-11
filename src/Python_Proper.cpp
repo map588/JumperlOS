@@ -18,6 +18,7 @@
 #include "SharedBuffer.h"  // For zero-copy transfer from Ekilo editor
 #include "externVars.h"  // For pauseCore2 synchronization
 #include "micropythonExamples.h"  // For embedded Python scripts including ViperIDE reinit
+#include "RotaryEncoder.h"  // For clickwheel interrupt during script execution
 extern "C" {
 #include "py/gc.h"
 #include "py/runtime.h"
@@ -43,6 +44,8 @@ static bool mp_repl_active = false;
 static bool jumperless_globals_loaded = false;
 bool mp_interrupt_requested = false; // Flag for keyboard interrupt
 bool mp_soft_reset_requested = false; // Flag for Ctrl+D soft reset requests
+volatile bool clickWheelPythonInterrupt = false; // When true, holding clickwheel interrupts Python
+static unsigned long clickwheel_interrupt_ignore_until = 0; // Grace period after script start (ms)
 
 // Global state for REPL initial file loading
 static String repl_initial_filepath = "";
@@ -573,6 +576,20 @@ extern "C" void mp_hal_check_interrupt(void) {
                          MP_INTERRUPT_CHAR_USBSER2 : MP_INTERRUPT_CHAR_SERIAL;
     check_stream_for_interrupt(mp_interrupt_check_stream, current_time, 
                                 last_interrupt_time, in_raw_repl, interrupt_char);
+  }
+
+  // Click-menu path: holding the clickwheel button acts as KeyboardInterrupt.
+  // Only trigger on HELD (not PRESSED) so a quick tap (e.g. selection click) won't interrupt.
+  // Grace period after script start ignores button for 500ms to avoid residual selection state.
+  if (clickWheelPythonInterrupt &&
+      encoderButtonState == HELD &&
+      millis() >= clickwheel_interrupt_ignore_until) {
+    mp_interrupt_requested = true;
+    mp_sched_keyboard_interrupt();
+    encoderButtonState = IDLE;  // Consume the button event
+    if (global_mp_stream) {
+      global_mp_stream->println("\r\nKeyboardInterrupt (clickwheel)");
+    }
   }
 }
 
@@ -4499,6 +4516,43 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
   
   // MINIMAL DEBUG: Removed verbose output to reduce USB buffer pressure
   return success;
+}
+
+/**
+ * Execute raw Python source code (e.g. file contents) without syntax highlighting.
+ * Initialises MicroPython if needed, runs mp_embed_exec_str(), then GC + file cleanup.
+ * Unlike executeSinglePythonCommand() this does NOT echo the source to the terminal,
+ * making it suitable for running entire .py files from the file manager.
+ *
+ * @param src  Null-terminated Python source string
+ * @return true on success (MicroPython does its own error printing)
+ */
+bool executePythonFileContent( const char* src ) {
+    if ( !src || !*src )
+        return false;
+
+    // Initialise quietly if needed
+    if ( !mp_initialized ) {
+        if ( !initMicroPythonQuiet( ) )
+            return false;
+    }
+
+    // Enable clickwheel-as-interrupt so holding the button raises KeyboardInterrupt.
+    // Grace period prevents selection click from instantly interrupting.
+    clickwheel_interrupt_ignore_until = millis() + 500;
+    clickWheelPythonInterrupt = true;
+
+    // Execute the source directly
+    mp_embed_exec_str( src );
+
+    // Disable clickwheel interrupt now that script is done
+    clickWheelPythonInterrupt = false;
+
+    // GC + close any leaked file handles
+    mp_embed_exec_str( "import gc; gc.collect()" );
+    jl_close_all_jfs_files( );
+
+    return true;
 }
 
 /**

@@ -183,6 +183,7 @@ void deinitMicroPythonProper(void);
 void getMicroPythonCommandFromStream(Stream *stream = &Serial);
 bool initMicroPythonQuiet(bool preserve_interrupt_char = false);
 bool executeSinglePythonCommand(const char* command, char* result_buffer = nullptr, size_t buffer_size = 0);
+bool executePythonFileContent(const char* src);
 bool executeSinglePythonCommandFormatted(const char* command, char* result_buffer, size_t buffer_size);
 bool executeSinglePythonCommandFloat(const char* command, float* result);
 float quickPythonCommand(const char* command);
@@ -230,6 +231,7 @@ void forceGarbageCollection(void);
 // Interrupt handling
 extern bool mp_interrupt_requested; // Global interrupt flag for Ctrl+Q
 extern bool mp_soft_reset_requested; // Soft reset request flag
+extern volatile bool clickWheelPythonInterrupt; // Clickwheel button interrupts Python when true
 extern "C" mp_uint_t mp_hal_set_interrupt_char(int c);
 extern "C" int getCurrentInterruptChar(void);
 

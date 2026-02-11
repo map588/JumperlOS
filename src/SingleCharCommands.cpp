@@ -31,6 +31,7 @@
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
 #include "States.h"
+#include "FakeGpio.h"
 #include "USBfs.h"
 #include "WokwiParser.h"
 #include "externVars.h"
@@ -212,6 +213,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t? = show firmware version\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t' = show startup animation\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\td = set debug flags\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tD = show debug menu\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tl = LED brightness / test\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\b`/~ = edit / print config\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\tp = microPython REPL\n\r" );
@@ -230,6 +232,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tJ = print JSON state\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tL = load JSON state (paste)\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tY = print YAML (0/1/2)\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tS = load YAML state (paste)\n\r" );
 // shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
 
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\ty = refresh connections\n\r" );
@@ -245,7 +248,8 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\t= = dump oled frame buffer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tk = show oled in terminal\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tt = OLED terminal mode\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\tR = show board LEDs\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tR = show board LEDs\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t* = raw speed test\n\r" );
         // shownMenuItems += printMenuLine( showExtraMenu, 3, "\t% = list all filesystem contents\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tE = don't show this menu\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tW = disable terminal colors\n\r" );
@@ -636,11 +640,11 @@ void SingleCharCommands::initializeCommands( ) {
     //                  "Enable logic analyzer mode.",
     //                  cmd_logicAnalyzer, MENU_STANDARD, CAT_APPS );
     registerCommand( 'J', "show JSON state",
-                     "Display current board state as JSON (for LLM/tools).",
+                     "Display state as JSON. J = full; J power|nets|gpio|overlays = that section only.",
                      cmd_showJsonState, MENU_STANDARD, CAT_DISPLAY );
 
     registerCommand( 'L', "load JSON state",
-                     "Load board state from JSON input. Paste JSON, end with empty line.",
+                     "Load state from JSON. L = full (paste all); L overlays|power|... = paste that section only.",
                      cmd_loadJsonState, MENU_STANDARD, CAT_CONNECTIONS );
 
     registerCommand( 'R', "show board LEDs",
@@ -660,7 +664,11 @@ void SingleCharCommands::initializeCommands( ) {
                      "Display current state in YAML format.",
                      cmd_printYAML, MENU_DEBUG, CAT_ADVANCED );
 
-    registerCommand( 'S', "raw speed test",
+    registerCommand( 'S', "load YAML state",
+                     "Paste YAML state (end with empty line). Same format as Y output.",
+                     cmd_loadYAMLState, MENU_STANDARD, CAT_CONNECTIONS );
+
+    registerCommand( '*', "raw speed test",
                      "Run raw crossbar switching speed test.",
                      cmd_rawSpeedTest, MENU_DEBUG, CAT_ADVANCED );
 
@@ -1272,48 +1280,98 @@ CommandResult cmd_showNetlist( char c, const String& line ) {
     return CMD_SHOW_MENU;
 }
 
+// Read optional argument from serial (e.g. " overlays" after "J") when line buffering is off
+static String readOptionalArgFromSerial( unsigned int timeoutMs = 50 ) {
+    String arg;
+    unsigned long start = millis( );
+    while ( millis( ) - start < timeoutMs ) {
+        while ( Jerial.available( ) > 0 ) {
+            char ch = (char) Jerial.read( );
+            if ( ch == '\n' || ch == '\r' ) return arg;
+            arg += ch;
+        }
+        delay( 1 );
+    }
+    return arg;
+}
+
 CommandResult cmd_showJsonState( char c, const String& line ) {
+    // Optional section: J or J power | J nets | J gpio | J overlays
+    // line often has only "J" when not using line buffering, so read from serial
+    String section;
+    if ( line.length( ) > 1 ) {
+        section = line.substring( 1 );
+        section.trim( );
+    }
+    if ( section.length( ) == 0 )
+        section = readOptionalArgFromSerial( );
+    section.trim( );
+    const char* sectionPtr = ( section.length( ) > 0 ) ? section.c_str( ) : nullptr;
     Jerial.print( "\n\n\r" );
-    Jerial.print( JsonState::getJumperlessStateJSON() );
+    Jerial.print( JsonState::getJumperlessStateJSON( sectionPtr ) );
     Jerial.print( "\n\r" );
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_loadJsonState( char c, const String& line ) {
-    Jerial.print( "\n\rPaste JSON state (end with empty line):\n\r" );
-    
+    // Optional section: L or L overlays | L power | etc. — load only that section (partial update)
+    // line often has only "L" when not using line buffering, so read from serial
+    String section;
+    if ( line.length( ) > 1 ) {
+        section = line.substring( 1 );
+        section.trim( );
+    }
+    // if ( section.length( ) == 0 )
+    //     section = readOptionalArgFromSerial( );
+    // section.trim( );
+    bool partialLoad = ( section.length( ) > 0 );
+    if ( partialLoad )
+        Jerial.print( "\n\rPaste JSON for '" + section + "' (end with empty line):\n\r" );
+    else
+        Jerial.print( "\n\rPaste JSON state (end with empty line):\n\r" );
+
     String jsonBuffer;
     jsonBuffer.reserve(8192);
-    
+
     // Read lines until empty line or timeout
     unsigned long startTime = millis();
     const unsigned long timeout = 30000; // 30 second timeout
-    
+
     while (millis() - startTime < timeout) {
         if (Serial.available()) {
             String inputLine = Serial.readStringUntil('\n');
             inputLine.trim();
-            
+
             // Empty line signals end of input
             if (inputLine.length() == 0 && jsonBuffer.length() > 0) {
                 break;
             }
-            
+
             jsonBuffer += inputLine + "\n";
             startTime = millis(); // Reset timeout on each line
         }
         delay(1);
     }
-    
+
     if (jsonBuffer.length() == 0) {
         Jerial.print( "\r\nNo JSON received\n\r" );
         return CMD_SHOW_MENU;
     }
-    
+
+    // Normalize pasted JSON so the parser sees an object
+    jsonBuffer.trim();
+    if ( jsonBuffer.length( ) > 0 && jsonBuffer.charAt( 0 ) != '{' ) {
+        if ( section.equalsIgnoreCase( "overlays" ) && jsonBuffer.charAt( 0 ) == '[' )
+            jsonBuffer = "{\"overlays\":" + jsonBuffer + "}";
+        else if ( jsonBuffer.charAt( 0 ) == '"' )
+            jsonBuffer = "{" + jsonBuffer + "}";
+    }
+
     Jerial.print( "\r\nApplying state...\n\r" );
-    
-    bool success = JsonStateParser::applyJSONState(jsonBuffer, true);
-    
+
+    // Partial load: only update the given section, do not clear connections
+    bool success = JsonStateParser::applyJSONState( jsonBuffer, !partialLoad );
+
     if (success) {
         Jerial.print( "State applied successfully!\n\r" );
     } else {
@@ -1321,7 +1379,7 @@ CommandResult cmd_loadJsonState( char c, const String& line ) {
         Jerial.print( JsonStateParser::getLastError() );
         Jerial.print( "\n\r" );
     }
-    
+
     return CMD_SHOW_MENU;
 }
 
@@ -2683,14 +2741,15 @@ CommandResult cmd_testStates( char c, const String& line ) {
 
 CommandResult cmd_printYAML( char c, const String& line ) {
     extern JumperlessState globalState;
-    Jerial.println( "\n\r╭────────────────────────────────────╮" );
-    Jerial.println( "│      Current YAML State (RAM)      │" );
-    Jerial.println( "╰────────────────────────────────────╯\n\r" );
+    // Jerial.println( "\n\r╭────────────────────────────────────╮" );
+    // Jerial.println( "│      Current YAML State (RAM)      │" );
+    // Jerial.println( "╰────────────────────────────────────╯\n\r" );
+    Serial.println();
 
-    Jerial.print( "Active Slot: " );
-    Jerial.println( netSlot );
-    Jerial.print( "Dirty Flag: " );
-    Jerial.println( globalState.isDirty( ) ? "YES (will auto-save)" : "NO (saved)" );
+    // Jerial.print( "Active Slot: " );
+    // Jerial.println( netSlot );
+    // Jerial.print( "Dirty Flag: " );
+    // Jerial.println( globalState.isDirty( ) ? "YES (will auto-save)" : "NO (saved)" );
 
     if ( globalState.isDirty( ) ) {
         unsigned long timeSince = millis( ) - globalState.getLastModifiedTime( );
@@ -2699,7 +2758,7 @@ CommandResult cmd_printYAML( char c, const String& line ) {
         Jerial.println( " seconds" );
     }
 
-    Jerial.println( "\n\r─── YAML Output ───\n\r" );
+    // Jerial.println( "\n\r─── YAML Output ───\n\r" );
 
     // Parse Y0/Y1/Y2: 0=no color, 1=colored hex (default), 2=colored blocks (read from serial)
     int showANSI = 2;
@@ -2718,14 +2777,61 @@ CommandResult cmd_printYAML( char c, const String& line ) {
         Jerial.println( "✗ Failed to generate YAML" );
     }
 
-    Jerial.println( "\n\r─── Memory Usage ───" );
-    Jerial.print( "Connections: " );
-    Jerial.println( globalState.connections.numBridges );
-    Jerial.print( "State RAM: ~" );
-    Jerial.print( globalState.estimateRAMUsage( ) );
-    Jerial.println( " bytes" );
+    // Jerial.println( "\n\r─── Memory Usage ───" );
+    // Jerial.print( "Connections: " );
+    // Jerial.println( globalState.connections.numBridges );
+    // Jerial.print( "State RAM: ~" );
+    // Jerial.print( globalState.estimateRAMUsage( ) );
+    // Jerial.println( " bytes" );
 
     Jerial.println( "\n\r" );
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_loadYAMLState( char c, const String& line ) {
+    Jerial.print( "\n\rPaste YAML state (end with empty line):\n\r" );
+
+    String yamlBuffer;
+    yamlBuffer.reserve( 16384 );
+
+    unsigned long startTime = millis( );
+    const unsigned long timeout = 30000;
+
+    while ( millis( ) - startTime < timeout ) {
+        if ( Serial.available( ) ) {
+            String inputLine = Serial.readStringUntil( '\n' );
+            inputLine.trim( );
+
+            if ( inputLine.length( ) == 0 && yamlBuffer.length( ) > 0 )
+                break;
+
+            yamlBuffer += inputLine + "\n";
+            startTime = millis( );
+        }
+        delay( 1 );
+    }
+
+    if ( yamlBuffer.length( ) == 0 ) {
+        Jerial.print( "\r\nNo YAML received\n\r" );
+        return CMD_SHOW_MENU;
+    }
+
+    Jerial.print( "\r\nApplying state...\n\r" );
+
+    String errorMsg;
+    if ( !globalState.fromYAML( yamlBuffer, errorMsg ) ) {
+        Jerial.print( "Error: " );
+        Jerial.print( errorMsg );
+        Jerial.print( "\n\r" );
+        return CMD_SHOW_MENU;
+    }
+
+    initializeFakeGpioFromLoadedState( );
+    refreshConnections( -1, 1, 1 );
+    finalizeFakeGpioAfterRouting( );
+    applyStateToHardware( );
+
+    Jerial.print( "State applied successfully!\n\r" );
     return CMD_SHOW_MENU;
 }
 

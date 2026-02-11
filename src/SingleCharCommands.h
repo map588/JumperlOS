@@ -288,6 +288,7 @@ CommandResult cmd_loadSlot(char c, const String& line);
 CommandResult cmd_testStates(char c, const String& line);
 CommandResult cmd_testOverlay(char c, const String& line);
 CommandResult cmd_printYAML(char c, const String& line);
+CommandResult cmd_loadYAMLState(char c, const String& line);
 CommandResult cmd_rawSpeedTest(char c, const String& line);
 CommandResult cmd_printColorSpectrum(char c, const String& line);
 CommandResult cmd_dumpOLED(char c, const String& line);

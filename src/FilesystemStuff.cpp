@@ -17,6 +17,7 @@
 
 // External references
 extern class oled oled;
+extern volatile int showLEDsCore2;
 
 // eKilo editor integration
 #include "EkiloEditor.h"
@@ -370,6 +371,33 @@ void FileManager::updateOLEDStatus( ) {
                                        ? fileList[ selectedIndex ].name.c_str( )
                                        : nullptr;
 
+    // Breadboard mode (from click menu): show on breadboard LEDs via b.print()
+    // Top row = directory name (7 chars), Bottom row = selected file name (7 chars)
+    if ( fromClickMenu ) {
+        String topLine;
+        if ( currentPath == "/" ) {
+            topLine = "root";
+        } else {
+            int lastSlash = currentPath.lastIndexOf( '/' );
+            topLine = ( lastSlash >= 0 ) ? currentPath.substring( lastSlash + 1 ) : currentPath;
+        }
+        if ( topLine.length( ) > 7 )
+            topLine = topLine.substring( topLine.length( ) - 7 );
+        String bottomLine = selectedFileName ? String( selectedFileName ) : "";
+        // Strip common extensions so more useful chars fit in 7-char display
+        if ( bottomLine.endsWith( ".py" ) || bottomLine.endsWith( ".PY" ) ) {
+            bottomLine = bottomLine.substring( 0, bottomLine.length( ) - 3 );
+        }
+        if ( bottomLine.length( ) > 7 )
+            bottomLine = bottomLine.substring( 0, 7 );
+
+        b.clear( );
+        b.print( topLine.c_str( ), 0x001008, 0xFFFFFF, 0, 0, 1 );   // top row
+        b.print( bottomLine.c_str( ), 0x100810, 0xFFFFFF, 0, 1, 1 ); // bottom row
+        showLEDsCore2 = 2;
+        // Fall through to still update the OLED normally
+    }
+
     if ( !selectedFileName ) {
         // No file selected, just show path
         oled.showFileStatus( currentPath.c_str( ), fileCount, nullptr );
@@ -638,6 +666,11 @@ void FileManager::refreshListing( ) {
     dir = FatFS.openDir( currentPath );
 
     while ( dir.next( ) && fileCount < maxFiles ) {
+        // Service USB periodically during long directory reads to prevent disconnect
+        #ifdef USE_TINYUSB
+        if ( ( fileCount & 0x03 ) == 0 ) tud_task( );
+        #endif
+
         String fileName = dir.fileName( );
 
         // Skip hidden files (files starting with '.') except for ".." navigation
@@ -669,6 +702,11 @@ void FileManager::refreshListing( ) {
     }
 
     for ( int i = startSort; i < fileCount - 1; i++ ) {
+        // Service USB during sort to prevent disconnect on large directories
+        #ifdef USE_TINYUSB
+        if ( ( i & 0x03 ) == 0 ) tud_task( );
+        #endif
+
         for ( int j = i + 1; j < fileCount; j++ ) {
             bool shouldSwap = false;
 
@@ -994,6 +1032,26 @@ FileEntry* FileManager::getCurrentFile( ) {
     return nullptr;
 }
 
+// Run a Python script file directly via mp_embed_exec_str (no interactive REPL).
+// Returns true on success.
+static bool runPythonScript( const String& fullPath ) {
+    File f = safeFileOpen( fullPath.c_str( ), "r" );
+    if ( !f ) {
+        Serial.println( "\r\nFailed to open " + fullPath );
+        return false;
+    }
+    String content = f.readString( );
+    safeFileClose( f, false );  // Release fs_mutex before running the script
+    if ( content.length( ) == 0 ) {
+        Serial.println( "\r\nScript is empty: " + fullPath );
+        return false;
+    }
+    Serial.println( "\r\nRunning " + fullPath + " ..." );
+    bool ok = executePythonFileContent( content.c_str( ) );
+    Serial.println( "\r\n--- script finished ---" );
+    return ok;
+}
+
 void FileManager::selectCurrentFile( ) {
     FileEntry* file = getCurrentFile( );
     if ( !file )
@@ -1014,9 +1072,51 @@ void FileManager::selectCurrentFile( ) {
             drawInterface( );
         }
     } else {
-        editFile( file->path );
-        refreshListing( ); // Refresh in case file was modified
-        drawInterface( );  // Redraw entire interface after editing
+        String fullPath = getFullPath( currentPath, file->name );
+        String lower = file->name;
+        lower.toLowerCase( );
+
+        // Type-based dispatch: run .py, load slot YAML, open image in BitmapEditor, else eKilo
+        if ( lower.endsWith( ".py" ) || lower.endsWith( ".pyw" ) ) {
+            if ( fromClickMenu ) {
+                // Defer script execution: store path and exit file manager
+                // so the script runs with a clean terminal and proper I/O
+                pendingScriptPath = fullPath;
+                shouldExitForScript = true;
+                return;  // run() loop will detect this and exit
+            }
+            // Non click-menu: run script inline (serial/REPL usage)
+            bool ok = runPythonScript( fullPath );
+            if ( ok ) {
+                outputToArea( "Ran: " + file->name, FileColors::STATUS );
+            } else {
+                outputToArea( "Error running: " + file->name, FileColors::ERROR );
+            }
+            scheduleOLEDUpdate( );
+        } else if ( lower.endsWith( ".yaml" ) && lower.startsWith( "slot" ) ) {
+            String err;
+            if ( SlotManager::getInstance( ).loadSlotFromPath( fullPath, err ) ) {
+                outputToArea( "Loaded slot: " + file->name, FileColors::STATUS );
+                changeTerminalColor( FileColors::STATUS, false );
+                Serial.println( "\n\rLoaded " + file->name );
+                changeTerminalColor( -1, false );
+            } else {
+                outputToArea( "Load failed: " + err, FileColors::ERROR );
+            }
+            scheduleOLEDUpdate( );
+        } else if ( lower.endsWith( ".bin" ) || lower.endsWith( ".bmp" ) ) {
+            changeTerminalColor( FileColors::STATUS, false );
+            Serial.println( "\n\n\rOpening " + file->name + " in bitmap editor..." );
+            changeTerminalColor( -1, false );
+            if ( launchBitmapEditor( fullPath ) ) {
+                refreshListing( );
+                drawInterface( );
+            }
+        } else {
+            editFile( fullPath );
+            refreshListing( ); // Refresh in case file was modified
+            drawInterface( );  // Redraw entire interface after editing
+        }
     }
 }
 
@@ -1218,11 +1318,16 @@ void FileManager::run( ) {
         // In REPL mode, check if we should exit after content is ready
         if ( replMode && shouldExitForREPL ) {
             // Close any open files before exiting
-            // Serial.println("replMode and shouldExitForREPL");
-            // Serial.flush();
-            // delay(2000);
             closeAllFiles( );
             // Clear screen completely before exiting to avoid weird state
+            clearScreen( );
+            running = false;
+            break;
+        }
+        
+        // Check if a Python script was selected for deferred execution
+        if ( shouldExitForScript ) {
+            closeAllFiles( );
             clearScreen( );
             running = false;
             break;
@@ -1262,6 +1367,8 @@ void FileManager::run( ) {
         // Check for encoder button presses
         if ( encoderButtonState != lastEncoderButtonState ) {
             if ( encoderButtonState == PRESSED && lastEncoderButtonState == IDLE ) {
+                inClickMenu = false;
+                showLEDsCore2 = -1;
                 selectCurrentFile( );
                 scheduleOLEDUpdate( );
                 lastInputTime = micros( ); // Record input time
@@ -2247,6 +2354,53 @@ void filesystemApp( bool waitForEnter ) {
 
     // Pop context - cleanup callback will be called automatically
     ContextManager::getInstance( ).popContext( );
+}
+
+// Returns selected .py path or "" if user quit. Exits file manager when done.
+String pickPythonScriptFromClickMenu( ) {
+    ContextEntry ctx( ContextType::FILE_MANAGER );
+    ctx.onExit = []( void* ) {
+        closeAllFiles( );
+        ContextManager::getInstance( ).clearTransferPath( );
+        if ( oled.oledConnected )
+            oled.restoreNormalFont( );
+    };
+
+    inClickMenu = true;
+    ContextManager::getInstance( ).pushContext( ctx );
+
+    bool showOledInTerminal = jumperlessConfig.top_oled.show_in_terminal;
+    jumperlessConfig.top_oled.show_in_terminal = false;
+
+    if ( !FatFS.exists( "/python_scripts" ) )
+        FatFS.mkdir( "/python_scripts" );
+    initializeMicroPythonExamples( );
+
+    saveScreenState( );
+    FileManager manager;
+    manager.setFromClickMenu( true );
+    manager.initInteractiveMode( );
+    manager.clearScreen( );
+    manager.hideCursor( );
+
+    if ( FatFS.exists( "/python_scripts" ) )
+        manager.changeDirectory( "/python_scripts" );
+
+    String selectedPath;
+    if ( manager.getCurrentPath( ) != "[NO_FS]" ) {
+        manager.run( );
+        if ( manager.getShouldExitForScript( ) ) {
+            selectedPath = manager.getPendingScriptPath( );
+        }
+    }
+
+    restoreScreenState( );
+    jumperlessConfig.top_oled.show_in_terminal = showOledInTerminal;
+    ContextManager::getInstance( ).popContext( );
+    b.clear( );
+    showLEDsCore2 = 2;
+
+    return selectedPath;
 }
 
 void eKiloApp( ) {

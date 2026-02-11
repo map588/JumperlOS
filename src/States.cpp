@@ -2596,6 +2596,21 @@ static int extractSlotNumberFromFilename(const char* filename) {
     return slotNum;
 }
 
+// Extract slot number from any path by parsing the filename (e.g. slot3.yaml -> 3)
+static int extractSlotNumberFromPath(const String& path) {
+    int lastSlash = path.lastIndexOf('/');
+    String fname = (lastSlash >= 0) ? path.substring(lastSlash + 1) : path;
+    if (fname.equalsIgnoreCase("slotPython.yaml")) return 99;
+    if (!fname.startsWith("slot") || !fname.endsWith(".yaml")) return -1;
+    int slotStart = 4;
+    int yamlStart = fname.indexOf(".yaml");
+    if (yamlStart <= slotStart) return -1;
+    String numStr = fname.substring(slotStart, yamlStart);
+    int slotNum = numStr.toInt();
+    if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) return -1;
+    return slotNum;
+}
+
 bool SlotManager::slotExists(int slotNum) const {
     // Allow slot 99 (Python slot) in addition to 0-7
     if (slotNum < 0 || (slotNum >= NUM_SLOTS && slotNum != 99)) {
@@ -2695,6 +2710,37 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
     // DON'T create the file yet - only create when something is saved
     // This prevents crashes from creating large objects on the stack
     
+    return true;
+}
+
+bool SlotManager::loadSlotFromPath(const String& path, String& errorMsg) {
+    if (!FatFS.exists(path.c_str())) {
+        errorMsg = "File not found: " + path;
+        return false;
+    }
+    File file = FatFS.open(path.c_str(), "r");
+    if (!file) {
+        errorMsg = "Failed to open: " + path;
+        return false;
+    }
+    String content = file.readString();
+    file.close();
+    if (!activeState.fromYAML(content, errorMsg)) {
+        errorMsg = "Failed to parse YAML: " + errorMsg;
+        return false;
+    }
+    initializeFakeGpioFromLoadedState();
+    extern void refreshConnections(int ledShowOption, int fillUnused, int clean);
+    refreshConnections(-1, 1, 1);
+    finalizeFakeGpioAfterRouting();
+    if (!previewModeActive) {
+        applyStateToHardware();
+    }
+    int slotNum = extractSlotNumberFromPath(path);
+    if (slotNum >= 0) {
+        activeSlotNumber = slotNum;
+        netSlot = slotNum;
+    }
     return true;
 }
 

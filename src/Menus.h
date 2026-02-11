@@ -87,6 +87,7 @@ enum actionCategories {
   OLEDACTION,
   CONNECTACTION,
   CALIBRATIONACTION,
+  
   NOCATEGORY
 };
 

@@ -62,6 +62,10 @@ JDI_MIP_Display* jdi_display = nullptr;
 // Wrapper for i2cScan to match void(*)(void)
 static void i2cScanWrapper( void ) { i2cScan( ); }
 
+static void pythonScriptsAppLauncher( void );
+
+
+
 struct app apps[ NUM_APPS ] = {
     { "Bounce Startup", 0, 1, bounceStartup },
     { "Calib  DACs", 1, 1, calibrateDacs },
@@ -81,6 +85,8 @@ struct app apps[ NUM_APPS ] = {
     { "DMX Serial", 13, 1, DMXSerialApp },
     { "OLED Images", 14, 1, imagesAppLauncher },
     { "Switch Calib", 15, 1, calibrateProbeSwitchThresholds },
+    { "Python", 18, 1, pythonScriptsAppLauncher },
+    { "Files", 19, 1, pythonScriptsAppLauncher },
     // others can remain uninitialized (works=0)
 };
 
@@ -144,11 +150,13 @@ void runApp( int index, char* name ) {
     // Serial.println( "Index: " + String( index ) );
 
     // Determine context type based on app name
-    // Some apps (File Manager, MicroPython REPL) push their own specific context,
+    // Some apps (File Manager, MicroPython REPL, Python/Files) push their own specific context,
     // so we use APP_GENERIC for others to avoid double-pushing
     String appName = normalizeSpaces( name );
     bool appPushesOwnContext = appName.equalsIgnoreCase( "file manager" ) ||
-                               appName.equalsIgnoreCase( "micropython repl" );
+                               appName.equalsIgnoreCase( "micropython repl" ) ||
+                               appName.equalsIgnoreCase( "python" ) ||
+                               appName.equalsIgnoreCase( "files" );
 
     if ( !appPushesOwnContext ) {
         // Push generic app context for cleanup tracking
@@ -166,6 +174,45 @@ void runApp( int index, char* name ) {
     // Pop context if we pushed one
     if ( !appPushesOwnContext ) {
         ContextManager::getInstance( ).popContext( );
+    }
+}
+
+// Run a Python script from path. Uses safeFileOpen/safeFileClose for thread safety.
+static void runPythonScriptFromPath( const String& path ) {
+    if ( path.length( ) == 0 )
+        return;
+    File f = safeFileOpen( path.c_str( ), "r" );
+    if ( !f ) {
+        Serial.println( "\r\nFailed to open " + path );
+        return;
+    }
+    String content = f.readString( );
+    safeFileClose( f, false );
+    if ( content.length( ) == 0 ) {
+        Serial.println( "\r\nScript is empty: " + path );
+        return;
+    }
+    Serial.print( "\033[2J\033[H" );
+    Serial.flush( );
+    delay( 30 );
+    setGlobalStreamWithInterrupt( &Serial );  // Ensure Python output goes to main serial
+
+    // Reset encoder state so the selection click doesn't instantly trigger KeyboardInterrupt.
+    // Add delay so user can release and encoder state machine can settle.
+    encoderButtonState = IDLE;
+    lastButtonEncoderState = IDLE;
+    delay( 400 );
+
+    Serial.println( "\r\nRunning " + path + " ...\r\n" );
+    executePythonFileContent( content.c_str( ) );
+    Serial.println( "\r\n--- script finished ---" );
+}
+
+// Pick a .py file from click menu, then run it.
+static void pythonScriptsAppLauncher( void ) {
+    String path = pickPythonScriptFromClickMenu( );
+    if ( path.length( ) > 0 ) {
+        runPythonScriptFromPath( path );
     }
 }
 
