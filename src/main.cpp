@@ -119,7 +119,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.4.7"; //! remember to update this
+const char firmwareVersion[] = "5.6.4.8"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -817,12 +817,36 @@ dontshowmenu:
             CommandBuffer::getInstance( ).consumePendingCommand( );  // Consume and discard
             // Serial.println( "Warning: Command ignored during startup" );
         } else {
-            String cmdLine = CommandBuffer::getInstance( ).consumePendingCommand( );
-            cmdLine.trim( );
+            // Use zero-copy consume to avoid heap-allocating a String for every command
+            // String heap fragmentation was causing crashes after minutes of continuous commands
+            const char* cmdPtr = CommandBuffer::getInstance( ).consumePendingCommandPtr( );
+            
+            if ( cmdPtr != nullptr ) {
+                // Trim leading whitespace manually (avoid extra String heap ops)
+                while ( *cmdPtr == ' ' || *cmdPtr == '\t' || *cmdPtr == '\r' || *cmdPtr == '\n' ) cmdPtr++;
+                
+                if ( *cmdPtr != '\0' ) {
+                    // SAFETY: Validate command has printable content before processing
+                    // This prevents garbled/corrupted serial data from reaching command handlers
+                    bool hasValidContent = false;
+                    size_t cmdLen = strlen( cmdPtr );
+                    if ( cmdLen > 0 && cmdLen < 1024 ) {
+                        for ( size_t ci = 0; ci < cmdLen && ci < 8; ci++ ) {
+                            if ( cmdPtr[ ci ] >= ' ' && cmdPtr[ ci ] < 127 ) {
+                                hasValidContent = true;
+                                break;
+                            }
+                        }
+                    }
 
-            if ( cmdLine.length( ) > 0 ) {
-                currentCommandLine = cmdLine;
-                input = cmdLine[ 0 ];
+                    if ( hasValidContent ) {
+                    // Single String creation for compatibility with executeCommand API
+                    currentCommandLine = cmdPtr;
+                    currentCommandLine.trim( );
+                    input = cmdPtr[ 0 ];
+
+                // Service USB to prevent port disconnect during command execution
+                tud_task( );
 
                 // Execute the command
                 inMainMenu = true;
@@ -838,6 +862,9 @@ dontshowmenu:
                 CommandBuffer::getInstance( ).setRespondToUART( false ); // Reset flag
             }
 
+            // Clear the command-from-UART flag now that we've processed it
+            AsyncPassthrough::clearCommandFromUARTFlag();
+
             CommandBuffer::getInstance( ).incrementCommandsProcessed( );
 
             // Handle special command results
@@ -852,7 +879,9 @@ dontshowmenu:
             }
 
             goto dontshowmenu; // Skip menu display
-            }
+                    }  // end if (hasValidContent)
+            }  // end if (*cmdPtr != '\0')
+            }  // end if (cmdPtr != nullptr)
         }  // end else (firstLoop == 0)
     }  // end if (hasPendingCommand)
 

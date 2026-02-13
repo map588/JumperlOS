@@ -324,6 +324,8 @@ static int pyexec_raw_repl_process_char(int c) {
         vstr_reset(MP_STATE_VM(repl_line));
         repl.cont_line = false;
         repl.paste_mode = false;
+        // JL patch: ensure clean readline state before switching to friendly REPL
+        readline_init(MP_STATE_VM(repl_line), "");
         pyexec_friendly_repl_process_char(CHAR_CTRL_B);
         return 0;
     } else if (c == CHAR_CTRL_C) {
@@ -355,6 +357,9 @@ static int pyexec_raw_repl_process_char(int c) {
 
 reset:
     vstr_reset(MP_STATE_VM(repl_line));
+    // JL patch: reset readline state after script execution to clear
+    // dangling rl.line pointer left by input() interrupted via NLR
+    readline_init(MP_STATE_VM(repl_line), "");
     mp_hal_stdout_tx_str(">");
 
     return 0;

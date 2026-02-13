@@ -152,24 +152,72 @@ ServiceStatus MpRemoteService::service( ) {
 
         // Feed character to event-driven REPL
         // Returns 0 normally, PYEXEC_FORCED_EXIT if soft reset requested
+        //
+        // SAFETY NET: Wrap in NLR to catch stray exceptions (e.g., MemoryError
+        // from vstr_add_byte, or stale KeyboardInterrupt). Without this, any
+        // nlr_raise inside pyexec with nlr_top == NULL crashes the device.
+        nlr_buf_t nlr;
+        if (nlr_push(&nlr) == 0) {
+            int result = pyexec_event_repl_process_char( c );
+            nlr_pop();
 
-        int result = pyexec_event_repl_process_char( c );
+            // Check current REPL mode
+            extern pyexec_mode_kind_t pyexec_mode_kind;
+            m_in_raw_repl = ( pyexec_mode_kind == PYEXEC_MODE_RAW_REPL );
+            
+            // Update global flag for jl_after_python_exec_hook
+            jl_in_raw_repl_mode = m_in_raw_repl;
 
-        // Check current REPL mode
-        extern pyexec_mode_kind_t pyexec_mode_kind;
-        m_in_raw_repl = ( pyexec_mode_kind == PYEXEC_MODE_RAW_REPL );
-        
-        // Update global flag for jl_after_python_exec_hook
-        jl_in_raw_repl_mode = m_in_raw_repl;
-
-        if ( result & PYEXEC_FORCED_EXIT ) {
-            if ( m_debug ) {
-                Serial.println( "[MpRemote] Soft reset requested via event REPL" );
+            if ( result & PYEXEC_FORCED_EXIT ) {
+                if ( m_debug ) {
+                    Serial.println( "[MpRemote] Soft reset requested via event REPL" );
+                }
+                mp_soft_reset_requested = true;
             }
-            mp_soft_reset_requested = true;
+        } else {
+            // Caught exception from event REPL processing.
+            // This prevents nlr_jump_fail -> device crash / USB disconnect.
+            mp_hal_set_interrupt_char(-1);
+            mp_handle_pending(false);
+            mp_interrupt_requested = false;
+            MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+            Serial.printf("[MpRemote] Caught stray exception val=%p\r\n", nlr.ret_val);
+
+            // CRITICAL: Send raw REPL completion markers so ViperIDE doesn't hang.
+            // The raw REPL protocol expects: OK<stdout>\x04<stderr>\x04>
+            // If the exception interrupted parse_compile_execute mid-flight,
+            // some or all of these markers may not have been sent. We can't know
+            // exactly which were already sent, but sending \x04\x04> is safe:
+            // - If ViperIDE already got both \x04s, the extra ones start a new
+            //   (empty) response which it will handle gracefully.
+            // - If it was waiting for markers, this unblocks it.
+            if (m_in_raw_repl && USBSer2) {
+                USBSer2.write('\x04');
+                USBSer2.write('\x04');
+                USBSer2.write('>');
+                USBSer2.flush();
+                #ifdef USE_TINYUSB
+                tud_task();
+                #endif
+            }
+
+            // Restore USBSer2 stream state and stop processing this batch
+            setGlobalStreamWithInterrupt(&USBSer2);
+            break;
         }
 
         processed_count++;
+    }
+
+    // CRITICAL: Flush USBSer2 after processing to ensure EOF markers (\x04) and
+    // the raw REPL prompt (>) actually reach the client (ViperIDE/mpremote).
+    // parse_compile_execute() writes these via mp_hal_stdout_tx_strn() which does
+    // NO flush — bytes can sit in the CDC TX buffer indefinitely without this.
+    if (processed_count > 0) {
+        USBSer2.flush();
+        #ifdef USE_TINYUSB
+        tud_task();  // Ensure USB transfer actually happens
+        #endif
     }
 
     // CRITICAL: Handle soft reset requests from the native REPL
@@ -207,9 +255,9 @@ void MpRemoteService::onScriptExecutionBegin() {
     // Default implementation - can be overridden for custom behavior
     // This is called before each Python script begins execution in raw REPL mode
     
-    // if ( m_debug ) {
-        // Serial.println( "[MpRemote] Script execution beginning" );
-    
+    if ( m_debug ) {
+        Serial.println( "[MpRemote] Script execution beginning" );
+    }
     probePowerDAConMpRemoteService = probePowerDAC;
     switchPositionOnMpRemoteService = switchPosition;
     lastShowLEDmeasurementsintervalinMpRemoteService = showLEDmeasurementsInterval;

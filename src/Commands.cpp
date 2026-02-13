@@ -379,12 +379,18 @@ void refreshLocalConnections(int ledShowOption, int fillUnused, int clean) {
     
     // Timeout safety: If Core 2 is taking too long, force proceed
     // This can happen if Core 2 is stuck waiting for mutex or other resources
-    if (micros() - core2_wait_start > 20000) {  // 5ms timeout
-      //Serial.println("WARNING: Core 2 timeout! Forcing proceed.");
+    // 200ms timeout allows complex CH446Q operations to complete
+    // (was 20ms which caused race conditions during rapid connect/disconnect)
+    if (micros() - core2_wait_start > 200000) {  // 200ms timeout
+      Serial.println("WARNING: Core 2 timeout (200ms)! Forcing proceed.");
       // Force clear busy flag to prevent permanent deadlock
       core2busy = false;
       __dmb();
       break;
+    }
+    // Service USB periodically during the wait to prevent port disconnect
+    if ((micros() - core2_wait_start) % 5000 < 10) {
+      tud_task();
     }
   }
   

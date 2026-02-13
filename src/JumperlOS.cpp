@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "JumperlOS.h"
+#include "Adafruit_USBD_CDC.h"
 #include "PersistentStuff.h"
 #include "Probing.h"
 #include "Highlighting.h"
@@ -956,6 +957,10 @@ bool ContextManager::pushContext(const ContextEntry& ctx, bool /*unused*/) {
  */
 bool ContextManager::popContext() {
     // Thread safety
+
+    // Serial.println("ContextManager::popContext called");
+    // Serial.flush();
+
     core_sync_acquire();
     
     // Check if stack is empty

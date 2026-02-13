@@ -81,8 +81,16 @@ public:
     /**
      * Consume the pending command (clears it after returning)
      * @return The command string, or empty string if none
+     * NOTE: Prefer consumePendingCommandPtr() to avoid heap allocation
      */
     String consumePendingCommand();
+    
+    /**
+     * Consume and return pointer to internal buffer (zero-copy, no heap alloc)
+     * The returned pointer is valid until the next setPending*Command() call.
+     * @return Pointer to command string, or nullptr if none pending
+     */
+    const char* consumePendingCommandPtr();
     
     /**
      * Clear pending command without processing

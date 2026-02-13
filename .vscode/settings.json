@@ -52,7 +52,8 @@
     "editor.formatOnSave": false,
     "editor.formatOnPaste": false,
     "editor.formatOnType": false,
-    
+    "editor.semanticHighlighting.enabled": true,
+  
     // Ensure clang-format is used
     "clang-format.executable": "clang-format",
     "clang-format.style": "file",
@@ -101,5 +102,8 @@
     
     // Use default IntelliSense engine
     "C_Cpp.intelliSenseEngine": "disabled"
+
+
+    
     
 }

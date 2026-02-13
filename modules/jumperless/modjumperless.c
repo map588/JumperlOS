@@ -3107,9 +3107,14 @@ static mp_obj_t jl_oled_print_func( size_t n_args, const mp_obj_t* args ) {
         // Probe Pad - get its string representation
         probe_pad_obj_t* pad = MP_OBJ_TO_PTR( args[ 0 ] );
         const char* name = jl_get_pad_name( pad->value );
-        strncpy( buffer, name, sizeof( buffer ) - 1 );
-        buffer[ sizeof( buffer ) - 1 ] = '\0';
-        text = buffer;
+        if ( name != NULL ) {
+            strncpy( buffer, name, sizeof( buffer ) - 1 );
+            buffer[ sizeof( buffer ) - 1 ] = '\0';
+            text = buffer;
+        } else {
+            strncpy( buffer, "???", sizeof( buffer ) - 1 );
+            text = buffer;
+        }
     } else if ( mp_obj_is_float( args[ 0 ] ) ) {
         // Float - convert to string with 3 decimal places
         float value = mp_obj_get_float( args[ 0 ] );

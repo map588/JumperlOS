@@ -82,22 +82,75 @@ void mp_hal_stdout_tx_str(const char *str) {
 // Note: mp_hal_set_interrupt_char is implemented in Python_Proper.cpp
 // to integrate with our custom interrupt handling system
 
-// Receive single character from stdin, non-blocking.
+// Forward declarations for interrupt checking and Arduino timing
+extern void mp_hal_check_interrupt(void);
+extern void delayMicroseconds(unsigned int us);
+extern int getCurrentInterruptChar(void);
+
+// Receive single character from stdin.
+// CRITICAL: When no data is available, we must service USB and yield to prevent
+// starvation. MicroPython's readline() calls this in a tight for(;;) loop during
+// input(). Without USB servicing here, the USB CDC layer desyncs and causes
+// hard faults when the script tries to write output after input() returns.
 int mp_hal_stdin_rx_chr(void) {
-    if (global_mp_stream_ptr) {
-        // When MicroPython is calling this function (e.g., from input() or readline),
-        // we need to bypass the custom REPL editor and read directly from the stream
-        // This ensures that input() works properly even when the custom REPL is active
-        int c = arduino_serial_read(global_mp_stream_ptr);
-        
-        
-        // Convert newline (\n) to carriage return (\r) for MicroPython readline compatibility
-        // This handles the case where the app converts \r to \n before sending
-        // if (c == '\n') {
-        //     return '\r';
-        // }
-        
-        return c;
+    void *stdin_stream = global_mp_stream_ptr;
+    if (stdin_stream) {
+        for (;;) {
+            int c = arduino_serial_read(stdin_stream);
+            if (c != -1) {
+                // RACE CONDITION FIX: arduino_serial_read() can consume the
+                // interrupt character (Ctrl+Q=0x11 / Ctrl+C=0x03) before
+                // check_stream_for_interrupt() gets to peek at it. tud_task()
+                // inside mp_hal_check_interrupt() delivers USB data to the
+                // buffer, but the throttled check_stream_for_interrupt() may
+                // not run before the next loop iteration's read consumes it.
+                //
+                // Without this check, the interrupt byte passes through to
+                // MicroPython's readline as a regular character instead of
+                // raising KeyboardInterrupt. This causes input() to silently
+                // swallow Ctrl+Q/Ctrl+C, requiring multiple presses to interrupt.
+                int int_char = getCurrentInterruptChar();
+                if (int_char >= 0 && c == int_char) {
+                    // Consume the interrupt char - don't return it to readline.
+                    // Schedule + raise KeyboardInterrupt properly.
+                    mp_sched_keyboard_interrupt();
+                    mp_handle_pending(true);  // nlr_raise -> mp_embed_exec_str catch
+                    continue;  // Fallback if mp_handle_pending didn't raise
+                }
+                // Normalize \n (LF, 0x0A) to \r (CR, 0x0D) for MicroPython.
+                // MicroPython's readline only accepts \r as Enter/line-end.
+                // Some hosts (e.g., Jumperless App interactive mode) send \n
+                // for Enter instead of \r. Without this, input() ignores Enter
+                // and the user can never submit a line.
+                if (c == '\n') {
+                    c = '\r';
+                }
+                return c;
+            }
+            // No data available - check for interrupts (which also services USB
+            // via tud_task internally) and yield to prevent CPU spin
+            mp_hal_check_interrupt();
+
+            // CRITICAL: Process any pending exceptions (e.g., KeyboardInterrupt).
+            // Without this, mp_sched_keyboard_interrupt() only SETS a flag but
+            // the exception is never RAISED because the VM's backwards-jump check
+            // doesn't run while we're blocked in C code. This mirrors what upstream
+            // MicroPython ports do via MICROPY_EVENT_POLL_HOOK.
+            // mp_handle_pending(true) will nlr_jump if an exception is pending,
+            // which unwinds through mp_embed_exec_str()'s nlr_push catch frame.
+            mp_handle_pending(true);
+
+            // The active input stream can change at runtime (e.g., friendly REPL
+            // to raw REPL transport). Re-sync to current stream pointer.
+            if (stdin_stream != global_mp_stream_ptr) {
+                stdin_stream = global_mp_stream_ptr;
+                if (!stdin_stream) {
+                    return -1;
+                }
+            }
+
+            delayMicroseconds(100); // Small yield to prevent CPU spin
+        }
     }
     // For embedded use, we don't support stdin input
     return -1; // No character available

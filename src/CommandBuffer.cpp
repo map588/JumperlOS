@@ -121,6 +121,21 @@ String CommandBuffer::consumePendingCommand() {
     return result;
 }
 
+const char* CommandBuffer::consumePendingCommandPtr() {
+    if (!has_pending_command) {
+        return nullptr;
+    }
+    
+    // Clear command state BUT KEEP respond_to_uart flag and buffer contents!
+    // The buffer remains valid until next setPending*Command() call
+    has_pending_command = false;
+    is_python_command = false;
+    // Note: Do NOT clear pending_command - caller needs to read it
+    // Note: respond_to_uart is NOT cleared here
+    
+    return pending_command;
+}
+
 void CommandBuffer::clearPendingCommand() {
     has_pending_command = false;
     is_python_command = false;

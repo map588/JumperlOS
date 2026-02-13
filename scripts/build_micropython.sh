@@ -289,6 +289,11 @@ export USER_C_MODULES="$PROJECT_ROOT/modules"
 # Build the embed port using the modified makefile that includes extmod
 make -f embed_with_extmod.mk PACKAGE_DIR="$MICROPYTHON_LOCAL_PATH/micropython_embed" V=1
 
+# Apply Jumperless-specific patches to stock MicroPython sources
+# These fix bugs that can't be addressed through mpconfigport.h or port-level overrides
+echo -e "${YELLOW}Applying Jumperless patches to MicroPython sources...${NC}"
+python3 "$PROJECT_ROOT/scripts/patch_micropython_sources.py" "$MICROPYTHON_LOCAL_PATH/micropython_embed"
+
 # Copy mpconfigport.h to the micropython_embed directory so it can be found during PlatformIO compilation
 echo -e "${YELLOW}Copying mpconfigport.h to micropython_embed directory...${NC}"
 

@@ -1839,7 +1839,37 @@ CommandResult cmd_pythonCommand( char c, const String& line ) {
         // Note: response_target routing for UART is available but not used for MicroPython output
         // because MicroPython writes directly to global_mp_stream and capturing is complex
 
-        executeSinglePythonCommand( pythonCommand.c_str( ), nullptr, 0 );
+        // SAFETY: If command contains newlines, split into individual lines
+        // and execute each separately. This way one bad command doesn't prevent
+        // the others from running (each gets its own nlr error handler).
+        if ( pythonCommand.indexOf( '\n' ) >= 0 ) {
+            int lineStart = 0;
+            for ( int i = 0; i <= (int)pythonCommand.length( ); i++ ) {
+                if ( i == (int)pythonCommand.length( ) || pythonCommand[ i ] == '\n' ) {
+                    if ( i > lineStart ) {
+                        String singleLine = pythonCommand.substring( lineStart, i );
+                        singleLine.trim( );
+                        if ( singleLine.length( ) > 0 ) {
+                            // Validate: skip lines with no printable content
+                            bool hasPrintable = false;
+                            for ( size_t j = 0; j < singleLine.length( ); j++ ) {
+                                if ( singleLine[ j ] >= ' ' && singleLine[ j ] < 127 ) {
+                                    hasPrintable = true;
+                                    break;
+                                }
+                            }
+                            if ( hasPrintable ) {
+                                executeSinglePythonCommand( singleLine.c_str( ), nullptr, 0 );
+                                tud_task( ); // Service USB between commands
+                            }
+                        }
+                    }
+                    lineStart = i + 1;
+                }
+            }
+        } else {
+            executeSinglePythonCommand( pythonCommand.c_str( ), nullptr, 0 );
+        }
 
     } else {
         Jerial.println( "Usage: > <python_command>" );

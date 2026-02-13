@@ -84,8 +84,9 @@ static int replColors[15] = {
 
 Stream *global_mp_stream = &Serial;
 
-// Separate stream for interrupt checking - always points to main Serial
-// This prevents mp_hal_check_interrupt from consuming data when global_mp_stream is USBSer2
+// Separate stream for interrupt checking.
+// Keep this aligned to the active REPL/input stream so interrupt polling
+// does not consume bytes from an unrelated stream.
 Stream *mp_interrupt_check_stream = &Serial;
 
 // C-compatible pointer for HAL functions
@@ -214,13 +215,21 @@ extern "C" mp_uint_t mp_hal_ticks_ms(void) {
 extern "C" int arduino_serial_available(Stream *stream) {
   // Check for interrupt request before checking availability
   // mp_hal_check_interrupt();
-  return global_mp_stream->available();
+  Stream *s = stream ? stream : global_mp_stream;
+  if (!s) {
+    return 0;
+  }
+  return s->available();
 }
 
 extern "C" int arduino_serial_read(Stream *stream) {
   // Check for interrupt request before reading
  // mp_hal_check_interrupt();
-  int c = global_mp_stream->read();
+  Stream *s = stream ? stream : global_mp_stream;
+  if (!s) {
+    return -1;
+  }
+  int c = s->read();
 // Serial.write(c);
 // Serial.flush();
   return c;
@@ -253,7 +262,7 @@ extern "C" void arduino_delay_ms(unsigned int ms) {
   unsigned long start_time = millis();
   while (millis() - start_time < ms) {
     mp_hal_check_interrupt();
-    delayMicroseconds(10);
+    delayMicroseconds(100);
     if (mp_interrupt_requested || mp_soft_reset_requested) {
         return;
     }
@@ -269,15 +278,30 @@ extern "C" mp_uint_t mp_hal_set_interrupt_char(int c) {
     
     keyboard_interrupt_char = c;
     
+    // CRITICAL: When disabling interrupts (c == -1), also clear any stale
+    // interrupt request flag. check_stream_for_interrupt() sets BOTH
+    // mp_interrupt_requested AND mp_pending_exception simultaneously.
+    // nlr_jump (from the raised KeyboardInterrupt) skips the code that
+    // clears mp_interrupt_requested, leaving it stale. If not cleared here,
+    // mp_hal_check_interrupt() would re-schedule the interrupt AFTER the
+    // NLR context is popped, causing nlr_jump_fail → core 0 crash.
+    if (c < 0) {
+        mp_interrupt_requested = false;
+    }
+    
     // Only print debug message if:
-    // - The interrupt character actually changed
+    // - The interrupt character actually changed between two ACTIVE values
     // - We're not on USBSer2 (would interfere with mpremote/ViperIDE protocol)
     // - Not being set to -1 (MicroPython uses -1 to temporarily disable interrupts)
+    // - Not restoring from -1 (happens after every script execution when
+    //   mp_embed_exec_str's exception handler disables interrupts then the
+    //   post-exec cleanup re-enables them — this is normal, not worth logging)
     const bool is_mpremote_active = (global_mp_stream == &USBSer2);
     const bool char_changed = (c != prev_interrupt_char);
     const bool is_real_char = (c >= 0); // -1 means "disable interrupts" - don't spam output
+    const bool is_restoration = (prev_interrupt_char < 0); // Coming back from disabled state
 
-    if (global_mp_stream && !is_mpremote_active && char_changed && is_real_char) {
+    if (global_mp_stream && !is_mpremote_active && char_changed && is_real_char && !is_restoration) {
         char char_name = (c >= 1 && c <= 26) ? (char)(c + 64) : '?';
         global_mp_stream->printf("[MP] Keyboard interrupt character set to Ctrl+%c (ASCII %d)\n\r", char_name, c);
     }
@@ -294,6 +318,7 @@ extern "C" int getCurrentInterruptChar(void) {
 void setGlobalStream(Stream *stream) {
   global_mp_stream = stream;
   global_mp_stream_ptr = (void *)stream;
+  mp_interrupt_check_stream = stream;
 }
 
 // Set global stream AND correct interrupt character based on stream type
@@ -302,6 +327,7 @@ void setGlobalStreamWithInterrupt(Stream *stream) {
   // First set the stream
   global_mp_stream = stream;
   global_mp_stream_ptr = (void *)stream;
+  mp_interrupt_check_stream = stream;
   
   // Determine which interrupt character to use based on stream type
   int interrupt_char;
@@ -422,35 +448,13 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
   int available = stream->available();
   if (available == 0) return false;
   
-  int c = stream->peek(); // Only consume if it's a control signal
-  bool already_consumed = false; // Track if we consumed 'c' during lookahead
-  
-  // Handle carriage return lookahead (e.g., \r followed by Ctrl-C/D)
-  // If we see \r, look ahead up to 5 bytes for control characters
-  if (c == 0x0D) {
-    const int max_lookahead = 5;
-    bool found_control = false;
-    for (int i = 0; i < max_lookahead && stream->available() > 0; i++) {
-      c = stream->read(); // Consume byte
-      already_consumed = true;
-      // Check for both Ctrl+C and Ctrl+D, also check expected interrupt char
-      if (c == 0x03 || c == 0x04 || c == expected_interrupt_char) {
-        found_control = true;
-        break;
-      }
-    }
-    // If we consumed bytes but didn't find a control char, exit early
-    // (we've already consumed the \r and subsequent bytes)
-    if (!found_control) {
-      return false;
-    }
-  }
+  // CRITICAL: Do not consume non-control bytes here.
+  // stdin/readline is the sole consumer for normal input characters.
+  int c = stream->peek();
 
   // Soft reset request (Ctrl+D) - works on all streams
   if (c == 0x04) {
-    if (!already_consumed) {
-      stream->read(); // Consume only if not already consumed during lookahead
-    }
+    stream->read(); // consume control byte
     mp_soft_reset_requested = true;
     // Schedule a SystemExit to unwind the VM immediately; executeCode will
     // also see mp_soft_reset_requested and reinit afterward.
@@ -461,9 +465,7 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
 
   // Keyboard interrupt character - use the stream-specific expected character
   if (c == expected_interrupt_char) {
-    if (!already_consumed) {
-      stream->read(); // Consume only if not already consumed during lookahead
-    }
+    stream->read(); // consume control byte
     if (current_time - last_interrupt_time > 20) { // Debounce (20ms = responsive but not too sensitive)
       // CRITICAL: Set the flag FIRST to break out of mp_hal_delay_ms immediately
       mp_interrupt_requested = true;
@@ -495,7 +497,21 @@ extern "C" void mp_hal_check_interrupt(void) {
   static uint32_t last_check_time = 0;
   static uint32_t last_gc_check_time = 0;
 
-  // CRITICAL: Check interrupt flag FIRST before any throttling or expensive operations
+  // CRITICAL: Respect MicroPython's interrupt-disable convention FIRST, before
+  // anything else. parse_compile_execute() calls mp_hal_set_interrupt_char(-1)
+  // during exception handling. If mp_interrupt_requested was set (by the same
+  // Ctrl+C that triggered the exception) but NOT yet cleared (because nlr_jump
+  // skipped the clearing code), we MUST NOT re-schedule the interrupt here.
+  // Re-scheduling would set mp_pending_exception AFTER the NLR context is gone,
+  // causing nlr_jump_fail → infinite loop → USB disconnect on next
+  // mp_handle_pending(true) call.
+  if (keyboard_interrupt_char < 0) {
+    // Silently discard any stale interrupt request from before the exception
+    mp_interrupt_requested = false;
+    return;
+  }
+
+  // Check interrupt flag before any throttling or expensive operations
   // This flag can be set from ISR or from stream detection and needs immediate response
   if (mp_interrupt_requested) {
     // Schedule the interrupt in MicroPython's VM
@@ -528,13 +544,15 @@ extern "C" void mp_hal_check_interrupt(void) {
     gc_info_t info;
     gc_info(&info);
     
-    // Trigger GC if less than 10KB free (critical threshold for script execution)
+    // Trigger GC if less than 5KB free (critical threshold for script execution)
     // This ensures we always have breathing room for allocations
-    const size_t CRITICAL_FREE_THRESHOLD = 10 * 1024;  // 10KB
+    const size_t CRITICAL_FREE_THRESHOLD = 5 * 1024;  // 5KB
     if (info.free < CRITICAL_FREE_THRESHOLD) {
       // Memory is getting critically low - run GC to free up space
       // This prevents MemoryError from occurring mid-script
-      gc_collect();
+      // CRITICAL: Use gc_collect_safe() to pause Core 2 first - GC finalisers
+      // may access the filesystem, which can corrupt if Core 2 is also accessing it
+      gc_collect_safe();
     }
     #endif
   }
@@ -548,34 +566,18 @@ extern "C" void mp_hal_check_interrupt(void) {
 
   // Cache in_raw_repl check once instead of calling getInstance() multiple times
   const bool in_raw_repl = MpRemoteService::getInstance().isInRawRepl();
-  
-  // Check Serial (always available) - uses Ctrl+Q (17)
-  if (check_stream_for_interrupt(&Serial, current_time, last_interrupt_time, in_raw_repl, 
-                                  MP_INTERRUPT_CHAR_SERIAL)) {
-    return; // Interrupt handled, early exit
-  }
 
-#ifdef USE_TINYUSB
-  // Check USBSer2 if available - uses Ctrl+C (3) for mpremote/ViperIDE
-  if (check_stream_for_interrupt(&USBSer2, current_time, last_interrupt_time, in_raw_repl, 
-                                  MP_INTERRUPT_CHAR_USBSER2)) {
-    return; // Interrupt handled, early exit
+  // Only poll the active interrupt/input stream to avoid cross-stream
+  // byte stealing during input()/readline.
+  Stream *interrupt_stream = mp_interrupt_check_stream ? mp_interrupt_check_stream : global_mp_stream;
+  if (!interrupt_stream) {
+    interrupt_stream = &Serial;
   }
-#endif
-
-  // Check mp_interrupt_check_stream if it's explicitly set to something else
-  // Determine which interrupt char to use based on stream identity
-  if (mp_interrupt_check_stream && 
-      mp_interrupt_check_stream != &Serial 
-#ifdef USE_TINYUSB
-      && mp_interrupt_check_stream != &USBSer2
-#endif
-      ) {
-    // Default to Serial's interrupt char for unknown streams
-    int interrupt_char = (mp_interrupt_check_stream == &USBSer2) ? 
-                         MP_INTERRUPT_CHAR_USBSER2 : MP_INTERRUPT_CHAR_SERIAL;
-    check_stream_for_interrupt(mp_interrupt_check_stream, current_time, 
-                                last_interrupt_time, in_raw_repl, interrupt_char);
+  int interrupt_char = (interrupt_stream == &USBSer2) ?
+                       MP_INTERRUPT_CHAR_USBSER2 : MP_INTERRUPT_CHAR_SERIAL;
+  if (check_stream_for_interrupt(interrupt_stream, current_time, last_interrupt_time,
+                                 in_raw_repl, interrupt_char)) {
+    return;
   }
 
   // Click-menu path: holding the clickwheel button acts as KeyboardInterrupt.
@@ -921,15 +923,57 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   unsigned long lastServiceTime = millis();
   
   while (mp_repl_active) {
-    // CRITICAL: Use repl_stream (the original stream), not global_mp_stream
-    // because global_mp_stream can be changed by MpRemoteService when ViperIDE connects
-    processMicroPythonInput(repl_stream);
-    
-    // Run essential services every 50ms to keep measurements and animations running
-    // This includes MpRemoteService which handles ViperIDE/mpremote on USBSer2
-    if (millis() - lastServiceTime >= 50) {
-      jl_service_python();
-      lastServiceTime = millis();
+    // SAFETY NET: Wrap the REPL iteration in an NLR handler to catch any
+    // stray exceptions that escape mp_embed_exec_str()'s catch frame.
+    // After script execution, nlr_top == NULL. If ANY subsequent MicroPython
+    // API call (gc_collect finaliser, vstr_add_byte in event REPL, etc.)
+    // triggers nlr_raise, it would hit nlr_jump_fail -> device crash.
+    // This wrapper ensures such exceptions are caught and the REPL continues.
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+      // CRITICAL: Use repl_stream (the original stream), not global_mp_stream
+      // because global_mp_stream can be changed by MpRemoteService when ViperIDE connects
+      processMicroPythonInput(repl_stream);
+      
+      // Run essential services every 50ms to keep measurements and animations running
+      // This includes MpRemoteService which handles ViperIDE/mpremote on USBSer2
+      if (millis() - lastServiceTime >= 50) {
+        jl_service_python();
+        lastServiceTime = millis();
+      }
+      nlr_pop();
+    } else {
+      // Caught an exception that escaped all inner handlers.
+      // This prevents nlr_jump_fail -> device crash / USB disconnect.
+      mp_hal_set_interrupt_char(-1);
+      mp_handle_pending(false);
+      mp_interrupt_requested = false;
+      MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+      
+      // Print diagnostic info using Serial directly (bypasses MicroPython I/O).
+      // NOTE: Do NOT call mp_obj_print_exception here — it's a C function and
+      // C++ name mangling causes linker errors. Serial.printf is safe and sufficient
+      // since the primary exception handler in mp_embed_exec_str already printed
+      // the traceback before we got here.
+      Serial.printf("\r\n[REPL] Caught stray exception (safety net) val=%p\r\n", nlr.ret_val);
+      
+      // CRITICAL: If the exception escaped while MpRemoteService had control
+      // (global_mp_stream was USBSer2), ViperIDE may be stuck waiting for the
+      // raw REPL completion markers. Send \x04\x04> to unblock it.
+      // This is safe even if markers were already sent — extra \x04s just
+      // produce an empty response that ViperIDE handles gracefully.
+      if (MpRemoteService::getInstance().isInRawRepl() && USBSer2) {
+        USBSer2.write('\x04');
+        USBSer2.write('\x04');
+        USBSer2.write('>');
+        USBSer2.flush();
+        #ifdef USE_TINYUSB
+        tud_task();
+        #endif
+      }
+      
+      // Restore stream state for next REPL iteration
+      setGlobalStreamWithInterrupt(repl_stream);
     }
     
     delayMicroseconds(1); // Small delay to prevent overwhelming
@@ -968,11 +1012,12 @@ void processMicroPythonInput(Stream *stream) {
     return;
   }
 
-  // CRITICAL: Before processing input from this stream, ensure the global stream
-  // and interrupt character are set correctly. This is necessary because multiple
-  // REPLs (Serial and USBSer2) can be active simultaneously, and we need to ensure
-  // the correct interrupt character is used for whichever stream has input.
-  if (stream && stream->available() > 0) {
+  // CRITICAL: ALWAYS set global_mp_stream to this REPL's stream at the start.
+  // MpRemoteService::service() switches global_mp_stream to USBSer2 every ~50ms
+  // in the outer loop. Without unconditionally restoring here, ALL output from
+  // the built-in REPL (prompts, script output, color changes) can go to USBSer2,
+  // corrupting ViperIDE's raw REPL protocol and losing output on Serial.
+  if (stream) {
     setGlobalStreamWithInterrupt(stream);
   }
 
@@ -1350,6 +1395,7 @@ void processMicroPythonInput(Stream *stream) {
 
       // Handle Enter key - check for multiline or execute
       if (c == '\r' || c == '\n') {
+        
         global_mp_stream->println(); // Echo newline
 
         // Clear history flags at the start of enter processing
@@ -1516,12 +1562,18 @@ void processMicroPythonInput(Stream *stream) {
                 
                 // Execute the script
                 mp_embed_exec_str(contentToExecute.c_str());
+                // Clear stale interrupt/exception state after script execution
+                mp_interrupt_requested = false;
+                MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+                tud_task();
                 // Force GC after script to close file handles and free memory
                 // Use safe version with Core 2 synchronization
                 gc_collect_safe();
                 // CRITICAL: Close any files that weren't explicitly closed by the script
                 // This prevents file handle leaks and filesystem conflicts
                 jl_close_all_jfs_files();
+                // Restore global_mp_stream to REPL's own stream
+                setGlobalStreamWithInterrupt(stream);
               }
             } else {
               // Regular save - load content into REPL editor
@@ -1886,11 +1938,17 @@ void processMicroPythonInput(Stream *stream) {
 
               // Execute the complete script
               mp_embed_exec_str(script_to_execute.c_str());
+              // Clear stale interrupt/exception state after script execution
+              mp_interrupt_requested = false;
+              MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+              tud_task();
               // Force GC after script to close file handles and free memory
               // Use safe version with Core 2 synchronization
               gc_collect_safe();
               // CRITICAL: Close any files that weren't explicitly closed by the script
               jl_close_all_jfs_files();
+              // Restore global_mp_stream to REPL's own stream
+              setGlobalStreamWithInterrupt(stream);
             }
 
             // Reset and show new prompt
@@ -2047,6 +2105,21 @@ void processMicroPythonInput(Stream *stream) {
               // Let MicroPython handle the complete statement
               mp_embed_exec_str(input_buffer);
               
+              // CRITICAL FIX: Clear stale interrupt/exception state after script execution.
+              // When input() is interrupted (Ctrl+C) or script terminates:
+              // 1. check_stream_for_interrupt() may have set mp_interrupt_requested = true
+              // 2. mp_sched_keyboard_interrupt() may have set mp_pending_exception
+              // 3. mp_embed_exec_str() catches the exception for traceback, but does NOT
+              //    clear these flags on the exception path
+              // Without clearing, post-execution output (gc_collect, color changes, prompt)
+              // can see stale interrupt state and malfunction, causing hangs.
+              mp_interrupt_requested = false;
+              MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+              
+              // Service USB to ensure any traceback output is fully transmitted
+              // before proceeding with gc_collect and prompt drawing
+              tud_task();
+              
               // Restore the original character
               input_buffer[clean_end] = saved_char;
               
@@ -2061,6 +2134,15 @@ void processMicroPythonInput(Stream *stream) {
               // CRITICAL: Close any files that weren't explicitly closed by the script
               // This ensures files are available for other operations (eKilo, etc.)
               jl_close_all_jfs_files();
+
+              // CRITICAL: Restore global_mp_stream to the REPL's own stream.
+              // During gc_collect_safe() and jl_close_all_jfs_files() above,
+              // the main loop may have called jl_service_python() which runs
+              // MpRemoteService::service(), switching global_mp_stream to USBSer2.
+              // Without restoring here, the prompt/color output below goes to
+              // USBSer2 (corrupting ViperIDE's raw REPL protocol) instead of
+              // the Serial terminal where the built-in REPL is running.
+              setGlobalStreamWithInterrupt(stream);
             }
 
             changeTerminalColor(replColors[1], true, global_mp_stream);
@@ -2177,11 +2259,17 @@ void processMicroPythonInput(Stream *stream) {
               
               // Execute the script
               mp_embed_exec_str(contentToExecute.c_str());
+              // Clear stale interrupt/exception state after script execution
+              mp_interrupt_requested = false;
+              MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+              tud_task();
               // Force GC after script to close file handles and free memory
               // Use safe version with Core 2 synchronization
               gc_collect_safe();
               // CRITICAL: Close any files that weren't explicitly closed by the script
               jl_close_all_jfs_files();
+              // Restore global_mp_stream to REPL's own stream
+              setGlobalStreamWithInterrupt(stream);
             }
           } else {
             // Regular save - load content into REPL editor
@@ -4453,6 +4541,30 @@ String parseCommandWithPrefix(const char* command) {
  * @return true if command executed successfully, false otherwise
  */
 bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t buffer_size) {
+  // SAFETY: Validate input before doing anything
+  if (!command || command[0] == '\0') {
+    return false;
+  }
+  
+  // SAFETY: Check command length - reject obviously oversized commands
+  size_t cmd_len = strlen(command);
+  if (cmd_len > 1024) {
+    Jerial.println("Error: Command too long (max 1024 chars)");
+    return false;
+  }
+  
+  // SAFETY: Check for at least one printable ASCII character
+  bool has_printable = false;
+  for (size_t i = 0; i < cmd_len; i++) {
+    if (command[i] >= ' ' && command[i] < 127) {
+      has_printable = true;
+      break;
+    }
+  }
+  if (!has_printable) {
+    return false;  // Silently ignore garbage-only commands
+  }
+
   // Initialize quietly if needed
   if (!mp_initialized) {
     if (!initMicroPythonQuiet()) {
@@ -4485,6 +4597,9 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
   Jerial.println();
   Jerial.flush();
   
+  // Service USB before execution to prevent port disconnect during long commands
+  tud_task();
+  
   // Clear result buffer
   if (result_buffer && buffer_size > 0) {
     memset(result_buffer, 0, buffer_size);
@@ -4493,8 +4608,11 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
   bool success = true;
   
   // Execute the command directly - MicroPython will handle errors internally
+  // mp_embed_exec_str has nlr_push/nlr_pop to catch Python exceptions
   mp_embed_exec_str(parsed_command.c_str());
 
+  // Service USB after execution
+  tud_task();
   
   // CRITICAL: Force garbage collection after each command to prevent heap exhaustion
   // Without this, repeated commands can fragment/exhaust the MicroPython heap

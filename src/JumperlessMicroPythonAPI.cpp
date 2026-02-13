@@ -1337,7 +1337,7 @@ void jl_exit_micropython_restore_entry_state( void ) {
     pauseCore2 = was_paused;
 
     // Refresh connections to match the current state
-    refreshConnections( -1, 1, 1 );
+    refreshConnections( -1, 1, 0 );
 }
 
 void jl_restore_micropython_entry_state( void ) {

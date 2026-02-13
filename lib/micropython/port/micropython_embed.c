@@ -141,20 +141,35 @@ int mp_embed_exec_str(const char *str) {
             // Compile as non-REPL file input so expression statements do NOT echo results
             mp_obj_t module_fun = mp_compile(&parse_tree, source_name, false);
             if (module_fun != MP_OBJ_NULL) {
-                // Execute code with interrupt handling active
-                // Ensure interrupt character is set (usually 3 for Ctrl+C)
-                // Note: mp_hal_set_interrupt_char handled externally or by default
-                
                 mp_call_function_0(module_fun);
                 
-                // Handle any pending exceptions or callbacks immediately after execution
+                // CRITICAL: Disable interrupts BEFORE mp_handle_pending().
+                // If mp_handle_pending(true) raises a pending exception (e.g. KeyboardInterrupt
+                // set during the last VM instruction), the nlr_jump lands in the else branch
+                // below. With interrupt char set to -1, the exception handler's traceback output
+                // won't re-trigger interrupts via mp_hal_check_interrupt() in
+                // mp_hal_stdout_tx_strn_cooked(). Matches parse_compile_execute() behavior.
+                mp_hal_set_interrupt_char(-1);
                 mp_handle_pending(true); 
             }
         }
         nlr_pop();
         return 0;
     } else {
-        // Handle exception
+        // Uncaught exception (e.g. KeyboardInterrupt from input()/sleep())
+        //
+        // CRITICAL: Disable interrupts and clear pending state BEFORE printing
+        // the traceback. Without this, the traceback output path calls
+        // mp_hal_check_interrupt() (via mp_hal_stdout_tx_strn_cooked every 50 chars)
+        // which can see stale mp_interrupt_requested=true left by nlr_jump skipping
+        // the normal cleanup. That re-calls mp_sched_keyboard_interrupt(), setting
+        // mp_pending_exception with NO active NLR frame -- causing nlr_jump_fail
+        // (device crash) or garbled prompt output (1-3 '>' chars instead of '>>>').
+        //
+        // This matches upstream parse_compile_execute() in pyexec.c.
+        mp_hal_set_interrupt_char(-1);  // Prevent re-triggering during traceback output
+        mp_handle_pending(false);       // Discard any stale pending exception/callbacks
+        
         mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(nlr.ret_val));
         return -1;
     }
@@ -277,23 +292,54 @@ void gc_collect(void) {
 
 // Non-local return (exception handling) failure function  
 void nlr_jump_fail(void *val) {
-    (void)val;
-    // For embedded use, we can't do much here - just halt
-    mp_hal_stdout_tx_strn_cooked("\nFATAL: nlr_jump_fail - uncaught exception\n", 43);
-    mp_hal_stdout_tx_strn_cooked("MicroPython has encountered a fatal error.\n", 44);
-    mp_hal_stdout_tx_strn_cooked("Please reset the device.\n", 26);
+    // CRITICAL: Disable ALL interrupt mechanisms FIRST to prevent re-entrant crashes.
+    // Without this, mp_hal_stdout_tx_strn_cooked -> mp_hal_check_interrupt could
+    // re-trigger the same exception path that got us here.
+    // Use mp_hal_set_interrupt_char(-1) which sets keyboard_interrupt_char=-1 AND
+    // clears mp_interrupt_requested (keyboard_interrupt_char is static in C++ code).
+    extern bool mp_interrupt_requested;
+    mp_hal_set_interrupt_char(-1);
+    mp_interrupt_requested = false;
+    MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+    
+    // Print diagnostic header
+    mp_hal_stdout_tx_strn_cooked("\r\nFATAL: nlr_jump_fail - uncaught exception\r\n", 46);
+    
+    // Try to print the exception details with NLR protection.
+    // mp_obj_print_exception can itself raise (e.g., OOM), so we catch that.
+    if (val) {
+        char buf[80];
+        int n = snprintf(buf, sizeof(buf), "  exception val=%p\r\n", val);
+        mp_hal_stdout_tx_strn_cooked(buf, n);
+        
+        nlr_buf_t nlr;
+        if (nlr_push(&nlr) == 0) {
+            mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(val));
+            nlr_pop();
+        } else {
+            mp_hal_stdout_tx_strn_cooked("  (could not print exception - double fault)\r\n", 47);
+        }
+    }
+    
+    mp_hal_stdout_tx_strn_cooked("MicroPython has encountered a fatal error.\r\n", 45);
+    mp_hal_stdout_tx_strn_cooked("Attempting recovery via reinit...\r\n", 35);
+    
+    // CRITICAL: Send raw REPL completion markers to unblock ViperIDE/mpremote.
+    // If this crash happened during raw REPL execution, the client is waiting
+    // for \x04\x04> to complete the transaction. Without this, ViperIDE hangs
+    // forever. Use raw tx (not cooked) so \x04 bytes aren't CRLF-mangled.
+    mp_hal_stdout_tx_strn("\x04\x04>", 3);
     
     // CRITICAL: This function is marked NORETURN - must NOT return!
-    // An infinite loop prevents stack corruption
-    // Note: We cannot safely recover from this state - trying to reinit MicroPython
-    // from within an exception handler is dangerous and could cause more corruption
-    // while(1) {
+    // An infinite loop prevents stack corruption from falling through.
+    // Reinit MicroPython to allow potential recovery by the REPL loop,
+    // then spin forever since the caller's stack frame is invalidated.
     mp_deinit();
     delay(1000);
     mp_init();
     delay(1000);
-    // Could potentially trigger a watchdog reset here if desired
-    // }
+    // Must never return from NORETURN function - spin forever
+    for(;;) { delay(1000); }
 }
 
 #ifdef __cplusplus

@@ -117,12 +117,17 @@ struct TagParserState {
     // This eliminates the need for per-character delays that caused blocking
     char command_buffer[256];      // Buffer for accumulating command content
     uint16_t command_buffer_idx;   // Current position in command buffer
+    
+    // Timeout: characters processed since entering a non-SEARCHING state
+    // Prevents the parser from getting stuck in TAG_IN_COMMAND or TAG_DETECTING
+    // if a closing tag never arrives (e.g., due to framing error or truncation)
+    uint16_t chars_in_state;       // Characters processed in current tag/command state
 };
 
 // Separate state machines for each direction
 // Initialize with zeroed command buffers
-static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0}, false, false, {0}, 0 };
-static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0}, false, false, {0}, 0 };
+static TagParserState usb_to_uart_parser = { TAG_SEARCHING, {0}, 0, {0}, false, false, {0}, 0, 0 };
+static TagParserState uart_to_usb_parser = { TAG_SEARCHING, {0}, 0, {0}, false, false, {0}, 0, 0 };
 
 // Command injection tracking (no rate limiting - process all commands immediately)
 static uint32_t s_last_command_injection_time = 0;
@@ -139,6 +144,7 @@ static uint32_t s_injected_commands = 0;
 struct UARTResponseEntry {
     char data[UART_RESPONSE_MAX_LEN];
     uint16_t length;
+    uint16_t read_offset;  // Current read position (avoids O(n²) memmove)
     bool pending;
 };
 
@@ -640,11 +646,16 @@ static inline bool process_runtime_command(uint8_t c) {
                     // Update RUNTIME state only (not config file)
                     asyncPassthroughTagParsingEnabled = new_state;
                     
-                    // Send confirmation back over UART
+                    // Send confirmation back over UART (NON-BLOCKING)
+                    // CRITICAL: Do NOT use uart_write_blocking - can hang Core 0
                     char response[64];
-                    snprintf(response, sizeof(response), "\r\nTag parsing %s\r\n", 
+                    int rlen = snprintf(response, sizeof(response), "\r\nTag parsing %s\r\n", 
                             new_state ? "enabled" : "disabled");
-                    uart_write_blocking(ASYNC_PASSTHROUGH_UART, (const uint8_t*)response, strlen(response));
+                    for (int ri = 0; ri < rlen && ri < (int)sizeof(response); ri++) {
+                        if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
+                            uart_putc_raw(ASYNC_PASSTHROUGH_UART, response[ri]);
+                        }
+                    }
                 }
             }
         }
@@ -740,11 +751,31 @@ static inline bool is_command_tag( const char* tag ) {
 static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, const char* direction ) {
     bool should_strip_tags = (jumperlessConfig.serial_1.tag_parsing == 2);  // Mode 2 = strip tags
     
+    // TIMEOUT: If we've been in a non-SEARCHING state for too many characters,
+    // the tag is malformed or we lost sync. Reset to prevent getting permanently stuck.
+    // Max command is 256 bytes + tag overhead (~40 chars) = ~300 chars max reasonable.
+    // Use 512 as a generous upper limit.
+    if ( parser->state != TAG_SEARCHING ) {
+        parser->chars_in_state++;
+        if ( parser->chars_in_state > 512 ) {
+            // Tag parser stuck - reset to searching state
+            parser->state = TAG_SEARCHING;
+            parser->tag_buffer_idx = 0;
+            parser->command_buffer_idx = 0;
+            parser->current_tag[0] = '\0';
+            parser->needs_python_prefix = false;
+            parser->seen_first_char = false;
+            parser->chars_in_state = 0;
+            return true;  // Forward the byte
+        }
+    }
+    
     switch ( parser->state ) {
         case TAG_SEARCHING:
             if ( c == '<' ) {
                 parser->state = TAG_DETECTING;
                 parser->tag_buffer_idx = 0;
+                parser->chars_in_state = 0;  // Reset timeout counter
                 memset( parser->tag_buffer, 0, sizeof(parser->tag_buffer) );
                 return !should_strip_tags; // Mode 1: forward, Mode 2: consume
             }
@@ -882,6 +913,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
                     
                     // Reset command buffer for new command
                     parser->command_buffer_idx = 0;
+                    parser->chars_in_state = 0;  // Reset timeout counter for command accumulation
                     
                     // For Python tags, prepare to inject '>' prefix if needed
                     if ( strcmp( parser->current_tag, "p" ) == 0 ) {
@@ -993,10 +1025,22 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
                 }
             }
             
-            // Write accumulated bytes to UART (non-blocking)
+            // Write accumulated bytes to UART (non-blocking to prevent Core 0 hang)
+            // CRITICAL: Do NOT use uart_write_blocking - if Arduino stops reading,
+            // the TX FIFO fills and uart_write_blocking blocks FOREVER, hanging Core 0.
             if ( forward_idx > 0 ) {
-                // delayMicroseconds( 350 );
-                uart_write_blocking( ASYNC_PASSTHROUGH_UART, forward_buf, forward_idx );
+                for ( size_t fi = 0; fi < forward_idx; fi++ ) {
+                    // Wait up to ~1ms per byte for FIFO space, then drop
+                    uint32_t wait_start = time_us_32();
+                    while ( !uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
+                        if ( (time_us_32() - wait_start) > 1000 ) {
+                            break;  // Bail out - don't hang Core 0
+                        }
+                    }
+                    if ( uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
+                        uart_putc_raw( ASYNC_PASSTHROUGH_UART, forward_buf[fi] );
+                    }
+                }
                 delayMicroseconds( 350 );
             }
         }
@@ -1053,15 +1097,25 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     
     // Process UART->USB data through tag parser (for Arduino-sent commands)
     // Limit to MAX_BYTES_PER_CALL to prevent blocking
-    // CRITICAL: Don't check avail in loop condition - drain ring buffer regardless of USB buffer state!
-    // We check per-write if there's space, but must keep draining ring to prevent overflow
-    while ( ring_pop_byte( &c ) && processed < MAX_BYTES_PER_CALL ) {
+    // CRITICAL: Check CDC write space BEFORE popping from ring buffer!
+    // Previous code popped unconditionally, losing data when CDC was full.
+    bool cdc1_connected = tud_cdc_n_connected( 1 );
+    while ( ring_available() > 0 && processed < MAX_BYTES_PER_CALL ) {
+        // Check if CDC 1 has space BEFORE popping - don't pop if we'd just drop the byte
+        if ( cdc1_connected && tud_cdc_n_write_available( 1 ) == 0 ) {
+            // CDC 1 buffer full - stop processing to avoid data loss
+            // Data stays in ring buffer and will be sent next call
+            break;
+        }
+        
+        if ( !ring_pop_byte( &c ) ) break;
+        
         // Monitor for runtime control commands (e.g., "tag parsing = on")
         // This passively monitors last 32 chars for commands, never consumes
         process_runtime_command(c);
         
         // Passthrough all data to CDC 1 (ViperIDE)
-        if ( tud_cdc_n_connected( 1 ) && tud_cdc_n_write_available( 1 ) > 0 ) {
+        if ( cdc1_connected && tud_cdc_n_write_available( 1 ) > 0 ) {
             tud_cdc_n_write_char( 1, c );
             wrote++;
         }
@@ -1944,6 +1998,7 @@ void clearTagParserState() {
     usb_to_uart_parser.command_buffer_idx = 0;
     usb_to_uart_parser.needs_python_prefix = false;
     usb_to_uart_parser.seen_first_char = false;
+    usb_to_uart_parser.chars_in_state = 0;
     
     // Reset UART->USB parser
     uart_to_usb_parser.state = TAG_SEARCHING;
@@ -1952,6 +2007,7 @@ void clearTagParserState() {
     uart_to_usb_parser.command_buffer_idx = 0;
     uart_to_usb_parser.needs_python_prefix = false;
     uart_to_usb_parser.seen_first_char = false;
+    uart_to_usb_parser.chars_in_state = 0;
     
     // Clear the runtime command ring buffer too
     memset(s_runtime_cmd_ring, 0, sizeof(s_runtime_cmd_ring));
@@ -1984,6 +2040,7 @@ bool queueUARTResponse(const char* data, size_t len) {
     memcpy(entry->data, data, len);
     entry->data[len] = '\0';
     entry->length = len;
+    entry->read_offset = 0;
     entry->pending = true;
     
     s_uart_response_head = (s_uart_response_head + 1) % UART_RESPONSE_QUEUE_SIZE;
@@ -2005,21 +2062,19 @@ void sendPendingUARTResponses() {
     // First, drain the legacy queue (for backwards compatibility)
     while (s_uart_response_count > 0 && bytesSent < MAX_BYTES_PER_CALL) {
         UARTResponseEntry* entry = &s_uart_response_queue[s_uart_response_tail];
-        if (entry->pending && entry->length > 0) {
+        if (entry->pending && entry->read_offset < entry->length) {
             // Write bytes one at a time, checking FIFO space
-            while (entry->length > 0 && bytesSent < MAX_BYTES_PER_CALL) {
+            while (entry->read_offset < entry->length && bytesSent < MAX_BYTES_PER_CALL) {
                 if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
-                    uart_putc_raw(ASYNC_PASSTHROUGH_UART, entry->data[0]);
-                    // Shift data (inefficient but simple for legacy queue)
-                    memmove(entry->data, entry->data + 1, entry->length - 1);
-                    entry->length--;
+                    uart_putc_raw(ASYNC_PASSTHROUGH_UART, entry->data[entry->read_offset]);
+                    entry->read_offset++;
                     bytesSent++;
                 } else {
                     // UART FIFO full, try again next call
                     return;
                 }
             }
-            if (entry->length == 0) {
+            if (entry->read_offset >= entry->length) {
                 entry->pending = false;
             }
         }

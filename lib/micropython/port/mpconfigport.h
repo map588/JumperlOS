@@ -40,6 +40,8 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_MEM_STATS           (1)  
 #define MICROPY_KBD_EXCEPTION      (1)
 
+#define MICROPY_ENABLE_VM_ABORT (1)
+
 #define MICROPY_CONFIG_ROM_LEVEL  MICROPY_CONFIG_ROM_LEVEL_FULL_FEATURES
 
 // Enable compiler and event-driven REPL for pyexec_event_repl_process_char()
@@ -238,10 +240,10 @@ void jl_after_python_exec_hook(int parse_input_kind, unsigned int exec_flags, vo
 #define MP_HAL_CHECK_INTERRUPT_DECLARED 1
 #define MICROPY_VM_HOOK_LOOP  mp_hal_check_interrupt();
 
-// Hook called before script execution begins
-// This allows notification when a script is about to execute
-#define MICROPY_BOARD_BEFORE_PYTHON_EXEC jl_before_python_exec_hook
+// // Hook called before script execution begins
+// // This allows notification when a script is about to execute
+// #define MICROPY_BOARD_BEFORE_PYTHON_EXEC jl_before_python_exec_hook
 
-// CRITICAL: Hook called after every script execution to perform cleanup
-// This is where we trigger garbage collection to free memory for the next script
-#define MICROPY_BOARD_AFTER_PYTHON_EXEC  jl_after_python_exec_hook
+// // CRITICAL: Hook called after every script execution to perform cleanup
+// // This is where we trigger garbage collection to free memory for the next script
+// #define MICROPY_BOARD_AFTER_PYTHON_EXEC  jl_after_python_exec_hook
