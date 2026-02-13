@@ -103,6 +103,13 @@ ServiceStatus MpRemoteService::service( ) {
     static bool repl_initialized = false;
     bool current_dtr = USBSer2; // CDC bool returns true if connected and DTR asserted
 
+    // CRITICAL: Save current stream state BEFORE any setGlobalStreamWithInterrupt calls.
+    // During script execution (e.g. time.sleep()), serviceCritical() calls us.
+    // Without save/restore, setGlobalStreamWithInterrupt(&USBSer2) permanently
+    // redirects stdout to USBSer2, making print() output from Serial REPL scripts
+    // invisible — characters appear "dropped" on the Serial terminal.
+    Stream* saved_stream = global_mp_stream;
+
     // When DTR goes from low to high (new connection), initialize event REPL
     if ( !repl_initialized) {
         if ( m_debug ) {
@@ -125,6 +132,10 @@ ServiceStatus MpRemoteService::service( ) {
 
     // Check if USBSer2 has data available
     if ( !USBSer2 || USBSer2.available( ) == 0 ) {
+        // Restore stream if init block switched it (first call only)
+        if (saved_stream && global_mp_stream != saved_stream) {
+            setGlobalStreamWithInterrupt(saved_stream);
+        }
         return m_in_raw_repl ? ServiceStatus::BUSY : ServiceStatus::IDLE;
     }
 
@@ -237,6 +248,12 @@ ServiceStatus MpRemoteService::service( ) {
             writeResponse( "soft reboot\r\n" );
             sendRawReplPrompt( );
         }
+    }
+
+    // CRITICAL: Restore the stream that was active before we switched to USBSer2.
+    // This ensures Serial REPL script I/O isn't permanently redirected.
+    if (saved_stream && saved_stream != &USBSer2) {
+        setGlobalStreamWithInterrupt(saved_stream);
     }
 
     return m_in_raw_repl ? ServiceStatus::BUSY : ServiceStatus::IDLE;

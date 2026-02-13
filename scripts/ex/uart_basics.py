@@ -20,5 +20,5 @@ time.sleep(1)
 
 buffer = "Sup Arduino"
 while True:
-    j.uart.write(buffer)
-    j.time.sleep(0.5)
+    uart.write(buffer)
+    time.sleep(0.5)

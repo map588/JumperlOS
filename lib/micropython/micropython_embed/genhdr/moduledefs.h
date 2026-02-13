@@ -32,6 +32,10 @@ extern const struct _mp_obj_module_t mp_module_platform;
 #undef MODULE_DEF_PLATFORM
 #define MODULE_DEF_PLATFORM { MP_ROM_QSTR(MP_QSTR_platform), MP_ROM_PTR(&mp_module_platform) },
 
+extern const struct _mp_obj_module_t mp_module_select;
+#undef MODULE_DEF_SELECT
+#define MODULE_DEF_SELECT { MP_ROM_QSTR(MP_QSTR_select), MP_ROM_PTR(&mp_module_select) },
+
 extern const struct _mp_obj_module_t mp_module_struct;
 #undef MODULE_DEF_STRUCT
 #define MODULE_DEF_STRUCT { MP_ROM_QSTR(MP_QSTR_struct), MP_ROM_PTR(&mp_module_struct) },
@@ -44,6 +48,10 @@ extern const struct _mp_obj_module_t mp_module___main__;
 #undef MODULE_DEF___MAIN__
 #define MODULE_DEF___MAIN__ { MP_ROM_QSTR(MP_QSTR___main__), MP_ROM_PTR(&mp_module___main__) },
 
+extern const struct _mp_obj_module_t mp_module_asyncio;
+#undef MODULE_DEF__ASYNCIO
+#define MODULE_DEF__ASYNCIO { MP_ROM_QSTR(MP_QSTR__asyncio), MP_ROM_PTR(&mp_module_asyncio) },
+
 extern const struct _mp_obj_module_t mp_module_builtins;
 #undef MODULE_DEF_BUILTINS
 #define MODULE_DEF_BUILTINS { MP_ROM_QSTR(MP_QSTR_builtins), MP_ROM_PTR(&mp_module_builtins) },
@@ -51,6 +59,14 @@ extern const struct _mp_obj_module_t mp_module_builtins;
 extern const struct _mp_obj_module_t mp_module_cmath;
 #undef MODULE_DEF_CMATH
 #define MODULE_DEF_CMATH { MP_ROM_QSTR(MP_QSTR_cmath), MP_ROM_PTR(&mp_module_cmath) },
+
+extern const struct _mp_obj_module_t mp_module_deflate;
+#undef MODULE_DEF_DEFLATE
+#define MODULE_DEF_DEFLATE { MP_ROM_QSTR(MP_QSTR_deflate), MP_ROM_PTR(&mp_module_deflate) },
+
+extern const struct _mp_obj_module_t mp_module_framebuf;
+#undef MODULE_DEF_FRAMEBUF
+#define MODULE_DEF_FRAMEBUF { MP_ROM_QSTR(MP_QSTR_framebuf), MP_ROM_PTR(&mp_module_framebuf) },
 
 extern const struct _mp_obj_module_t mp_module_gc;
 #undef MODULE_DEF_GC
@@ -88,6 +104,8 @@ extern const struct _mp_obj_module_t mp_module_uctypes;
 #define MICROPY_REGISTERED_MODULES \
     MODULE_DEF_BUILTINS \
     MODULE_DEF_CMATH \
+    MODULE_DEF_DEFLATE \
+    MODULE_DEF_FRAMEBUF \
     MODULE_DEF_GC \
     MODULE_DEF_JFS \
     MODULE_DEF_JUMPERLESS \
@@ -96,6 +114,7 @@ extern const struct _mp_obj_module_t mp_module_uctypes;
     MODULE_DEF_MICROPYTHON \
     MODULE_DEF_SYS \
     MODULE_DEF_UCTYPES \
+    MODULE_DEF__ASYNCIO \
     MODULE_DEF___MAIN__ \
 // MICROPY_REGISTERED_MODULES
 
@@ -108,6 +127,7 @@ extern const struct _mp_obj_module_t mp_module_uctypes;
     MODULE_DEF_MACHINE \
     MODULE_DEF_OS \
     MODULE_DEF_PLATFORM \
+    MODULE_DEF_SELECT \
     MODULE_DEF_STRUCT \
     MODULE_DEF_TIME \
 // MICROPY_REGISTERED_EXTENSIBLE_MODULES

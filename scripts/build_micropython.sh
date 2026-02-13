@@ -128,11 +128,16 @@ SRC_EXTMOD_C = \
 	extmod/vfs_reader.c \
 	extmod/modos.c \
 	extmod/modbinascii.c \
+	extmod/modselect.c \
+	extmod/modasyncio.c \
+	extmod/moddeflate.c \
+	extmod/modframebuf.c \
 
 # Define shared source files we want
 SRC_SHARED_C = \
 	shared/readline/readline.c \
 	shared/runtime/pyexec.c \
+	shared/runtime/sys_stdio_mphal.c \
 
 # Define driver files for soft I2C/SPI
 SRC_DRIVERS_C = \
@@ -203,6 +208,15 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/extmod/vfs.h $(PACKAGE_DIR)/extmod
 	$(Q)$(CP) $(TOP)/extmod/modos.c $(PACKAGE_DIR)/extmod
 	$(Q)$(CP) $(TOP)/extmod/modbinascii.c $(PACKAGE_DIR)/extmod
+	# Select module for poll-based I/O and asyncio
+	$(Q)$(CP) $(TOP)/extmod/modselect.c $(PACKAGE_DIR)/extmod
+	# Asyncio C acceleration module (_asyncio)
+	$(Q)$(CP) $(TOP)/extmod/modasyncio.c $(PACKAGE_DIR)/extmod
+	# Deflate/zlib decompression module
+	$(Q)$(CP) $(TOP)/extmod/moddeflate.c $(PACKAGE_DIR)/extmod
+	# Framebuffer module + font data
+	$(Q)$(CP) $(TOP)/extmod/modframebuf.c $(PACKAGE_DIR)/extmod
+	$(Q)$(CP) $(TOP)/extmod/font_petme128_8x8.h $(PACKAGE_DIR)/extmod
 	# Machine bitstream support (compiled)
 	$(Q)$(CP) $(TOP)/extmod/machine_bitstream.c $(PACKAGE_DIR)/extmod || true
 	# Machine peripheral support files (glue layer from extmod)
@@ -231,10 +245,7 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(ECHO) "- lib/uzlib (for binascii/crc32)"
 	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/lib/uzlib || true
 	$(Q)$(CP) $(TOP)/lib/uzlib/*.[ch] $(PACKAGE_DIR)/lib/uzlib
-	# Compression helpers (defl_static) need extra config types we don't build; drop them
-	$(Q)$(RM) -f $(PACKAGE_DIR)/lib/uzlib/defl_static.c
-	# lz77 pulls in defl_static; drop it to avoid missing include
-	$(Q)$(RM) -f $(PACKAGE_DIR)/lib/uzlib/lz77.c
+	# Keep all uzlib files — lz77.c includes defl_static.c, and moddeflate.c includes lz77.c
 
 	$(ECHO) "- shared"
 	$(Q)$(CP) $(TOP)/shared/runtime/gchelper.h $(PACKAGE_DIR)/shared/runtime
@@ -242,6 +253,7 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/shared/runtime/pyexec.h $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(CP) $(TOP)/shared/runtime/pyexec.c $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(CP) $(TOP)/shared/runtime/mpirq.h $(PACKAGE_DIR)/shared/runtime
+	$(Q)$(CP) $(TOP)/shared/runtime/sys_stdio_mphal.c $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/shared/timeutils || true
 	$(Q)$(CP) $(TOP)/shared/timeutils/*.h $(PACKAGE_DIR)/shared/timeutils || true
 	$(Q)$(CP) $(TOP)/shared/timeutils/*.c $(PACKAGE_DIR)/shared/timeutils || true
@@ -315,6 +327,8 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     TIME_QSTRS=$(grep -c "time\|sleep\|ticks" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     MACHINE_QSTRS=$(grep -c "machine\|Pin\|ADC\|PWM\|Timer\|RTC\|WDT\|I2C\|SPI" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     PERIPHERAL_QSTRS=$(grep -c "duty_u16\|duty_ns\|freq\|baudrate\|read_u16\|datetime\|feed\|scan\|writeto\|readfrom" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
+    SELECT_QSTRS=$(grep -c "select\|poll\|ipoll" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
+    ASYNCIO_QSTRS=$(grep -c "asyncio\|TaskQueue\|CancelledError" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     
     echo -e "${GREEN}◆ MicroPython embed build successful!${NC}"
     echo -e "${GREEN}   Generated $QSTR_COUNT total QSTR definitions${NC}"
@@ -326,8 +340,10 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     echo -e "${GREEN}   Time module QSTRs found: $TIME_QSTRS${NC}"
     echo -e "${GREEN}   Machine module QSTRs found: $MACHINE_QSTRS${NC}"
     echo -e "${GREEN}   Peripheral method QSTRs found: $PERIPHERAL_QSTRS${NC}"
+    echo -e "${GREEN}   Select/poll QSTRs found: $SELECT_QSTRS${NC}"
+    echo -e "${GREEN}   Asyncio QSTRs found: $ASYNCIO_QSTRS${NC}"
     echo -e "${GREEN}   Files ready for PlatformIO integration with embed API${NC}"
-    echo -e "${GREEN}   Available modules: time, machine (Pin,PWM,ADC,Timer,RTC,WDT,I2C,SPI,UART), os, math, gc, array, etc.${NC}"
+    echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, select, asyncio, deflate, framebuf, etc.${NC}"
 else
     echo -e "${RED}◇ MicroPython embed build failed!${NC}"
     echo -e "${RED}   qstrdefs.generated.h not found${NC}"
@@ -350,6 +366,7 @@ fi
 
 echo -e "${GREEN}◆ MicroPython embed port is ready with built-in modules!${NC}"
 echo -e "${GREEN}   You can now use: mp_embed_init(), mp_embed_exec_str(), mp_embed_deinit()${NC}"
-echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, binascii, etc.${NC}"
+echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, binascii, select, deflate, framebuf, etc.${NC}"
+echo -e "${GREEN}   C acceleration: _asyncio (full asyncio needs Python files on filesystem)${NC}"
 echo -e "${GREEN}   Machine peripherals: Pin, PWM, ADC, Timer, RTC, WDT, I2C, SPI, UART${NC}"
 echo -e "${GREEN}   Machine functions: reset(), unique_id(), reset_cause(), freq(), bootloader()${NC}" 

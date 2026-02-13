@@ -3081,6 +3081,9 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #ifdef INCLUDE_ADC_BASICS
         { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py" },
 #endif
+#ifdef INCLUDE_ASYNC_READ
+        { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py" },
+#endif
 #ifdef INCLUDE_GPIO_BASICS
         { "/python_scripts/examples/gpio_basics.py", GPIO_BASICS_PY, "gpio_basics.py" },
 #endif

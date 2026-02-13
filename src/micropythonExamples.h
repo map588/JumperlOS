@@ -11,6 +11,7 @@
 // Define which examples to include at compile time
 // Comment out any example you don't want to include
 #define INCLUDE_ADC_BASICS
+#define INCLUDE_ASYNC_READ
 #define INCLUDE_DAC_BASICS
 #define INCLUDE_GPIO_BASICS
 #define INCLUDE_INTERACTION_DEMO
@@ -44,6 +45,7 @@
 
 #ifdef DISABLE_ALL_EXAMPLES
 #undef INCLUDE_ADC_BASICS
+#undef INCLUDE_ASYNC_READ
 #undef INCLUDE_DAC_BASICS
 #undef INCLUDE_GPIO_BASICS
 #undef INCLUDE_INTERACTION_DEMO
@@ -113,6 +115,56 @@ while True:
         print("  ADC" + str(channel) + ": " + str(round(voltage, 3)) + "V")
     time.sleep(0.5)
             
+)";
+#endif
+
+#ifdef INCLUDE_ASYNC_READ
+const char* ASYNC_READ_PY = R"("""
+This isn't even Jumperless specific, it's just a demo of using select.poll() to check for input on stdin without blocking.
+"""
+import sys
+import select
+import time
+
+# Create a poll object
+poll_obj = select.poll()
+
+# Register sys.stdin for polling on input events
+poll_obj.register(sys.stdin, select.POLLIN)
+
+print("Polling stdin, Ctrl+C to exit:")
+
+while True:
+    # Poll with 0 timeout is nonblocking
+    events = poll_obj.poll(0) 
+
+    if events:
+        # Data is available. The 'events' list contains tuples of (object, event_mask)
+        for obj, event in events:
+            
+            print("ack") # it occasionally drops the first chars if it doesn't poll at the right time, so maybe send some sort of request to send and wait for an ack?
+            
+            while obj is sys.stdin and event & select.POLLIN:
+
+                char = sys.stdin.read(1) 
+                
+                if char:
+                    print(f"{char}", end='')
+                else:
+                 
+                    print("End of input stream (EOF detected). Exiting.")
+                    break
+                if char == '\n':
+                    break
+
+    sleep_start = time.ticks_ms()
+    
+    while time.ticks_ms() - sleep_start < 1000:
+        events = poll_obj.poll(0) 
+        if events:
+            break
+            
+        # print("loop")
 )";
 #endif
 
@@ -1953,8 +2005,8 @@ time.sleep(1)
 
 buffer = "Sup Arduino"
 while True:
-    j.uart.write(buffer)
-    j.time.sleep(0.5)
+    uart.write(buffer)
+    time.sleep(0.5)
 )";
 #endif
 
@@ -1969,8 +2021,8 @@ import time
     
 uart = UART(0, 115200)
 uart.init(115200, 8, None, 1)
-j.connect(j.UART_TX, j.D0)
-j.connect(j.UART_RX, j.D0)
+j.connect(j.UART_TX, j.D0, 0)
+j.connect(j.UART_RX, j.D0, 0)
 
 buffer = "UART looped back!"
 
@@ -4391,6 +4443,9 @@ const char* VIPERIDE_REINIT_PY = R"(if True:
 // #endif
 // #ifdef INCLUDE_ADC_BASICS
 //     { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py" },
+// #endif
+// #ifdef INCLUDE_ASYNC_READ
+//     { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py" },
 // #endif
 // #ifdef INCLUDE_DAC_BASICS
 //     { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py" },

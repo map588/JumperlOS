@@ -14,6 +14,7 @@
 #include "SingleCharCommands.h"
 #include "configManager.h"  // For ConfigSaveService
 #include "MpRemoteService.h"
+#include "Python_Proper.h"   // For isMicroPythonREPLActive()
 #include "CH446Q.h"         // For LiveCrossbarService
 #include "MatrixState.h"    // For net color access
 
@@ -566,6 +567,16 @@ ServiceStatus TermSerialService::service() {
     // Only service if line buffering is enabled for user input
     // Injected commands are handled separately by InjectedCommandService (fast path)
     if (jumperlessConfig.display.terminal_line_buffering != 1) {
+        return lastStatus;
+    }
+    
+    // CRITICAL: Don't consume Serial input when MicroPython owns stdin.
+    // During REPL or script execution (e.g. time.sleep()), TermControl::service()
+    // reads from Serial via stream->read(), stealing characters that should go to
+    // MicroPython's sys.stdin. This causes select.poll()+read(1) loops to drop
+    // characters (every-other-char pattern) because serviceCritical() calls us
+    // every 50ms during mp_hal_delay_ms.
+    if (isMicroPythonREPLActive()) {
         return lastStatus;
     }
     

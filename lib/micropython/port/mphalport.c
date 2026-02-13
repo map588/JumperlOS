@@ -44,6 +44,7 @@ extern int jl_fs_exists(const char* path);
 
 // Import the global stream from our main Arduino code
 extern void* global_mp_stream_ptr;
+extern void* mp_stdin_locked_stream_ptr;  // When non-NULL, stdin is locked to this stream
 extern void arduino_serial_write(const char *str, int len, void *stream);
 extern int arduino_serial_read(void *stream);
 extern const mp_obj_type_t mp_type_jfs_file;
@@ -66,10 +67,15 @@ typedef struct _mp_obj_jfs_file_t {
 
 // Send string of given length to stdout (raw).
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
+    // DEFENSE-IN-DEPTH: When Serial REPL script is executing (lock set),
+    // use the locked stream for stdout to prevent MpRemoteService redirection.
+    void *out_ptr = (mp_stdin_locked_stream_ptr && mp_stdin_locked_stream_ptr != global_mp_stream_ptr)
+                    ? mp_stdin_locked_stream_ptr
+                    : global_mp_stream_ptr;
     // CRITICAL: Check for NULL and validate pointer before writing
     // During soft reset, global_mp_stream_ptr might be temporarily invalid
-    if (global_mp_stream_ptr && (uintptr_t)global_mp_stream_ptr > 0x20000000) {
-        arduino_serial_write(str, len, global_mp_stream_ptr);
+    if (out_ptr && (uintptr_t)out_ptr > 0x20000000) {
+        arduino_serial_write(str, len, out_ptr);
     }
     return len;
 }
@@ -93,9 +99,16 @@ extern int getCurrentInterruptChar(void);
 // input(). Without USB servicing here, the USB CDC layer desyncs and causes
 // hard faults when the script tries to write output after input() returns.
 int mp_hal_stdin_rx_chr(void) {
-    void *stdin_stream = global_mp_stream_ptr;
+    // Use locked stream if set (prevents MpRemoteService from redirecting stdin
+    // to USBSer2 during time.sleep via serviceCritical), else fall back to global.
+    void *stdin_stream = mp_stdin_locked_stream_ptr ? mp_stdin_locked_stream_ptr : global_mp_stream_ptr;
     if (stdin_stream) {
         for (;;) {
+            // Service USB before reading to ensure any pending USB packets
+            // are moved into the CDC FIFO. Prevents character loss when
+            // reading in quick succession (e.g., select.poll + read loop).
+            extern void service_usb_task(void);
+            service_usb_task();
             int c = arduino_serial_read(stdin_stream);
             if (c != -1) {
                 // RACE CONDITION FIX: arduino_serial_read() can consume the
@@ -142,7 +155,9 @@ int mp_hal_stdin_rx_chr(void) {
 
             // The active input stream can change at runtime (e.g., friendly REPL
             // to raw REPL transport). Re-sync to current stream pointer.
-            if (stdin_stream != global_mp_stream_ptr) {
+            // But NOT when stdin is locked during script execution — the lock
+            // exists precisely to prevent MpRemoteService from redirecting stdin.
+            if (!mp_stdin_locked_stream_ptr && stdin_stream != global_mp_stream_ptr) {
                 stdin_stream = global_mp_stream_ptr;
                 if (!stdin_stream) {
                     return -1;
@@ -227,8 +242,84 @@ mp_uint_t mp_hal_ticks_cpu(void) {
     return micros();
 }
 
+// time.time() support — returns seconds since Epoch as mp_obj_t
+// Called by extmod/modtime.c when MICROPY_PY_TIME_TIME_TIME_NS is enabled.
+// Uses the RP2350's always-on timer (same hardware as machine.RTC).
+#include "pico/aon_timer.h"
+
+mp_obj_t mp_time_time_get(void) {
+    struct timespec ts;
+    if (aon_timer_is_running()) {
+        aon_timer_get_time(&ts);
+    } else {
+        // AON timer not started — return millis-based uptime in seconds
+        ts.tv_sec = (time_t)(millis() / 1000);
+        ts.tv_nsec = 0;
+    }
+    return mp_obj_new_int_from_ull((uint64_t)ts.tv_sec);
+}
+
+// time.time_ns() support — returns nanoseconds since Epoch
+uint64_t mp_hal_time_ns(void) {
+    struct timespec ts;
+    if (aon_timer_is_running()) {
+        aon_timer_get_time(&ts);
+    } else {
+        ts.tv_sec = (time_t)(millis() / 1000);
+        ts.tv_nsec = (long)((millis() % 1000) * 1000000ULL);
+    }
+    return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
+}
+
 // Get CPU frequency in Hz - required by machine.bitstream for precise timing
 uint32_t mp_hal_get_cpu_freq(void) {
     return clock_get_hz(clk_sys);
+}
+
+// Forward declaration for checking serial data availability
+extern int arduino_serial_available(void *stream);
+
+// ---- HAL functions required by shared/runtime/sys_stdio_mphal.c ----
+// sys_stdio_mphal.c provides the canonical sys.stdin/stdout/stderr objects.
+// It needs these three HAL functions from the port:
+//   mp_hal_stdin_rx_chr()  — already implemented above
+//   mp_hal_stdout_tx_strn_cooked()  — implemented here
+//   mp_hal_stdio_poll()  — implemented here
+
+#include "py/stream.h"
+
+// Send string of given length to stdout, converting \n to \r\n.
+void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
+    // For our USB CDC stream, raw output is fine — the terminal handles \n.
+    // If a host needs \r\n, the stream adapter or terminal emulator handles it.
+    mp_hal_stdout_tx_strn(str, len);
+}
+
+// Poll stdin/stdout for readability/writability.
+// Called by sys_stdio_mphal.c's ioctl handler for select.poll() support.
+mp_uint_t mp_hal_stdio_poll(mp_uint_t poll_flags) {
+    // CRITICAL: Service USB BEFORE checking availability.
+    // Without this, characters sitting in USB hardware buffers won't be
+    // moved into the CDC software FIFO, causing select.poll() to return
+    // empty even though data has arrived. This causes dropped characters
+    // in tight poll+read loops (e.g., TermRead example from MicroPython
+    // discussion #11448).
+    extern void service_usb_task(void);
+    service_usb_task();
+
+    // Use locked stream if set (prevents MpRemoteService from redirecting
+    // stdin to USBSer2 during time.sleep), else fall back to global.
+    void *poll_stream = mp_stdin_locked_stream_ptr ? mp_stdin_locked_stream_ptr : global_mp_stream_ptr;
+
+    mp_uint_t ret = 0;
+    if ((poll_flags & MP_STREAM_POLL_RD) &&
+        poll_stream && arduino_serial_available(poll_stream)) {
+        ret |= MP_STREAM_POLL_RD;
+    }
+    if (poll_flags & MP_STREAM_POLL_WR) {
+        // USB CDC is always writable
+        ret |= MP_STREAM_POLL_WR;
+    }
+    return ret;
 }
 

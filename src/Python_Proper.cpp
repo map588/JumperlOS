@@ -92,6 +92,12 @@ Stream *mp_interrupt_check_stream = &Serial;
 // C-compatible pointer for HAL functions
 extern "C" {
     void *global_mp_stream_ptr = (void *)&Serial;
+    // When non-NULL, mp_hal_stdio_poll() and mp_hal_stdin_rx_chr() use this
+    // instead of global_mp_stream_ptr for stdin operations.  This prevents
+    // MpRemoteService::service() (called during time.sleep via serviceCritical)
+    // from switching the stdin stream away from Serial to USBSer2, which causes
+    // select.poll() to check the wrong CDC port and drop characters.
+    void *mp_stdin_locked_stream_ptr = nullptr;
 }
 
 // Forward declaration for color function (from Graphics.cpp)
@@ -235,6 +241,15 @@ extern "C" int arduino_serial_read(Stream *stream) {
   return c;
 }
 
+// Wrapper callable from C code (mphalport.c) to service USB.
+// tud_task() itself is available in C++ but not directly linkable from
+// the micropython library's C compilation units.
+extern "C" void service_usb_task(void) {
+  #ifdef USE_TINYUSB
+  tud_task();
+  #endif
+}
+
 extern "C" void arduino_serial_write(const char *str, int len, void *stream) {
   Stream *s = (Stream *)stream;
   if (s) {
@@ -303,7 +318,7 @@ extern "C" mp_uint_t mp_hal_set_interrupt_char(int c) {
 
     if (global_mp_stream && !is_mpremote_active && char_changed && is_real_char && !is_restoration) {
         char char_name = (c >= 1 && c <= 26) ? (char)(c + 64) : '?';
-        global_mp_stream->printf("[MP] Keyboard interrupt character set to Ctrl+%c (ASCII %d)\n\r", char_name, c);
+        // global_mp_stream->printf("[MP] Keyboard interrupt character set to Ctrl+%c (ASCII %d)\n\r", char_name, c);
     }
     
     prev_interrupt_char = c;
@@ -382,10 +397,15 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     
     // Basic output to global stream (regular MicroPython output)
     if (global_mp_stream) {
-        bool is_raw_repl_stream = (global_mp_stream == &USBSer2);
-        if (global_mp_stream_ptr == (void *)&USBSer2) {
-          is_raw_repl_stream = true;
+        // DEFENSE-IN-DEPTH: When a Serial REPL script is executing (lock is set),
+        // use the locked stream for stdout too. This prevents MpRemoteService from
+        // redirecting print() output to USBSer2 even if save/restore is bypassed.
+        Stream* out_stream = global_mp_stream;
+        if (mp_stdin_locked_stream_ptr && (Stream*)mp_stdin_locked_stream_ptr != &USBSer2) {
+            out_stream = (Stream*)mp_stdin_locked_stream_ptr;
         }
+
+        bool is_raw_repl_stream = (out_stream == &USBSer2);
 
         for (size_t i = 0; i < len; i++) {
             // CRITICAL: Service USB every 32 characters to prevent CDC buffer deadlock
@@ -398,30 +418,16 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
 
             if (!is_raw_repl_stream && str[i] == '\n') {
                 // Friendly REPL / main Serial: normalize to CRLF
-                //Serial.printf("[MP-OUT] CRLF\n");
-                global_mp_stream->write('\r');
-                global_mp_stream->write('\n');
+                out_stream->write('\r');
+                out_stream->write('\n');
 
             } else {
                 // Raw REPL stream: send bytes verbatim (no CR injection)
-                global_mp_stream->write(str[i]);
-
-              //   if (MpRemoteService::getInstance().isDebugEnabled()) {
-              //     //Serial.printf("[MpRemote] Tx: ");
-              //     // Print with escape sequences shown
-                 
-              //         if (str[i] == '\r') Serial.print("\\r");
-              //         else if (str[i] == '\n') Serial.print("\\n");
-              //         else if (str[i] < 0x20) Serial.printf("\\x%02X", str[i]);
-              //         else Serial.write(str[i]);
-                  
-              //    //Serial.println();
-              // }
-                
+                out_stream->write(str[i]);
             }
         }
         // Service USB after output to ensure data starts transmitting
-        global_mp_stream->flush();
+        out_stream->flush();
     }
     
     // UART Response Capture: If this command came from UART, also queue output there
@@ -949,6 +955,7 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
       mp_handle_pending(false);
       mp_interrupt_requested = false;
       MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
+      mp_stdin_locked_stream_ptr = nullptr;  // Clear stdin lock on exception
       
       // Print diagnostic info using Serial directly (bypasses MicroPython I/O).
       // NOTE: Do NOT call mp_obj_print_exception here — it's a C function and
@@ -1561,7 +1568,9 @@ void processMicroPythonInput(Stream *stream) {
                 history.addToHistory(contentToExecute);
                 
                 // Execute the script
+                mp_stdin_locked_stream_ptr = (void*)global_mp_stream;  // Lock stdin
                 mp_embed_exec_str(contentToExecute.c_str());
+                mp_stdin_locked_stream_ptr = nullptr;  // Unlock stdin
                 // Clear stale interrupt/exception state after script execution
                 mp_interrupt_requested = false;
                 MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
@@ -1937,7 +1946,9 @@ void processMicroPythonInput(Stream *stream) {
               jl_init_micropython_local_copy();
 
               // Execute the complete script
+              mp_stdin_locked_stream_ptr = (void*)global_mp_stream;  // Lock stdin
               mp_embed_exec_str(script_to_execute.c_str());
+              mp_stdin_locked_stream_ptr = nullptr;  // Unlock stdin
               // Clear stale interrupt/exception state after script execution
               mp_interrupt_requested = false;
               MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
@@ -2103,7 +2114,9 @@ void processMicroPythonInput(Stream *stream) {
               history.resetHistoryNavigation();
 
               // Let MicroPython handle the complete statement
+              mp_stdin_locked_stream_ptr = (void*)global_mp_stream;  // Lock stdin to current REPL stream
               mp_embed_exec_str(input_buffer);
+              mp_stdin_locked_stream_ptr = nullptr;  // Unlock stdin
               
               // CRITICAL FIX: Clear stale interrupt/exception state after script execution.
               // When input() is interrupted (Ctrl+C) or script terminates:
@@ -2258,7 +2271,9 @@ void processMicroPythonInput(Stream *stream) {
               history.addToHistory(contentToExecute);
               
               // Execute the script
+              mp_stdin_locked_stream_ptr = (void*)global_mp_stream;  // Lock stdin
               mp_embed_exec_str(contentToExecute.c_str());
+              mp_stdin_locked_stream_ptr = nullptr;  // Unlock stdin
               // Clear stale interrupt/exception state after script execution
               mp_interrupt_requested = false;
               MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;

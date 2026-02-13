@@ -135,8 +135,8 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_PY_MACHINE_PWM_INCLUDEFILE      "../../lib/micropython/port/machine_pwm_jl.c"
 
 #define MICROPY_PY_MACHINE_SPI                  (1)  // Enable hardware SPI
-#define MICROPY_PY_MACHINE_SPI_MSB              (0)  // MSB first (standard)
-#define MICROPY_PY_MACHINE_SPI_LSB              (1)  // LSB first
+#define MICROPY_PY_MACHINE_SPI_MSB              (1)  // MSB first (standard)
+#define MICROPY_PY_MACHINE_SPI_LSB              (0)  // LSB first
 #define MICROPY_PY_MACHINE_SOFTSPI              (1)  // Enable software SPI
 
 #define MICROPY_PY_MACHINE_I2C                  (1)  // Enable hardware I2C
@@ -163,7 +163,20 @@ typedef uint32_t mp_hal_pin_obj_t;
 // Allow port to extend machine module (e.g., expose Pin, Timer, RTC, etc.)
 #define MICROPY_PY_MACHINE_INCLUDEFILE          "../../lib/micropython/port/modmachine_jl.inc"
 
-// Additional useful modules - disable to save memory
+// Select module - required for asyncio and poll-based I/O
+#define MICROPY_PY_SELECT           (1)
+#define MICROPY_PY_SELECT_POSIX_OPTIMISATIONS (0)  // No POSIX poll on baremetal
+#define MICROPY_PY_SELECT_SELECT    (1)            // Enable select.select() baremetal impl
+
+// Asyncio module (C acceleration: _asyncio provides TaskQueue/Task types)
+// Note: Full 'import asyncio' also requires the Python package from
+// micropython/extmod/asyncio/ to be available on the filesystem
+#define MICROPY_PY_ASYNCIO          (1)
+
+// Framebuffer module for display/pixel manipulation
+#define MICROPY_PY_FRAMEBUF         (1)
+
+// Additional useful modules
 #define MICROPY_PY_ONEWIRE          (1)
 
 // Optimize for size but keep features
@@ -207,8 +220,9 @@ typedef uint32_t mp_hal_pin_obj_t;
 // User C modules (Jumperless module will be added here)
 #define MODULE_JUMPERLESS_ENABLED   (1)
 
-// Force all print output through our HAL functions instead of sys.stdout
-#define MICROPY_PY_SYS_STDFILES     (0)
+// Expose sys.stdin, sys.stdout, sys.stderr as Python file objects
+// These wrap mp_hal_stdin_rx_chr / mp_hal_stdout_tx_strn from mphalport.c
+#define MICROPY_PY_SYS_STDFILES     (1)
 
 // Board name for sys.platform
 #define MICROPY_HW_BOARD_NAME "jumperless-v5"

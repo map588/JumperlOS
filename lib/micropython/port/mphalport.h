@@ -29,6 +29,7 @@ mp_uint_t mp_hal_ticks_ms(void);
 mp_uint_t mp_hal_ticks_us(void);
 mp_uint_t mp_hal_ticks_cpu(void);
 uint32_t mp_hal_get_cpu_freq(void);
+uint64_t mp_hal_time_ns(void);
 
 // Fast delay for soft I2C/SPI - just use regular delay
 #define mp_hal_delay_us_fast(us) mp_hal_delay_us(us)
