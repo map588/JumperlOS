@@ -15,6 +15,7 @@
 #include "Graphics.h"
 #include "Menus.h"
 #include "Commands.h"
+#include <cstdint>
 
 
 
@@ -179,7 +180,7 @@ void printRotaryEncoderStatus(void) {
 }
 
 unsigned long buttonHoldTimer = 0;
-unsigned long buttonHoldLength = 500;
+unsigned long buttonHoldLength = 700;
 
 unsigned long doubleClickTimer = 0;
 unsigned long doubleClickLength = 250;
@@ -234,6 +235,20 @@ volatile bool encoderDirectionConsumed = true;
 static unsigned long buttonEventTimestamp = 0;
 const unsigned long BUTTON_EVENT_MIN_DURATION_US = 10000; // 10ms minimum hold time - ensures Core 1 catches events even when busy
 
+// ── Hold animation state ──
+// Managed by holdAnimationStuff(); drives the white→red LED sweep and
+// transitions encoderButtonState from HELD → LONG_HELD when the animation ends.
+static unsigned long holdAnimTimer = 0;
+static int  holdAnimStep  = 0;
+static bool holdAnimActive = false;
+static bool holdAnimLongHeldFlashed = false;
+
+// ── Press animation state ──
+// White flash on press, rainbow transition during second half of buttonHoldLength.
+static bool pressAnimActive = false;
+static unsigned long pressAnimUpdateTimer = 0;
+volatile bool buttonPressAnimActive = false;
+volatile uint32_t pressAnimLogoColors[8] = {0};
 
 void rotaryEncoderButtonStuff(void) {
   // CRITICAL: Don't update lastButtonEncoderState while we're holding an event for Core 1
@@ -307,8 +322,9 @@ void rotaryEncoderButtonStuff(void) {
   }
 
   if (encoderIsPressed == 1 && encoderWasPressed == 1) {
-    if (millis() - buttonHoldTimer > buttonHoldLength) {
-      // lastButtonEncoderState = PRESSED;
+    if (millis() - buttonHoldTimer > buttonHoldLength && encoderButtonState != LONG_HELD) {
+      // HELD is set here; LONG_HELD is driven by holdAnimationStuff()
+      // when the animation finishes its cycles.
       encoderButtonState = HELD;
     }
   }
@@ -341,6 +357,189 @@ bool isEncoderButtonPhysicallyPressed(void) {
   return gpio_get(BUTTON_ENC) == 0;
 }
 
+void holdAnimationStuff(void) {
+  // Hold animation: fill logo LED pairs from bottom → top in rainbow.
+  // 3 pairs (GPIO, DAC, ADC) light up in sequence and STAY on per sweep.
+  // 2 full sweeps with increasing speed, then LONG_HELD fires.
+  // Colours cycle through a rainbow hue based on the overall animation progress.
+
+  static const logoOverrideNames holdLogoPairs[][2] = {
+    { GPIO_0, GPIO_1 },
+    { DAC_0,  DAC_1  },
+    { ADC_0,  ADC_1  },
+  };
+    static const logoOverrideNames holdLogos[]= {
+    GPIO_0, GPIO_1,
+     DAC_0,  DAC_1,
+   ADC_0,  ADC_1
+  };
+  static const int  PAIR_COUNT       = 3;
+  static const int  LOGO_COUNT        = 6;
+  static const int  HOLD_ANIM_CYCLES = 1;   // number of full sweeps before LONG_HELD
+  static const unsigned long HOLD_STEP_MS = 450; // ms per pair step (slow/deliberate)
+    static const unsigned long HOLD_STEP_IN_PAD = 50; // ms per pair step (slow/deliberate)
+
+  static const uint32_t PRESS_WHITE = 0x151633; // visible but not blinding
+
+  // ── Press animation: white flash → rainbow transition ──
+  // Activates on PRESSED, runs until HELD or release.
+
+  if (encoderButtonState == PRESSED && !pressAnimActive) {
+    // Immediate white flash on press
+    // Write colors BEFORE setting the cross-core flag so logoSwirl()
+    // on Core 1 never sees the flag with stale/zero color data.
+    pressAnimActive = true;
+    for (int i = 0; i < 8; i++) {
+      pressAnimLogoColors[i] = PRESS_WHITE;
+    }
+    pressAnimUpdateTimer = millis();
+    buttonPressAnimActive = true;  // set AFTER colors are ready
+    showLEDsCore2 = 2;
+  }
+
+  if (pressAnimActive && encoderButtonState == PRESSED) {
+    // Throttle updates to ~20ms
+    if (millis() - pressAnimUpdateTimer >= 20) {
+      pressAnimUpdateTimer = millis();
+
+      unsigned long elapsed = millis() - buttonHoldTimer;
+      unsigned long halfPoint = buttonHoldLength / 2;
+
+      if (elapsed >= halfPoint) {
+        // Second half: transition outer LEDs from white to rainbow
+        float progress = (float)(elapsed - (halfPoint/2)) / (float)(buttonHoldLength - halfPoint);
+        if (progress > 1.0f) progress = 1.0f;
+
+        uint8_t sat = (uint8_t)(progress * 230.0f); // 0 (white) → 230 (vivid)
+
+        for (int i = 0; i < 6; i++) {
+          uint8_t hue = (uint8_t)((i * 255) / 6); // evenly spaced rainbow
+          hsvColor hsv = { hue, sat, 100 };
+          pressAnimLogoColors[i] = HsvToRaw(hsv);
+        }
+        // Center LEDs stay white
+        pressAnimLogoColors[6] = PRESS_WHITE;
+        pressAnimLogoColors[7] = PRESS_WHITE;
+
+        showLEDsCore2 = 2;
+      }
+    }
+  }
+
+  // Cancel press animation on double-click
+  if (pressAnimActive && encoderButtonState == DOUBLECLICKED) {
+    pressAnimActive = false;
+    buttonPressAnimActive = false;
+    showLEDsCore2 = 2;
+  }
+
+  // ── Start animation on entering HELD ──
+  if (encoderButtonState == HELD && !holdAnimActive) {
+    // Keep press animation (logo rainbow) running — it stays visible
+    // while the connector LED hold animation plays alongside it.
+
+    holdAnimStep  = 0;
+    holdAnimTimer = millis();
+    holdAnimActive = true;
+    holdAnimLongHeldFlashed = false;
+    for (int p = 0; p < PAIR_COUNT; p++) {
+      setLogoOverride(holdLogoPairs[p][0], -3);
+      setLogoOverride(holdLogoPairs[p][1], -3);
+    }
+  }
+
+  // ── Step animation while HELD ──
+  if (encoderButtonState == HELD && holdAnimActive) {
+    unsigned long stepDuration = holdAnimStep % 2 == 0 ? HOLD_STEP_MS : HOLD_STEP_IN_PAD; // Alternate between main step and pad
+    if (millis() - holdAnimTimer >= stepDuration) {
+      holdAnimTimer = millis();
+
+      int cycleNum = holdAnimStep / LOGO_COUNT; // which sweep (0‥N-1)
+      int pairIdx  = holdAnimStep % LOGO_COUNT; // which pair  (0‥2)
+
+      if (cycleNum < HOLD_ANIM_CYCLES) {
+        // Rainbow: hue progresses through 0°→360° across all steps
+        int totalSteps = HOLD_ANIM_CYCLES * LOGO_COUNT;
+        uint8_t hue = (255 -((int)((float)holdAnimStep / (float)totalSteps * 255.0f))) % 256; // 0‥255
+
+
+        // // HSV→RGB (S=1, V=1) — full saturation, full brightness
+        // float h60 = hue / 60.0f;
+        // int   sector = (int)h60 % 6;
+        // float frac = h60 - (int)h60;
+        // uint8_t q = (uint8_t)(255 * (1.0f - frac));
+        // uint8_t t = (uint8_t)(255 * frac);
+        // uint8_t r, g, bv;
+        // switch (sector) {
+        //   case 0: r = 255; g = t;   bv = 0;   break;
+        //   case 1: r = q;   g = 255; bv = 0;   break;
+        //   case 2: r = 0;   g = 255; bv = t;   break;
+        //   case 3: r = 0;   g = q;   bv = 255; break;
+        //   case 4: r = t;   g = 0;   bv = 255; break;
+        //   default:r = 255; g = 0;   bv = q;   break;
+        // }
+        // uint32_t color = ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bv;
+        hsvColor hsv = { hue, 180, 190 };
+        uint32_t color = HsvToRaw(hsv);
+        // At the start of each new sweep, clear all pairs to begin fresh fill
+        if (pairIdx == 0) {
+          for (int p = 0; p < PAIR_COUNT; p++) {
+            setLogoOverride(holdLogoPairs[p][0], -3);
+            setLogoOverride(holdLogoPairs[p][1], -3);
+          }
+        }
+
+        // Light this pair (it stays on until next sweep clears)
+        setLogoOverride(holdLogos[pairIdx], color);
+          // setLogoOverride(holdLogoPairs[pairIdx][0], color);
+          // setLogoOverride(holdLogoPairs[pairIdx][1], color);
+        showLEDsCore2 = 2;
+
+        holdAnimStep++;
+      } else {
+        // Animation finished → fire LONG_HELD
+        encoderButtonState = LONG_HELD;
+        buttonEventTimestamp = micros();
+      }
+    }
+  }
+
+  // ── Flash all red on LONG_HELD (once) ──
+  if (encoderButtonState == LONG_HELD && holdAnimActive && !holdAnimLongHeldFlashed) {
+    for (int p = 0; p < PAIR_COUNT; p++) {
+      setLogoOverride(holdLogoPairs[p][0], 0xaaaaaa);
+      setLogoOverride(holdLogoPairs[p][1], 0xaaaaaa);
+    }
+    showLEDsCore2 = 2;
+    holdAnimLongHeldFlashed = true;
+  }
+
+  // ── Clean up when button is released ──
+  if (holdAnimActive && encoderIsPressed == 0) {
+    for (int p = 0; p < PAIR_COUNT; p++) {
+      setLogoOverride(holdLogoPairs[p][0], -3);
+      setLogoOverride(holdLogoPairs[p][1], -3);
+    }
+    showLEDsCore2 = 2;
+    holdAnimActive = false;
+    holdAnimLongHeldFlashed = false;
+    holdAnimStep = 0;
+    // Also clear the logo rainbow that was kept alive during HELD
+    buttonPressAnimActive = false;
+    pressAnimActive = false;
+  }
+
+  // Clean up press animation on actual release (RELEASED, IDLE, DOUBLECLICKED).
+  // Don't clear during HELD/LONG_HELD — the logo rainbow stays visible there.
+  if (pressAnimActive
+      && encoderButtonState != PRESSED
+      && encoderButtonState != HELD
+      && encoderButtonState != LONG_HELD) {
+    buttonPressAnimActive = false;
+    pressAnimActive = false;
+  }
+}
+
 void rotaryEncoderStuff(void) {
 
 
@@ -357,6 +556,9 @@ if (false) {
 
   // Handle button state checking and updates
   rotaryEncoderButtonStuff();
+
+  // Drive the hold animation + LONG_HELD transition
+  holdAnimationStuff();
 
   if (lastRotaryDivider != rotaryDivider) {
     pio_sm_restart(pioEnc, smEnc);
@@ -459,6 +661,11 @@ numberOfSteps = lastPositionEncoder - encoderRaw;
       case HELD:
 
         Serial.println("HELD");
+        // delay(150);
+        break;
+      case LONG_HELD:
+
+        Serial.println("LONG_HELD");
         // delay(150);
         break;
       case RELEASED:

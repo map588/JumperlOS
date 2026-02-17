@@ -700,7 +700,7 @@ JerialClass::~JerialClass() {
 // ============================================================================
 // Stream Interface Implementation
 // ============================================================================
-
+#define DEBUG_JERIAL 1
 int JerialClass::available() {
     // CRITICAL: Check InjectionBufferStream first (with tag filtering!)
     // This works regardless of line buffering mode
@@ -1693,19 +1693,160 @@ size_t OLEDStream::write(uint8_t byte) {
 }
 
 size_t OLEDStream::write(const uint8_t *buffer, size_t size) {
-    if (!isConnected() || !buffer) {
+    if (!isConnected() || !buffer || size == 0) {
         return 0;
     }
     
-    // DON'T disable auto-update - we want each character to update immediately
-    // The original code disabled it for performance, but that breaks print redirect
-    // because characters never make it to showMultiLineSmallText
-    for (size_t i = 0; i < size; i++) {
-        write(buffer[i]);
+    // Build a complete filtered string from the buffer, then send to
+    // showMultiLineSmallText in one shot.  This avoids per-byte display
+    // refreshes so that e.g. print(42) shows "42" atomically.
+    char filtered[OLEDSTREAM_BUFFER_SIZE];
+    int filteredLen = 0;
+    
+    for (size_t i = 0; i < size && filteredLen < OLEDSTREAM_BUFFER_SIZE - 1; i++) {
+        char c = (char)buffer[i];
+        
+        // Handle ANSI escape sequences - filter them out
+        if (c == '\x1b') {
+            in_ansi_escape = true;
+            continue;
+        }
+        if (in_ansi_escape) {
+            if (c == 'm' || c == 'H' || c == 'J' || c == 'K' || c == 'G') {
+                in_ansi_escape = false;
+            }
+            continue;
+        }
+        
+        // Handle special characters
+        if (c == '\n' || c == '\r') {
+            if (!last_was_newline) {
+                filtered[filteredLen++] = '\n';
+                last_was_newline = true;
+            }
+        } else if (c == '\t') {
+            int spaces = 4;
+            if (filteredLen + spaces > OLEDSTREAM_BUFFER_SIZE - 1)
+                spaces = OLEDSTREAM_BUFFER_SIZE - 1 - filteredLen;
+            for (int j = 0; j < spaces; j++) filtered[filteredLen++] = ' ';
+            last_was_newline = false;
+        } else if (c == '\b') {
+            last_was_newline = false;
+        } else if (c >= 32 && c <= 126) {
+            filtered[filteredLen++] = c;
+            last_was_newline = false;
+        }
+        // Other control characters are silently ignored
+    }
+    
+    // Send the complete filtered string to the display in one update
+    if (filteredLen > 0 && auto_update) {
+        filtered[filteredLen] = '\0';
+        oled.showMultiLineSmallText(filtered, false, true);
     }
     
     return size;
 }
+
+// ============================================================================
+// Print Methods - Convert values to ASCII (like Serial.print vs write)
+// ============================================================================
+
+// Helper: format a number into buf[] and return the length.
+// Handles bases 2-16, negative values in base 10.
+static size_t formatNumber(char* buf, size_t bufSize, long long value, int base, bool isSigned) {
+    if (base < 2 || base > 16) base = 10;
+    
+    char tmp[8 * sizeof(long long) + 2]; // worst case: 64 binary digits + sign + NUL
+    char* p = &tmp[sizeof(tmp) - 1];
+    *p = '\0';
+    
+    bool negative = false;
+    unsigned long long uval;
+    if (isSigned && base == 10 && value < 0) {
+        negative = true;
+        uval = (unsigned long long)(-value);
+    } else {
+        uval = (unsigned long long)value;
+    }
+    
+    do {
+        char c = uval % base;
+        uval /= base;
+        *--p = c < 10 ? c + '0' : c + 'A' - 10;
+    } while (uval);
+    
+    if (negative) *--p = '-';
+    
+    size_t len = strlen(p);
+    if (len >= bufSize) len = bufSize - 1;
+    memcpy(buf, p, len);
+    buf[len] = '\0';
+    return len;
+}
+
+static size_t formatFloat(char* buf, size_t bufSize, double value, int decimals) {
+    if (decimals < 0) decimals = 2;
+    if (isnan(value))  { strncpy(buf, "nan", bufSize); buf[bufSize-1]='\0'; return strlen(buf); }
+    if (isinf(value))  { strncpy(buf, "inf", bufSize); buf[bufSize-1]='\0'; return strlen(buf); }
+    if (value > 4294967040.0 || value < -4294967040.0) { strncpy(buf, "ovf", bufSize); buf[bufSize-1]='\0'; return strlen(buf); }
+    int n = snprintf(buf, bufSize, "%.*f", decimals, value);
+    if (n < 0) n = 0;
+    if ((size_t)n >= bufSize) n = bufSize - 1;
+    buf[n] = '\0';
+    return (size_t)n;
+}
+
+size_t OLEDStream::print(int value, int base) {
+    char buf[8 * sizeof(long long) + 2];
+    size_t len = formatNumber(buf, sizeof(buf), (long long)value, base, true);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::print(unsigned int value, int base) {
+    char buf[8 * sizeof(long long) + 2];
+    size_t len = formatNumber(buf, sizeof(buf), (long long)(unsigned long long)value, base, false);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::print(long value, int base) {
+    char buf[8 * sizeof(long long) + 2];
+    size_t len = formatNumber(buf, sizeof(buf), (long long)value, base, true);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::print(unsigned long value, int base) {
+    char buf[8 * sizeof(long long) + 2];
+    size_t len = formatNumber(buf, sizeof(buf), (long long)(unsigned long long)value, base, false);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::print(long long value, int base) {
+    char buf[8 * sizeof(long long) + 2];
+    size_t len = formatNumber(buf, sizeof(buf), value, base, true);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::print(unsigned long long value, int base) {
+    char buf[8 * sizeof(long long) + 2];
+    size_t len = formatNumber(buf, sizeof(buf), (long long)value, base, false);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::print(double value, int decimals) {
+    char buf[64];
+    size_t len = formatFloat(buf, sizeof(buf), value, decimals);
+    return write((const uint8_t*)buf, len);
+}
+
+size_t OLEDStream::println(int value, int base)           { size_t n = print(value, base); n += println(); return n; }
+size_t OLEDStream::println(unsigned int value, int base)  { size_t n = print(value, base); n += println(); return n; }
+size_t OLEDStream::println(long value, int base)          { size_t n = print(value, base); n += println(); return n; }
+size_t OLEDStream::println(unsigned long value, int base) { size_t n = print(value, base); n += println(); return n; }
+size_t OLEDStream::println(long long value, int base)     { size_t n = print(value, base); n += println(); return n; }
+size_t OLEDStream::println(unsigned long long value, int base) { size_t n = print(value, base); n += println(); return n; }
+size_t OLEDStream::println(double value, int decimals)    { size_t n = print(value, decimals); n += println(); return n; }
+size_t OLEDStream::println(void)                          { return write((const uint8_t*)"\n", 1); }
 
 // OLED-specific Functions
 void OLEDStream::setSmallFont(SmallFont font) {

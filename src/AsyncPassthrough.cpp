@@ -32,6 +32,7 @@
 
 // Debug flag for command injection tracing
 // Set to 1 to see each character being injected from <j> tags
+#include "ArduinoStuff.h"
 #include "FileParsing.h"
 #define DEBUG_INJECTED_COMMANDS 0
 
@@ -76,7 +77,7 @@ bool asyncPassthroughTagParsingEnabled = false; // DISABLED during startup - ena
 // Startup protection - system must be fully initialized before accepting tag commands
 // This prevents crashes if Arduino sends <j> commands before Jumperless is ready
 static volatile bool s_startup_complete = false;
-static const uint32_t STARTUP_TAG_PARSING_DELAY_MS = 3000;  // Minimum time before tag parsing allowed
+static const uint32_t STARTUP_TAG_PARSING_DELAY_MS = 5000;  // Minimum time before tag parsing allowed
 static uint32_t s_arduino_release_time = 0;
 
 // Track when tag parsing was re-enabled after flashing
@@ -92,6 +93,27 @@ static uint32_t s_tag_parsing_disabled_time = 0;  // When tag parsing was disabl
 // Smart re-enable: Track last USB->UART activity to detect end of upload
 static uint32_t s_last_usb_to_uart_data_time = 0;  // Last time USB->UART data was sent
 static uint32_t s_tag_parsing_inactivity_timeout_ms = 0;  // Re-enable after this many ms of no data (0 = disabled)
+
+
+bool async_begun = false;
+// ============================================================================
+// Flash Completion Detection (STK500 protocol sniffing)
+// ============================================================================
+// STK500 protocol constants
+#define STK_LEAVE_PROGMODE  0x51   // 'Q' - last command avrdude sends
+#define CRC_EOP             0x20   // ' ' - end of packet marker
+
+static volatile bool     s_flash_mode_active   = false;  // True while in flash detection mode
+static volatile bool     s_stk_leave_seen      = false;  // STK_LEAVE_PROGMODE sequence detected
+static volatile uint32_t s_stk_leave_time      = 0;      // When STK_LEAVE was detected
+static volatile uint32_t s_flash_start_time    = 0;      // When flash mode was entered
+static volatile bool     s_any_flash_data      = false;   // Has any USB→UART data been seen?
+static uint8_t           s_stk_prev_byte       = 0;      // Previous byte for 2-byte sequence detection
+
+// Flash detection timeouts
+static const uint32_t FLASH_STK_GRACE_MS    = 500;    // Grace period after STK_LEAVE_PROGMODE
+static const uint32_t FLASH_INACTIVITY_MS   = 1500;   // Inactivity fallback
+static const uint32_t FLASH_HARD_TIMEOUT_MS = 30000;  // 30s safety cap
 
 // ============================================================================
 // Jumperless Command Tag Detection
@@ -298,12 +320,24 @@ static inline uint16_t make_serial_config_from_line_coding( uint8_t data_bits, u
 static volatile bool s_uart_flush_pending = false;
 // Track suspend state to avoid concurrent access when MicroPython owns UART0
 static volatile bool s_uart_suspended_by_mpy = false;
+// Track whether UART IRQ has been enabled (deferred from begin() to signalStartupComplete())
+static volatile bool s_uart_irq_enabled = false;
+// Deferred resync flag - set by ISR, handled in task() to avoid busy_wait in ISR context
+static volatile bool s_resync_requested = false;
 // Exposed ring: uartReceived
 uint8_t uartReceived[ 4096 ];
 volatile uint16_t uartReceivedHead = 0;
 volatile uint16_t uartReceivedTail = 0;
 static volatile uint32_t uartReceivedOverflowCount = 0;
 static volatile uint32_t s_uart_overrun_count = 0;
+
+// TX ring buffer — main thread pushes, ISR pops to UART HW FIFO
+static uint8_t uartToSend[ 1024 ];
+static volatile uint16_t uartToSendHead = 0;   // Main thread writes
+static volatile uint16_t uartToSendTail = 0;   // ISR reads
+#define UART_TOSEND_MASK 0x03FF
+static volatile uint32_t uartToSendOverflowCount = 0;
+
 static volatile uint32_t s_uart_framing_error_count = 0;
 static volatile uint32_t s_uart_framing_error_total = 0;
 static volatile uint32_t s_uart_resync_count = 0;
@@ -391,6 +425,34 @@ static inline void ring_clear( void ) {
     uartReceivedTail = 0;
 }
 
+// TX ring buffer helper functions (main context pushes, ISR pops)
+static inline bool tx_ring_push_byte( uint8_t b ) {
+    uint16_t next_head = (uint16_t)( ( uartToSendHead + 1 ) & UART_TOSEND_MASK );
+    if ( next_head == uartToSendTail ) {
+        uartToSendOverflowCount++;
+        return false;
+    }
+    uartToSend[ uartToSendHead ] = b;
+    uartToSendHead = next_head;
+    return true;
+}
+
+static inline bool tx_ring_pop_byte( uint8_t *out ) {
+    if ( uartToSendHead == uartToSendTail ) return false;
+    *out = uartToSend[ uartToSendTail ];
+    uartToSendTail = (uint16_t)( ( uartToSendTail + 1 ) & UART_TOSEND_MASK );
+    return true;
+}
+
+static inline uint16_t tx_ring_available( void ) {
+    return (uint16_t)( ( uartToSendHead - uartToSendTail ) & UART_TOSEND_MASK );
+}
+
+static inline void tx_ring_clear( void ) {
+    uartToSendHead = 0;
+    uartToSendTail = 0;
+}
+
 // Flush TinyUSB CDC buffers for a specific interface
 // Used during Arduino reset to ensure clean state
 static inline void flush_cdc_buffers( uint8_t itf ) {
@@ -415,32 +477,45 @@ void clearTagParserState( void );
 // This flushes the FIFO and forces the receiver to wait for a new start bit
 // Also clears the ring buffer since it likely contains garbage
 static inline void uart_force_receiver_resync( void ) {
+    // return;  // DISABLED - was causing upload failures due to mistimed resyncs during flashing
     uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
-    
-    // Disable UART receiver (clears shift register and FIFO)
+
+    // PL011 UART resync procedure (per RP2350B datasheet §12.1):
+
+    // 1. Disable UART receiver — completes current character then stops.
+    //    Clears the shift register so we don't receive a partial byte.
     hw_clear_bits( &hw->cr, UART_UARTCR_RXE_BITS );
-    
-    // Drain any remaining bytes from HW FIFO (they're garbage)
+
+    // 2. Drain any remaining bytes from HW FIFO (they're garbage from desync)
     while ( !(hw->fr & UART_UARTFR_RXFE_BITS) ) {
         volatile uint32_t discard = hw->dr;
         (void)discard;
     }
-    
-    // Clear error flags
+
+    // 3. Clear error flags in UARTRSR (OE, BE, PE, FE)
     hw->rsr = 0xFFFFFFFFu;
-    
-    // CRITICAL: Clear the ring buffer - it likely contains garbage from misalignment
-    // This prevents garbage from being processed by higher layers
+
+    // 4. Clear sticky interrupt flags in UARTICR — PL011 error interrupts
+    //    are NOT auto-cleared by reading DR or writing RSR. Without this,
+    //    the FE/PE/BE/OE/RT interrupt flags remain asserted and the ISR
+    //    keeps re-entering on stale errors.
+    hw->icr = UART_UARTICR_OEIC_BITS |   // Overrun error
+              UART_UARTICR_BEIC_BITS |   // Break error
+              UART_UARTICR_PEIC_BITS |   // Parity error
+              UART_UARTICR_FEIC_BITS |   // Framing error
+              UART_UARTICR_RTIC_BITS;    // Receive timeout
+
+    // 5. Clear the software ring buffer — it likely contains garbage
     uartReceivedHead = 0;
     uartReceivedTail = 0;
-    
-    // Brief delay to ensure the receiver fully stops and line settles
-    // At 115200 baud, one bit time is ~8.7us, so 100us is ~11 bit times (>1 frame)
+
+    // 6. Brief delay to ensure the receiver fully stops and line settles.
+    //    At 115200 baud, one bit time is ~8.7µs, so 100µs is ~11 bit times (>1 frame).
     busy_wait_us( 100 );
-    
-    // Re-enable receiver - it will now wait for next valid start bit
+
+    // 7. Re-enable receiver — it will now wait for the next valid start bit
     hw_set_bits( &hw->cr, UART_UARTCR_RXE_BITS );
-    
+
     s_uart_resync_count++;
     s_uart_framing_error_count = 0;  // Reset consecutive error counters
     s_uart_garbage_count = 0;
@@ -450,6 +525,7 @@ static void async_uart_irq_handler( void ) {
     uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
     int i = 0;
     bool had_framing_error = false;
+    // return;
     
     // Get current time for timing validation
     uint32_t now_us = time_us_32();
@@ -470,8 +546,26 @@ static void async_uart_irq_handler( void ) {
     } else {
         s_line_was_idle = false;
     }
-    
-    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+
+    int max_bytes_to_process = 16;  // Prevent spending too long in one IRQ if data is flooding in
+    int bytes_processed = 0;
+    // TX: Drain TX ring buffer into UART HW FIFO (non-blocking)
+    // This runs before RX processing to minimize TX latency
+    while ( tx_ring_available() > 0 && uart_is_writable( ASYNC_PASSTHROUGH_UART ) && bytes_processed < max_bytes_to_process ) {
+        uint8_t b;
+        if ( tx_ring_pop_byte( &b ) ) {
+            hw->dr = b;
+            bytes_processed++;
+        }
+    }
+    // Disable TXIM when TX ring is empty to prevent continuous spurious interrupts.
+    // bridge_usb_to_uart() re-enables TXIM when it pushes new data.
+    if ( tx_ring_available() == 0 ) {
+        hw_clear_bits( &hw->imsc, UART_UARTIMSC_TXIM_BITS );
+    }
+
+    bytes_processed = 0;
+    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART )  && bytes_processed < max_bytes_to_process ) {
         uint32_t byte_time_us = time_us_32();
         
         // Check for errors BEFORE reading the byte (errors are per-byte in FIFO)
@@ -537,7 +631,7 @@ static void async_uart_irq_handler( void ) {
         
         ring_push_byte( c );
         i++;
-        if (i > 1000) {
+        if (i > max_bytes_to_process) {
             // This shouldn't happen in normal operation
             break;
         }
@@ -556,7 +650,11 @@ static void async_uart_irq_handler( void ) {
     //     needs_resync = true;
     // }
     if ( needs_resync ) {
-        uart_force_receiver_resync();
+        // Defer resync to task() — calling uart_force_receiver_resync() from the ISR
+        // does busy_wait_us(100) at priority 1, which blocks ALL lower-priority
+        // interrupts including USB. With continuous garbage data this loops
+        // repeatedly and starves the USB stack, causing crashes.
+        s_resync_requested = true;
     }
     
     // Clear any sticky error flags in RSR (Receive Status Register)
@@ -564,6 +662,18 @@ static void async_uart_irq_handler( void ) {
     if ( rsr & ( UART_UARTRSR_OE_BITS | UART_UARTRSR_FE_BITS | UART_UARTRSR_PE_BITS | UART_UARTRSR_BE_BITS ) ) {
         hw->rsr = 0xFFFFFFFFu;  // Write to RSR (alias of ECR) clears errors
     }
+
+    // CRITICAL: Clear pending interrupt flags via ICR (Interrupt Clear Register).
+    // PL011 error interrupts (OE, FE, PE, BE) are STICKY — they are NOT cleared
+    // by reading DR or writing RSR. They MUST be cleared via ICR. Without this,
+    // a single overrun or framing error causes the ISR to fire in an infinite
+    // loop at priority 1, starving USB and all lower-priority code → crash.
+    // RT (receive timeout) is also cleared here for completeness.
+    hw->icr = UART_UARTICR_OEIC_BITS   // Overrun error
+            | UART_UARTICR_FEIC_BITS   // Framing error
+            | UART_UARTICR_PEIC_BITS   // Parity error
+            | UART_UARTICR_BEIC_BITS   // Break error
+            | UART_UARTICR_RTIC_BITS;  // Receive timeout
     
     s_uart_flush_pending = true;
 }
@@ -751,6 +861,11 @@ static inline bool is_command_tag( const char* tag ) {
 static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, const char* direction ) {
     bool should_strip_tags = (jumperlessConfig.serial_1.tag_parsing == 2);  // Mode 2 = strip tags
     
+    if (flashingArduino) {
+        // If we're currently flashing the Arduino, we should ignore all tag parsing to prevent crashes
+        // Just forward all bytes without processing tags
+        return true;
+    }
     // TIMEOUT: If we've been in a non-SEARCHING state for too many characters,
     // the tag is malformed or we lost sync. Reset to prevent getting permanently stuck.
     // Max command is 256 bytes + tag overhead (~40 chars) = ~300 chars max reasonable.
@@ -997,6 +1112,25 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
                 // Tag parsing disabled - track data to detect upload completion
                 s_last_usb_to_uart_data_time = millis();
             }
+
+            // Track activity and sniff for STK_LEAVE_PROGMODE during flash mode
+            if ( s_flash_mode_active ) {
+                uint32_t now = millis();
+                s_last_usb_to_uart_data_time = now;
+                s_any_flash_data = true;
+
+                // Scan for STK_LEAVE_PROGMODE (0x51) followed by CRC_EOP (0x20)
+                if ( !s_stk_leave_seen ) {
+                    for ( size_t i = 0; i < rd; i++ ) {
+                        if ( s_stk_prev_byte == STK_LEAVE_PROGMODE && buf[i] == CRC_EOP ) {
+                            s_stk_leave_seen = true;
+                            s_stk_leave_time = now;
+                            break;
+                        }
+                        s_stk_prev_byte = buf[i];
+                    }
+                }
+            }
             
             size_t forward_idx = 0;
             
@@ -1010,8 +1144,11 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
             // Process each byte through tag detector (USB→UART)
             for ( size_t i = 0; i < rd; i++ ) {
                 // Monitor for runtime control commands (e.g., "tag parsing = on")
-                // This passively monitors last 32 chars for commands, never consumes
-                process_runtime_command(buf[i]);
+                // Skip during flashing - binary STK500 data would corrupt the 32-char
+                // ring buffer and could false-trigger "tag parsing = on/off" matches
+                if ( !flashingArduino ) {
+                    process_runtime_command(buf[i]);
+                }
                 
                 if ( asyncPassthroughTagParsingEnabled ) {
                     // Tag parsing enabled - check for command tags
@@ -1029,19 +1166,32 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
             // CRITICAL: Do NOT use uart_write_blocking - if Arduino stops reading,
             // the TX FIFO fills and uart_write_blocking blocks FOREVER, hanging Core 0.
             if ( forward_idx > 0 ) {
-                for ( size_t fi = 0; fi < forward_idx; fi++ ) {
-                    // Wait up to ~1ms per byte for FIFO space, then drop
-                    uint32_t wait_start = time_us_32();
-                    while ( !uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
-                        if ( (time_us_32() - wait_start) > 1000 ) {
-                            break;  // Bail out - don't hang Core 0
+                if ( flashingArduino ) {
+                    // During flashing, write directly with timeout — STK500 protocol
+                    // requires strict request/response timing that a ring buffer would break.
+                    const uint32_t wait_timeout_us = 10000;
+                    for ( size_t fi = 0; fi < forward_idx; fi++ ) {
+                        uint32_t wait_start = time_us_32();
+                        while ( !uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
+                            if ( (time_us_32() - wait_start) > wait_timeout_us ) {
+                                break;
+                            }
+                            tight_loop_contents();
+                        }
+                        if ( uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
+                            uart_putc_raw( ASYNC_PASSTHROUGH_UART, forward_buf[fi] );
                         }
                     }
-                    if ( uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
-                        uart_putc_raw( ASYNC_PASSTHROUGH_UART, forward_buf[fi] );
+                } else {
+                    // Normal passthrough: non-blocking push to TX ring buffer.
+                    // ISR drains the ring buffer to UART HW FIFO via TXIM interrupt.
+                    for ( size_t fi = 0; fi < forward_idx; fi++ ) {
+                        tx_ring_push_byte( forward_buf[fi] );
                     }
+                    // Enable TXIM to trigger ISR drain — ISR disables when ring is empty
+                    hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc,
+                                 UART_UARTIMSC_TXIM_BITS );
                 }
-                delayMicroseconds( 350 );
             }
         }
     }
@@ -1050,15 +1200,26 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
 static inline void bridge_uart_to_usb( uint8_t itf ) {
     // Flush any ring-buffered bytes from UART IRQ to CDC
     if ( !tud_inited( ) ) return;
-    if ( !tud_cdc_n_connected( itf ) ) return;
+    
+    // If CDC is not connected, drain ring buffer to prevent overflow.
+    // Without this, the ISR keeps pushing bytes while nobody pops them,
+    // and the 4096-byte ring buffer fills up — dropping all subsequent
+    // UART data until the host reconnects. During flashing, this would
+    // lose bootloader responses if avrdude hasn't opened the port yet.
+    if ( !tud_cdc_n_connected( itf ) ) {
+        // Just advance tail to head — discard all buffered data
+        uartReceivedTail = uartReceivedHead;
+        return;
+    }
     uint32_t wrote = 0;
     uint32_t avail = tud_cdc_n_write_available( itf );
     uint8_t c;
     
-    // CRITICAL: Limit processing to prevent multi-second blocking
-    // Process max 128 bytes per call to keep service responsive
-    // With 4096-byte ring buffer, processing everything at once can take 5-7 seconds!
-    const uint32_t MAX_BYTES_PER_CALL = 2048;
+    // Limit per-call processing to keep other services responsive.
+    // 256 bytes ≈ 256µs of tag parsing — large enough to keep up with
+    // 115200 baud (~11520 bytes/sec) at reasonable task() call rates,
+    // small enough to not block the main loop.
+    const uint32_t MAX_BYTES_PER_CALL = 256;
     uint32_t processed = 0;
     
     // If in forwarding mode, stream all bytes to main Serial until end token or timeout
@@ -1111,10 +1272,13 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
         if ( !ring_pop_byte( &c ) ) break;
         
         // Monitor for runtime control commands (e.g., "tag parsing = on")
-        // This passively monitors last 32 chars for commands, never consumes
-        process_runtime_command(c);
+        // Skip during flashing - binary bootloader responses would corrupt the
+        // 32-char ring buffer and could false-trigger command matches
+        if ( !flashingArduino ) {
+            process_runtime_command(c);
+        }
         
-        // Passthrough all data to CDC 1 (ViperIDE)
+        // Passthrough all data to CDC 1 (UART->USB Arduino output)
         if ( cdc1_connected && tud_cdc_n_write_available( 1 ) > 0 ) {
             tud_cdc_n_write_char( 1, c );
             wrote++;
@@ -1204,6 +1368,61 @@ extern void SetArduinoResetLine(bool state, int topBottomBoth);
 // ----------------------------------------------------------------------------
 
 namespace AsyncPassthrough {
+
+// Helper: Enable UART RX IRQ after boot is complete.
+// Drains any stale data from HW FIFO, clears errors and ring buffer,
+// then enables the UART interrupt mask and NVIC IRQ.
+// Safe to call multiple times (no-op if already enabled).
+static void enableUARTReceiver() {
+    if ( s_uart_irq_enabled ) return;
+
+    // Drain HW FIFO - discard any bytes that accumulated during boot
+    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+        (void)hw->dr;  // Discard
+    }
+
+    // Clear sticky error flags in RSR
+    hw->rsr = 0xFFFFFFFFu;
+
+    // Clear ALL pending UART interrupt flags via ICR.
+    // During boot, overrun/framing errors accumulate while the IRQ is disabled.
+    // These are sticky in the PL011 RIS register and would fire IMMEDIATELY
+    // when the NVIC IRQ is enabled.
+    hw->icr = UART_UARTICR_OEIC_BITS | UART_UARTICR_FEIC_BITS
+            | UART_UARTICR_PEIC_BITS | UART_UARTICR_BEIC_BITS
+            | UART_UARTICR_RTIC_BITS | UART_UARTICR_RXIC_BITS;
+
+    // Clear software ring buffers
+    ring_clear();
+    tx_ring_clear();
+
+    // NOTE: Do NOT call clearTagParserState() or CommandBuffer here.
+    // Tag parsing hasn't started yet (enabled later after ARDUINO_BOOT_DELAY_MS),
+    // so there's no stale state to clear.
+
+    // Enable UART interrupt mask: RX=true, TX=false
+    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
+    // Enable RX timeout interrupt only — NOT overrun (OEIM).
+    // Overrun errors are already detected per-byte via DR register flags (bit 11).
+    // Enabling OEIM creates an additional interrupt source that fires when the
+    // HW FIFO overflows. With continuous external data and a full ring buffer,
+    // this causes rapid repeated ISR invocations that starve the USB stack.
+    hw_set_bits( &hw->imsc, UART_UARTIMSC_RTIM_BITS );
+
+    // Clear any latched pending interrupt in the NVIC from boot-time activity.
+    // Even after clearing ICR, the NVIC may have registered a pending interrupt
+    // while the IRQ was disabled. Without this, the ISR fires immediately on
+    // enable with stale/phantom state.
+    // UART0_IRQ=33 on RP2350 → ICPR1 bit 1 (IRQ 33-32=1)
+    *((io_rw_32*)(PPB_BASE + M33_NVIC_ICPR0_OFFSET + 4 * (ASYNC_PASSTHROUGH_UART_IRQ / 32)))
+        = 1u << (ASYNC_PASSTHROUGH_UART_IRQ % 32);
+
+    // Enable NVIC IRQ - ISR will now fire on UART data
+    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
+
+    s_uart_irq_enabled = true;
+}
 
 void begin( unsigned long baud ) {
     // Configure UART pins and UART with HW FIFO enabled
@@ -1313,22 +1532,14 @@ void begin( unsigned long baud ) {
     // END STARTUP RESYNC SEQUENCE
     // =========================================================================
 
-    // Enable RX interrupt for immediate forwarding; include RX timeout interrupt
-//#if JL_UART0_INTEROP_MODE == 0
-    // Integrate: use shared handler so MicroPython and passthrough can coexist
+    // Configure IRQ handler and priority, but DO NOT enable yet.
+    // IRQ is deferred to enableUARTReceiver() (called from signalStartupComplete())
+    // to prevent the priority-1 ISR from running during boot and starving USB/main code.
     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
     irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 1 );
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-// #else
-//     // Preempt (default): exclusive handler while not suspended by MicroPython
-//     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
-//     // Priority 64 (was 0) - allow main loop to get CPU time during fast command streams
-//     irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 64 );
-//     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-// #endif
-    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
-    // Ensure RX timeout and overrun interrupts are enabled
-    hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
+    // NOTE: irq_set_enabled() NOT called here — deferred to enableUARTReceiver()
+
+    // Configure FIFO trigger levels (hardware config only, no interrupts generated yet)
     // Set RX IRQ trigger at 1/8 FIFO, TX at 1/2 FIFO
     hw_write_masked( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->ifls,
                      ( 0u << UART_UARTIFLS_RXIFLSEL_LSB ) | ( 2u << UART_UARTIFLS_TXIFLSEL_LSB ),
@@ -1352,8 +1563,11 @@ void begin( unsigned long baud ) {
     // registerForwardPrefix( "\x02" ); // SOH
     // registerForwardPrefix( "\x03" ); // DLE
     // registerForwardPrefix( "jl:" );
+    async_begun = true;
 }
+// #define DEBUG_INJECTED_COMMANDS 1
 
+bool enableResync = true;  // Set to true to enable resync sequence on demand (e.g. via runtime command)
 void task( ) {
     // DEBUG DISABLED: All checkpoint output removed to minimize USB pressure
     // The A12345678 markers were contributing to freeze by adding USB load
@@ -1366,14 +1580,25 @@ void task( ) {
     unsigned long taskStart = micros();
     unsigned long t0, t1;
     
+    // Re-entrancy guard: task() is called from flashArduino() tight loop AND registered
+    // as a CRITICAL service. Prevent re-entrant calls (e.g. via tud_task() callbacks).
+    static volatile bool s_in_task = false;
+    if (s_in_task) return;
+    s_in_task = true;
+
     // CRITICAL: Check DTR state FIRST, before any data processing
     // This ensures DTR pulse detection takes absolute priority over command injection
     // USBSer1 is declared extern at file scope (line 21), outside the namespace
+    // SKIP during flashing: avrdude toggles DTR multiple times during a flash session.
+    // If we process DTR mid-flash, we'll reset the Arduino, clear all buffers, and
+    // call connectArduino() (heavy crossbar reprogramming) — causing USB disconnect.
     t0 = micros();
     
     if (printCheckpoints) { Serial.write('1'); tud_task(); }
     
-    checkDTRState( USBSer1 );
+    if (!flashingArduino) {
+        checkDTRState( USBSer1 );
+    }
     
     if (printCheckpoints) { Serial.write('2'); tud_task(); }
     t1 = micros();
@@ -1402,9 +1627,11 @@ void task( ) {
             // Fallback: Enable tag parsing after 4 seconds even if not signaled
             // This ensures tag parsing eventually works even if something goes wrong
             s_startup_complete = true;
-            #if DEBUG_INJECTED_COMMANDS
+            // Also enable UART IRQ if it wasn't enabled by signalStartupComplete()
+            enableUARTReceiver();
+            // #if DEBUG_INJECTED_COMMANDS
             Serial.println("Tag parsing enabled (fallback timeout)");
-            #endif
+            // #endif
         }
     }
     
@@ -1418,6 +1645,9 @@ void task( ) {
          s_arduino_release_time > 0 &&
          (millis() - s_arduino_release_time) >= ARDUINO_BOOT_DELAY_MS ) {
         
+            if (enableResync) {
+                // Perform resync on startup if enabled - helps with noisy lines and ensures clean start
+                
         // CRITICAL: Disable UART RX interrupt during cleanup to prevent race conditions
         irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
         
@@ -1431,10 +1661,16 @@ void task( ) {
         clearTagParserState();
         ring_clear();
         CommandBuffer::getInstance().clearPendingCommand();
+
+        // Clear pending UART interrupt flags before re-enabling IRQ
+        uart_get_hw( ASYNC_PASSTHROUGH_UART )->icr =
+            UART_UARTICR_OEIC_BITS | UART_UARTICR_FEIC_BITS
+          | UART_UARTICR_PEIC_BITS | UART_UARTICR_BEIC_BITS
+          | UART_UARTICR_RTIC_BITS;
         
         // Re-enable UART RX interrupt
         irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-        
+    }
         asyncPassthroughTagParsingEnabled = true;
         #if DEBUG_INJECTED_COMMANDS
         Serial.println("Tag parsing enabled (startup complete + boot delay)");
@@ -1442,7 +1678,11 @@ void task( ) {
     }
     
     // Check if tag parsing should be re-enabled (after flashing, etc.)
-    if ( !asyncPassthroughTagParsingEnabled && s_startup_complete ) {
+    // CRITICAL: Skip while flash mode is active — checkFlashDone() handles flash exit.
+    // Without this guard, the 8s absolute timeout fires mid-flash, calling
+    // uart_force_receiver_resync() and ring_clear() which destroys the UART
+    // state while avrdude is still communicating → garbage / desync.
+    if ( !asyncPassthroughTagParsingEnabled && s_startup_complete && !s_flash_mode_active ) {
         bool should_reenable = false;
         const char* reenable_reason = nullptr;
         
@@ -1482,7 +1722,7 @@ void task( ) {
             }
         }
         
-        if ( should_reenable ) {
+        if ( should_reenable && enableResync ) {
             // CRITICAL: Perform full UART resync to handle baud rate transitions
             // After flashing, the bootloader may have used a different baud rate,
             // causing garbage when the sketch starts. This resyncs the receiver.
@@ -1502,6 +1742,11 @@ void task( ) {
             clearTagParserState();
             ring_clear();  // Clear UART RX ring buffer
             CommandBuffer::getInstance().clearPendingCommand();  // Clear any pending commands
+
+            // Clear pending UART interrupt flags before re-enabling IRQ
+            hw->icr = UART_UARTICR_OEIC_BITS | UART_UARTICR_FEIC_BITS
+                    | UART_UARTICR_PEIC_BITS | UART_UARTICR_BEIC_BITS
+                    | UART_UARTICR_RTIC_BITS;
             
             // Re-enable UART RX interrupt
             irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
@@ -1520,7 +1765,15 @@ void task( ) {
     }
     
     if (printCheckpoints) { Serial.write('3'); tud_task(); }
-    
+
+    // Handle deferred UART receiver resync (requested by ISR via flag).
+    // This runs in main context where busy_wait_us(100) is harmless,
+    // unlike doing it from the priority-1 ISR where it starves USB.
+    if ( s_resync_requested ) {
+        s_resync_requested = false;
+        uart_force_receiver_resync();
+    }
+
     // If suspended by MicroPython, avoid touching UART hardware
     if ( s_uart_suspended_by_mpy ) {
         tud_task();
@@ -1632,6 +1885,8 @@ void task( ) {
     
     if (printCheckpoints) { Serial.write('8'); Serial.write('\n'); }  // Task completed
     
+    s_in_task = false;  // Release re-entrancy guard
+    
     unsigned long taskEnd = micros();
     #if DEBUG_INJECTED_COMMANDS
     if ((taskEnd - taskStart) > 100000) {  // > 100ms total
@@ -1639,126 +1894,18 @@ void task( ) {
     }
     #endif
 }
-
-bool registerForwardPrefix( const char* prefix ) {
-    if ( !prefix || !*prefix ) return false;
-    if ( s_forward_prefix_count >= ( sizeof( s_forward_prefixes ) / sizeof( s_forward_prefixes[ 0 ] ) ) ) return false;
-    s_forward_prefixes[ s_forward_prefix_count++ ] = prefix;
-    const size_t len = strlen( prefix );
-    if ( len > s_forward_max_len ) s_forward_max_len = len;
-    return true;
-}
-
-bool unregisterForwardPrefix( const char* prefix ) {
-    if ( !prefix ) return false;
-    for ( size_t i = 0; i < s_forward_prefix_count; ++i ) {
-        if ( s_forward_prefixes[ i ] && strcmp( s_forward_prefixes[ i ], prefix ) == 0 ) {
-            // Compact array
-            for ( size_t j = i + 1; j < s_forward_prefix_count; ++j ) {
-                s_forward_prefixes[ j - 1 ] = s_forward_prefixes[ j ];
-            }
-            s_forward_prefix_count--;
-            s_forward_prefixes[ s_forward_prefix_count ] = nullptr;
-            // Recompute max len
-            s_forward_max_len = 0;
-            for ( size_t k = 0; k < s_forward_prefix_count; ++k ) {
-                size_t l = strlen( s_forward_prefixes[ k ] );
-                if ( l > s_forward_max_len ) s_forward_max_len = l;
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
-size_t listForwardPrefixes( const char** out, size_t max ) {
-    size_t n = ( s_forward_prefix_count < max ) ? s_forward_prefix_count : max;
-    for ( size_t i = 0; i < n; ++i ) out[ i ] = s_forward_prefixes[ i ];
-    return s_forward_prefix_count;
-}
-
-bool registerForwardEnd( const char* token ) {
-    if ( !token ) return false;
-    if ( s_forward_end_count >= ( sizeof( s_forward_end_tokens ) / sizeof( s_forward_end_tokens[ 0 ] ) ) ) return false;
-    s_forward_end_tokens[ s_forward_end_count++ ] = token;
-    return true;
-}
-
-bool unregisterForwardEnd( const char* token ) {
-    if ( !token ) return false;
-    for ( size_t i = 0; i < s_forward_end_count; ++i ) {
-        if ( s_forward_end_tokens[ i ] && strcmp( s_forward_end_tokens[ i ], token ) == 0 ) {
-            for ( size_t j = i + 1; j < s_forward_end_count; ++j ) {
-                s_forward_end_tokens[ j - 1 ] = s_forward_end_tokens[ j ];
-            }
-            s_forward_end_count--;
-            s_forward_end_tokens[ s_forward_end_count ] = nullptr;
-            return true;
-        }
-    }
-    return false;
-}
-
-size_t listForwardEnds( const char** out, size_t max ) {
-    size_t n = ( s_forward_end_count < max ) ? s_forward_end_count : max;
-    for ( size_t i = 0; i < n; ++i ) out[ i ] = s_forward_end_tokens[ i ];
-    return s_forward_end_count;
-}
-
-void setForwardEndOnNewline( bool enable ) {
-    s_forward_end_on_newline = enable;
-}
-
-void setTagParsingEnabled( bool enable ) {
-    // SAFETY: Don't allow enabling tag parsing until startup is complete
-    // This prevents crashes from early commands before system is ready
-    if ( enable && !s_startup_complete ) {
-        return;  // Silently ignore - will be enabled after startup completes
-    }
-    
-    if ( !enable && asyncPassthroughTagParsingEnabled ) {
-        // Tag parsing is being disabled - record the time
-        s_tag_parsing_disabled_time = millis();
-    }
-    
-    // CRITICAL: Clear all buffers on any state change
-    // When disabling: clears any partial tags that might be in progress
-    // When enabling: clears any garbage accumulated during flashing
-    clearTagParserState();
-    ring_clear();
-    CommandBuffer::getInstance().clearPendingCommand();
-    
-    asyncPassthroughTagParsingEnabled = enable;
-    
-    // If re-enabling, clear any pending timeouts
-    if ( enable ) {
-        s_tag_parsing_timeout_ms = 0;
-        s_tag_parsing_inactivity_timeout_ms = 0;
-        s_last_usb_to_uart_data_time = 0;
-    }
-}
-
-void disableTagParsingWithTimeout( uint32_t timeout_ms ) {
-    asyncPassthroughTagParsingEnabled = false;
-    s_tag_parsing_disabled_time = millis();
-    s_tag_parsing_timeout_ms = timeout_ms;
-    s_tag_parsing_inactivity_timeout_ms = 0;  // Clear inactivity timeout when using absolute timeout
-    s_last_usb_to_uart_data_time = 0;
-    
-    // CRITICAL: Clear all buffers and parser state when disabling tag parsing
-    // This prevents garbage from flashing/binary data from being processed as commands
-    // when tag parsing is re-enabled
-    clearTagParserState();
-    ring_clear();
-    CommandBuffer::getInstance().clearPendingCommand();
-}
-
 void disableTagParsingWithInactivityTimeout( uint32_t absolute_timeout_ms, uint32_t inactivity_timeout_ms ) {
-    // If already disabled with an inactivity timeout active, don't reset the state
-    // This prevents multiple DTR pulses or calls from breaking the inactivity tracking
+    // If already disabled with an inactivity timeout active, REFRESH the timeouts
+    // Previous code returned early here, preserving stale timers from the first DTR pulse.
+    // This caused tag parsing to re-enable mid-flash (absolute timeout expired based on
+    // first pulse time), which triggered uart_force_receiver_resync() + ring_clear(),
+    // destroying pending bootloader responses and causing avrdude to see 0xff.
     if ( !asyncPassthroughTagParsingEnabled && s_tag_parsing_inactivity_timeout_ms > 0 ) {
-        // Already disabled and tracking - preserve existing state
-        // Don't print anything here to avoid spam during flashing
+        // Already disabled - just refresh timers so they restart from NOW
+        s_tag_parsing_disabled_time = millis();
+        s_tag_parsing_timeout_ms = absolute_timeout_ms;
+        s_tag_parsing_inactivity_timeout_ms = inactivity_timeout_ms;
+        s_last_usb_to_uart_data_time = millis();  // Reset inactivity tracker too
         return;
     }
     
@@ -1768,11 +1915,13 @@ void disableTagParsingWithInactivityTimeout( uint32_t absolute_timeout_ms, uint3
     s_tag_parsing_inactivity_timeout_ms = inactivity_timeout_ms;
     s_last_usb_to_uart_data_time = 0;  // Will be set when first data arrives
     
-    // CRITICAL: Clear all buffers and parser state when disabling tag parsing
+    // Clear parser state when disabling tag parsing
     // This prevents garbage from flashing/binary data from being processed as commands
     // when tag parsing is re-enabled
+    // NOTE: Do NOT call ring_clear() here - the ring buffer may contain bootloader
+    // responses that bridge_uart_to_usb() needs to forward to avrdude.
     clearTagParserState();
-    ring_clear();
+    // ring_clear();  // DO NOT CLEAR - bootloader responses live here
     CommandBuffer::getInstance().clearPendingCommand();
 }
 
@@ -1785,31 +1934,31 @@ void signalStartupComplete() {
     // This enables tag parsing if configured to do so
     if ( !s_startup_complete ) {
         s_startup_complete = true;
-        
-        // CRITICAL: Clear ALL buffers BEFORE releasing Arduino from reset
-        // This ensures no garbage is in the system
-        clearTagParserState();
-        ring_clear();
-        CommandBuffer::getInstance().clearPendingCommand();
-        
-        // Drain UART hardware FIFO - any garbage from line noise
-        uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
-        while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
-            (void)hw->dr;  // Discard data
-        }
-        
+
+            if ( jumperlessConfig.serial_1.async_passthrough == true ) {
+        AsyncPassthrough::begin( 115200 );
+    }
+    initArduino( );
+
+        // CRITICAL: Enable UART IRQ now that boot is complete and task() is draining.
+        // This was deferred from begin() to prevent the priority-1 ISR from
+        // starving USB interrupts and main code during boot initialization.
+        // enableUARTReceiver() drains the HW FIFO, clears errors/buffers,
+        // then enables the interrupt mask and NVIC IRQ.
+        enableUARTReceiver();
+
         // CRITICAL: Release Arduino from reset now that system is ready
         // Arduino was held in reset during boot (see main.cpp setup())
         // This prevents crashes from early Arduino commands
         SetArduinoResetLine(HIGH, 2);  // Release both Arduinos from reset
         s_arduino_release_time = millis();  // Track when we released Arduino
-        
+
         // NOTE: Don't enable tag parsing here - let it happen via the normal
         // task() path after ARDUINO_BOOT_DELAY_MS. This gives the Arduino time to boot.
         // During this delay, UART data is just passed through (not parsed for tags).
-        
+
         #if DEBUG_INJECTED_COMMANDS
-        Serial.println("Startup complete - Arduino released from reset");
+        Serial.println("Startup complete - UART IRQ enabled, Arduino released from reset");
         #endif
     }
 }
@@ -1828,116 +1977,76 @@ static bool s_dtr_pulse_detected = false;
 static uint32_t s_last_dtr_reset_time = 0;  // Debounce: track last reset time
 #define DTR_RESET_DEBOUNCE_MS 500  // Minimum time between resets
 
+// DTR edge locking: only trigger on the first transition direction we see
+// 0 = accept either direction, 1 = only falling (HIGH→LOW), -1 = only rising (LOW→HIGH)
+static int8_t s_dtr_accepted_edge = 0;
+// Post-flash lockout: suppress DTR detection for 2s after flash ends
+// Prevents port-close DTR toggle from re-triggering a flash cycle
+static uint32_t s_dtr_lockout_until = 0;
+
 void checkDTRState(Adafruit_USBD_CDC& cdc) {
     bool current_dtr = cdc.dtr();
-    
+
+    // Post-flash lockout: suppress DTR detection entirely
+    if ( s_dtr_lockout_until > 0 ) {
+        if ( millis() < s_dtr_lockout_until ) {
+            // Update state tracking so we don't see a stale edge when lockout expires
+            s_dtr_state[0] = s_dtr_state[1];
+            s_dtr_state[1] = s_dtr_state[2];
+            s_dtr_state[2] = current_dtr;
+            return;
+        }
+        // Lockout expired — reset edge tracking for next cycle
+        s_dtr_lockout_until = 0;
+        s_dtr_accepted_edge = 0;
+    }
+
     // Shift the array to track state changes
     if (current_dtr != s_dtr_state[2]) {
         s_dtr_state[0] = s_dtr_state[1];
         s_dtr_state[1] = s_dtr_state[2];
         s_dtr_state[2] = current_dtr;
-        
-        // Trigger on ANY DTR transition (both HIGH→LOW and LOW→HIGH)
-        // This handles both standard and inverted DTR behavior from various tools
-        bool pulse_detected = (s_dtr_state[1] != s_dtr_state[2]);
-        
+
+        bool falling = (s_dtr_state[1] == true  && s_dtr_state[2] == false);
+        bool rising  = (s_dtr_state[1] == false && s_dtr_state[2] == true);
+
         // Debounce: Ignore pulses during boot and within debounce window
-        // This prevents rapid DTR toggling from causing multiple resets
         uint32_t now = millis();
-        bool debounce_ok = (now > 3000) && 
+        bool debounce_ok = (now > 6000) &&
                           (now - s_last_dtr_reset_time > DTR_RESET_DEBOUNCE_MS);
-        
-        if (pulse_detected && debounce_ok) {
-            s_dtr_pulse_detected = true;
-            s_last_dtr_reset_time = now;
-            
-            // =====================================================================
-            // ARDUINO FLASH SEQUENCE - Must be precise and non-blocking to USB
-            // =====================================================================
-            
-            // Step 1: IMMEDIATELY disable tag parsing
-            // Use longer inactivity timeout (3s) to handle normal upload pauses
-            // Absolute timeout 10s as safety fallback
-            if (asyncPassthroughEnabled) {
-                disableTagParsingWithInactivityTimeout(10000, 3000);
+
+        if ((falling || rising) && debounce_ok) {
+            bool should_trigger = false;
+
+            if ( s_dtr_accepted_edge == 0 ) {
+                // First edge this cycle — accept it and lock out the opposite direction
+                s_dtr_accepted_edge = falling ? 1 : -1;
+                should_trigger = true;
+            } else if ( ( s_dtr_accepted_edge == 1 && falling ) ||
+                        ( s_dtr_accepted_edge == -1 && rising ) ) {
+                // Same direction as previously accepted — trigger
+                should_trigger = true;
             }
-            
-            // Step 2: Clear ALL buffers and parser state
-            // This prevents stale data from interfering with flash protocol
-            clearTagParserState();       // Reset tag parser state machines
-            ring_clear();                // Clear UART RX ring buffer
-            CommandBuffer::getInstance().clearPendingCommand();  // Clear pending commands
-            
-            // Step 3: Flush CDC buffers to ensure clean state
-            // Service USB frequently during this to prevent disconnect
-            tud_task();
-            flush_cdc_buffers(ASYNC_PASSTHROUGH_CDC_ITF);
-            tud_task();
-            
-            // Step 4: Assert Arduino reset with proper timing
-            // Standard Arduino auto-reset: DTR LOW triggers reset via RC circuit
-            // We emulate this with GPIO control
-            
-            bool esp32 = false;
-            if (esp32) {
-                // ESP32 reset sequence (GPIO0 + EN pin control)
-                addBridgeToState(NANO_AREF, GND, 0, true);
-                SetArduinoResetLine(LOW, 1);
-                delayMicroseconds(15000);
-                SetArduinoResetLine(LOW, 0);  
-                delayMicroseconds(15000);
-                SetArduinoResetLine(HIGH, 0);
-                delayMicroseconds(15000);
-                SetArduinoResetLine(HIGH, 1);  
-                removeBridgeFromState(NANO_AREF, GND, true);
-            } else {
-                // ATmega328P reset sequence
-                // Hold reset LOW for 10-15ms (longer than typical RC time constant)
-                // This ensures reliable reset even with capacitor charging effects
-                
-                unsigned long resetStart = micros();
-                SetArduinoResetLine(LOW, 0);  // Assert reset
-                
-                // Hold reset for 12ms while servicing USB
-                // avrdude expects bootloader to be ready within ~50ms of DTR pulse
-                while (micros() - resetStart < 12000) {
-                    tud_task();  // Keep USB alive - CRITICAL!
-                    delayMicroseconds(100);
-                }
-                
-                SetArduinoResetLine(HIGH, 0);  // Release reset
-                
-                // Track when Arduino was released from reset for boot delay protection
-                s_arduino_release_time = millis();
-                
-                // Step 5: Brief delay for bootloader to initialize
-                // Optiboot starts ~10ms after reset release
-                // Service USB during this window
-                unsigned long bootDelay = micros();
-                while (micros() - bootDelay < 5000) {
-                    tud_task();
-                    delayMicroseconds(100);
-                }
+            // else: opposite direction (port-close event) — ignore
+
+            if ( should_trigger ) {
+                s_dtr_pulse_detected = true;
+                s_last_dtr_reset_time = now;
             }
-            
-            // Step 6: Ensure UART connection is established IMMEDIATELY
-            // CRITICAL: avrdude expects to communicate with bootloader right after reset
-            // If UART isn't connected, sync bytes won't reach Arduino and upload fails
-            if (jumperlessConfig.serial_1.autoconnect_flashing == 1) {
-                if (checkIfArduinoIsConnected() == 0) {
-                    // UART not connected - establish connection now
-                    // Use flash mode (1) with refresh (1) for immediate matrix update
-                    connectArduino(1, 1);
-                    
-                    // Service USB during connection to prevent timeout
-                    tud_task();
-                }
-            }
-            
-            // Step 7: Final USB service to ensure host sees clean state
-            tud_task();
+
+            // ALL heavy operations (reset, tag parsing, flush, connect) are
+            // deferred to flashArduino() which runs from secondSerialHandler()
+            // in the same main loop iteration. This keeps checkDTRState()
+            // fast and prevents USB stack crashes from long operations
+            // (refreshLocalConnections, addBridgeToState, etc.) running inside
+            // the service dispatch loop without USB servicing.
         }
     }
+}
+
+// Set DTR lockout — called after flash completes to suppress port-close DTR
+void setDTRLockout(uint32_t duration_ms) {
+    s_dtr_lockout_until = millis() + duration_ms;
 }
 
 bool wasDTRPulseDetected() {
@@ -1946,6 +2055,71 @@ bool wasDTRPulseDetected() {
 
 void clearDTRPulse() {
     s_dtr_pulse_detected = false;
+}
+
+// ============================================================================
+// Flash Completion Detection (STK500 protocol sniffing + inactivity fallback)
+// ============================================================================
+
+void enterFlashMode() {
+    s_flash_mode_active      = true;
+    s_stk_leave_seen         = false;
+    s_stk_leave_time         = 0;
+    s_flash_start_time       = millis();
+    s_any_flash_data         = false;
+    s_stk_prev_byte          = 0;
+    s_last_usb_to_uart_data_time = millis();
+}
+
+void exitFlashMode() {
+    s_flash_mode_active  = false;
+    s_stk_leave_seen     = false;
+    s_any_flash_data     = false;
+    s_stk_prev_byte      = 0;
+}
+
+void resetFlashSTKDetection() {
+    // Reset only the STK500 byte scanner for a new bootloader session.
+    // Does NOT reset timestamps or s_any_flash_data — those must survive
+    // across DTR re-resets so inactivity/hard timeout still work correctly.
+    s_stk_leave_seen = false;
+    s_stk_prev_byte  = 0;
+}
+
+bool hasFlashDataBeenSeen() {
+    return s_any_flash_data;
+}
+
+bool checkFlashDone() {
+    if ( !s_flash_mode_active ) return false;
+
+    uint32_t now = millis();
+
+    // Priority 1: STK_LEAVE_PROGMODE was detected
+    if ( s_stk_leave_seen ) {
+        // If new USB→UART data arrived AFTER detection, it was a false positive
+        // (binary flash data that happened to contain 0x51 0x20)
+        if ( s_last_usb_to_uart_data_time > s_stk_leave_time ) {
+            // Reset detection and keep looking
+            s_stk_leave_seen = false;
+            s_stk_prev_byte  = 0;
+        } else if ( now - s_stk_leave_time >= FLASH_STK_GRACE_MS ) {
+            // Grace period elapsed, no new data — flash is truly done
+            return true;
+        }
+    }
+
+    // Priority 2: Inactivity fallback (only if some data was transferred)
+    if ( s_any_flash_data && ( now - s_last_usb_to_uart_data_time >= FLASH_INACTIVITY_MS ) ) {
+        return true;
+    }
+
+    // Priority 3: Hard safety timeout
+    if ( now - s_flash_start_time >= FLASH_HARD_TIMEOUT_MS ) {
+        return true;
+    }
+
+    return false;
 }
 
 void resetArduino(int resetPin) {
@@ -1985,6 +2159,52 @@ void resumeUARTRxIRQ() {
 
 bool isUARTRxIRQSuspended() {
     return s_uart_rx_irq_suspended;
+}
+
+void drainUARTRxBuffers() {
+    // Safely drain all UART RX data (HW FIFO + software ring buffer)
+    // CRITICAL: Call after Arduino reset to discard phantom 0xFF bytes.
+    // During reset, the ATmega TX pin goes tri-state and the UART RX line
+    // sees glitches that produce valid-looking 0xFF bytes (idle line = all
+    // bits HIGH, stop bit HIGH = no framing error). These phantom bytes
+    // sit in the ring buffer and get forwarded to avrdude before the real
+    // bootloader response, causing "resp=0xff" on every sync attempt.
+    
+    // Disable BOTH the UART interrupt mask AND the NVIC to fully suppress
+    // any IRQ during the drain. suspendUARTRxIRQ() may have already disabled
+    // the UART mask; we also disable the NVIC for completeness.
+    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
+    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, false, false );
+    
+    // Drain hardware FIFO
+    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
+    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
+        (void)hw->dr;  // Discard
+    }
+    
+    // Clear software ring buffers (uses file-scope variables directly)
+    ring_clear();
+    tx_ring_clear();
+    
+    // Clear any sticky error flags
+    uint32_t rsr = hw->rsr;
+    if ( rsr ) {
+        hw->rsr = 0xFFFFFFFFu;
+    }
+
+    // Clear pending UART interrupt flags before re-enabling IRQ
+    hw->icr = UART_UARTICR_OEIC_BITS | UART_UARTICR_FEIC_BITS
+            | UART_UARTICR_PEIC_BITS | UART_UARTICR_BEIC_BITS
+            | UART_UARTICR_RTIC_BITS;
+    
+    // Re-enable BOTH mechanisms so UART RX interrupts work again.
+    // CRITICAL: Previous bug — suspendUARTRxIRQ() disables the UART mask
+    // (UARTIMSC.RXIM) but we only re-enabled the NVIC here. The UART never
+    // generated interrupts after reset, so bootloader responses sat in the
+    // HW FIFO forever → avrdude got resp=0x00 (timeout, no data).
+    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );  // RX=true, TX=false
+    s_uart_rx_irq_suspended = false;  // Clear the suspend flag
+    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
 }
 
 void clearTagParserState() {
@@ -2130,6 +2350,7 @@ void resetUARTErrorStats() {
 
 void forceUARTResync() {
     // Call the internal resync function
+    //if (flashingArduino) return;  // Don't resync during flashing - it will cause upload failures
     uart_force_receiver_resync();
 }
 

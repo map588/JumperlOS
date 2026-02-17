@@ -712,48 +712,48 @@ bool firstRead = true;
                 switch ( finishCountdown ) {
                 case 0:
                     if (countup == 0) {
-                        setLogoOverride( GPIO_1, -3);
+                        //setLogoOverride( GPIO_1, -3);
                     }
 
-                    setLogoOverride( GPIO_0, 0xa0a0f0 );
+                 //   setLogoOverride( GPIO_0, 0xa0a0f0 );
 
                     showLEDsCore2 = 2;
                     break;
                 case 1:
                     if (countup == 0) {
-                        setLogoOverride( DAC_0, -3);
+                       // setLogoOverride( DAC_0, -3);
                     }
-                    setLogoOverride( GPIO_1, 0xa0a0f0 );
+                   // setLogoOverride( GPIO_1, 0xa0a0f0 );
 
                     showLEDsCore2 = 2;
                     break;
                 case 2:
                     if (countup == 0) {
-                        setLogoOverride( DAC_1, -3);
+                       // setLogoOverride( DAC_1, -3);
                     }
 
-                    setLogoOverride( DAC_0, 0xa0a0f0 );
+                   // setLogoOverride( DAC_0, 0xa0a0f0 );
 
                     showLEDsCore2 = 2;
                     break;
                 case 3:
                     if (countup == 0) {
-                        setLogoOverride( ADC_0, -3);
+                        //setLogoOverride( ADC_0, -3);
                     }
-                    setLogoOverride( DAC_1, 0xa0a0f0 );
+                    //setLogoOverride( DAC_1, 0xa0a0f0 );
 
                     showLEDsCore2 = 2;
                     break;
                 case 4:
                     if (countup == 0) {
-                        setLogoOverride( ADC_1, -3);
+                        //setLogoOverride( ADC_1, -3);
                     }
-                    setLogoOverride( ADC_0, 0xa0a0f0 );
+                    //setLogoOverride( ADC_0, 0xa0a0f0 );
 
                     showLEDsCore2 = 2;
                     break;
                 case 5:
-                    setLogoOverride( ADC_1, 0xa0a0f0 );
+                    //setLogoOverride( ADC_1, 0xa0a0f0 );
 
                     showLEDsCore2 = 2;
                     break;
@@ -764,7 +764,7 @@ bool firstRead = true;
                 default:
                     if (countup == 0) {
                        
-                        setLogoOverride( GPIO_0, -3);
+                        //setLogoOverride( GPIO_0, -3);
        
                     }
                     

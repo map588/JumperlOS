@@ -2044,6 +2044,14 @@ void provisionFirmwareFiles(bool print) {
     provisionEmbeddedFile("images/bubbleJump.bin", bubbleJump_bin, bubbleJump_bin_len);
     provisionEmbeddedFile("images/jogo32h.bin", jogo32h_file_bin, jogo32h_file_bin_len);
     provisionEmbeddedFile("images/bubbleJumpThiccWhite.bin", bubbleJumpThiccWhite_bin, bubbleJumpThiccWhite_bin_len);
+    // ---- Paste into provisionFirmwareFiles() in src/configManager.cpp ----
+
+    provisionEmbeddedFile("images/dayglow.bin", dayglow_bin, dayglow_bin_len);
+    provisionEmbeddedFile("images/eevblog.bin", eevblog_bin, eevblog_bin_len);
+    provisionEmbeddedFile("images/jogo32h.bin", jogo32h_bin, jogo32h_bin_len);
+    provisionEmbeddedFile("images/jogotextInv.bin", jogotextInv_bin, jogotextInv_bin_len);
+    provisionEmbeddedFile("images/jumperless_text.bin", jumperless_text_bin, jumperless_text_bin_len);
+    provisionEmbeddedFile("images/ksc.bin", ksc_bin, ksc_bin_len);
     
     // Mark as provisioned
     jumperlessConfig.firmware.files_provisioned = true;
@@ -3409,6 +3417,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "lock_connection") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.lock_connection);
         else if (strcmp(key, "autoconnect_flashing") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.autoconnect_flashing);
         else if (strcmp(key, "async_passthrough") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.async_passthrough);
+        else if (strcmp(key, "tag_parsing") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.tag_parsing);
     }
     else if (strcmp(section, "serial_2") == 0) {
         if (strcmp(key, "function") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_2.function);
@@ -3548,6 +3557,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "lock_connection") == 0) jumperlessConfig.serial_1.lock_connection = parseBool(value);
         else if (strcmp(key, "autoconnect_flashing") == 0) jumperlessConfig.serial_1.autoconnect_flashing = parseBool(value);
         else if (strcmp(key, "async_passthrough") == 0) jumperlessConfig.serial_1.async_passthrough = parseBool(value);
+        else if (strcmp(key, "tag_parsing") == 0) jumperlessConfig.serial_1.tag_parsing = parseBool(value);
     }
     else if (strcmp(section, "serial_2") == 0) {
         if (strcmp(key, "function") == 0) jumperlessConfig.serial_2.function = parseUartFunction(value);

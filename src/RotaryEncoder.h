@@ -57,13 +57,16 @@ enum encoderDirectionStates { NONE,UP,DOWN };
  * - IDLE → DOUBLECLICKED (on quick double press, holds 15ms with freeze)
  * - DOUBLECLICKED → IDLE (manual clear by Core 1, or auto after 15ms)
  */
-enum encoderButtonStates { IDLE, PRESSED, HELD, RELEASED, DOUBLECLICKED};
+enum encoderButtonStates { IDLE, PRESSED, HELD, RELEASED, DOUBLECLICKED, LONG_HELD};
 
 extern volatile encoderDirectionStates encoderDirectionState;
 extern volatile encoderButtonStates encoderButtonState;
 extern volatile encoderButtonStates lastButtonEncoderState;
 extern volatile encoderDirectionStates lastDirectionState;
 extern volatile bool encoderDirectionConsumed;
+
+extern volatile bool buttonPressAnimActive;
+extern volatile uint32_t pressAnimLogoColors[8];
 
 void initRotaryEncoder(void);
 void unInitRotaryEncoder(void);

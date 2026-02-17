@@ -10,7 +10,7 @@ extern bool asyncPassthroughTagParsingEnabled;
 extern unsigned long microsPerByteSerial1;
 extern unsigned long serial1baud;
 extern volatile bool s_line_coding_override;
-
+extern bool async_begun;
 #if ASYNC_PASSTHROUGH_ENABLED == 1
 namespace AsyncPassthrough {
     // Initialize the CDC1 <-> UART passthrough (pico-sdk uart with HW FIFO)
@@ -25,33 +25,7 @@ namespace AsyncPassthrough {
     extern volatile uint16_t uartReceivedHead;
     extern volatile uint16_t uartReceivedTail;
 
-    // Register command prefixes to forward UART payload to main Serial
-    // Returns true on success, false if registry full
-    bool registerForwardPrefix(const char* prefix);
 
-    // Remove a previously-registered prefix (exact string match)
-    bool unregisterForwardPrefix(const char* prefix);
-
-    // List current prefixes; returns number written into out (may be truncated)
-    size_t listForwardPrefixes(const char** out, size_t max);
-
-    // Register/remove/list end tokens that terminate forwarding sessions
-    bool registerForwardEnd(const char* token);
-    bool unregisterForwardEnd(const char* token);
-    size_t listForwardEnds(const char** out, size_t max);
-
-    // Control whether newline (\n or \r) also ends forwarding (default true)
-    void setForwardEndOnNewline(bool enable);
-    
-    // Control whether tag parsing is enabled (default true)
-    // When disabled, all data passes through without checking for command tags
-    void setTagParsingEnabled(bool enable);
-    
-    // Disable tag parsing for a specific duration, then auto-re-enable
-    // Useful for Arduino flashing where you want to temporarily disable tag parsing
-    // Example: disableTagParsingWithTimeout(5000) disables for 5 seconds
-    void disableTagParsingWithTimeout(uint32_t timeout_ms);
-    
     // Disable tag parsing with smart re-enable based on upload completion detection
     // Re-enables when EITHER condition is met:
     //   1. absolute_timeout_ms elapsed since disable (safety fallback)
@@ -60,16 +34,10 @@ namespace AsyncPassthrough {
     //   - Re-enables after 500ms of no data (upload done) OR 5 seconds max (safety)
     void disableTagParsingWithInactivityTimeout(uint32_t absolute_timeout_ms, uint32_t inactivity_timeout_ms);
     
-    bool getTagParsingEnabled();
     
     // Startup protection - call when system initialization is complete
     // Tag parsing is disabled during startup to prevent crashes from early Arduino commands
     void signalStartupComplete();
-    bool isStartupComplete();
-    
-    // Apply a new UART line coding immediately (baud/data/parity/stop)
-    // Keeps passthrough active while updating hardware and timing
-    void applyLineCodingOverride(uint32_t baud, uint8_t data_bits, uint8_t parity, uint8_t stop_bits);
     
     // DTR pulse detection and Arduino reset handling
     // Call this frequently to monitor DTR state changes on CDC interface
@@ -80,10 +48,37 @@ namespace AsyncPassthrough {
     
     // Clear the DTR pulse flag
     void clearDTRPulse();
+
+    // Set DTR lockout — suppresses DTR detection for duration_ms
+    // Called after flash completes to prevent port-close DTR from re-triggering
+    void setDTRLockout(uint32_t duration_ms);
     
     // Trigger Arduino reset via GPIO pin
     void resetArduino(int resetPin);
-    
+
+    // ============================================================================
+    // Flash Completion Detection (STK500 sniffing + inactivity fallback)
+    // ============================================================================
+
+    // Enter flash mode: starts STK500 sniffing and activity tracking
+    void enterFlashMode();
+
+    // Exit flash mode: clears all flash detection state
+    void exitFlashMode();
+
+    // Poll to detect flash completion. Returns true when ANY of:
+    //   1. STK_LEAVE_PROGMODE (0x51 0x20) seen + 500ms grace + no new data
+    //   2. 1500ms of USB→UART inactivity (after data was seen)
+    //   3. 60s hard safety timeout
+    bool checkFlashDone();
+
+    // Reset only the STK500 byte scanner (for DTR re-resets during flash).
+    // Unlike enterFlashMode(), does NOT reset timestamps or data-seen flag.
+    void resetFlashSTKDetection();
+
+    // Returns true if any USB→UART data has been seen since enterFlashMode()
+    bool hasFlashDataBeenSeen();
+
     // ============================================================================
     // UART Response Functions - Route command responses back to Arduino
     // ============================================================================
@@ -130,6 +125,14 @@ namespace AsyncPassthrough {
      * Call this on DTR pulse to ensure clean state for Arduino flashing.
      */
     void clearTagParserState();
+
+    /**
+     * Drain all UART RX buffers (HW FIFO + ring buffer).
+     * Disables UART IRQ during the operation to prevent race conditions.
+     * Call after Arduino reset to discard phantom 0xFF bytes caused by
+     * the ATmega TX pin going tri-state during reset.
+     */
+    void drainUARTRxBuffers();
     
     /**
      * Mark that command processing is in progress.

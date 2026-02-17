@@ -1,4 +1,5 @@
 #include "Python_Proper.h"
+#include "Adafruit_USBD_CDC.h"
 #include "ArduinoStuff.h"
 #include <Arduino.h>
 #include <FatFS.h>
@@ -19,6 +20,7 @@
 #include "externVars.h"  // For pauseCore2 synchronization
 #include "micropythonExamples.h"  // For embedded Python scripts including ViperIDE reinit
 #include "RotaryEncoder.h"  // For clickwheel interrupt during script execution
+#include "pyexec.h"
 extern "C" {
 #include "py/gc.h"
 #include "py/runtime.h"
@@ -192,9 +194,16 @@ extern "C" void mp_hal_delay_ms(mp_uint_t ms) {
       mp_hal_check_interrupt();
       last_interrupt_check = current;
       
-      // If interrupt requested, CLEAR FLAG and return immediately to allow VM to handle it
-      if (mp_interrupt_requested || mp_soft_reset_requested) {
-          mp_interrupt_requested = false;  // Clear flag now that we're breaking out
+      // Raise any pending exception (e.g. KeyboardInterrupt) immediately.
+      // mp_hal_check_interrupt() schedules the exception via mp_sched_keyboard_interrupt()
+      // but also clears mp_interrupt_requested internally, so checking that flag here
+      // is unreliable. mp_handle_pending(true) checks mp_pending_exception directly
+      // and nlr_raise()s it, which is the standard MicroPython pattern used by
+      // mp_hal_stdin_rx_chr and MICROPY_EVENT_POLL_HOOK in other ports.
+      mp_handle_pending(true);
+
+      // Fast-path check for flags that mp_handle_pending doesn't cover
+      if (mp_soft_reset_requested) {
           mp_soft_reset_requested = false;
           return;
       }
@@ -266,6 +275,12 @@ extern "C" void arduino_serial_write(const char *str, int len, void *stream) {
       } else {
         // Raw REPL stream: send bytes verbatim (no CR injection)
         s->write(str[i]);
+        extern bool oled_copy_print_enabled; // Flag for OLED print copy feature
+        extern uint8_t pyexec_repl_active; // Flag to check if REPL is active (from pyexec.cpp)
+        if (oled_copy_print_enabled && oled.isConnected() && pyexec_repl_active) {
+            OLEDOut.print((char)str[i]);
+            // OLEDOut.write((const uint8_t*)&str[i], 1);
+        }
       }
     }
     s->flush();
@@ -424,6 +439,9 @@ extern "C" void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
             } else {
                 // Raw REPL stream: send bytes verbatim (no CR injection)
                 out_stream->write(str[i]);
+                if (oled_copy_print_enabled && oled.isConnected()) {
+                    OLEDOut.write((const uint8_t*)&str[i], 1);
+                }
             }
         }
         // Service USB after output to ensure data starts transmitting
@@ -449,7 +467,11 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
                                                uint32_t& last_interrupt_time, 
                                                bool in_raw_repl,
                                                int expected_interrupt_char) {
-  if (!stream) return false;
+  if (!stream) {
+    // Serial.println("[MP] Interrupt check: No stream available");
+
+     return false;
+  }
   
   int available = stream->available();
   if (available == 0) return false;
@@ -470,7 +492,7 @@ static inline bool check_stream_for_interrupt(Stream* stream, uint32_t current_t
   }
 
   // Keyboard interrupt character - use the stream-specific expected character
-  if (c == expected_interrupt_char) {
+  if (c == MP_INTERRUPT_CHAR_SERIAL || c == MP_INTERRUPT_CHAR_USBSER2) {
     stream->read(); // consume control byte
     if (current_time - last_interrupt_time > 20) { // Debounce (20ms = responsive but not too sensitive)
       // CRITICAL: Set the flag FIRST to break out of mp_hal_delay_ms immediately
@@ -573,24 +595,26 @@ extern "C" void mp_hal_check_interrupt(void) {
   // Cache in_raw_repl check once instead of calling getInstance() multiple times
   const bool in_raw_repl = MpRemoteService::getInstance().isInRawRepl();
 
-  // Only poll the active interrupt/input stream to avoid cross-stream
-  // byte stealing during input()/readline.
-  Stream *interrupt_stream = mp_interrupt_check_stream ? mp_interrupt_check_stream : global_mp_stream;
-  if (!interrupt_stream) {
-    interrupt_stream = &Serial;
+  // ALWAYS check BOTH Serial and USBSer2 for interrupts.
+  // check_stream_for_interrupt only peeks/consumes control bytes (Ctrl+C, Ctrl+Q, Ctrl+D)
+  // so checking both is safe — no normal data bytes are stolen.
+  // This ensures that either Ctrl+C or Ctrl+Q works on either port, regardless of
+  // which stream is the "active" one. Previously, only one stream was checked,
+  // meaning interrupts typed on the wrong port were silently dropped.
+  if (check_stream_for_interrupt(&Serial, current_time, last_interrupt_time,
+                                 in_raw_repl, MP_INTERRUPT_CHAR_SERIAL)) {
+    return;
   }
-  int interrupt_char = (interrupt_stream == &USBSer2) ?
-                       MP_INTERRUPT_CHAR_USBSER2 : MP_INTERRUPT_CHAR_SERIAL;
-  if (check_stream_for_interrupt(interrupt_stream, current_time, last_interrupt_time,
-                                 in_raw_repl, interrupt_char)) {
+  if (check_stream_for_interrupt(&USBSer2, current_time, last_interrupt_time,
+                                 in_raw_repl, MP_INTERRUPT_CHAR_USBSER2)) {
     return;
   }
 
-  // Click-menu path: holding the clickwheel button acts as KeyboardInterrupt.
-  // Only trigger on HELD (not PRESSED) so a quick tap (e.g. selection click) won't interrupt.
-  // Grace period after script start ignores button for 500ms to avoid residual selection state.
-  if (clickWheelPythonInterrupt &&
-      encoderButtonState == HELD &&
+  // Click-menu path: LONG_HELD (3-second hold) always acts as KeyboardInterrupt.
+  // The encoder state machine drives a logo LED animation from white→red during
+  // the hold, then fires LONG_HELD at 3 seconds.  We always honour it regardless
+  // of clickWheelPythonInterrupt because a 3-second deliberate hold is unambiguous.
+  if (encoderButtonState == LONG_HELD &&
       millis() >= clickwheel_interrupt_ignore_until) {
     mp_interrupt_requested = true;
     mp_sched_keyboard_interrupt();

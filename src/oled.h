@@ -360,6 +360,21 @@ extern const unsigned char jogo32h_file_bin[];
 extern const unsigned int jogo32h_file_bin_len;
 extern const unsigned char bubbleJumpThiccWhite_bin[];
 extern const unsigned int bubbleJumpThiccWhite_bin_len;
+// ---- Paste into src/oled.h (extern declarations) ----
+
+// Embedded binary images for filesystem provisioning (generated)
+extern const unsigned char dayglow_bin[];
+extern const unsigned int dayglow_bin_len;
+extern const unsigned char eevblog_bin[];
+extern const unsigned int eevblog_bin_len;
+extern const unsigned char jogo32h_bin[];
+extern const unsigned int jogo32h_bin_len;
+extern const unsigned char jogotextInv_bin[];
+extern const unsigned int jogotextInv_bin_len;
+extern const unsigned char jumperless_text_bin[];
+extern const unsigned int jumperless_text_bin_len;
+extern const unsigned char ksc_bin[];
+extern const unsigned int ksc_bin_len;
 
 // Font structure - now includes point size and spacing info for granular control
 struct font {

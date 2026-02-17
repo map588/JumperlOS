@@ -3,7 +3,7 @@
 Chapter 9. GPIO
  CAUTION
 Under certain conditions, pull-down does not function as expected. For more information, see RP2350-E9.
-9.1. Overview
+## 9.1. Overview
 RP2350 has up to 54 multi-functional General Purpose Input / Output (GPIO) pins, divided into two banks:
 Bank 0
 30 user GPIOs in the QFN-60 package (RP2350A), or 48 user GPIOs in the QFN-80 package
@@ -33,10 +33,10 @@ Bank 0 supports the following functions:
 • 1 × auxiliary QSPI chip select, for a second XIP device — Section 12.14, “QSPI memory interface (QMI)”
 • CoreSight execution trace output — Section 3.5.7, “Trace”
 • USB VBUS management — Section 12.7.3.10, “VBUS control”
-• External interrupt requests, level or edge-sensitive — Section 9.5, “Interrupts”
+• External interrupt requests, level or edge-sensitive — Section ## 9.5, “Interrupts”
 Bank 1 contains the QSPI and USB DP/DM pins and supports the following functions:
 RP2350 Datasheet
-9.1. Overview 587
+## .1. Overview 587
 • Software control via SIO — Section 3.1.3, “GPIO control”
 • Flash execute in place (Section 4.4, “External flash and PSRAM (XIP)”) via QSPI Memory Interface (QMI) — Section
 12.14, “QSPI memory interface (QMI)”
@@ -65,7 +65,7 @@ level) can also be
 inverted or forced high
 or low, using the GPIO
 control registers.
-9.2. Changes from RP2040
+## .2. Changes from RP2040
 RP2350 GPIO differs from RP2040 in the following ways:
 • 18 more GPIOs in the QFN-80 package
 • Addition of a third PIO to GPIO functions
@@ -76,16 +76,16 @@ on power up)
 • Both Secure and Non-secure access to GPIOs (see Section 10.6)
 • Double the number of GPIO interrupts to differentiate between Secure and Non-secure
 • Interrupt summary registers added so you can quickly see which GPIOs have pending interrupts
-9.3. Reset state
+## .3. Reset state
 At first power up, Bank 0 IOs (GPIOs 0 through 29 in the QFN-60 package, and GPIOs 0 through 47 in the QFN-80
 package) assume the following state:
 • Output buffer is high-impedance
 • Input buffer is disabled
 • Pulled low
-• Isolation latches are set to latched (Section 9.7)
+• Isolation latches are set to latched (Section ## .7)
 The pad output disable bit (GPIO0.OD) for each pad is clear at reset, but the IO muxing is reset to the null function,
 RP2350 Datasheet
-9.2. Changes from RP2040 588
+## .2. Changes from RP2040 588
 which ensures that the output buffer is high-impedance.
  IMPORTANT
 The pad reset state is different from RP2040, which only disables digital inputs on GPIOs 26 through 29 (as of
@@ -101,10 +101,10 @@ The pads return to the reset state on any of the following:
 • Asserting the RUN pin low
 • Setting SW-DP CDBGRSTREQ via SWD
 • Setting RP-AP rescue reset via SWD
-If a pad’s isolation latches are in the latched state (Section 9.7) then resetting the PADS and IO registers does not
+If a pad’s isolation latches are in the latched state (Section ## .7) then resetting the PADS and IO registers does not
 physically return the pad to its reset state. The isolation latches prevent upstream signals from propagating to the pad.
 Clear the ISO bit to allow signals to propagate.
-9.4. Function select
+## .4. Function select
 To allocate a function to a GPIO, write to the FUNCSEL field in the CTRL register corresponding to the pin. For a list of GPIOs
 and corresponding registers, see Table 645. For an example, see GPIO0_CTRL. The descriptions for the functions listed
 in this table can be found in Table 646.
@@ -112,7 +112,7 @@ Each GPIO can only select one function at a time. Each peripheral input (e.g. UA
 GPIO at a time. If you connect the same peripheral input to multiple GPIOs, the peripheral sees the logical OR of these
 GPIO inputs.
 RP2350 Datasheet
-9.4. Function select 589
+## .4. Function select 589
 Table 645. General
 Purpose Input/Output
 (GPIO) Bank 0
@@ -142,7 +142,7 @@ GPIO F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11
 21 SPI0 CSn UART1 RX I2C0 SCL PWM2 B SIO PIO0 PIO1 PIO2 CLOCK GPOUT0 USB OVCUR DET
 22 SPI0 SCK UART1 CTS I2C1 SDA PWM3 A SIO PIO0 PIO1 PIO2 CLOCK GPIN1 USB VBUS DET UART1 TX
 RP2350 Datasheet
-9.4. Function select 590
+## .4. Function select 590
 GPIO F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11
 23 SPI0 TX UART1 RTS I2C1 SCL PWM3 B SIO PIO0 PIO1 PIO2 CLOCK GPOUT1 USB VBUS EN UART1 RX
 24 SPI1 RX UART1 TX I2C0 SDA PWM4 A SIO PIO0 PIO1 PIO2 CLOCK GPOUT2 USB OVCUR DET
@@ -168,13 +168,13 @@ GPIOs 30 through 47 are QFN-80 only:
 43 SPI1 TX UART1 RTS I2C1 SCL PWM9 B SIO PIO0 PIO1 PIO2 USB VBUS DET UART1 RX
 44 SPI1 RX UART0 TX I2C0 SDA PWM10 A SIO PIO0 PIO1 PIO2 USB VBUS EN
 RP2350 Datasheet
-9.4. Function select 591
+## .4. Function select 591
 GPIO F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11
 45 SPI1 CSn UART0 RX I2C0 SCL PWM10 B SIO PIO0 PIO1 PIO2 USB OVCUR DET
 46 SPI1 SCK UART0 CTS I2C1 SDA PWM11 A SIO PIO0 PIO1 PIO2 USB VBUS DET UART0 TX
 47 SPI1 TX UART0 RTS I2C1 SCL PWM11 B SIO PIO0 PIO1 PIO2 QMI CS1n USB VBUS EN UART0 RX
 RP2350 Datasheet
-9.4. Function select 592
+## .4. Function select 592
 Table 646. GPIO User
 Bank function
 descriptions
@@ -225,7 +225,7 @@ Function Name Description
 UARTx Connect one of the internal PL011 UART peripherals to GPIO.
 I2Cx Connect one of the internal DW I2C peripherals to GPIO.
 RP2350 Datasheet
-9.4. Function select 593
+## .4. Function select 593
 Function Name Description
 SIO Software control of GPIO, from the single-cycle IO (SIO) block. The SIO function (F5) must be selected
 for the processors to drive a GPIO, but the input is always connected, so software can check the state
@@ -237,7 +237,7 @@ However, there are two scenarios where the pins can be used as software-controll
 • If a SPI or Dual-SPI flash device is used for execute-in-place, then the SD2 and SD3 pins are not used for flash
 access, and can be used for other GPIO functions on the circuit board.
 • If RP2350 is used in a flashless configuration (USB and OTP boot only), then all six pins can be used for softwarecontrolled GPIO functions.
-9.5. Interrupts
+## .5. Interrupts
 An interrupt can be generated for every GPIO pin in four scenarios:
 • Level High: the GPIO pin is a logical 1
 • Level Low: the GPIO pin is a logical 0
@@ -264,10 +264,10 @@ This means the user can watch for several GPIO events at once.
 Summary registers can be used to quickly check for pending GPIO interrupts. See IRQSUMMARY_PROC0_NONSECURE0
 for an example.
 RP2350 Datasheet
-9.5. Interrupts 594
-9.6. Pads
+## .5. Interrupts 594
+## .6. Pads
  CAUTION
-Under certain conditions, pull-down does not function as expected. For more information, see RP2350-E9.
+Under certain conditions, pull-down does not function as expected. For more information, see RP2350-E## .
 Each GPIO is connected off-chip via a pad. Pads are the electrical interface between the chip’s internal logic and
 external circuitry. They translate signal voltage levels, support higher currents and offer some protection against
 electrostatic discharge (ESD) events. You can adjust pad electrical behaviour to meet the requirements of external
@@ -308,11 +308,11 @@ Using IOVDD voltages greater than 1.8V, with the input thresholds set for 1.8V m
 Pad input threshold are adjusted on a per bank basis, with separate VOLTAGE_SELECT registers for the pads associated with
 the User IO bank (IO Bank 0) and the QSPI IO bank. However, both banks share the same digital IO supply (IOVDD), so
 both register should always be set to the same value.
-Pad register details are available in Section 9.11.3, “Pad Control - User Bank” and Section 9.11.4, “Pad Control - QSPI
+Pad register details are available in Section ## .11.3, “Pad Control - User Bank” and Section ## .11.4, “Pad Control - QSPI
 Bank”.
 RP2350 Datasheet
-9.6. Pads 595
-9.6.1. Bus keeper mode
+## .6. Pads 595
+## .6.1. Bus keeper mode
 For each pad, only the pull-up or the pull-down resistor can be enabled at any given time. It is impossible to enable both
 simultaneously. Instead, if you set both the GPIO0.PDE and GPIO0.PUE bits simultaneously then you enable bus keeper
 mode, where the pad is:
@@ -322,8 +322,8 @@ When the output buffer is disabled, and the pad is not driven by any external so
 current logical state. The pad does not float to mid-rail.
 Bus keeper mode relies on control logic in the switched core domain, so does not function when the core is powered
 down. Rather, powering down the core when bus keeper mode is enabled latches the current output controls (pull-up or
-pull-down) in the pad isolation latches, as described in Section 9.7.
-9.7. Pad isolation latches
+pull-down) in the pad isolation latches, as described in Section ## .7.
+## .7. Pad isolation latches
 RP2350 features extended low-power states that allow all internal logic, with the exception of POWMAN and some
 CoreSight debug logic, to fully power down under software control. This includes powering down all peripherals, the IO
 muxing, and the pad control registers, which brings with it the risk that pad signals may experience unwanted
@@ -354,7 +354,7 @@ The isolation latches themselves are reset by the always-on power domain reset, 
 • RP-AP rescue reset
 The latches reset to the reset value of the signal being isolated. For example, on Bank 0 GPIOs, the input enable control
 RP2350 Datasheet
-9.7. Pad isolation latches 596
+## .7. Pad isolation latches 596
 (GPIO0.IE) resets to 0 (input-disabled), so the isolation latches for these signals also take a reset value of 0. Resetting
 the isolation latch forces the pad to assume its reset state even if it is currently isolated.
 The ISO control bits (e.g. GPIO0.ISO) are reset by the top-level switched core domain isolation signal, which is asserted
@@ -363,7 +363,7 @@ entering and exiting a sleep state where the switched core domain is unpowered l
 up; you can then re-engage them individually. The ISO control bits are not reset by the PADS register block reset driven
 by the RESETS control registers: resetting the PADS register block returns non-isolated pads to their reset state, but has
 no effect on isolated pads.
-9.8. Processor GPIO controls (SIO)
+## .8. Processor GPIO controls (SIO)
 The single-cycle IO subsystem (Section 3.1) contains memory-mapped GPIO registers. The processors can use these to
 perform input/output operations on GPIOs:
 • The GPIO_OUT and GPIO_HI_OUT registers set the output level: 1 = high, 0 = low
@@ -383,7 +383,7 @@ These registers are documented in more detail in the SIO GPIO register section (
 The DMA cannot access registers in the SIO subsystem. The recommended method to DMA to GPIOs is a PIO program
 that continuously transfers TX FIFO data to the GPIO outputs, which provides more consistent timing than DMA directly
 into GPIO registers.
-9.9. GPIO coprocessor port
+## .## . GPIO coprocessor port
 Coprocessor port 0 on each Cortex-M33 processor connects to a GPIO coprocessor interface. These coprocessor
 instructions provide fast access to the SIO GPIO registers from Arm software:
 • The equivalent of any SIO GPIO register access is a single instruction, without having to materialise a 32-bit
@@ -396,9 +396,9 @@ Both Secure and Non-secure code may access the coprocessor. Non-secure code sees
 registers, defined by ACCESSCTRL GPIO_NSMASK0/1.
 The GPIO coprocessor instruction set is documented in Section 3.6.1.
 RP2350 Datasheet
-9.8. Processor GPIO controls (SIO) 597
-9.10. Software examples
-9.10.1. Select an IO function
+## .8. Processor GPIO controls (SIO) 597
+## .10. Software examples
+## .10.1. Select an IO function
 An IO pin can perform many different functions and must be configured before use. For example, you may want it to be
 a UART_TX pin, or a PWM output. The SDK provides gpio_set_function for this purpose. Many SDK examples call
 gpio_set_function early on to enable printing to a UART.
@@ -454,7 +454,7 @@ SDK: https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2350/hardware_str
   IO_BANK0_IRQSUMMARY_PROC0_NONSECURE0
 222 // 0x80000000 [31] GPIO31 (0)
 RP2350 Datasheet
-9.10. Software examples 598
+## 9.10. Software examples 598
 223 // 0x40000000 [30] GPIO30 (0)
 224 // 0x20000000 [29] GPIO29 (0)
 225 // 0x10000000 [28] GPIO28 (0)
@@ -520,7 +520,7 @@ RP2350 Datasheet
 284 // 0x00000020 [5] GPIO5 (0)
 285 // 0x00000010 [4] GPIO4 (0)
 RP2350 Datasheet
-9.10. Software examples 599
+## 9.10. Software examples 599
 286 // 0x00000008 [3] GPIO3 (0)
 287 // 0x00000004 [2] GPIO2 (0)
 288 // 0x00000002 [1] GPIO1 (0)
@@ -586,7 +586,7 @@ RP2350 Datasheet
 344 // 0x00020000 [17] GPIO17 (0)
 345 // 0x00010000 [16] GPIO16 (0)
 RP2350 Datasheet
-9.10. Software examples 600
+## 9.10. Software examples 600
 346 // 0x00008000 [15] GPIO15 (0)
 347 // 0x00004000 [14] GPIO14 (0)
 348 // 0x00002000 [13] GPIO13 (0)
@@ -652,7 +652,7 @@ RP2350 Datasheet
 405 // 0x20000000 [29] GPIO7_LEVEL_HIGH (0)
 406 // 0x10000000 [28] GPIO7_LEVEL_LOW (0)
 RP2350 Datasheet
-9.10. Software examples 601
+## 9.10. Software examples 601
 407 // 0x08000000 [27] GPIO6_EDGE_HIGH (0)
 408 // 0x04000000 [26] GPIO6_EDGE_LOW (0)
 409 // 0x02000000 [25] GPIO6_LEVEL_HIGH (0)
@@ -713,10 +713,10 @@ SDK: https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware
 48 io_bank0_hw->io[gpio].ctrl = fn << IO_BANK0_GPIO0_CTRL_FUNCSEL_LSB;
 49 // Remove pad isolation now that the correct peripheral is in control of the pad
 RP2350 Datasheet
-9.10. Software examples 602
+## 9.10. Software examples 602
 50 hw_clear_bits(&pads_bank0_hw->io[gpio], PADS_BANK0_GPIO0_ISO_BITS);
 51 }
-9.10.2. Enable a GPIO interrupt
+## 9.10.2. Enable a GPIO interrupt
 The SDK provides a method of being interrupted when a GPIO pin changes state:
 SDK: https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_gpio/gpio.c Lines 186 - 196
 186 void gpio_set_irq_enabled(uint gpio, uint32_t events, bool enabled) {
@@ -762,7 +762,7 @@ Pico Examples: https://github.com/raspberrypi/pico-examples/blob/master/gpio/hel
 11 #define GPIO_WATCH_PIN 2
 12
 RP2350 Datasheet
-9.10. Software examples 603
+## 9.10. Software examples 603
 13 static char event_str[128];
 14
 15 void gpio_event_string(char *buf, uint32_t events);
@@ -814,12 +814,12 @@ RP2350 Datasheet
 60 }
 61 *buf++ = '\0';
 62 }
-9.11. List of registers
-9.11.1. IO - User Bank
+## 9.11. List of registers
+## 9.11.1. IO - User Bank
 The User Bank IO registers start at a base address of 0x40028000 (defined as IO_BANK0_BASE in SDK).
 RP2350 Datasheet
-9.11. List of registers 604
-Table 649. List of
+## 9.11. List of registers 604
+Table 64## 9. List of
 IO_BANK0 registers
 Offset Name Info
 0x000 GPIO0_STATUS
@@ -859,7 +859,7 @@ Offset Name Info
 0x088 GPIO17_STATUS
 0x08c GPIO17_CTRL
 RP2350 Datasheet
-9.11. List of registers 605
+## 9.11. List of registers 605
 Offset Name Info
 0x090 GPIO18_STATUS
 0x094 GPIO18_CTRL
@@ -898,7 +898,7 @@ Offset Name Info
 0x118 GPIO35_STATUS
 0x11c GPIO35_CTRL
 RP2350 Datasheet
-9.11. List of registers 606
+## 9.11. List of registers 606
 Offset Name Info
 0x120 GPIO36_STATUS
 0x124 GPIO36_CTRL
@@ -937,7 +937,7 @@ Offset Name Info
 0x224 IRQSUMMARY_COMA_WAKE_SECURE
 1
 RP2350 Datasheet
-9.11. List of registers 607
+## 9.11. List of registers 607
 Offset Name Info
 0x228 IRQSUMMARY_COMA_WAKE_NONSE
 CURE0
@@ -976,7 +976,7 @@ CURE1
 0x2a8 PROC1_INTF0 Interrupt Force for proc1
 0x2ac PROC1_INTF1 Interrupt Force for proc1
 RP2350 Datasheet
-9.11. List of registers 608
+## 9.11. List of registers 608
 Offset Name Info
 0x2b0 PROC1_INTF2 Interrupt Force for proc1
 0x2b4 PROC1_INTF3 Interrupt Force for proc1
@@ -1017,7 +1017,7 @@ Bits Description Type Reset
 25:18 Reserved. - -
 17 INFROMPAD: input signal from pad, before filtering and override are applied RO 0x0
 RP2350 Datasheet
-9.11. List of registers 609
+## 9.11. List of registers 609
 Bits Description Type Reset
 16:14 Reserved. - -
 13 OETOPAD: output enable to pad after register override is applied RO 0x0
@@ -1057,7 +1057,7 @@ Enumerated values:
 0x1 → INVERT: drive output from inverse of peripheral signal selected by
 funcsel
 RP2350 Datasheet
-9.11. List of registers 610
+## 9.11. List of registers 610
 Bits Description Type Reset
 0x2 → LOW: drive output low
 0x3 → HIGH: drive output high
@@ -1100,7 +1100,7 @@ GPIO1_CTRL Register
 Bits Description Type Reset
 31:30 Reserved. - -
 RP2350 Datasheet
-9.11. List of registers 611
+## 9.11. List of registers 611
 Bits Description Type Reset
 29:28 IRQOVER RW 0x0
 Enumerated values:
@@ -1141,7 +1141,7 @@ Enumerated values:
 0x03 → I2C0_SCL
 0x04 → PWM_B_0
 RP2350 Datasheet
-9.11. List of registers 612
+## 9.11. List of registers 612
 Bits Description Type Reset
 0x05 → SIO_1
 0x06 → PIO0_1
@@ -1183,7 +1183,7 @@ Enumerated values:
 0x0 → NORMAL: don’t invert the peri input
 0x1 → INVERT: invert the peri input
 RP2350 Datasheet
-9.11. List of registers 613
+## 9.11. List of registers 613
 Bits Description Type Reset
 0x2 → LOW: drive peri input low
 0x3 → HIGH: drive peri input high
@@ -1223,7 +1223,7 @@ Enumerated values:
 IO_BANK0: GPIO3_STATUS Register
 Offset: 0x018
 RP2350 Datasheet
-9.11. List of registers 614
+## 9.11. List of registers 614
 Table 656.
 GPIO3_STATUS
 Register
@@ -1272,7 +1272,7 @@ by funcsel
 
 
 
-12.7. USB
+# 12.7. USB
 12.7.1. Overview
  NOTE
 Prerequisite knowledge required
@@ -2132,7 +2132,7 @@ Set limit while enable is low and then set the enable.
 
 
 
-12.1. UART
+# 12.1. UART
 Arm documentation
 Excerpted from the PrimeCell UART (PL011) Technical Reference Manual. Used with permission.
 RP2350 has 2 identical instances of a UART peripheral, based on the Arm Primecell UART (PL011) (Revision r1p5).
@@ -3547,18 +3547,18 @@ by a number of different error conditions:
 To determine the cause of the interrupt, read the Raw Interrupt Status Register (UARTRIS) or the Masked Interrupt Status
 Register (UARTMIS). To clear the interrupt, write to the relevant bits of the Interrupt Clear Register, UARTICR (bits 7 to 10 are
 the error clear bits).
-12.1.6.6. UARTINTR
+## ## 12.1.6.6. UARTINTR
 The interrupts are also combined into a single output, that is an OR function of the individual masked sources. You can
 connect this output to a system interrupt controller to provide another level of masking on a individual peripheral basis.
 The combined UART interrupt is asserted if any of the individual interrupts are asserted and enabled.
-12.1.7. Programmer’s model
+## 12.1.7. Programmer’s model
 The SDK provides a uart_init function to configure the UART with a particular baud rate. Once the UART is initialised,
 the user must configure a GPIO pin as UART_TX and UART_RX. See Section 9.10.1 for more information on selecting a GPIO
 function.
 To initialise the UART, the uart_init function takes the following steps:
 1. De-asserts the reset
 RP2350 Datasheet
-12.1. UART 970
+## 12.1. UART 970
 2. Enables clk_peri
 3. Sets enable bits in the control register
 4. Enables the FIFOs
@@ -3614,8 +3614,8 @@ SDK: https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware
 87 return baud;
 88 }
 RP2350 Datasheet
-12.1. UART 971
-12.1.7.1. Baud rate calculation
+## 12.1. UART 971
+## 12.1.7.1. Baud rate calculation
 The UART baud rate is derived from dividing clk_peri.
 If the required baud rate is 115200 and UARTCLK = 125MHz then:
 Baud Rate Divisor = (125 × 106
@@ -3653,7 +3653,7 @@ SDK: https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware
 178 // See datasheet
 179 return (4 * uart_clock_get_hz(uart)) / (64 * baud_ibrd + baud_fbrd);
 180 }
-12.1.8. List of registers
+## 12.1.8. List of registers
 The UART0 and UART1 registers start at base addresses of 0x40070000 and 0x40078000 respectively (defined as
 UART0_BASE and UART1_BASE in SDK).
 Table 1028. List of
@@ -3665,7 +3665,7 @@ UARTRSR/UARTECR
 0x018 UARTFR Flag Register, UARTFR
 0x020 UARTILPR IrDA Low-Power Counter Register, UARTILPR
 RP2350 Datasheet
-12.1. UART 972
+## 12.1. UART 972
 Offset Name Info
 0x024 UARTIBRD Integer Baud Rate Register, UARTIBRD
 0x028 UARTFBRD Fractional Baud Rate Register, UARTFBRD
@@ -3711,7 +3711,7 @@ Control Register, UARTLCR_H. In FIFO mode, this error is associated with the
 character at the top of the FIFO.
 RO -
 RP2350 Datasheet
-12.1. UART 973
+## 12.1. UART 973
 Bits Description Type Reset
 8 FE: Framing error. When set to 1, it indicates that the received character did
 not have a valid stop bit (a valid stop bit is 1). In FIFO mode, this error is
@@ -3763,7 +3763,7 @@ Bits Description Type Reset
 nUARTRI, modem status input. That is, the bit is 1 when nUARTRI is LOW.
 RO -
 RP2350 Datasheet
-12.1. UART 974
+## 12.1. UART 974
 Bits Description Type Reset
 7 TXFE: Transmit FIFO empty. The meaning of this bit depends on the state of
 the FEN bit in the Line Control Register, UARTLCR_H. If the FIFO is disabled,
@@ -3819,7 +3819,7 @@ Register
 Bits Description Type Reset
 31:16 Reserved. - -
 RP2350 Datasheet
-12.1. UART 975
+## 12.1. UART 975
 Bits Description Type Reset
 15:0 BAUD_DIVINT: The integer baud rate divisor. These bits are cleared to 0 on
 reset.
@@ -3876,7 +3876,7 @@ at least two complete frames. For normal use, this bit must be cleared to 0.
 RW 0x0
 UART: UARTCR Register
 RP2350 Datasheet
-12.1. UART 976
+## 12.1. UART 976
 Offset: 0x030
 Description
 Control Register, UARTCR
@@ -3932,7 +3932,7 @@ the modem inputs. This bit is cleared to 0 on reset, to disable loopback.
 RW 0x0
 6:3 Reserved. - -
 RP2350 Datasheet
-12.1. UART 977
+## 12.1. UART 977
 Bits Description Type Reset
 2 SIRLP: SIR low-power IrDA mode. This bit selects the IrDA encoding mode. If
 this bit is cleared to 0, low-level bits are transmitted as an active high pulse
@@ -3986,7 +3986,7 @@ UARTOEINTR interrupt. On a write of 1, the mask of the UARTOEINTR interrupt
 is set. A write of 0 clears the mask.
 RW 0x0
 RP2350 Datasheet
-12.1. UART 978
+## 12.1. UART 978
 Bits Description Type Reset
 9 BEIM: Break error interrupt mask. A read returns the current mask for the
 UARTBEINTR interrupt. On a write of 1, the mask of the UARTBEINTR interrupt
@@ -4046,7 +4046,7 @@ RO 0x0
 UARTPEINTR interrupt.
 RO 0x0
 RP2350 Datasheet
-12.1. UART 979
+## 12.1. UART 979
 Bits Description Type Reset
 7 FERIS: Framing error interrupt status. Returns the raw interrupt state of the
 UARTFEINTR interrupt.
@@ -4108,7 +4108,7 @@ RO -
 interrupt state of the UARTDCDINTR interrupt.
 RO -
 RP2350 Datasheet
-12.1. UART 980
+## 12.1. UART 980
 Bits Description Type Reset
 1 CTSMMIS: nUARTCTS modem masked interrupt status. Returns the masked
 interrupt state of the UARTCTSINTR interrupt.
@@ -4160,7 +4160,7 @@ RW 0x0
 is enabled.
 RW 0x0
 RP2350 Datasheet
-12.1. UART 981
+## 12.1. UART 981
 UART: UARTPERIPHID0 Register
 Offset: 0xfe0
 Description
@@ -4210,7 +4210,7 @@ Offset: 0xff0
 Description
 UARTPCellID0 Register
 RP2350 Datasheet
-12.1. UART 982
+## 12.1. UART 982
 Table 1047.
 UARTPCELLID0
 Register
@@ -4260,12 +4260,12 @@ Bits Description Type Reset
 
 
 
-12.6. DMA
+# 12.6. DMA
 The RP2350 Direct Memory Access (DMA) controller performs bulk data transfers on a processor’s behalf. This leaves
 processors free to attend to other tasks or enter low-power sleep states. The DMA dual bus manager ports can issue
 one read and one write access per cycle. The data throughput is therefore far greater than one of RP2350’s processors.
 RP2350 Datasheet
-12.6. DMA 1094
+## 12.6. DMA 1094
 Control/Status
 Registers
 Read Address FIFO
@@ -4326,18 +4326,18 @@ channel can configure another, loading configuration data from a sequence of con
 second can then call back to the first via the CHAIN_TO option when it needs to be reconfigured.
 Making the DMA more autonomous means that much less processor supervision is required: overall this allows the
 system to do more at once, or to dissipate less power.
-12.6.1. Changes from RP2040
+## 12.6.1. Changes from RP2040
 The following new features have been added:
 • Increased the number of DMA channels from 12 to 16.
 • Increased the number of shared IRQ outputs from 2 to 4.
 • Channels can be assigned to security domains using SECCFG_CH0 through SECCFG_CH15.
-• The DMA now filters bus accesses using the built-in memory protection unit (Section 12.6.6.3).
+• The DMA now filters bus accesses using the built-in memory protection unit (Section ## 12.6.6.3).
 • Interrupts can be assigned to security domains using SECCFG_IRQ0 through SECCFG_IRQ3.
 • Pacing timers and the CRC sniffer can be assigned to security domains using the SECCFG_MISC register.
 • The four most-significant bits of TRANS_COUNT (CH0_TRANS_COUNT) are redefined as the MODE field, which defines
 what happens when TRANS_COUNT reaches zero:
 RP2350 Datasheet
-12.6. DMA 1095
+## 12.6. DMA 1095
 ◦
 This backward-incompatible change reduces the maximum transfers in one sequence from 232-1 to 228-1.
 ◦ Mode 0x0 has the same behaviour as RP2040, so there is no need to modify software that performs less than
@@ -4367,24 +4367,24 @@ cycle, but it can be later when the DMA encounters a write data-phase bus stall.
 channels (CH0_CTRL_TRIG.HIGH_PRIORITY), even if there were no active low-priority requests. This reduced DMA
 throughput when lightly loaded. This idle cycle has been removed, eliminating lost throughput.
 • IRQ assertion latency has been reduced by one cycle.
-12.6.2. Configuring channels
+## 12.6.2. Configuring channels
 Each channel has four control/status registers:
 • READ_ADDR (CH0_READ_ADDR) is the address of the next memory location to read.
 • WRITE_ADDR (CH0_WRITE_ADDR) is the address of the next memory location to write.
 • TRANS_COUNT (CH0_TRANS_COUNT) shows the number of transfers remaining in the current transfer sequence and
-programs the number of transfers in the next transfer sequence (see Section 12.6.2.2).
+programs the number of transfers in the next transfer sequence (see Section ## 12.6.2.2).
 • CTRL (CH0_CTRL_TRIG) configures all other aspects of the channel’s behaviour, enables/disables the channel, and
 provides completion status.
 To directly instruct the DMA channel to perform a data transfer, software writes to these four registers, and then
-triggers the channel (Section 12.6.3). To make the DMA more autonomous, you can also program one DMA channel to
+triggers the channel (Section ## 12.6.3). To make the DMA more autonomous, you can also program one DMA channel to
 write to another channel’s configuration registers, queueing up many transfer sequences in advance.
 All four are live registers; they update their status continuously as the channel progresses.
-12.6.2.1. Read and write addresses
+## 12.6.2.1. Read and write addresses
 READ_ADDR and WRITE_ADDR contain the address the channel will next read from, and write to, respectively. These registers
 update automatically after each read/write access, incrementing to the next read/write address as required. The size of
 the increment varies according to:
 RP2350 Datasheet
-12.6. DMA 1096
+## 12.6. DMA 1096
 • the transfer size: 1, 2 or 4 byte bus accesses as per CH0_CTRL_TRIG.DATA_SIZE
 • the increment enable for each address register: CH0_CTRL_TRIG.INCR_READ and CH0_CTRL_TRIG.INCR_WRITE
 • the increment direction: CH0_CTRL_TRIG.INCR_READ_REV and CH0_CTRL_TRIG.INCR_WRITE_REV
@@ -4396,9 +4396,9 @@ to/from that same address, there is no need to write to the register again.
 • When transferring to/from a consecutive series of buffers in memory (e.g. scattering and gathering), an address
 register will already have incremented to the start of the next buffer at the completion of a transfer.
 By not programming all four CSRs for each transfer sequence, software can use shorter interrupt handlers, and more
-compact control block formats when used with channel chaining (see register aliases in Section 12.6.3.1, chaining in
-Section 12.6.3.2).
-12.6.2.1.1. Address alignment
+compact control block formats when used with channel chaining (see register aliases in Section ## 12.6.3.1, chaining in
+Section ## 12.6.3.2).
+## 12.6.2.1.1. Address alignment
 READ_ADDR and WRITE_ADDR must be aligned to the transfer size, specified in CH0_CTRL_TRIG.DATA_SIZE. For 32-bit
 transfers, the address must be a multiple of four, and for 16-bit transfers, the address must be a multiple of two.
 Software is responsible for correctly aligning addresses written to READ_ADDR and WRITE_ADDR: the DMA does not enforce
@@ -4412,7 +4412,7 @@ transferred on a given cycle (i.e. to the present value of READ_ADDR/WRITE_ADDR)
 unaligned bus accesses do not cause data to be read/written from the other side of a protection boundary. This means
 that unaligned access can not be used to violate the memory protection model. Other than this, the result of an
 unaligned access is unspecified.
-12.6.2.2. Transfer count
+## 12.6.2.2. Transfer count
 Reading TRANS_COUNT (CH0_TRANS_COUNT) returns the number of transfers remaining in the current transfer sequence.
 This value updates continuously as the channel progresses. Writing to TRANS_COUNT sets the length of the next transfer
 sequence. Up to 228-1 transfers can be performed in one sequence (0x0fffffff, approximately 256 million).
@@ -4423,14 +4423,14 @@ If the channel is triggered multiple times without intervening writes to TRANS_C
 transfers each time. For example, when chained to, one channel might load a fixed-size control block into another
 channel’s CSRs. TRANS_COUNT would be programmed once by software, and then reload automatically every time.
 Alternatively, TRANS_COUNT can be written with a new value before starting each transfer sequence. If TRANS_COUNT is the
-channel trigger (see Section 12.6.3.1), the channel will start immediately, and the value just written will be used, not the
+channel trigger (see Section ## 12.6.3.1), the channel will start immediately, and the value just written will be used, not the
 value currently in the reload register.
 RP2350 Datasheet
-12.6. DMA 1097
+## 12.6. DMA 1097
  NOTE
 The TRANS_COUNT is the number of transfers to be performed. The total number of bytes transferred is TRANS_COUNT
 times the size of each transfer in bytes, given by CTRL.DATA_SIZE.
-12.6.2.2.1. Count modes
+## 12.6.2.2.1. Count modes
 The four most-significant bits of TRANS_COUNT contain the MODE field (CH0_TRANS_COUNT.MODE), which modifies the
 counting behaviour of TRANS_COUNT. Mode 0x0 is the default: TRANS_COUNT decrements once for every bus transfer, and the
 channel halts once TRANS_COUNT reaches zero and all in-flight transfers have finished. The value of 0x0 is chosen for
@@ -4438,7 +4438,7 @@ backward-compatibility with RP2040 software, which expects the TRANS_COUNT regis
 than a 4-bit mode and a 28-bit count. There are few use cases for a finite number of transfers greater than 228, which is
 why the four most-significant bits have been reallocated for use with endless transfers.
 Mode 0x1, TRIGGER_SELF, behaves the same as mode 0x0, except that rather than halting upon completion, the channel
-immediately re-triggers itself. This is equivalent to a trigger performed by any other mechanism (Section 12.6.3):
+immediately re-triggers itself. This is equivalent to a trigger performed by any other mechanism (Section ## 12.6.3):
 TRANS_COUNT is reloaded, and the channel resumes from the current READ_ADDR and WRITE_ADDR addresses. A completion
 interrupt is still raised (if CTRL.IRQ_QUIET is not set) and the specified CHAIN_TO operation is still performed. The main use
 for this mode is streaming through SRAM ring buffers, where some action is required at regular intervals, for example
@@ -4446,7 +4446,7 @@ requesting the processor to refill an audio buffer once it is half-empty.
 Mode 0xf, ENDLESS, disables the decrement of TRANS_COUNT. This means a channel will generally run indefinitely without
 pause, though triggering a channel with a mode of 0xf and a count of 0x0 will result in the channel halting immediately.
 All other values are reserved for future use and their effect is unspecified.
-12.6.2.3. Control/Status
+## 12.6.2.3. Control/Status
 The CTRL register (CH0_CTRL_TRIG) has more, smaller fields than the other 3 registers. Among other things, CTRL is used
 to:
 • Configure the size of this channel’s data transfers through the DATA_SIZE field. Reads are always the same size as
@@ -4459,7 +4459,7 @@ address pointers wraps at some power-of-2 boundary.
 • See when the channel is idle, using the BUSY flag.
 • See if the channel has encountered a bus error in the READ_ERROR and WRITE_ERROR flags, or the combined error status
 in the AHB_ERROR flag.
-12.6.3. Triggering channels
+## 12.6.3. Triggering channels
 After a channel has been correctly configured, you must trigger it. This instructs the channel to begin scheduling bus
 accesses, either paced by a peripheral data request signal (DREQ) or as fast as possible. The following events can
 trigger a channel:
@@ -4468,16 +4468,16 @@ trigger a channel:
 • A write to the MULTI_CHAN_TRIGGER register (can trigger multiple channels at once).
 Each trigger mechanism covers different use cases. For example, trigger registers are simple and efficient when
 RP2350 Datasheet
-12.6. DMA 1098
+## 12.6. DMA 1098
 configuring and starting a channel in an interrupt service routine because the channel is triggered by the last
 configuration write. CHAIN_TO allows one channel to callback to another channel, which can then reconfigure the first
 channel. MULTI_CHAN_TRIGGER allows software to simply start a channel without touching any of its configuration
 registers.
 When triggered, the channel sets its CTRL.BUSY flag to indicate it is actively scheduling transfers. This remains set until
-the transfer count reaches zero, or the channel is aborted via the CHAN_ABORT register (Section 12.6.8.3).
+the transfer count reaches zero, or the channel is aborted via the CHAN_ABORT register (Section ## 12.6.8.3).
 When a channel is already running, indicated by BUSY = 1, it ignores additional triggers. A channel that is disabled (CTRL.EN
 is clear) also ignores triggers.
-12.6.3.1. Aliases and triggers
+## 12.6.3.1. Aliases and triggers
 Table 1145. Control
 register aliases. Each
 channel has four
@@ -4520,11 +4520,11 @@ Trigger registers do not start the channel if:
 in the CTRL register)
 • The channel is already running
 • The value 0 is written to the trigger register (useful for ending control block chains, see null triggers (Section
-12.6.3.3))
-• The bus access has a security level lower than the channel’s security level (Section 12.6.6.1)
+## 12.6.3.3))
+• The bus access has a security level lower than the channel’s security level (Section ## 12.6.6.1)
 RP2350 Datasheet
-12.6. DMA 1099
-12.6.3.2. Chaining
+## 12.6. DMA 1099
+## 12.6.3.2. Chaining
 When a channel completes, it can name a different channel to immediately be triggered. This can be used as a callback
 for the second channel to reconfigure and restart the first.
 This feature is configured through the CHAIN_TO field in the channel CTRL register. This 4-bit value selects a channel that
@@ -4535,17 +4535,17 @@ TRANS_COUNT to reload, and they are ignored if the targeted channel is already r
 One application for CHAIN_TO is for a channel to request reconfiguration by another channel from a sequence of control
 blocks in memory. Channel A is configured to perform a wrapped transfer from memory to channel B’s control registers
 (including a trigger register), and channel B is configured to chain back to channel A when it completes each transfer
-sequence. This is shown explicitly in the DMA control blocks example (Section 12.6.9.2).
-Use of the register aliases (Section 12.6.3.1) enables compact formats for DMA control blocks: as little as one word, in
+sequence. This is shown explicitly in the DMA control blocks example (Section ## 12.6.9.2).
+Use of the register aliases (Section ## 12.6.3.1) enables compact formats for DMA control blocks: as little as one word, in
 some cases.
 Another use of chaining is a ping-pong configuration, where two channels each trigger one another. The processor can
 respond to the channel completion interrupts and reconfigure each channel after it completes. However, the chained
 channel, which has already been configured, starts immediately. In other words, channel configuration and channel
 operation are pipelined. This can improve performance dramatically when a usage pattern requires many short transfer
 sequences.
-The Section 12.6.9 goes into more detail on the possibilities of chain triggers in the real world.
-12.6.3.3. Null triggers and chain interrupts
-As mentioned in Section 12.6.3.1, writing all-zeroes to a trigger register does not start the channel. This is called a null
+The Section ## 12.6.9 goes into more detail on the possibilities of chain triggers in the real world.
+## 12.6.3.3. Null triggers and chain interrupts
+As mentioned in Section ## 12.6.3.1, writing all-zeroes to a trigger register does not start the channel. This is called a null
 trigger, and it has two purposes:
 • Cause a halt at the end of an array of control blocks, by appending an all-zeroes block.
 • Reduce the number of interrupts generated when using control blocks.
@@ -4556,16 +4556,16 @@ chain.
 The channel CTRL register has a field called IRQ_QUIET. Its default value is 0. When this set to 1, channels generate an
 interrupt when they receive a null trigger, but not on normal completion of a transfer sequence. The interrupt is
 generated by the channel that receives the trigger.
-12.6.4. Data request (DREQ)
+## 12.6.4. Data request (DREQ)
 Peripherals produce or consume data at their own pace. If the DMA transferred data as fast as possible, loss or
 corruption of data would ensue. DREQs are a communication channel between peripherals and the DMA that enables
 the DMA to pace transfers according to the needs of the peripheral.
 The CTRL.TREQ_SEL (transfer request) field selects an external DREQ. It can also be used to select one of the internal
 pacing timers, or select no TREQ at all (the transfer proceeds as fast as possible), e.g. for memory-to-memory transfers.
-12.6.4.1. System DREQ table
+## 12.6.4.1. System DREQ table
 DREQ numbers use the following global assignment to peripheral DREQ channels:
 RP2350 Datasheet
-12.6. DMA 1100
+## 12.6. DMA 1100
 Table 1146. DREQs DREQ DREQ Channel DREQ DREQ Channel DREQ DREQ Channel DREQ DREQ Channel
 0 DREQ_PIO0_TX0 14 DREQ_PIO1_RX2 28 DREQ_UART0_TX 42 DREQ_PWM_WRAP10
 1 DREQ_PIO0_TX1 15 DREQ_PIO1_RX3 29 DREQ_UART0_RX 43 DREQ_PWM_WRAP11
@@ -4581,7 +4581,7 @@ Table 1146. DREQs DREQ DREQ Channel DREQ DREQ Channel DREQ DREQ Channel DREQ DRE
 11 DREQ_PIO1_TX3 25 DREQ_SPI0_RX 39 DREQ_PWM_WRAP7 53 DREQ_CORESIGHT
 12 DREQ_PIO1_RX0 26 DREQ_SPI1_TX 40 DREQ_PWM_WRAP8 54 DREQ_SHA256
 13 DREQ_PIO1_RX1 27 DREQ_SPI1_RX 41 DREQ_PWM_WRAP9
-12.6.4.2. Credit-based DREQ Scheme
+## 12.6.4.2. Credit-based DREQ Scheme
 The RP2350 DMA is designed for systems where:
 • The area and power cost of large peripheral data FIFOs is prohibitive.
 • The bandwidth demands of individual peripherals can be high, for example, >50% bus injection rate for short
@@ -4603,7 +4603,7 @@ issued to the address FIFOs. At this point the transfer is in flight, but has no
 The counter is saturating, and six bits in size. The counter ignores increments at the maximum value or decrements at
 zero. The six-bit counter size supports counts up to the depth of any FIFO on RP2350.
 RP2350 Datasheet
-12.6. DMA 1101
+## 12.6. DMA 1101
 clk
 0 1 0 1 2
 dreq
@@ -4618,7 +4618,7 @@ has the following caveats:
 • The user must not access a FIFO currently being serviced by the DMA. This causes the channel and peripheral to
 become desynchronised, and can cause corruption or loss of data.
 • Multiple channels must not be connected to the same DREQ.
-12.6.5. Interrupts
+## 12.6.5. Interrupts
 Each channel can generate interrupts; these can be masked on a per-channel basis using one of the four identical
 interrupt enable registers, INTE0 through INTE3. There are three circumstances where a channel raises an interrupt
 request:
@@ -4638,7 +4638,7 @@ requirements.
 security domain can get interrupts from its own channels.
 For debugging purposes, the INTF registers can force any channel interrupt to be asserted, which will cause assertion of
 any system IRQs that have that channel interrupt’s enable bit set in their respective INTE registers.
-12.6.6. Security
+## 12.6.6. Security
 RP2350’s processors support partitioning of memory and peripherals into multiple security domains. This partitioning is
 extended into the DMA, so that different security contexts can safely use their assigned channels without breaking any
 of the security invariants laid out by the processor security model. For example, an Arm processor in the Non-secure
@@ -4651,7 +4651,7 @@ Equivalent to Arm processors in the Secure, Privileged state
 Equivalent to RISC-V processors in Machine mode
 • 2: SU (secure and unprivileged)
 RP2350 Datasheet
-12.6. DMA 1102
+## 12.6. DMA 1102
 ◦
 Equivalent to Arm processors in the Secure, Normal state
 • 1: NSP (nonsecure and privileged)
@@ -4670,8 +4670,8 @@ SP and SU are acceptable, and NSP and NSU are not. As a rule, every action has a
 security level of the original action, and so the DMA can not be used to escalate accesses to a higher security level.
 Software assigns internal DMA resources, like channels, interrupts, pacing timers and the CRC sniffer, to one of the four
 possible security levels. These resources are then accessible only at and above that level. Channel assignment in
-particular is discussed in Section 12.6.6.1.
-The DMA memory protection unit (Section 12.6.6.3) defines the minimum security level required to access up to eight
+particular is discussed in Section ## 12.6.6.1.
+The DMA memory protection unit (Section ## 12.6.6.3) defines the minimum security level required to access up to eight
 programmable address ranges, so that channels of a given security level can not access memory beyond their means.
 This MPU is intended to mirror the SRAM and XIP memory protection boundaries configured in the processor SAU or
 PMP. In addition to the internal filtering performed by the DMA MPU, accesses are filtered by the system bus according
@@ -4679,7 +4679,7 @@ to the ACCESSCTRL filter rules described in Section 10.6.2.
 The combination of these features allows the DMA to be safely shared by software running in different security
 domains. If this is not desired, the entire DMA block can instead be assigned wholesale to a single security domain
 using the ACCESSCTRL DMA register.
-12.6.6.1. Channel security assignment
+## 12.6.6.1. Channel security assignment
 Channels are assigned to security domains using the channel SECCFG registers, SECCFG_CH0 through SECCFG_CH15.
 There is one register per channel. Each register contains a 2-bit security level, and a lock bit that prevents that SECCFG
 register from being changed once configured. At reset, all channels are assigned to the SP security level, which is the
@@ -4690,7 +4690,7 @@ protection unit and the ACCESSCTRL bus-level filters described in Section 10.6.2
 • The minimum security level required to read or write this channel’s registers; access from a lower level returns a
 bus fault.
 • The minimum security level that must be defined on a shared IRQ line for that IRQ to be able to observe this
-channel’s interrupts (Section 12.6.6.2), or for this channel’s interrupt to be set/cleared through that IRQ’s registers.
+channel’s interrupts (Section ## 12.6.6.2), or for this channel’s interrupt to be set/cleared through that IRQ’s registers.
 • The minimum bus security level required to clear this channel’s interrupts through the INTR register.
 • Which DREQs a channel can observe: channels assigned to the NSP or NSU security levels can not observe DREQs
 of Secure-only peripherals (as defined by the ACCESSCTRL peripheral configuration).
@@ -4701,7 +4701,7 @@ must be no lower than the observed channel’s security level.
 • Which channels this channel can trigger with a CHAIN_TO; chaining from lower to higher security levels is not
 permitted.
 RP2350 Datasheet
-12.6. DMA 1103
+## 12.6. DMA 1103
 • The minimum bus security level required to trigger this channel with a write to MULTI_CHAN_TRIGGER.
 The channel SECCFG registers require privileged writes (SP/NSP), and will generate a bus fault on an attempted
 unprivileged write (SU/NSU). Additionally, the S bit (MSB of the security level) and the LOCK bit are writable only by SP,
@@ -4716,13 +4716,13 @@ SECCFG registers can be written multiple times before being locked, so the full 
 front: for example, Secure Arm software can set spare channels to NSP before launching the Non-secure software
 context, and Non-secure, Privileged software can then set the remaining channels it does not need to NSU before
 returning to the Non-secure, Normal context.
-12.6.6.2. Interrupt Security Assignment
+## 12.6.6.2. Interrupt Security Assignment
 The RP2350 DMA has four system-level interrupt request lines (IRQs), each of which can be asserted on any
 combination of channel interrupts, as defined by the channel masks in the interrupt enable registers INTE0 through
 INTE3. Because the timing of interrupts can leak information, and because it is possible to cause software to
 malfunction by deliberately manipulating its interrupts, access to the channel interrupt flags must be controlled.
 The interrupt security configuration registers, SECCFG_IRQ0 through SECCFG_IRQ3, define the security level for each
-interrupt. This is one of the four security levels laid out in Section 12.6.6. The security level of an IRQ defines:
+interrupt. This is one of the four security levels laid out in Section ## 12.6.6. The security level of an IRQ defines:
 • Which channels are visible in this IRQ’s status registers; channels of a level higher than the IRQ’s will read back as
 zero.
 • Whether a bus access to this IRQ’s control and status registers is permitted; bus accesses below this IRQ’s
@@ -4735,11 +4735,11 @@ The INTR register is shared between all IRQs, so it does not respect any of the 
 security level of the bus access: reads of INTR will return the interrupt flags of all channels at or below the security level
 of the bus access (with higher-level channels reading back as zeroes), and writes to INTR have write-one-clear behaviour
 on channels which are at or below the security level of the bus access.
-12.6.6.3. Memory protection unit
+## 12.6.6.3. Memory protection unit
 The DMA memory protection unit (MPU) monitors the addresses of all read/write transfers performed by the DMA, and
 notes the security level of the originating channel. The MPU is configured in advance with a user-defined security
 address map, which specifies the minimum security level required to access up to eight dynamically configured regions.
-This is one of the four security levels defined in Section 12.6.6.
+This is one of the four security levels defined in Section ## 12.6.6.
 Transfers that fail to meet the minimum security level for their address are shot down before reaching the system bus,
 and a bus error is returned to the originating channel. This will be reported as either a read or write bus error in the
 channel’s CTRL register, depending on whether it was a read or write address that failed the security check.
@@ -4747,7 +4747,7 @@ The intended use for the DMA MPU is to mirror the security definitions of SRAM a
 SAU or PMP. The number of DMA MPU regions is not sufficient for assigning individual peripherals, so the
 ACCESSCTRL bus access registers (Section 10.6.2) are provided for this purpose.
 RP2350 Datasheet
-12.6. DMA 1104
+## 12.6. DMA 1104
 Each of the eight MPU regions is configured with a base address, MPU_BAR0 through MPU_BAR7 for each region, and a
 limit address, MPU_LAR0 through MPU_LAR7.
 MPU regions have a granularity of 32 bytes, so the base/limit addresses are configured by the 27 most-significant bits
@@ -4767,10 +4767,10 @@ effect.
 The MPU registers are also mostly read-only to NSP accesses, with the sole exception being the region P bits which are
 NSP-writable if and only if the corresponding region’s S bit is clear. This delegates to Privileged, Non-secure software
 the decision of whether Non-secure regions are NSU-accessible.
-12.6.7. Bus error handling
+## 12.6.7. Bus error handling
 A bus error is an error condition flagged to one of the DMA’s manager ports in response to an attempted read or write
 transfer, indicating the transfer was rejected for one of the following reasons:
-• The DMA MPU forbids access to this address at the originating channel’s security level (Section 12.6.6.3).
+• The DMA MPU forbids access to this address at the originating channel’s security level (Section ## 12.6.6.3).
 • The bus fabric failed to decode the address; the address did not match any known memory location (for example
 SIO is not visible from the DMA bus ports as it is tightly coupled to the processors).
 • ACCESSCTRL forbids access to the addressed region at the originating channel’s privilege level (Section 10.6.2).
@@ -4778,8 +4778,8 @@ SIO is not visible from the DMA bus ports as it is tightly coupled to the proces
 • The APB bridge returned a timeout fault for a transfer exceeding 65535 cycles (e.g. accessed ADC whilst clk_adc
 was stopped).
 • The downstream bus port returned an error response for any other device-specific reason, e.g. attempting to
-access configuration registers for a DMA channel with higher security level (Section 12.6.6.1).
-12.6.7.1. Response to bus errors
+access configuration registers for a DMA channel with higher security level (Section ## 12.6.6.1).
+## 12.6.7.1. Response to bus errors
 Upon encountering a bus error, the DMA halts the offending channel and reports the error through the channel’s
 CH0_CTRL_TRIG.READ_ERROR and WRITE_ERROR flags. The channel stops scheduling bus accesses.
 Bus errors are exceptional events which usually indicate misconfiguration of the DMA or some other system hardware.
@@ -4789,8 +4789,8 @@ A channel which encounters a bus error does not CHAIN_TO other channels.
 Bus errors always cause the channel’s interrupt request to be asserted. Whether or not this causes a system-level IRQ
 depends on the channel masks configured in interrupt enable registers INTE0 through INTE3.
 RP2350 Datasheet
-12.6. DMA 1105
-12.6.7.2. Recovery after bus errors
+## 12.6. DMA 1105
+## 12.6.7.2. Recovery after bus errors
 If an error is reported through READ_ERR/WRITE_ERR then, before restarting the channel, software must:
 1. Poll for a low BUSY status to ensure that all in-flight transfers for this channel have been flushed from the DMA’s bus
 pipeline.
@@ -4802,7 +4802,7 @@ READ_ADDR and WRITE_ADDR contain the approximate address where the bus error was
 the programmer to understand why the bus error occurred, and fix the software to avoid it in future.
 Since the DMA performs reads and writes in parallel, it is possible for a channel to encounter both a read and write error
 simultaneously, and in this case the DMA sets both READ_ERR and WRITE_ERR. You must clear both.
-12.6.7.3. Halt timing
+## 12.6.7.3. Halt timing
 The DMA halts the channel as soon as possible following a bus error. This suppresses future reads and writes. Because
 the request to access the bus is masked, the bus access has no side effects on the system. The timing relationships are
 not straightforward due to the DMA’s pipelining and buffering. The DMA provides the following ordering guarantees
@@ -4836,9 +4836,9 @@ writes are always scheduled in pairs.
 In addition to the increments mentioned above, READ_ADDR/WRITE_ADDR always point to the next address to be written, so
 always point slightly past the faulting address if address increment is enabled.
 RP2350 Datasheet
-12.6. DMA 1106
-12.6.8. Additional features
-12.6.8.1. Pacing timers
+## 12.6. DMA 1106
+## 12.6.8. Additional features
+## 12.6.8.1. Pacing timers
 These allow transfer of data roughly once every n clk_sys clocks instead of using external peripheral DREQ to trigger
 transfers. A fractional (X/Y) divider is used, and will generate a maximum of 1 request per clk_sys cycle.
 There are 4 timers available in RP2350. Each DMA channel is able to select any of these in CTRL.TREQ_SEL. There is one
@@ -4846,7 +4846,7 @@ register used to configure the pacing coefficients for each timer, TIMER0 throug
 Each timer’s security level is defined by a register field in SECCFG_MISC. This defines the minimum bus security level
 required to configure that timer (lower levels will get a bus fault), and the minimum channel security level required to
 observe that timer’s TREQ.
-12.6.8.2. CRC calculation
+## 12.6.8.2. CRC calculation
 The DMA can watch data from a given channel passing through the data FIFO, and calculate checksums based on this
 data. This a purely passive affair: the data is not altered by this hardware, only observed.
 The feature is controlled via the SNIFF_CTRL and SNIFF_DATA registers, and can be enabled/disabled per DMA transfer via
@@ -4867,7 +4867,7 @@ These manipulations do not affect the CRC calculation, just how the data is pres
 The sniffer’s security level is configured by the SECCFG_MISC.SNIFF_S and SECCFG_MISC.SNIFF_P bits. This
 determines the minimum bus security level required to access the sniffer’s control registers, as well as the maximum
 channel security level that the sniffer can observe.
-12.6.8.3. Channel abort
+## 12.6.8.3. Channel abort
 It is possible for a channel to get into an irrecoverable state. If commanded to transfer more data than a peripheral will
 ever request, the channel will never complete. Clearing the CTRL.EN bit pauses the channel, but does not solve the
 problem. This should not occur under normal circumstances, but it is important that there is a mechanism to recover
@@ -4876,7 +4876,7 @@ In such a situation, use the CHAN_ABORT register to force the channel to complet
 channel. Writing a 1 to the corresponding bit terminates the channel. This clears the transfer counter and forces the
 channel into an inactive state.
 RP2350 Datasheet
-12.6. DMA 1107
+## 12.6. DMA 1107
 At the time an abort is triggered, a channel might have bus transfers currently in flight between the read and write
 manager. These transfers cannot be revoked. The CTRL.BUSY flag stays high until these transfers complete, and the
 channel reaches a safe state. This generally takes only a few cycles. The channel must not be restarted until its
@@ -4889,11 +4889,11 @@ RP2350-E5 is:
 3. Poll the ABORT register until all bits set by the previous write are clear.
 When aborting a channel involved in a CHAIN_TO, it is recommended to simultaneously abort all other channels involved in
 the chain.
-12.6.8.4. Debug
+## 12.6.8.4. Debug
 Debug registers are available for each DMA channel to show the dreq counter DBG_CTDREQ and next transfer count DBG_TCR.
 These can also be used to reset a DMA channel if required.
-12.6.9. Example use cases
-12.6.9.1. Using interrupts to reconfigure a channel
+## 12.6.9. Example use cases
+## 12.6.9.1. Using interrupts to reconfigure a channel
 When a channel finishes a block of transfers, it becomes available for making more transfers. Software detects that the
 channel is no longer busy, and reconfigures and restarts the channel. One approach is to poll the CTRL_BUSY bit until the
 channel is done, but this loses one of the key advantages of the DMA, namely that it does not have to operate in
@@ -4920,7 +4920,7 @@ Pico Examples: https://github.com/raspberrypi/pico-examples/blob/master/dma/chan
 44 }
 45
 RP2350 Datasheet
-12.6. DMA 1108
+## 12.6. DMA 1108
 46 // Clear the interrupt request.
 47 dma_hw->ints0 = 1u << dma_chan;
 48 // Give the channel a new wave table entry to read from, and re-trigger it
@@ -4978,19 +4978,19 @@ large gap in transfers. This makes it difficult to sustain a high data throughpu
 This is solved by using two channels, with their CHAIN_TO fields crossed over, so that channel A triggers channel B when it
 completes, and vice versa. At any point in time, one of the channels is transferring data. The other is either already
 RP2350 Datasheet
-12.6. DMA 1109
+## 12.6. DMA 1109
 configured to start the next transfer immediately when the current one finishes, or it is in the process of being
 reconfigured. When channel A completes, it immediately starts the cued-up transfer on channel B. At the same time, the
 interrupt is fired, and the handler reconfigures channel A so that it is ready when channel B completes.
-12.6.9.2. DMA control blocks
+## 12.6.9.2. DMA control blocks
 Frequently, multiple smaller buffers must be gathered together and sent to the same peripheral. To address this use
 case, the RP2350 DMA can execute a long and complex sequence of transfers without processor control. One channel
 repeatedly reconfigures a second channel, and the second channel restarts the first each time it completes block of
 transfers.
 Because the first DMA channel transfers data directly from memory to the second channel’s control registers, the
 format of the control blocks in memory must match those registers. Each time, the last register written to will be one of
-the trigger registers (Section 12.6.3.1), which will start the second channel on its programmed block of transfers. The
-register aliases (Section 12.6.3.1) give some flexibility for the block layout, and more importantly allow some registers
+the trigger registers (Section ## 12.6.3.1), which will start the second channel on its programmed block of transfers. The
+register aliases (Section ## 12.6.3.1) give some flexibility for the block layout, and more importantly allow some registers
 to be omitted from the blocks, so they occupy less memory and can be loaded more quickly.
 This example shows how multiple buffers can be gathered and transferred to the UART, by reprogramming TRANS_COUNT
 and READ_ADDR_TRIG:
@@ -5035,7 +5035,7 @@ Pico Examples: https://github.com/raspberrypi/pico-examples/blob/master/dma/cont
  38
  39 const struct {uint32_t len; const char *data;} control_blocks[] = {
 RP2350 Datasheet
-12.6. DMA 1110
+## 12.6. DMA 1110
  40 {count_of(word0) - 1, word0}, // Skip null terminator
  41 {count_of(word1) - 1, word1},
  42 {count_of(word2) - 1, word2},
@@ -5101,7 +5101,7 @@ RP2350 Datasheet
 102 // Everything is ready to go. Tell the control channel to load the first
 103 // control block. Everything is automatic from here.
 RP2350 Datasheet
-12.6. DMA 1111
+## 12.6. DMA 1111
 104 dma_start_channel_mask(1u << ctrl_chan);
 105
 106 // The data channel will assert its IRQ flag when it gets a null trigger,
@@ -5114,7 +5114,7 @@ RP2350 Datasheet
 113 puts("DMA finished.");
 114 #endif
 115 }
-12.6.10. List of Registers
+## 12.6.10. List of Registers
 The DMA registers start at a base address of 0x50000000 (defined as DMA_BASE in SDK).
 Table 1147. List of
 DMA registers
@@ -5146,7 +5146,7 @@ reload the channel counter and start the channel.
 0x048 CH1_TRANS_COUNT DMA Channel 1 Transfer Count
 0x04c CH1_CTRL_TRIG DMA Channel 1 Control and Status
 RP2350 Datasheet
-12.6. DMA 1112
+## 12.6. DMA 1112
 Offset Name Info
 0x050 CH1_AL1_CTRL Alias for channel 1 CTRL register
 0x054 CH1_AL1_READ_ADDR Alias for channel 1 READ_ADDR register
@@ -5189,7 +5189,7 @@ reload the channel counter and start the channel.
 This is a trigger register (0xc). Writing a nonzero value will
 reload the channel counter and start the channel.
 RP2350 Datasheet
-12.6. DMA 1113
+## 12.6. DMA 1113
 Offset Name Info
 0x0c0 CH3_READ_ADDR DMA Channel 3 Read Address pointer
 0x0c4 CH3_WRITE_ADDR DMA Channel 3 Write Address pointer
@@ -5231,7 +5231,7 @@ This is a trigger register (0xc). Writing a nonzero value will
 reload the channel counter and start the channel.
 0x130 CH4_AL3_CTRL Alias for channel 4 CTRL register
 RP2350 Datasheet
-12.6. DMA 1114
+## 12.6. DMA 1114
 Offset Name Info
 0x134 CH4_AL3_WRITE_ADDR Alias for channel 4 WRITE_ADDR register
 0x138 CH4_AL3_TRANS_COUNT Alias for channel 4 TRANS_COUNT register
@@ -5273,7 +5273,7 @@ reload the channel counter and start the channel.
 0x1a0 CH6_AL2_CTRL Alias for channel 6 CTRL register
 0x1a4 CH6_AL2_TRANS_COUNT Alias for channel 6 TRANS_COUNT register
 RP2350 Datasheet
-12.6. DMA 1115
+## 12.6. DMA 1115
 Offset Name Info
 0x1a8 CH6_AL2_READ_ADDR Alias for channel 6 READ_ADDR register
 0x1ac CH6_AL2_WRITE_ADDR_TRIG Alias for channel 6 WRITE_ADDR register
@@ -5315,7 +5315,7 @@ reload the channel counter and start the channel.
 0x214 CH8_AL1_READ_ADDR Alias for channel 8 READ_ADDR register
 0x218 CH8_AL1_WRITE_ADDR Alias for channel 8 WRITE_ADDR register
 RP2350 Datasheet
-12.6. DMA 1116
+## 12.6. DMA 1116
 Offset Name Info
 0x21c CH8_AL1_TRANS_COUNT_TRIG Alias for channel 8 TRANS_COUNT register
 This is a trigger register (0xc). Writing a nonzero value will
@@ -5358,7 +5358,7 @@ reload the channel counter and start the channel.
 0x284 CH10_WRITE_ADDR DMA Channel 10 Write Address pointer
 0x288 CH10_TRANS_COUNT DMA Channel 10 Transfer Count
 RP2350 Datasheet
-12.6. DMA 1117
+## 12.6. DMA 1117
 Offset Name Info
 0x28c CH10_CTRL_TRIG DMA Channel 10 Control and Status
 0x290 CH10_AL1_CTRL Alias for channel 10 CTRL register
@@ -5399,7 +5399,7 @@ reload the channel counter and start the channel.
 0x2f4 CH11_AL3_WRITE_ADDR Alias for channel 11 WRITE_ADDR register
 0x2f8 CH11_AL3_TRANS_COUNT Alias for channel 11 TRANS_COUNT register
 RP2350 Datasheet
-12.6. DMA 1118
+## 12.6. DMA 1118
 Offset Name Info
 0x2fc CH11_AL3_READ_ADDR_TRIG Alias for channel 11 READ_ADDR register
 This is a trigger register (0xc). Writing a nonzero value will
@@ -5440,7 +5440,7 @@ reload the channel counter and start the channel.
 0x364 CH13_AL2_TRANS_COUNT Alias for channel 13 TRANS_COUNT register
 0x368 CH13_AL2_READ_ADDR Alias for channel 13 READ_ADDR register
 RP2350 Datasheet
-12.6. DMA 1119
+## 12.6. DMA 1119
 Offset Name Info
 0x36c CH13_AL2_WRITE_ADDR_TRIG Alias for channel 13 WRITE_ADDR register
 This is a trigger register (0xc). Writing a nonzero value will
@@ -5481,7 +5481,7 @@ reload the channel counter and start the channel.
 0x3d4 CH15_AL1_READ_ADDR Alias for channel 15 READ_ADDR register
 0x3d8 CH15_AL1_WRITE_ADDR Alias for channel 15 WRITE_ADDR register
 RP2350 Datasheet
-12.6. DMA 1120
+## 12.6. DMA 1120
 Offset Name Info
 0x3dc CH15_AL1_TRANS_COUNT_TRIG Alias for channel 15 TRANS_COUNT register
 This is a trigger register (0xc). Writing a nonzero value will
@@ -5521,7 +5521,7 @@ reload the channel counter and start the channel.
 0x460 FIFO_LEVELS Debug RAF, WAF, TDF levels
 0x464 CHAN_ABORT Abort an in-progress transfer sequence on one or more channels
 RP2350 Datasheet
-12.6. DMA 1121
+## 12.6. DMA 1121
 Offset Name Info
 0x468 N_CHANNELS The number of channels this DMA instance is equipped with.
 This DMA supports up to 16 hardware channels, but can be
@@ -5538,7 +5538,7 @@ configured with as few as one, to minimise silicon area.
 0x4a4 SECCFG_CH9 Security level configuration for channel 9.
 0x4a8 SECCFG_CH10 Security level configuration for channel 10.
 0x4ac SECCFG_CH11 Security level configuration for channel 11.
-0x4b0 SECCFG_CH12 Security level configuration for channel 12.
+0x4b0 SECCFG_CH12 Security level configuration for channel ## 12.
 0x4b4 SECCFG_CH13 Security level configuration for channel 13.
 0x4b8 SECCFG_CH14 Security level configuration for channel 14.
 0x4bc SECCFG_CH15 Security level configuration for channel 15.
@@ -5564,7 +5564,7 @@ Secure, Privileged context, with the exception of the P bit.
 0x50c MPU_BAR1 Base address register for MPU region 1. Writable only from a
 Secure, Privileged context.
 RP2350 Datasheet
-12.6. DMA 1122
+## 12.6. DMA 1122
 Offset Name Info
 0x510 MPU_LAR1 Limit address register for MPU region 1. Writable only from a
 Secure, Privileged context, with the exception of the P bit.
@@ -5611,7 +5611,7 @@ cause channel to re-initiate DREQ handshake.
 0x884 CH2_DBG_TCR Read to get channel TRANS_COUNT reload value, i.e. the length
 of the next transfer
 RP2350 Datasheet
-12.6. DMA 1123
+## 12.6. DMA 1123
 Offset Name Info
 0x8c0 CH3_DBG_CTDREQ Read: get channel DREQ counter (i.e. how many accesses the
 DMA expects it can perform on the peripheral without
@@ -5660,7 +5660,7 @@ DMA expects it can perform on the peripheral without
 overflow/underflow. Write any value: clears the counter, and
 cause channel to re-initiate DREQ handshake.
 RP2350 Datasheet
-12.6. DMA 1124
+## 12.6. DMA 1124
 Offset Name Info
 0xa84 CH10_DBG_TCR Read to get channel TRANS_COUNT reload value, i.e. the length
 of the next transfer
@@ -5698,8 +5698,8 @@ of the next transfer
 
 
 
-I2C
-12.2. I2C
+# I2C
+## 12.2. I2C
 Synopsys Documentation
 Synopsys Proprietary. Used with permission.
 I2C is a commonly used 2-wire interface that can be used to connect devices for low speed data transfer using clock SCL
@@ -5707,8 +5707,8 @@ and data SDA wires.
 RP2350 has two identical instances of an I2C controller. The external pins of each controller are connected to GPIO pins
 as defined in the GPIO muxing table in Section 9.4. The muxing options give some IO flexibility.
 RP2350 Datasheet
-12.2. I2C 983
-12.2.1. Features
+## 12.2. I2C 983
+## 12.2.1. Features
 Each I2C controller is based on a configuration of the Synopsys DW_apb_i2c (v2.03a) IP. The following features are
 supported:
 • Master or Slave (Default to Master mode)
@@ -5719,12 +5719,12 @@ supported:
 • 16-element receive buffer
 • Can be driven from DMA
 • Can generate interrupts
-12.2.1.1. Standard
+## 12.2.1.1. Standard
 The I2C controller was designed for I2C Bus specification, version 6.0, dated April 2014.
 12.2.1.2. Clocking
 All clocks in the I2C controller are connected to clk_sys, including ic_clk, which is mentioned in later sections. The I2C
 clock is generated by dividing down this clock, controlled by registers inside the block.
-12.2.1.3. IOs
+## 12.2.1.3. IOs
 Each controller must connect its clock SCL and data SDA to one pair of GPIOs. The I2C standard requires that drivers drive
 a signal low, or when not driven the signal will be pulled high. This applies to SCL and SDA. The GPIO pads should be
 configured for:
@@ -5734,7 +5734,7 @@ configured for:
  NOTE
 There should also be external pull-ups on the board as the internal pad pull-ups may not be strong enough to pull up
 external circuits.
-12.2.2. IP configuration
+## 12.2.2. IP configuration
 I2C configuration details (each instance is fully independent):
 • 32-bit APB access
 • Supports Standard mode, Fast mode or Fast mode plus (not High speed)
@@ -5742,7 +5742,7 @@ I2C configuration details (each instance is fully independent):
 • Master or Slave mode
 • Master by default (Slave mode disabled at reset)
 RP2350 Datasheet
-12.2. I2C 984
+## 12.2. I2C 984
 • 10-bit addressing supported in master mode (7-bit by default)
 • 16 entry transmit buffer
 • 16 entry receive buffer
@@ -5758,7 +5758,7 @@ RP2350 Datasheet
 • Hold bus until space available in RX FIFO
 • Restart detect interrupt in Slave mode
 • Optional blocking Master commands (not enabled by default)
-12.2.3. I2C overview
+## 12.2.3. I2C overview
 The I2C bus is a 2-wire serial interface, consisting of a serial data line SDA and a serial clock SCL. These wires carry
 information between the devices connected to the bus. Each device is recognized by a unique address and can operate
 as either a "transmitter" or "receiver", depending on the function of the device. Devices can also be considered as
@@ -5782,7 +5782,7 @@ standard mode devices at up to 100 kb/s over the I2C bus system. However, standa
 compatible and should not be incorporated in a fast-mode I2C bus system as they cannot follow the higher transfer
 rate; unpredictable states would occur.
 RP2350 Datasheet
-12.2. I2C 985
+## 12.2. I2C 985
 The following devices commonly use high-speed mode:
 • LCD displays
 • high-bit count ADCs
@@ -5828,7 +5828,7 @@ Generate a START and a STOP
 Setup the data and hold the data
 • RX Shift: Takes data into the design and extracts it in byte format.
 RP2350 Datasheet
-12.2. I2C 986
+## 12.2. I2C 986
 • TX Shift: Presents data supplied by CPU for transfer on the I2C bus.
 • RX Filter: Detects the events in the bus; for example, start, stop and arbitration lost.
 • Toggle: Generates pulses on both sides and toggles to transfer signals across clock domains.
@@ -5837,9 +5837,9 @@ RP2350 Datasheet
 transfer without CPU intervention.
 • Interrupt Controller: Generates the raw interrupt and interrupt flags, allowing them to be set and cleared.
 • RX FIFO/TX FIFO: Holds the RX FIFO and TX FIFO register banks and controllers, along with their status levels.
-12.2.4. I2C terminology
+## 12.2.4. I2C terminology
 This section defines key terms used in various parts of the I2C.
-12.2.4.1. I2C bus terms
+## 12.2.4.1. I2C bus terms
 The following terms relate to how the role of the I2C device and how it interacts with other I2C devices on the bus.
 Transmitter
 the device that sends data to the bus. A transmitter can either be a device that initiates the data transmission to the
@@ -5857,17 +5857,17 @@ Multi-master
 the ability for more than one master to co-exist on the bus at the same time without collision or data loss.
 Arbitration
 the predefined procedure that authorizes only one master at a time to take control of the bus. For more information
-about this behaviour, refer to Section 12.2.8.
+about this behaviour, refer to Section ## 12.2.8.
 Synchronization
 the predefined procedure that synchronizes the clock signals provided by two or more masters. For more
-information about this feature, refer to Section 12.2.9.
+information about this feature, refer to Section ## 12.2.9.
 SDA
 the data signal line (Serial Data).
 SCL
 the clock signal line (Serial Clock).
 RP2350 Datasheet
-12.2. I2C 987
-12.2.4.2. Bus transfer terms
+## 12.2. I2C 987
+## 12.2.4.2. Bus transfer terms
 The following terms are specific to data transfers that occur to and from the I2C bus.
 START (RESTART)
 data transfer begins with a START or RESTART condition. The level of the SDA data line changes from high to low,
@@ -5878,7 +5878,7 @@ STOP
 data transfer is terminated by a STOP condition. This occurs when the level on the SDA data line passes from the low
 state to the high state, while the SCL clock line remains high. When the data transfer has been terminated, the bus is
 free or idle once again. The bus stays busy if a RESTART is generated instead of a STOP condition.
-12.2.5. I2C behaviour
+## 12.2.5. I2C behaviour
 The DW_apb_i2c can be controlled with software to be one of the following:
 • An I2C master only, communicating with other I2C slaves
 • An I2C slave only, communicating with one or more I2C masters.
@@ -5925,10 +5925,10 @@ The DW_apb_i2c is a synchronous serial interface. The SDA line is a bidirectiona
 is low except for STOP, START, and RESTART conditions. The output drivers are open-drain or open-collector to perform
 wire-AND functions on the bus. The maximum number of devices on the bus is limited by only the maximum
 capacitance specification of 400 pF. Data is transmitted in byte packages.
-The I2C protocols implemented in DW_apb_i2c are described in more details in Section 12.2.6.
+The I2C protocols implemented in DW_apb_i2c are described in more details in Section ## 12.2.6.
 RP2350 Datasheet
-12.2. I2C 988
-12.2.5.1. START and STOP generation
+## 12.2. I2C 988
+## 12.2.5.1. START and STOP generation
 When operating as an I2C master, putting data into the TX FIFO causes the DW_apb_i2c to generate a START condition on
 the I2C bus. Writing a 1 to IC_DATA_CMD.STOP causes the DW_apb_i2c to generate a STOP condition on the I2C bus; a
 STOP condition is not issued if this bit is not set, even if the TX FIFO is empty.
@@ -5936,7 +5936,7 @@ When operating as a slave, the DW_apb_i2c does not generate START and STOP condi
 if a read request is made to the DW_apb_i2c, it holds the SCL line low until read data has been supplied to it. This stalls the
 I2C bus until read data is provided to the slave DW_apb_i2c, or the DW_apb_i2c slave is disabled by writing a 0 to
 IC_ENABLE.ENABLE.
-12.2.5.2. Combined formats
+## 12.2.5.2. Combined formats
 The DW_apb_i2c supports mixed read and write combined format transactions in both 7-bit and 10-bit addressing modes.
 The DW_apb_i2c does not support mixed address and mixed address format - that is, a 7-bit address transaction followed
 by a 10-bit address transaction or vice versa-combined format transactions. To initiate combined format transfers,
@@ -5949,10 +5949,10 @@ I2C transfer completes:
 If set to 1, a STOP bit is issued.
 ◦
 If set to 0, the SCL is held low until the next command is written to the TX FIFO.
-For more details, refer to Section 12.2.7.
-12.2.6. I2C protocols
+For more details, refer to Section ## 12.2.7.
+## 12.2.6. I2C protocols
 This section defines protocols used in the DW_apb_i2c.
-12.2.6.1. START and STOP conditions
+## 12.2.6.1. START and STOP conditions
 When the bus is idle, both the SCL and SDA signals are pulled high through external pull-up resistors on the bus. When the
 master wants to start a transmission on the bus, the master issues a START condition: a high-to-low transition of the
 SDA signal while SCL is 1. When the master wants to terminate the transmission, the master issues a STOP condition: a
@@ -5968,14 +5968,14 @@ P
 Figure 70. I2C START
 and STOP Condition
 RP2350 Datasheet
-12.2. I2C 989
+## 12.2. I2C 989
  NOTE
 The signal transitions for the START/STOP conditions, as depicted in Figure 70, reflect those observed at the output
 signals of the master driving the I2C bus. Care should be taken when observing the SDA/SCL signals at the input
 signals of slaves, because unequal line delays may result in an incorrect SDA/SCL timing relationship.
-12.2.6.2. Addressing slave protocol
+## 12.2.6.2. Addressing slave protocol
 There are two address formats: 7-bit and 10-bit.
-12.2.6.2.1. 7-bit address format
+## 12.2.6.2.1. 7-bit address format
 In the 7-bit address format, the first seven bits (bits 7:1) of the first byte set the slave address and the LSB bit (bit 0)
 defines the R/W status, as shown in Figure 71. When bit 0 is set to 0, the master writes to the slave. When bit 0 is set to
 1, the master reads from the slave.
@@ -5985,7 +5985,7 @@ Slave Address
 S = START Condition ACK = Acknowledge R/W = Read/Write Pulse
 Figure 71. I2C 7-bit
 Address Format
-12.2.6.2.2. 10-bit address format
+## 12.2.6.2.2. 10-bit address format
 The 10-bit address format transfers two bytes for each 10-bit address.
 • In the first byte, the first five bits (bits 7:3) indicate a 10-bit transfer. The next two bits (bits 2:1) contain bits 9:8 of
 the slave address. The LSB bit (bit 0) defines the R/W status.
@@ -6008,16 +6008,16 @@ Slave Address R/W Bit Description
 places the data in the receive buffer
 and issues a General Call interrupt.
 0000 000 1 START byte. For more details, refer to
-Section 12.2.6.4.
+Section ## 12.2.6.4.
 0000 001 X CBUS address. DW_apb_i2c ignores
 these accesses.
 0000 010 X Reserved.
 RP2350 Datasheet
-12.2. I2C 990
+## 12.2. I2C 990
 Slave Address R/W Bit Description
 0000 011 X Reserved.
 0000 1XX X High-speed master code (for more
-information, refer to Section 12.2.8).
+information, refer to Section ## 12.2.8).
 1111 1XX X Reserved.
 1111 0XX X 10-bit slave addressing.
 0001 000 X SMbus Host. (not supported)
@@ -6027,11 +6027,11 @@ supported)
 supported)
 DW_apb_i2c does not restrict you from using reserved addresses. However, if you use these reserved addresses, you may
 experience incompatibilities with I2C components.
-12.2.6.3. Transmitting and receiving protocol
+## 12.2.6.3. Transmitting and receiving protocol
 The master can initiate data transmission and reception to and from the bus, acting as either a master-transmitter or
 master-receiver. A slave responds to requests from the master to either transmit data or receive data to/from the bus,
 acting as either a slave-transmitter or slave-receiver, respectively.
-12.2.6.3.1. Master-transmitter and slave-receiver
+## 12.2.6.3.1. Master-transmitter and slave-receiver
 All data is transmitted in byte format, with no limit on the number of bytes transferred per data transfer. After the master
 sends the address and R/W bit or the master transmits a byte of data to the slave, the slave-receiver must respond with
 the acknowledge signal (ACK). When no slave-receiver responds with an ACK pulse, the master aborts the transfer by
@@ -6057,12 +6057,12 @@ Slave Address
 Second Byte
 ‘11110xxx’
 Figure 73. I2C MasterTransmitter Protocol
-12.2.6.3.2. Master-receiver and slave-transmitter
+## 12.2.6.3.2. Master-receiver and slave-transmitter
 If the master is receiving data as shown in Figure 74 the master responds to the slave-transmitter with an acknowledge
 pulse after receiving each byte of data, except for the last byte. This is the way the master-receiver notifies the slavetransmitter that this is the last byte. The slave-transmitter relinquishes the SDA line after detecting No Acknowledge
 (NACK) so that the master can issue a STOP condition.
 RP2350 Datasheet
-12.2. I2C 991
+## 12.2. I2C 991
 S
 For 7-bit Address
 R/W
@@ -6089,10 +6089,10 @@ Figure 74. I2C MasterReceiver Protocol
 When a master does not want to relinquish the bus with a STOP condition, the master can issue a RESTART condition.
 This is identical to a START condition except it occurs after the ACK pulse. Operating in master mode, the DW_apb_i2c can
 then communicate with the same slave using a transfer of a different direction. For a description of the combined
-format transactions that the DW_apb_i2c supports, see Section 12.2.5.2.
+format transactions that the DW_apb_i2c supports, see Section ## 12.2.5.2.
  NOTE
 The DW_apb_i2c must be completely disabled before the target slave address register (IC_TAR) can be reprogrammed.
-12.2.6.4. START BYTE Transfer Protocol
+## 12.2.6.4. START BYTE Transfer Protocol
 The START BYTE transfer protocol is designed for systems that do not have an on-board dedicated I2C hardware
 module. When the DW_apb_i2c is addressed as a slave, it always samples the I2C bus at the highest speed supported so
 that it never requires a START BYTE transfer. However, when DW_apb_i2c is a master, it supports the generation of START
@@ -6120,11 +6120,11 @@ The START BYTE procedure is as follows:
 Hardware receivers do not respond to the START BYTE procedure because it uses a reserved address and resets after
 the RESTART condition generates.
 RP2350 Datasheet
-12.2. I2C 992
-12.2.7. TX FIFO Management and START, STOP and RESTART Generation
+## 12.2. I2C 992
+## 12.2.7. TX FIFO Management and START, STOP and RESTART Generation
 When operating as a master, the DW_apb_i2c component supports the mode of TX (transmit) FIFO management
 illustrated in Figure 76.
-12.2.7.1. TX FIFO management
+## 12.2.7.1. TX FIFO management
 The component does not generate a STOP if the TX FIFO becomes empty; in this situation the component holds the SCL
 line low, stalling the bus until a new entry is available in the TX FIFO. A STOP condition is generated only when the user
 specifically requests it by setting bit nine (Stop bit) of the command written to IC_DATA_CMD register. Figure 76 shows
@@ -6220,7 +6220,7 @@ a RESTART is generated before the data byte is written to or read from the slave
 a STOP followed by a START is generated in place of the RESTART. Figure 79 illustrates this situation during operation
 as a master transmitter.
 RP2350 Datasheet
-12.2. I2C 993
+## 12.2. I2C 993
 SDA
 SCL
 FIFO_
@@ -6363,7 +6363,7 @@ FIFO Not Empty
 Figure 84 illustrates operation as a master receiver where the first command loaded after the TX FIFO is allowed to
 empty and the Restart bit is set.
 RP2350 Datasheet
-12.2. I2C 994
+## 12.2. I2C 994
 SDA
 SCL
 FIFO_
@@ -6398,7 +6398,7 @@ Command Loaded
 After TX FIFO Allowed
 to Empty/Restart Bit
 Set
-12.2.8. Multiple master arbitration
+## 12.2.8. Multiple master arbitration
 The DW_apb_i2c bus protocol allows multiple masters to reside on the same bus. If there are two masters on the same
 I2C bus, there is an arbitration procedure if both try to take control of the bus at the same time by generating a START
 condition at the same time. Once a master (for example, a microcontroller) has control of the bus, no other master can
@@ -6434,11 +6434,11 @@ Arbitration is not allowed between the following conditions:
 • A RESTART condition and a STOP condition
  NOTE
 Slaves do not participate in the arbitration process.
-12.2.9. Clock synchronisation
+## 12.2.9. Clock synchronisation
 When two or more masters try to transfer information on the bus at the same time, they must arbitrate and synchronize
 the SCL clock. All masters generate their own clock to transfer messages. Data is valid only during the high period of SCL
 RP2350 Datasheet
-12.2. I2C 995
+## 12.2. I2C 995
 clock. Clock synchronisation is performed using the wired-AND connection to the SCL signal. When the master
 transitions the SCL clock to zero, the master starts counting the low time of the SCL clock and transitions the SCL clock
 signal to one at the beginning of the next clock period. However, if another master is holding the SCL line to 0, then the
@@ -6458,15 +6458,15 @@ all CLKs are in HIGH state
 Start counting HIGH period
 Figure 86. MultiMaster Clock
 Synchronisation
-12.2.10. Operation modes
+## 12.2.10. Operation modes
 This section provides information about operation modes.
  NOTE
 Only set the DW_apb_i2c to operate as an I2C Master or an I2C Slave. Never set the DW_apb_i2c to operate as both
 simultaneously. To avoid this, never simultaneously set IC_CON.IC_SLAVE_DISABLE and IC_CON.MASTER_MODE to
 zero and one, respectively.
-12.2.10.1. Slave mode operation
+## 12.2.10.1. Slave mode operation
 This section discusses slave mode procedures.
-12.2.10.1.1. Initial configuration
+## 12.2.10.1.1. Initial configuration
 To use the DW_apb_i2c as a slave, perform the following steps:
 1. Disable the DW_apb_i2c by writing a 0 to IC_ENABLE.ENABLE.
 2. Write to the IC_SAR register (bits 9:0) to set the slave address. This is the address to which the DW_apb_i2c
@@ -6475,7 +6475,7 @@ responds.
 Enable the DW_apb_i2c in slave-only mode by writing a 0 into bit six (IC_CON.IC_SLAVE_DISABLE) and a 0 to bit zero
 (IC_CON.MASTER_MODE).
 RP2350 Datasheet
-12.2. I2C 996
+## 12.2. I2C 996
  NOTE
 Slaves and masters can use different addressing settings. For instance, a slave can be programmed with 7-bit
 addressing and a master with 10-bit addressing, and vice versa.
@@ -6493,7 +6493,7 @@ causing a false START condition to be detected by the DW_apb_i2c Slave. This sce
 configuring the DW_apb_i2c with IC_SLAVE_DISABLE = 1 and MASTER_MODE = 1 so that the Slave interface is disabled after
 reset. It can then be enabled by programming IC_CON[0] = 0 and IC_CON[6] = 0 after the internal SDA and SCL have
 synchronized to the value on the bus; this takes approximately six ic_clk cycles after reset de-assertion.
-12.2.10.1.2. Slave-transmitter operation for a single byte
+## 12.2.10.1.2. Slave-transmitter operation for a single byte
 When another I2C master device on the bus addresses the DW_apb_i2c and requests data, the DW_apb_i2c acts as a slavetransmitter. The following steps occur:
 1. The other I2C master device initiates an I2C transfer with an address that matches the slave address in the IC_SAR
 register of the DW_apb_i2c.
@@ -6519,7 +6519,7 @@ interrupt (bit six of the IC_RAW_INTR_STAT register) to flush the old data from 
 has been masked, due to IC_INTR_MASK.M_TX_ABRT being set to zero, re-use the timing routine described in the
 previous step to read the IC_RAW_INTR_STAT register.
 RP2350 Datasheet
-12.2. I2C 997
+## 12.2. I2C 997
  NOTE
 Because the DW_apb_i2c's TX FIFO is forced into a flushed/reset state whenever a TX_ABRT event occurs, software
 must release the DW_apb_i2c from this state by reading the IC_CLR_TX_ABRT register before attempting to write
@@ -6542,7 +6542,7 @@ read as one.
  NOTE
 Slave-Transmitter Operation for a single byte is not applicable in Ultra-Fast mode, since this mode does not support
 read transfers.
-12.2.10.1.3. Slave-receiver operation for a single byte
+## 12.2.10.1.3. Slave-receiver operation for a single byte
 When another I2C master device on the bus addresses the DW_apb_i2c and is sending data, the DW_apb_i2c acts as a slavereceiver and the following steps occur:
 1. The other I2C master device initiates an I2C transfer with an address that matches the DW_apb_i2c's slave address in
 the IC_SAR register.
@@ -6554,15 +6554,15 @@ If the Rx (receive) FIFO is completely filled with data when a byte is pushed, t
 I2C SCL line low until the Rx FIFO has some space, and then continues with the next read request.
 4. DW_apb_i2c asserts the RX_FULL interrupt IC_RAW_INTR_STAT.RX_FULL. If the RX_FULL interrupt has been masked, due
 to setting IC_INTR_MASK.M_RX_FULL to zero or setting IC_TX_TL to a value larger than zero, you should
-implement a timing routine (described in Section 12.2.10.1.2) for periodic reads of the IC_STATUS register. This
+implement a timing routine (described in Section ## 12.2.10.1.2) for periodic reads of the IC_STATUS register. This
 timing routine should treat reads of the IC_STATUS register, with bit 3 (RFNE) set at one as the equivalent of an
 RX_FULL interrupt.
 5. Software may read the byte from the IC_DATA_CMD register (bits 7:0).
 6. The other master device may hold the I2C bus by issuing a RESTART condition, or release the bus by issuing a
 STOP condition.
 RP2350 Datasheet
-12.2. I2C 998
-12.2.10.1.4. Slave-transfer operation for bulk transfers
+## 12.2. I2C 998
+## 12.2.10.1.4. Slave-transfer operation for bulk transfers
 In the standard I2C protocol, all transactions are single byte transactions; the programmer responds to a remote master
 read request by writing one byte into the slave’s TX FIFO. When a slave (slave-transmitter) receives a read request
 (RD_REQ) from the remote master (master-receiver), at a minimum there should be at least one entry placed into the
@@ -6573,7 +6573,7 @@ TX FIFO, the DW_apb_i2c holds the I2C SCL line low while it raises the read requ
 write into the TX FIFO.
 If the RD_REQ interrupt is masked by setting IC_INTR_STAT.R_RD_REQ to zero, use a timing routine to activate periodic
 reads of the IC_RAW_INTR_STAT register. Reads of IC_RAW_INTR_STAT that return bit five (RD_REQ) set to one must be
-treated as the equivalent of RD_REQ. This timing routine is similar to that described in Section 12.2.10.1.2.
+treated as the equivalent of RD_REQ. This timing routine is similar to that described in Section ## 12.2.10.1.2.
 The RD_REQ interrupt is raised upon a read request. Always clear this interrupt when exiting the interrupt service handling
 routine (ISR). The ISR allows you to either write one byte or more than one byte into the TX FIFO. The master can
 request additional data at the end of a transmission by acknowledging the last byte. In this scenario, the slave must
@@ -6590,16 +6590,16 @@ following procedure:
 At the time an ACK/NACK is expected, if a NACK is received, then the remote master has all the data it wants. At this
 time, a flag is raised within the slave’s state machine to clear the leftover data in the TX FIFO. This flag is transferred to
 the processor bus clock domain where the FIFO exists and the contents of the TX FIFO is cleared at that time.
-12.2.10.2. Master mode operation
+## 12.2.10.2. Master mode operation
 This section discusses master mode procedures.
-12.2.10.2.1. Initial configuration
+## 12.2.10.2.1. Initial configuration
 To use the DW_apb_i2c as a master, perform the following steps:
 1. Disable the DW_apb_i2c by writing zero to IC_ENABLE.ENABLE.
 2. Write to the IC_CON register to set the maximum speed mode supported (bits 2:1) and the desired speed of the
 DW_apb_i2c master-initiated transfers, either 7-bit or 10-bit addressing (bit 4). Ensure that bit six
 (IC_SLAVE_DISABLE) is written with a 1 and bit zero (MASTER_MODE) is written with a 1.
 RP2350 Datasheet
-12.2. I2C 999
+## 12.2. I2C 999
  NOTE
 Slaves and masters can use different addressing settings. For instance, a slave can be programmed with 7-bit
 addressing and a master with 10-bit addressing, and vice versa.
@@ -6615,7 +6615,7 @@ buffers are kept cleared when DW_apb_i2c is disabled.
 The values stored are static and do not need to be reprogrammed when the DW_apb_i2c is disabled except for transfer
 direction and data. As a result, you may not need to perform steps two, three, four, and five if you already configured the
 reset values.
-12.2.10.2.2. Master transmit and master receive
+## 12.2.10.2.2. Master transmit and master receive
 The DW_apb_i2c supports switching back and forth between reading and writing dynamically. To transmit data, write data
 to the lower byte of the I2C RX/TX Data Buffer and Command Register (IC_DATA_CMD). For I2C write operations, write
 zero to the CMD bit [8]. Subsequently, to issue a read command, write a one to the CMD bit and write don’t care to the
@@ -6624,8 +6624,8 @@ commands present in the TX FIFO. If the TX FIFO becomes empty, the master perfor
 based on the value of IC_DATA_CMD:
 • If set to one, it issues a STOP condition after completing the current transfer.
 • If set to zero, it holds SCL low until next command is written to the TX FIFO.
-For more details, refer to Section 12.2.7.
-12.2.10.3. Disabling DW_apb_i2c
+For more details, refer to Section ## 12.2.7.
+## 12.2.10.3. Disabling DW_apb_i2c
 The IC_ENABLE_STATUS register allows software to unambiguously determine when the I2C hardware has completely
 shut down.
  NOTE
@@ -6638,8 +6638,8 @@ active, holding the SCL line low until a new command is received in the TX FIFO.
 To relinquish the I2C bus and disable DW_apb_i2c while the DW_apb_i2c master is processing a command without the STOP
 bit set, issue an ABORT request.
 RP2350 Datasheet
-12.2. I2C 1000
-12.2.10.3.1. Procedure
+## 12.2. I2C 1000
+## 12.2.10.3.1. Procedure
 1. Define a timer interval (ti2c_poll) equal to the 10 times the signalling period for the highest I2C transfer speed used in
 the system and supported by DW_apb_i2c. For example, if the highest I2C transfer mode is 400 kb/s, ti2c_poll is 25μs.
 2. Define a maximum time-out parameter, MAX_T_POLL_COUNT, such that if any repeated polling operation exceeds this
@@ -6654,17 +6654,17 @@ This step can be ignored if DW_apb_i2c is programmed to operate as an I2C slave 
 POLL_COUNT >= MAX_T_POLL_COUNT, exit with the relevant error code.
 4. If IC_ENABLE_STATUS[0] is one, sleep for ti2c_poll and proceed to the previous step. Otherwise, exit with a
 relevant success code.
-12.2.10.4. Aborting I2C transfers
+## 12.2.10.4. Aborting I2C transfers
 The ABORT control bit of the IC_ENABLE register allows the software to relinquish the I2C bus before completing the
 issued transfer commands from the TX FIFO. In response to an ABORT request, the controller issues the STOP condition
 over the I2C bus, followed by a TX FIFO flush. Aborting the transfer is allowed only in master mode of operation.
-12.2.10.4.1. Procedure
+## 12.2.10.4.1. Procedure
 1. Stop filling the TX FIFO (IC_DATA_CMD) with new commands.
 2. When operating in DMA mode, disable the transmit DMA by setting TDMAE to zero.
 3. Set IC_ENABLE.ABORT to one.
 4. Wait for the M_TX_ABRT interrupt.
 5. Read the IC_TX_ABRT_SOURCE register to identify the source as ABRT_USER_ABRT.
-12.2.11. Spike suppression
+## 12.2.11. Spike suppression
 The DW_apb_i2c contains programmable spike suppression logic that matches requirements imposed by the I2C Bus
 Specification for SS/FS modes. This logic is based on counters that monitor the input signals (SCL and SDA), checking if
 they remain stable for a predetermined amount of ic_clk cycles before they are sampled internally. There is one
@@ -6677,7 +6677,7 @@ resets and stops, and the internal version of the signal updates to the input va
 resets and stops, but the internal version of the signal does not update.
 The timing diagram in Figure 87 illustrates the behaviour described above.
 RP2350 Datasheet
-12.2. I2C 1001
+## 12.2. I2C 1001
 Recovery Clocks
 Spike length counter
 SCL
@@ -6708,21 +6708,21 @@ of these signals. Depending on when they occur relative to the rising edge of ic
 length might show a difference of one ic_clk cycle after being sampled.
 • Spike suppression is symmetrical; the behaviour is exactly the same for transitions from zero to one and from
 one to zero.
-12.2.12. Fast mode plus operation
+## 12.2.## 12. Fast mode plus operation
 In fast mode plus, the DW_apb_i2c extends fast mode operation to be support speeds up to 1000 kb/s. To enable the
 DW_apb_i2c for fast mode plus operation, perform the following steps before initiating any data transfer:
-1. Set ic_clk frequency greater than or equal to 32 MHz (refer to Section 12.2.14.2.1).
+1. Set ic_clk frequency greater than or equal to 32 MHz (refer to Section ## 12.2.14.2.1).
 2. Program the IC_CON register [2:1] = 2’b10 for fast mode or fast mode plus.
 3. Program IC_FS_SCL_LCNT and IC_FS_SCL_HCNT registers to meet the fast mode plus SCL (refer to Section
-12.2.14).
+## 12.2.14).
 4. Program the IC_FS_SPKLEN register to suppress the maximum spike of 50 ns.
 5. Program the IC_SDA_SETUP register to meet the minimum data setup time (tSU; DAT).
-12.2.13. Bus clear feature
+## 12.2.13. Bus clear feature
 DW_apb_i2c supports the bus clear feature that provides graceful recovery of data SDA and clock SCL lines during unlikely
 events in which either the clock or data line is stuck at LOW.
 RP2350 Datasheet
-12.2. I2C 1002
-12.2.13.1. SDA line is stuck at LOW
+## 12.2. I2C 1002
+## 12.2.13.1. SDA line is stuck at LOW
 In case of SDA line stuck at LOW, the master performs the following actions to recover as shown in Figure 88 and Figure
 89:
 1. Master sends a maximum of nine clock pulses to recover the bus LOW within those nine clocks.
@@ -6752,10 +6752,10 @@ Master drives 9 clocks to recover SDA stuck at low
 Figure 89. SDA
 Recovery with 6 SCL
 Clocks
-12.2.13.2. SCL line is stuck at LOW
+## 12.2.13.2. SCL line is stuck at LOW
 In the unlikely event (due to an electric failure of a circuit) where the clock (SCL) is stuck to LOW, there is no effective
 method to overcome this problem. Instead, reset the bus using the hardware reset signal.
-12.2.14. IC_CLK frequency configuration
+## 12.2.14. IC_CLK frequency configuration
 When the DW_apb_i2c is configured as a Standard (SS), Fast (FS), or Fast-Mode Plus (FM+), the *CNT registers must be set
 before any I2C bus transaction can take place in order to ensure proper I/O timing. The *CNT registers are:
 • IC_SS_SCL_HCNT
@@ -6766,7 +6766,7 @@ before any I2C bus transaction can take place in order to ensure proper I/O timi
 The tBUF timing and setup/hold time of START, STOP and RESTART registers uses *HCNT/*LCNT register settings for
 the corresponding speed mode.
 RP2350 Datasheet
-12.2. I2C 1003
+## 12.2. I2C 1003
  NOTE
 It is not necessary to program any of the *CNT registers if the DW_apb_i2c is enabled to operate only as an I2C slave,
 since these registers are used only to determine the SCL timing requirements for operation as an I2C master.
@@ -6794,7 +6794,7 @@ tBUF IC_SS_SCL_LCNT IC_FS_SCL_LCNT
 Spike length tSP IC_FS_SPKLEN IC_FS_SPKLEN
 Data hold time tHD;DAT IC_SDA_HOLD IC_SDA_HOLD
 Data setup time tSU;DAT IC_SDA_SETUP IC_SDA_SETUP
-12.2.14.1. Minimum high and low counts in SS, FS, and FM+ modes.
+## 12.2.14.1. Minimum high and low counts in SS, FS, and FM+ modes.
 When the DW_apb_i2c operates as an I2C master, in both transmit and receive transfers:
 • IC_SS_SCL_LCNT and IC_FS_SCL_LCNT register values must be larger than IC_FS_SPKLEN + 7.
 • IC_SS_SCL_HCNT and IC_FS_SCL_HCNT register values must be larger than IC_FS_SPKLEN + 5.
@@ -6816,7 +6816,7 @@ IC_FS_SPKLEN if the component is operating in SS or FS.
 three ic_clk cycles is incurred. Consequently, the minimum SCL low time of which the DW_apb_i2c is capable is
 nine ic_clk periods (7 + 1 + 1), while the minimum SCL high time is thirteen ic_clk periods (6 + 1 + 3 + 3).
 RP2350 Datasheet
-12.2. I2C 1004
+## 12.2. I2C 1004
  NOTE
 The total high time and low time of SCL generated by the DW_apb_i2c master is also influenced by the rise time and fall
 time of the SCL line, as shown in the illustration and equations in Figure 90. SCL rise and fall time parameters vary
@@ -6841,12 +6841,12 @@ Figure 90. Impact of
 SCL Rise Time and Fall
 Time on Generated
 SCL
-12.2.14.2. Minimum IC_CLK frequency
+## 12.2.14.2. Minimum IC_CLK frequency
 This section describes the minimum ic_clk frequencies that the DW_apb_i2c supports for each speed mode, and the
 associated high and low count values. In slave mode, IC_SDA_HOLD (Thd;dat) and IC_SDA_SETUP (Tsu:dat) need to be
 programmed to satisfy the I2C protocol timing requirements. The following examples are for the case where
 IC_FS_SPKLEN is programmed to two.
-12.2.14.2.1. Standard Mode (SM), Fast Mode (FM), and Fast Mode Plus (FM+)
+## 12.2.14.2.1. Standard Mode (SM), Fast Mode (FM), and Fast Mode Plus (FM+)
 This section details how to derive a minimum ic_clk value for standard and fast modes of the DW_apb_i2c. Although the
 following method shows how to do fast mode calculations, you can also use the same method in order to do
 calculations for standard mode and fast mode plus.
@@ -6862,7 +6862,7 @@ MIN_SCL_LOWtime_FS = 1300 ns
 MIN_SCL_HIGHtime_FS = 600 ns
 Derived equations:
 RP2350 Datasheet
-12.2. I2C 1005
+## 12.2. I2C 1005
 SCL_PERIOD_FS / (IC_HCNT_FS + IC_LCNT_FS) = IC_CLK_PERIOD
 IC_LCNT_FS × IC_CLK_PERIOD = MIN_SCL_LOWtime_FS
 Combined, the previous equations produce the following:
@@ -6897,7 +6897,7 @@ Value
 SCL High
 Time
 SS 2.7 1 13 12 4.7μs 14 6 5.2μs
-FS 12.0 1 16 15 1.33μs 14 6 1.16μs
+FS ## 12.0 1 16 15 1.33μs 14 6 1.16μs
 FM+ 32 2 16 15 500 ns 16 7 500 ns
 • The IC_*_SCL_LCNT and IC_*_SCL_HCNT registers are programmed using the SCL low and high program values in Table
 1053, which are calculated using SCL low count minus one, and SCL high counts minus eight, respectively. The
@@ -6908,13 +6908,13 @@ registers in Master mode.
 IC_HCNT_* = [(HCNT + IC_*_SPKLEN + 7) * ic_clk] + SCL_Fall_time
 ◦
 IC_LCNT_* = [(LCNT + 1) * ic_clk] - SCL_Fall_time + SCL_Rise_time
-12.2.14.3. Calculating high and low counts
+## 12.2.14.3. Calculating high and low counts
 The calculations below show how to calculate SCL high and low counts for each speed mode in the DW_apb_i2c. For the
 calculations to work, the ic_clk frequencies used must not be less than the minimum ic_clk frequencies specified in
 Table 1053.
 The default ic_clk period value is set to 100 ns, so default SCL high and low count values are calculated for each speed
 RP2350 Datasheet
-12.2. I2C 1006
+## 12.2. I2C 1006
 mode based on this clock. These values need updating according to the guidelines below.
 The equation to calculate the proper number of ic_clk signals required for setting the proper SCL clocks high and low
 times is as follows:
@@ -6940,31 +6940,31 @@ IC_LCNT = (ROUNDUP(1300ns * 100MHz,0))
 IC_LCNTSCL PERIOD = 130
 Actual MIN_SCL_HIGHtime = 60*(1/100MHz) = 600ns
 Actual MIN_SCL_LOWtime = 130*(1/100MHz) = 1300ns
-12.2.15. DMA controller interface
+## 12.2.15. DMA controller interface
 The DW_apb_i2c has built-in DMA capability; it has a handshaking interface to the DMA Controller to request and control
 transfers. The APB bus is used to perform data transfers to and from the DMA. DMA transfers use single accesses,
 since the data rate is relatively low.
-12.2.15.1. Enabling the DMA controller interface
+## 12.2.15.1. Enabling the DMA controller interface
 To enable the DMA Controller interface on the DW_apb_i2c, you must write the DMA Control Register (IC_DMA_CR).
 Writing a one into the TDMAE bit field of IC_DMA_CR register enables the DW_apb_i2c transmit handshaking interface.
 Writing a one into the RDMAE bit field of the IC_DMA_CR register enables the DW_apb_i2c receive handshaking interface.
-12.2.15.2. Overview of operation
+## 12.2.15.2. Overview of operation
 The DMA Controller is programmed with the number of data items (transfer count) that are to be transmitted or
 received by DW_apb_i2c.
 The transfer is broken into single transfers on the bus, each initiated by a request from the DW_apb_i2c.
 RP2350 Datasheet
-12.2. I2C 1007
+## 12.2. I2C 1007
 For example, where the transfer count programmed into the DMA Controller is four. The DMA transfer consists of a
 series of four single transactions. If the DW_apb_i2c makes a transmit request to this channel, a single data item is written
 to the DW_apb_i2c TX FIFO. Similarly, if the DW_apb_i2c makes a receive request to this channel, a single data item is read
 from the DW_apb_i2c RX FIFO. Four separate requests must be made to this DMA channel before all four data items are
 written or read.
-12.2.15.3. Watermark levels
+## 12.2.15.3. Watermark levels
 In DW_apb_i2c the registers for setting watermarks to allow DMA bursts do not need be set to anything other than their
 reset value. Specifically, IC_DMA_TDLR and IC_DMA_RDLR can be left at reset values of zero. This is because only
 single transfers are needed due to the low bandwidth of I2C relative to system bandwidth. Because the DMA controller
 normally has the highest priority on the system bus, transfers complete quickly.
-12.2.16. Operation of interrupt registers
+## 12.2.16. Operation of interrupt registers
 Table 1054 lists the operation of the DW_apb_i2c interrupt registers and how they are set and cleared. Some bits are set
 by hardware and cleared by software, whereas other bits are set and cleared by hardware.
 Table 1054. Clearing
@@ -6984,11 +6984,11 @@ TX_OVER Y N
 RX_FULL N Y
 RX_OVER Y N
 RX_UNDER Y N
-12.2.17. List of registers
+## 12.2.17. List of registers
 The I2C0 and I2C1 registers start at base addresses of 0x40090000 and 0x40098000 respectively (defined as I2C0_BASE and
 I2C1_BASE in SDK).
 RP2350 Datasheet
-12.2. I2C 1008
+## 12.2. I2C 1008
  NOTE
 You may see references to configuration constants in the I2C register descriptions; these are fixed values, set at
 hardware design time. A full list of their values can be found in i2c.h in the pico-sdk GitHub repository.
@@ -7028,7 +7028,7 @@ Offset Name Info
 0x84 IC_SLV_DATA_NACK_ONLY Generate Slave Data NACK Register
 0x88 IC_DMA_CR DMA Control Register
 RP2350 Datasheet
-12.2. I2C 1009
+## 12.2. I2C 1009
 Offset Name Info
 0x8c IC_DMA_TDLR DMA Transmit Data Level Register
 0x90 IC_DMA_RDLR DMA Transmit Data Level Register

@@ -25,6 +25,8 @@
 #include "hardware/structs/io_bank0.h"
 #include "hardware/structs/xip.h"
 
+extern void tud_task(void);  // TinyUSB task processing
+
 // #include "SerialWrapper.h"
 
 // #include <SoftwareSerial.h>
@@ -126,6 +128,8 @@ volatile int backpowered = 1;
 
 volatile bool flashingArduino = false;
 
+
+
 void initArduino( void ) // if the UART is set up, the Arduino won't flash from
                          // it's own USB port
 {
@@ -139,6 +143,7 @@ void initArduino( void ) // if the UART is set up, the Arduino won't flash from
     // delay(1);
 
     pinMode( 18, INPUT );
+    SetArduinoResetLine(LOW, 1);
    // pinMode( 19, INPUT );
 }
 
@@ -366,21 +371,20 @@ int serialPassthroughStatusTimeout = 50;
 int secondSerialHandler( void ) {
     // AsyncPassthrough handles all serial bridging via asyncPassthroughService (CRITICAL priority)
     // This function now only handles DTR pulse detection for Arduino flashing
-    
+
     #if ASYNC_PASSTHROUGH_ENABLED == 1
     // DTR checking happens automatically in AsyncPassthrough::task()
     // Just check if a pulse was detected and handle Arduino reset
     if ( AsyncPassthrough::wasDTRPulseDetected() ) {
-        // Tag parsing already disabled by AsyncPassthrough::checkDTRState()
-        // // 3000ms timeout gives bootloader time to sync with avrdude
-        // Serial.println("DTR pulse detected - flashing Arduino");
-        // Serial.flush();
-        flashArduino( 3000 );
+        // Flash loop now uses STK500 sniffing + inactivity detection to determine
+        // when avrdude is done, instead of a fixed timeout. The timeoutTime parameter
+        // is unused in async mode (kept for non-async fallback compatibility).
+        flashArduino( 0 );
         AsyncPassthrough::clearDTRPulse();
     }
     // Normal passthrough happens automatically in AsyncPassthrough::task()
     #endif
-    
+
     return 0;
 }
 
@@ -392,69 +396,161 @@ char arduinoCommandStrings[ 10 ][ 50 ] = {
 
 };
 
-// DEPRECATED: checkForDTRpulse() - no longer used, DTR detection is handled by AsyncPassthrough::checkDTRState()
-// Keeping for reference/fallback but not called in normal operation
-bool checkForDTRpulse( void ) {
-    if ( USBSer1.dtr( ) != arduinoDTR[ 2 ] ) {
-        arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
-        arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
-        arduinoDTR[ 2 ] = USBSer1.dtr( );
 
-        if ( arduinoDTR[ 1 ] == 1 && arduinoDTR[ 2 ] == 0 ) {
-            arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
-            arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
-            arduinoDTR[ 2 ] = USBSer1.dtr( );
-            arduinoDTRpulse = true;
-        } else if ( arduinoDTR[ 1 ] == 0 && arduinoDTR[ 2 ] == 1 ) {
-            arduinoDTR[ 0 ] = arduinoDTR[ 1 ];
-            arduinoDTR[ 1 ] = arduinoDTR[ 2 ];
-            arduinoDTR[ 2 ] = USBSer1.dtr( );
-            arduinoDTRpulse = true;
-        } else {
-            arduinoDTRpulse = false;
-        }
-    }
-    return arduinoDTRpulse;
-}
 
 void flashArduino( unsigned long timeoutTime ) {
-    // Arduino flashing with async passthrough:
-    // NOTE: Arduino reset now happens IMMEDIATELY in AsyncPassthrough::checkDTRState()
-    // This function just ensures UART is connected and services passthrough
-    
-    ARDUINO_DEBUG_PRINTLN( "Arduino DTR pulse - servicing passthrough" );
-    
+    // =========================================================================
+    // ARDUINO FLASH SEQUENCE
+    // All heavy operations happen here (NOT in checkDTRState) so we can
+    // service USB between steps and prevent device disconnects.
+    // =========================================================================
+
+    ARDUINO_DEBUG_PRINTLN( "Arduino DTR pulse - starting flash sequence" );
+
+    // Step 1: Disable tag parsing so binary flash data isn't parsed as commands
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    if (asyncPassthroughEnabled) {
+        AsyncPassthrough::disableTagParsingWithInactivityTimeout(8000, 2000);
+    }
+    AsyncPassthrough::clearTagParserState();
+    #endif
+
+    // Service USB between steps
+    tud_task();
+
+    // Step 2: Auto-connect UART if not already connected
     arduinoConnected = checkIfArduinoIsConnected( );
-    int arduinoWasConnected = arduinoConnected;
-    
-    // Auto-connect UART if not already connected and config allows
     if ( arduinoConnected == 0 && jumperlessConfig.serial_1.autoconnect_flashing == 1 ) {
         Serial.println( "Arduino not connected - connecting UART automatically" );
         connectArduino( 1, 1 );
         arduinoConnected = checkIfArduinoIsConnected( );
     }
 
-    flashingArduino = true;
-    
-    // CRITICAL: Service the passthrough actively during the flash window
-    // The Arduino was already reset in checkDTRState(), now we bridge data
-    unsigned long flashStart = millis();
-    
+    // Service USB after potentially heavy connectArduino
+    tud_task();
+
+    // Step 3: Reset the Arduino
+    // Suspend UART IRQ during reset to prevent phantom 0xFF bytes from
+    // entering the ring buffer (ATmega TX goes tri-state during reset,
+    // UART RX sees glitches that look like valid 0xFF data bytes).
     #if ASYNC_PASSTHROUGH_ENABLED == 1
-    while (millis() - flashStart < timeoutTime) {
-        // Service passthrough - bridges USB↔UART data
+    AsyncPassthrough::suspendUARTRxIRQ();
+    #endif
+    {
+        unsigned long resetStart = micros();
+        SetArduinoResetLine( LOW, 0 );
+        while ( micros() - resetStart < 12000 ) {
+            tud_task();
+            delayMicroseconds( 100 );
+        }
+        SetArduinoResetLine( HIGH, 0 );
+    }
+
+    // Drain any phantom bytes that entered before IRQ was suspended,
+    // then re-enable the IRQ for bootloader responses
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    AsyncPassthrough::drainUARTRxBuffers();  // This also re-enables the IRQ
+    #endif
+
+    // Service USB after reset
+    tud_task();
+
+    // Step 4: Brief delay for bootloader to initialize (~5ms)
+    {
+        unsigned long bootDelay = micros();
+        while ( micros() - bootDelay < 5000 ) {
+            tud_task();
+            delayMicroseconds( 100 );
+        }
+    }
+
+    flashingArduino = true;
+
+    // Step 5: Enter flash detection mode — sniffs for STK_LEAVE_PROGMODE
+    // and tracks USB→UART data inactivity to detect when avrdude is done.
+    // This replaces the fixed timeout with smart completion detection.
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    AsyncPassthrough::enterFlashMode();
+    #endif
+
+    // Step 6: Service the passthrough actively during the flash window
+    // Bridges USB↔UART data between avrdude and the Arduino bootloader.
+    //
+    // IMPORTANT: We monitor DTR during the loop and re-reset the Arduino
+    // on any new DTR transition. This handles the case where the
+    // Jumperless App's port accessibility check (open→close) triggered
+    // this flash sequence BEFORE avrdude actually runs. When avrdude
+    // later opens the port and does its own DTR toggle, we catch it
+    // here and re-reset, so the bootloader starts fresh with correct
+    // timing relative to avrdude's first sync byte.
+    bool last_dtr_in_loop = USBSer1.dtr();
+
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    // Loop until flash completion is detected (STK500 sniffing / inactivity / hard timeout)
+    while ( !AsyncPassthrough::checkFlashDone() ) {
         AsyncPassthrough::task();
-        
-        // Service USB for tighter timing
-        #ifdef USE_TINYUSB
-        extern void tud_task(void);
-        tud_task();
-        #endif
-        
-        delayMicroseconds(50);
+
+        // Check for new DTR transition (avrdude's reset request)
+        bool current_dtr = USBSer1.dtr();
+        if (current_dtr != last_dtr_in_loop) {
+            // Only re-reset if no flash data has been exchanged yet.
+            // Before data flows: this DTR is likely the app closing or avrdude opening
+            //   → re-reset so bootloader is fresh for avrdude's sync.
+            // After data flows: this DTR is avrdude closing the port after flashing
+            //   → do NOT re-reset (avrdude is done, nobody will flash again).
+            if ( !AsyncPassthrough::hasFlashDataBeenSeen() ) {
+                ARDUINO_DEBUG_PRINTLN("Re-reset: DTR transition before flash data (pre-avrdude)");
+                AsyncPassthrough::suspendUARTRxIRQ();
+                {
+                    unsigned long resetStart = micros();
+                    SetArduinoResetLine( LOW, 0 );
+                    while ( micros() - resetStart < 12000 ) {
+                        tud_task();
+                        delayMicroseconds( 100 );
+                    }
+                    SetArduinoResetLine( HIGH, 0 );
+                }
+                AsyncPassthrough::drainUARTRxBuffers();
+                tud_task();
+                {
+                    unsigned long bootDelay = micros();
+                    while ( micros() - bootDelay < 5000 ) {
+                        tud_task();
+                        delayMicroseconds( 100 );
+                    }
+                }
+                // Reset STK byte scanner for new bootloader session, but keep
+                // timestamps and data-seen flag so timeouts still work correctly
+                AsyncPassthrough::resetFlashSTKDetection();
+            }
+        }
+        last_dtr_in_loop = current_dtr;
     }
     #endif
-    
+
+    // Flash complete — clean up
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    AsyncPassthrough::exitFlashMode();
+    // Suppress DTR detection for 2s to prevent port-close from re-triggering
+    AsyncPassthrough::setDTRLockout(2000);
+
+    // Post-flash settle: suspend UART RX during Arduino bootloader→app transition.
+    // After the last STK500 command, optiboot's watchdog fires (~500ms–1s) causing
+    // a hard reset. During reset the ATmega TX line goes tri-state, generating noise
+    // that the UART receiver captures as garbage bytes. By suspending the IRQ here
+    // and waiting for the Arduino to fully boot into the user app, we avoid
+    // forwarding that noise into the ring buffer.
+    AsyncPassthrough::suspendUARTRxIRQ();
+    {
+        unsigned long settleStart = millis();
+        while ( millis() - settleStart < 1200 ) {
+            tud_task();
+        }
+    }
+    // Drain any noise that entered the HW FIFO before we suspended, then re-enable
+    AsyncPassthrough::drainUARTRxBuffers();
+    #endif
+
     flashingArduino = false;
 }
 
@@ -518,9 +614,14 @@ void printMicrosPerByte( void ) {
 void connectArduino( int flashOrLocal, int refreshConnections ) {
 
     // Use RAM-based state system
-    addBridgeToState( RP_UART_RX, NANO_D1 );
-    addBridgeToState( RP_UART_TX, NANO_D0 );
-    refresh( flashOrLocal, -1, 1, 0 );
+    // CRITICAL: Pass autoRefresh=false to avoid triggering refreshLocalConnections()
+    // on EACH addBridgeToState call. Without this, 3 sequential refreshes happen
+    // (2 auto + 1 explicit), each with zero tud_task() during compute = 30-150ms
+    // of USB starvation that causes macOS to disconnect the CDC device.
+    addBridgeToState( RP_UART_RX, NANO_D1 , 0, false);
+    addBridgeToState( RP_UART_TX, NANO_D0, 0, false);
+    // refresh( flashOrLocal, -1, 1, 0 );  // Single combined refresh for both bridges
+    refreshLocalConnections(-1, 1);
 
     // CRITICAL FIX: Reduced timeout and service AsyncPassthrough during wait
     // The original 2-second timeout was blocking AsyncPassthrough::task()
@@ -558,7 +659,8 @@ void disconnectArduino( int flashOrLocal ) {
     removeBridgeFromState( NANO_D1, RP_UART_RX );
     removeBridgeFromState( NANO_D0, RP_UART_TX );
     // State functions already refresh, but do explicit refresh for safety
-    refresh( flashOrLocal, -1, 1 );
+    refreshLocalConnections(-1, 1);
+    
     // if (flashOrLocal == 1) {
     //   refreshLocalConnections(1, 0);
     //   } else {

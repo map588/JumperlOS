@@ -10,6 +10,7 @@
 #include "Commands.h"
 #include "Debugs.h"
 #include "FileParsing.h"
+#include "FilesystemStuff.h"
 #include "GraphicOverlays.h"
 #include "Graphics.h"
 #include "HelpDocs.h"
@@ -218,7 +219,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\b`/~ = edit / print config\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\tp = microPython REPL\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t> = send Python formatted command\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t/ = show filesystem\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 0, "\t/ = show filesystem / run script\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 0, "\t\b\bU/u = enable/disable USB Mass Storage\n\r" );
         // shownMenuItems += printMenuLine( showExtraMenu, 1, "\tw = enable logic analyzer\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tX = resource status\n\r" );
@@ -519,8 +520,8 @@ void SingleCharCommands::initializeCommands( ) {
                      cmd_pythonCommand, MENU_BASIC, CAT_PYTHON );
 
     // File system commands
-    registerCommand( '/', "show filesystem",
-                     "Open the file manager to browse files.",
+    registerCommand( '/', "show filesystem / run script",
+                     "Open file manager, or /filename.py to run a script directly.",
                      cmd_showFilesystem, MENU_BASIC, CAT_FILE_SYSTEM );
 
     registerCommand( 'U', "enable USB Mass Storage",
@@ -1765,6 +1766,8 @@ static String stripLeadingArrows( const String& input ) {
     return result;
 }
 
+
+
 CommandResult cmd_pythonCommand( char c, const String& line ) {
     String pythonCommand = "";
 
@@ -1881,6 +1884,44 @@ CommandResult cmd_pythonCommand( char c, const String& line ) {
 
 // File system commands
 CommandResult cmd_showFilesystem( char c, const String& line ) {
+    // Check if a filename/path was provided after '/'
+    String arg = line;
+    arg.trim( );
+    // Strip the leading '/' trigger character
+    if ( arg.startsWith( "/" ) )
+        arg = arg.substring( 1 );
+    arg.trim( );
+
+    // If line only had the trigger char, read the rest from Jerial
+    // (happens when terminal_line_buffering == 0, char-by-char mode)
+    if ( arg.length( ) == 0 && Jerial.available( ) > 0 ) {
+        while ( Jerial.available( ) > 0 ) {
+            char ch = Jerial.read( );
+            if ( ch == '\n' ) {
+                break;
+            }
+            if ( ch != '\r' ) {
+                arg += ch;
+            }
+        }
+        arg.trim( );
+    }
+
+    if ( arg.length( ) > 0 ) {
+        // User provided a path like "/adc_basics.py" — resolve and run it
+        String resolved = resolvePythonScriptPath( arg );
+        if ( resolved.length( ) > 0 ) {
+            setGlobalStreamWithInterrupt( &Serial );
+            runPythonScriptByPath( resolved );
+        } else {
+            Jerial.println( "Script not found: " + arg );
+            Jerial.println( "Searched: /python_scripts, /python_scripts/examples, /python_scripts/lib, /python_scripts/modules, /" );
+        }
+        Jerial.flush( );
+        return CMD_DONT_SHOW_MENU;
+    }
+
+    // No argument — open the file manager as before
     runApp( -1, (char*)"File Manager" );
     Jerial.write( 0x0F );
     termInInteractiveMode = 0;

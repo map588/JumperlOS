@@ -248,6 +248,10 @@ ServiceStatus MpRemoteService::service( ) {
             writeResponse( "soft reboot\r\n" );
             sendRawReplPrompt( );
         }
+                // USBSer2.write('\x04');
+                // USBSer2.write('\x04');
+                // USBSer2.write('>');
+                // USBSer2.flush();
     }
 
     // CRITICAL: Restore the stream that was active before we switched to USBSer2.

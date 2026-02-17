@@ -299,7 +299,7 @@ float jl_dac_get( int channel ) {
 
 // ADC Functions
 float jl_adc_get( int channel ) {
-    return readAdcVoltage( channel, 32 );
+    return readAdcVoltage( channel, 16 );
 }
 
 // INA Functions

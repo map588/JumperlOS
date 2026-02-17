@@ -16,6 +16,7 @@
 #include "config.h"
 // #include <FastLED.h>
 #include "Highlighting.h"
+#include "RotaryEncoder.h"  // For buttonPressAnimActive, pressAnimLogoColors
 #include "externVars.h"  // For filesystemActive indicator
 // CRGB probeLEDs[1];
 
@@ -3381,6 +3382,17 @@ if (logoLedAccess == true) {
   return;
 }
 logoLedAccess = true;
+
+  // ========================================================================
+  // BUTTON PRESS ANIMATION - White flash / rainbow during press-to-hold
+  // ========================================================================
+  if (buttonPressAnimActive) {
+    for (int i = 0; i < 8; i++) {
+      leds.setPixelColor(LOGO_LED_START + i, pressAnimLogoColors[i]);
+    }
+    logoLedAccess = false;
+    return;
+  }
 
   // ========================================================================
   // FILESYSTEM ACTIVITY INDICATOR - Shows during flash operations

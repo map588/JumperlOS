@@ -115,11 +115,16 @@ volatile int startupAnimationFinished = 0;
 
 unsigned long startupTimers[ 16 ];
 
+// Deferred startup complete: record when we're ready, fire after delay
+unsigned long startupCompleteRequestTime = 0;
+bool startupCompletePending = false;
+#define STARTUP_COMPLETE_DELAY_MS 4000
+
 volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.4.9"; //! remember to update this
+const char firmwareVersion[] = "5.6.5.0"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -241,9 +246,7 @@ void setup( ) {
 
     // Serial.println("Routable buffer power initialized");
     // Serial.flush();
-    if ( jumperlessConfig.serial_1.async_passthrough == true ) {
-        AsyncPassthrough::begin( 115200 );
-    }
+
     startupTimers[ 4 ] = millis( );
     drawAnimatedImage( 0 );
     startupAnimationFinished = 1;
@@ -262,7 +265,7 @@ void setup( ) {
     // Serial.println("NTCC initialized");
     // Serial.flush();
     delayMicroseconds( 100 );
-    initArduino( );
+    
     // Serial.println("Arduino initialized");
     // Serial.flush();
     // delay(100);
@@ -536,11 +539,11 @@ menu:
 #endif
         firstLoop = 0;
         
-        // Signal that startup is complete - enables tag parsing for Arduino commands
-        // This MUST be called after all initialization is done to prevent crashes
-        // from <j> commands arriving before the system is ready
+        // Defer startup complete by STARTUP_COMPLETE_DELAY_MS to avoid crashing
+        // if an Arduino is already sending UART data at boot
         #if ASYNC_PASSTHROUGH_ENABLED == 1
-        AsyncPassthrough::signalStartupComplete();
+        startupCompleteRequestTime = millis();
+        startupCompletePending = true;
         #endif
 
 #if SETUP_LOGIC_ANALYZER_ON_BOOT == 1

@@ -362,7 +362,7 @@ public:
     
     ServiceStatus service() override;
     const char* getName() const override { return "AsyncPassthrough"; }
-    ServicePriority getPriority() const override { return ServicePriority::CRITICAL; }
+    ServicePriority getPriority() const override { return ServicePriority::HIGH; }
     
 private:
     AsyncPassthroughService() = default;
@@ -382,7 +382,7 @@ public:
     
     ServiceStatus service() override;
     const char* getName() const override { return "TinyUSB"; }
-    ServicePriority getPriority() const override { return ServicePriority::HIGH; }
+    ServicePriority getPriority() const override { return ServicePriority::NORMAL; }
     
 private:
     TinyUSBService() = default;

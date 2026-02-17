@@ -362,4 +362,22 @@ bool safeMkdir(const char* path, uint32_t timeout_ms = 2000);
  */
 bool safeFileDelete(const char* path, uint32_t timeout_ms = 2000);
 
+/**
+ * Resolve a Python script filename to a full path by searching standard directories.
+ * Searches: exact path, /python_scripts, /python_scripts/examples,
+ *           /python_scripts/lib, /python_scripts/modules, and root /.
+ * Appends .py if the filename doesn't already end with .py or .pyw.
+ * @param filename The script name or path to resolve
+ * @return Full path if found, or empty String if not found
+ */
+String resolvePythonScriptPath( const String& filename );
+
+/**
+ * Run a resolved Python script by path (public wrapper).
+ * Reads the file, prints status, and calls executePythonFileContent.
+ * @param fullPath Absolute path on the filesystem
+ * @return true on success
+ */
+bool runPythonScriptByPath( const String& fullPath );
+
 #endif // FILESYSTEMSTUFF_H 

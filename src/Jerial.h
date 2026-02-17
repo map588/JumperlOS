@@ -746,6 +746,32 @@ public:
     virtual size_t write(const uint8_t *buffer, size_t size) override;
     
     // ============================================================================
+    // Print Methods - Convert values to ASCII (like Serial.print)
+    // ============================================================================
+    // Inherit base class print/println for strings, chars, Printable
+    using Print::print;
+    using Print::println;
+    
+    // Numeric type overrides - format entire value to a string,
+    // then write atomically so the OLED updates once per print() call
+    size_t print(int value, int base = DEC);
+    size_t print(unsigned int value, int base = DEC);
+    size_t print(long value, int base = DEC);
+    size_t print(unsigned long value, int base = DEC);
+    size_t print(long long value, int base = DEC);
+    size_t print(unsigned long long value, int base = DEC);
+    size_t print(double value, int decimals = 2);
+    
+    size_t println(int value, int base = DEC);
+    size_t println(unsigned int value, int base = DEC);
+    size_t println(long value, int base = DEC);
+    size_t println(unsigned long value, int base = DEC);
+    size_t println(long long value, int base = DEC);
+    size_t println(unsigned long long value, int base = DEC);
+    size_t println(double value, int decimals = 2);
+    size_t println(void);
+    
+    // ============================================================================
     // OLED-specific Functions
     // ============================================================================
     

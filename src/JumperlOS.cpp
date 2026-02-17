@@ -162,7 +162,20 @@ bool jOSmanager::unregisterService(Service* service) {
 void jOSmanager::serviceAll() {
     loopCounter++;
     //debugWaitLoopTiming = true;
-    
+
+    // Deferred startup complete: wait 4s after init before enabling UART/async
+    // passthrough so incoming Arduino data doesn't crash the system during boot
+    #if ASYNC_PASSTHROUGH_ENABLED == 1
+    {
+        extern bool startupCompletePending;
+        extern unsigned long startupCompleteRequestTime;
+        if (startupCompletePending && (millis() - startupCompleteRequestTime >= 4000)) {
+            startupCompletePending = false;
+            AsyncPassthrough::signalStartupComplete();
+        }
+    }
+    #endif
+
     // DEBUG: Track current service for crash debugging
     static const char* currentServiceName = nullptr;
     static uint8_t currentServiceIndex = 255;
@@ -657,6 +670,8 @@ AsyncPassthroughService& AsyncPassthroughService::getInstance() {
     return *instance;
 }
 
+
+
 /**
  * @brief Service method for AsyncPassthrough
  * CRITICAL priority - must run every loop to prevent data loss and maintain low latency
@@ -670,9 +685,10 @@ ServiceStatus AsyncPassthroughService::service() {
     lastStatus = ServiceStatus::IDLE;
     
     extern bool asyncPassthroughEnabled;
-    
+    extern bool async_begun;
+
     // Only run if async passthrough is enabled
-    if (asyncPassthroughEnabled) {
+    if (asyncPassthroughEnabled && async_begun) {
 #if ASYNC_PASSTHROUGH_ENABLED == 1
         AsyncPassthrough::task();
         lastStatus = ServiceStatus::BUSY;

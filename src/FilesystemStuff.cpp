@@ -1,4 +1,5 @@
 #include "FilesystemStuff.h"
+#include "Adafruit_USBD_CDC.h"
 #include "FatFS.h"
 #include "FileParsing.h"
 #include "Graphics.h"
@@ -1052,6 +1053,77 @@ static bool runPythonScript( const String& fullPath ) {
     return ok;
 }
 
+// Resolve a bare script name (e.g. "adc_basics.py") to a full filesystem path
+// by searching the standard Python directories.
+String resolvePythonScriptPath( const String& filename ) {
+    String name = filename;
+    name.trim( );
+    if ( name.length( ) == 0 )
+        return "";
+
+    // Strip leading '/' for the search (we'll add it per-directory)
+    if ( name.startsWith( "/" ) )
+        name = name.substring( 1 );
+
+    // Ensure it has a .py or .pyw extension
+    String lower = name;
+    lower.toLowerCase( );
+    if ( !lower.endsWith( ".py" ) && !lower.endsWith( ".pyw" ) )
+        name += ".py";
+
+    // If the original filename was an absolute path, check it directly first
+    if ( filename.startsWith( "/" ) ) {
+        if ( safeFileExists( filename.c_str( ), 500 ) )
+            return filename;
+    }
+
+    // Search directories in priority order
+    const char* searchDirs[] = {
+        "/python_scripts",
+        "/python_scripts/examples",
+        "/python_scripts/lib",
+        "/python_scripts/modules",
+        "/"  // root
+    };
+
+    for ( const char* dir : searchDirs ) {
+        String candidate = String( dir );
+        if ( !candidate.endsWith( "/" ) )
+            candidate += "/";
+        candidate += name;
+        if ( safeFileExists( candidate.c_str( ), 500 ) )
+            return candidate;
+    }
+
+    return "";  // not found
+}
+
+// Public wrapper: run a Python script given its full path.
+bool runPythonScriptByPath( const String& fullPath ) {
+    File f = safeFileOpen( fullPath.c_str( ), "r" );
+    if ( !f ) {
+        Serial.println( "\r\nFailed to open " + fullPath );
+        return false;
+    }
+    String content = f.readString( );
+    safeFileClose( f, false );
+    if ( content.length( ) == 0 ) {
+        Serial.println( "\r\nScript is empty: " + fullPath );
+        return false;
+    }
+    Serial.println( "\r\nRunning " + fullPath + " ..." );
+    Serial.write(0x0E);
+    Serial.flush();
+
+
+    bool ok = executePythonFileContent( content.c_str( ) );
+
+    Serial.write(0x0F);
+    Serial.println( "\r\n--- script finished ---" );
+    Serial.flush();
+    return ok;
+}
+
 void FileManager::selectCurrentFile( ) {
     FileEntry* file = getCurrentFile( );
     if ( !file )
@@ -1076,23 +1148,13 @@ void FileManager::selectCurrentFile( ) {
         String lower = file->name;
         lower.toLowerCase( );
 
-        // Type-based dispatch: run .py, load slot YAML, open image in BitmapEditor, else eKilo
-        if ( lower.endsWith( ".py" ) || lower.endsWith( ".pyw" ) ) {
-            if ( fromClickMenu ) {
-                // Defer script execution: store path and exit file manager
-                // so the script runs with a clean terminal and proper I/O
-                pendingScriptPath = fullPath;
-                shouldExitForScript = true;
-                return;  // run() loop will detect this and exit
-            }
-            // Non click-menu: run script inline (serial/REPL usage)
-            bool ok = runPythonScript( fullPath );
-            if ( ok ) {
-                outputToArea( "Ran: " + file->name, FileColors::STATUS );
-            } else {
-                outputToArea( "Error running: " + file->name, FileColors::ERROR );
-            }
-            scheduleOLEDUpdate( );
+        // Type-based dispatch: run .py from click menu, load slot YAML, open image in BitmapEditor, else eKilo
+        if ( fromClickMenu && ( lower.endsWith( ".py" ) || lower.endsWith( ".pyw" ) ) ) {
+            // Defer script execution: store path and exit file manager
+            // so the script runs with a clean terminal and proper I/O
+            pendingScriptPath = fullPath;
+            shouldExitForScript = true;
+            return;  // run() loop will detect this and exit
         } else if ( lower.endsWith( ".yaml" ) && lower.startsWith( "slot" ) ) {
             String err;
             if ( SlotManager::getInstance( ).loadSlotFromPath( fullPath, err ) ) {

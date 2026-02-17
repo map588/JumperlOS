@@ -5,6 +5,7 @@
  */
 
 #include "CommandBuffer.h"
+#include "Adafruit_USBD_CDC.h"
 #include <cstring>
 
 // Singleton instance
@@ -176,6 +177,7 @@ size_t CommandBuffer::queueForUART(const char* str) {
 }
 
 size_t CommandBuffer::queueForUART(const String& str) {
+    if (str.length() == 0) return 0;
     return queueForUART((const uint8_t*)str.c_str(), str.length());
 }
 
