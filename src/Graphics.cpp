@@ -20,6 +20,8 @@
 #include "TuiGlue.h"
 
 #include "Jerial.h"
+#include "hardware/gpio.h"
+#include "hardware/structs/io_bank0.h"
 #ifdef DONOTUSE_SERIALWRAPPER
 #include "SerialWrapper.h"
 #define Serial SerialWrap
@@ -2519,10 +2521,18 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
       }
     }
   }
+ int gpioIndex = index - 3;
+  
+ 
+ if (gpio_get_function(gpioDef[gpioIndex][0]) == GPIO_FUNC_UART) { // Confirm it's in input mode
+       
+      return; // Don't show animation for UART mode since it's not a real GPIO state
 
-  if (rowAnimations[index].type == 2) {
-    int gpioIndex = index - 3;
+  } else if (rowAnimations[index].type == 2) {
+   
     if (gpioNet[gpioIndex] == actualNet && gpioNet[gpioIndex] != -1) {
+
+
       if (gpioReading[gpioIndex] == 0 ||
           gpioReading[gpioIndex] == 1) { // if any gpio is low or high, don't
                                          // show the animation, let gpioRead()
@@ -2530,6 +2540,7 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
         //return;
         // continue;
       }
+    
     }
   } else if (rowAnimations[index].type == 7 || rowAnimations[index].type == 8) {
     // Bus keeper animations - show only if GPIO state matches animation type

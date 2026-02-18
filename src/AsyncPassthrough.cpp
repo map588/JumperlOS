@@ -33,7 +33,9 @@
 // Debug flag for command injection tracing
 // Set to 1 to see each character being injected from <j> tags
 #include "ArduinoStuff.h"
+#include "Commands.h"
 #include "FileParsing.h"
+#include "hardware/structs/io_bank0.h"
 #define DEBUG_INJECTED_COMMANDS 0
 
 #include "AsyncPassthrough.h"
@@ -55,7 +57,8 @@
 #include <Arduino.h>
 #include "Jerial.h" // Unified serial interface
 #include "Python_Proper.h" // For executeSinglePythonCommand and ScriptHistory
-
+#include "Peripherals.h" // For gpio_get_function in floating detection
+#include "externVars.h" // For gpioReadingColors and showLEDsCore2
 // External Jerial instance
 extern JerialClass Jerial;
 
@@ -392,6 +395,17 @@ static volatile uint32_t s_last_inter_byte_time_us = 0;
 
 #define UART_RECEIVED_MASK ( (uint16_t)( sizeof( uartReceived ) - 1 ) )
 
+// Snapshot buffers used by the UI to show "last data" on the OLED.
+// Keep these small and cheap to update from ISR (RX) and task (USB→UART).
+#define LAST_DATA_SNAPSHOT_SIZE 64
+static volatile char s_last_uart_rx_buf[LAST_DATA_SNAPSHOT_SIZE];
+static volatile uint8_t s_last_uart_rx_head = 0;   // next write index (ISR-writable)
+static volatile uint8_t s_last_uart_rx_len = 0;    // number of valid bytes (<= SIZE)
+
+static char s_last_usb_to_uart_buf[LAST_DATA_SNAPSHOT_SIZE];
+static uint8_t s_last_usb_to_uart_head = 0; // next write index (task context)
+static uint8_t s_last_usb_to_uart_len = 0;  // number of valid bytes
+
 static inline bool ring_push_byte( uint8_t b ) {
     uint16_t next_head = (uint16_t)( ( uartReceivedHead + 1 ) & UART_RECEIVED_MASK );
     if ( next_head == uartReceivedTail ) {
@@ -400,6 +414,12 @@ static inline bool ring_push_byte( uint8_t b ) {
     }
     uartReceived[ uartReceivedHead ] = b;
     uartReceivedHead = next_head;
+
+    // Update small RX snapshot (keep last N bytes). This is ISR-safe (single-byte writes).
+    s_last_uart_rx_buf[s_last_uart_rx_head] = (char)b;
+    s_last_uart_rx_head = (uint8_t)( ( s_last_uart_rx_head + 1 ) % LAST_DATA_SNAPSHOT_SIZE );
+    if ( s_last_uart_rx_len < LAST_DATA_SNAPSHOT_SIZE ) s_last_uart_rx_len++;
+
     return true;
 }
 
@@ -451,6 +471,56 @@ static inline uint16_t tx_ring_available( void ) {
 static inline void tx_ring_clear( void ) {
     uartToSendHead = 0;
     uartToSendTail = 0;
+}
+
+// ---------------------------------------------------------------------------
+// UI snapshot accessors (lightweight copies of last-data buffers)
+// ---------------------------------------------------------------------------
+size_t AsyncPassthrough::getLastUsbToUartSnapshot(char* out, size_t outSize) {
+    if (!out || outSize == 0) return 0;
+    size_t copyLen = (size_t)s_last_usb_to_uart_len;
+    if ( copyLen > outSize - 1 ) copyLen = outSize - 1;
+
+    // Copy in chronological order: head points to next write index
+    uint8_t start = (uint8_t)( ( s_last_usb_to_uart_head + LAST_DATA_SNAPSHOT_SIZE - s_last_usb_to_uart_len ) % LAST_DATA_SNAPSHOT_SIZE );
+    for ( size_t i = 0; i < copyLen; i++ ) {
+        out[i] = s_last_usb_to_uart_buf[(start + i) % LAST_DATA_SNAPSHOT_SIZE];
+    }
+    out[copyLen] = '\0';
+    return copyLen;
+}
+
+size_t AsyncPassthrough::getLastUartRxSnapshot(char* out, size_t outSize) {
+    if (!out || outSize == 0) return 0;
+    // Disable UART IRQ briefly to get a consistent snapshot
+    irq_set_enabled(ASYNC_PASSTHROUGH_UART_IRQ, false);
+
+    size_t copyLen = (size_t)s_last_uart_rx_len;
+    if ( copyLen > outSize - 1 ) copyLen = outSize - 1;
+    // oldest index is head - len (mod size)
+    uint8_t start = (uint8_t)( ( s_last_uart_rx_head + LAST_DATA_SNAPSHOT_SIZE - s_last_uart_rx_len ) % LAST_DATA_SNAPSHOT_SIZE );
+    for ( size_t i = 0; i < copyLen; i++ ) {
+        out[i] = (char)s_last_uart_rx_buf[(start + i) % LAST_DATA_SNAPSHOT_SIZE];
+    }
+    out[copyLen] = '\0';
+
+    // Re-enable IRQ (assume normal runtime)
+    irq_set_enabled(ASYNC_PASSTHROUGH_UART_IRQ, true);
+    return copyLen;
+}
+
+// Clear the saved USB->UART snapshot (UI consumed it)
+void AsyncPassthrough::clearLastUsbToUartSnapshot() {
+    s_last_usb_to_uart_head = 0;
+    s_last_usb_to_uart_len = 0;
+}
+
+// Clear the saved UART->USB (RX) snapshot. IRQ is briefly disabled to be safe.
+void AsyncPassthrough::clearLastUartRxSnapshot() {
+    irq_set_enabled(ASYNC_PASSTHROUGH_UART_IRQ, false);
+    s_last_uart_rx_head = 0;
+    s_last_uart_rx_len = 0;
+    irq_set_enabled(ASYNC_PASSTHROUGH_UART_IRQ, true);
 }
 
 // Flush TinyUSB CDC buffers for a specific interface
@@ -522,6 +592,10 @@ static inline void uart_force_receiver_resync( void ) {
 }
 
 static void async_uart_irq_handler( void ) {
+
+
+
+
     uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
     int i = 0;
     bool had_framing_error = false;
@@ -676,7 +750,10 @@ static void async_uart_irq_handler( void ) {
             | UART_UARTICR_RTIC_BITS;  // Receive timeout
     
     s_uart_flush_pending = true;
+
+   
 }
+
 
 // ----------------------------------------------------------------------------
 // Runtime command parsing - Parse "tag parsing = on/off" from UART
@@ -1095,6 +1172,7 @@ static inline bool process_command_tag_byte( uint8_t c, TagParserState* parser, 
     return true; // Default: forward
 }
 
+
 static inline void bridge_usb_to_uart( uint8_t itf ) {
     // Drain CDC RX and forward to UART (pico-sdk, HW FIFO)
     // Process through command tag filter
@@ -1105,6 +1183,8 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
     if ( tud_cdc_n_available( itf ) ) {
         size_t rd = tud_cdc_n_read( itf, buf, sizeof( buf ) );
         if ( rd > 0 ) {
+            
+           
             // Track USB->UART data activity for inactivity timeout
             // CRITICAL: Only track when tag parsing is DISABLED (during flashing)
             // This lets us detect when the Arduino upload finishes (500ms of no data)
@@ -1166,6 +1246,13 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
             // CRITICAL: Do NOT use uart_write_blocking - if Arduino stops reading,
             // the TX FIFO fills and uart_write_blocking blocks FOREVER, hanging Core 0.
             if ( forward_idx > 0 ) {
+                // Update USB→UART "last data" snapshot (keep last LAST_DATA_SNAPSHOT_SIZE bytes)
+                for ( size_t fi = 0; fi < forward_idx; fi++ ) {
+                    s_last_usb_to_uart_buf[s_last_usb_to_uart_head] = (char)forward_buf[fi];
+                    s_last_usb_to_uart_head = (uint8_t)( ( s_last_usb_to_uart_head + 1 ) % LAST_DATA_SNAPSHOT_SIZE );
+                    if ( s_last_usb_to_uart_len < LAST_DATA_SNAPSHOT_SIZE ) s_last_usb_to_uart_len++;
+                }
+
                 if ( flashingArduino ) {
                     // During flashing, write directly with timeout — STK500 protocol
                     // requires strict request/response timing that a ring buffer would break.
@@ -1193,6 +1280,11 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
                                  UART_UARTIMSC_TXIM_BITS );
                 }
             }
+           
+        } else {
+
+
+            
         }
     }
 }
@@ -1215,6 +1307,10 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     uint32_t avail = tud_cdc_n_write_available( itf );
     uint8_t c;
     
+
+
+
+
     // Limit per-call processing to keep other services responsive.
     // 256 bytes ≈ 256µs of tag parsing — large enough to keep up with
     // 115200 baud (~11520 bytes/sec) at reasonable task() call rates,
@@ -1234,6 +1330,7 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
         
         while ( ring_pop_byte( &c ) && forwardCount < MAX_FORWARD_BYTES ) {
             // Serial.write( c );
+            // gpioReadingColors[9] = 0x200400;
             s_forward_last_byte_us = micros();
             wrote++;
             processed++;
@@ -1261,6 +1358,8 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
     // CRITICAL: Check CDC write space BEFORE popping from ring buffer!
     // Previous code popped unconditionally, losing data when CDC was full.
     bool cdc1_connected = tud_cdc_n_connected( 1 );
+
+
     while ( ring_available() > 0 && processed < MAX_BYTES_PER_CALL ) {
         // Check if CDC 1 has space BEFORE popping - don't pop if we'd just drop the byte
         if ( cdc1_connected && tud_cdc_n_write_available( 1 ) == 0 ) {
@@ -1355,6 +1454,9 @@ void tud_cdc_line_coding_cb( uint8_t itf, cdc_line_coding_t const* p ) {
         return;
     s_line_coding = *p;
     s_apply_line_coding_pending = true;
+
+    AsyncPassthrough::processPendingLineCoding();
+
 }
 }
 
@@ -1428,6 +1530,8 @@ void begin( unsigned long baud ) {
     // Configure UART pins and UART with HW FIFO enabled
     gpio_set_function( ASYNC_PASSTHROUGH_UART_TX_PIN, GPIO_FUNC_UART );
     gpio_set_function( ASYNC_PASSTHROUGH_UART_RX_PIN, GPIO_FUNC_UART );
+    gpio_function_map[8] = GPIO_FUNC_UART;
+    gpio_function_map[9] = GPIO_FUNC_UART;
 
     uart_init( ASYNC_PASSTHROUGH_UART, baud );
     uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
@@ -1566,8 +1670,77 @@ void begin( unsigned long baud ) {
     async_begun = true;
 }
 // #define DEBUG_INJECTED_COMMANDS 1
+void processPendingLineCoding() {
+ if ( s_apply_line_coding_pending) {
+        // Apply to pico-sdk UART
+        uint data_bits = 8;
+        switch ( s_line_coding.data_bits ) {
+        case 5: data_bits = 5; break;
+        case 6: data_bits = 6; break;
+        case 7: data_bits = 7; break;
+        default: data_bits = 8; break;
+        }
 
+        uart_parity_t parity = UART_PARITY_NONE;
+        if ( s_line_coding.parity == 1 ) {
+            parity = UART_PARITY_ODD;
+        } else if ( s_line_coding.parity == 2 ) {
+            parity = UART_PARITY_EVEN;
+        } else {
+            parity = UART_PARITY_NONE;
+        }
+
+        uint stop_bits = 1;
+        if ( s_line_coding.stop_bits == 2 ) {
+            stop_bits = 2;
+        } else if ( s_line_coding.stop_bits == 1 ) {
+            // 1.5 not supported; approximate with 2
+            stop_bits = 2;
+        } else {
+            stop_bits = 1;
+        }
+       
+        uart_set_baudrate( ASYNC_PASSTHROUGH_UART, s_line_coding.bit_rate );
+        uart_set_format( ASYNC_PASSTHROUGH_UART, data_bits, stop_bits, parity );
+        
+        serial1baud = s_line_coding.bit_rate;
+        set_micros_per_byte( &s_line_coding );
+        s_apply_line_coding_pending = false;
+
+        // tud_cdc_n_write_str(0, "Applied new line coding:\n");
+        // tud_cdc_n_write_str(0, "  Baud: ");
+        // tud_cdc_n_write_str(0, String(s_line_coding.bit_rate).c_str());
+        // tud_cdc_n_write_str(0, "\n");
+        // tud_cdc_n_write_str(0, "  Data bits: ");
+        // tud_cdc_n_write_str(0, String(data_bits).c_str());
+        // tud_cdc_n_write_str(0, "\n");
+        // tud_cdc_n_write_str(0, "  Stop bits: ");
+        // tud_cdc_n_write_str(0, String(stop_bits).c_str());
+        // tud_cdc_n_write_str(0, "\n");
+        // tud_cdc_n_write_str(0, "  Parity: ");
+        // if (parity == UART_PARITY_NONE) {
+        //     tud_cdc_n_write_str(0, "None\n");
+        // } else if (parity == UART_PARITY_ODD) {
+        //     tud_cdc_n_write_str(0, "Odd\n");
+        // } else if (parity == UART_PARITY_EVEN) {
+        //     tud_cdc_n_write_str(0, "Even\n");
+        // }
+        // tud_cdc_n_write_flush(0);
+        
+        
+        
+        // #if DEBUG_INJECTED_COMMANDS
+        // if ((t1 - t0) > 50000) {
+        //     Serial.printf("⏱️  line_coding took %lu ms\n", (t1 - t0) / 1000);
+        // }
+        // #endif
+    }
+}
 bool enableResync = true;  // Set to true to enable resync sequence on demand (e.g. via runtime command)
+
+unsigned long last_usb_uart = 0;
+unsigned long last_uart_usb = 0;
+
 void task( ) {
     // DEBUG DISABLED: All checkpoint output removed to minimize USB pressure
     // The A12345678 markers were contributing to freeze by adding USB load
@@ -1785,58 +1958,28 @@ void task( ) {
     
     // Apply pending line coding from host
     t0 = micros();
-    if ( s_apply_line_coding_pending && s_line_coding_override == false ) {
-        // Apply to pico-sdk UART
-        uint data_bits = 8;
-        switch ( s_line_coding.data_bits ) {
-        case 5: data_bits = 5; break;
-        case 6: data_bits = 6; break;
-        case 7: data_bits = 7; break;
-        default: data_bits = 8; break;
-        }
-
-        uart_parity_t parity = UART_PARITY_NONE;
-        if ( s_line_coding.parity == 1 ) {
-            parity = UART_PARITY_ODD;
-        } else if ( s_line_coding.parity == 2 ) {
-            parity = UART_PARITY_EVEN;
-        } else {
-            parity = UART_PARITY_NONE;
-        }
-
-        uint stop_bits = 1;
-        if ( s_line_coding.stop_bits == 2 ) {
-            stop_bits = 2;
-        } else if ( s_line_coding.stop_bits == 1 ) {
-            // 1.5 not supported; approximate with 2
-            stop_bits = 2;
-        } else {
-            stop_bits = 1;
-        }
-       
-        uart_set_baudrate( ASYNC_PASSTHROUGH_UART, s_line_coding.bit_rate );
-        uart_set_format( ASYNC_PASSTHROUGH_UART, data_bits, stop_bits, parity );
-        
-        serial1baud = s_line_coding.bit_rate;
-        set_micros_per_byte( &s_line_coding );
-        s_apply_line_coding_pending = false;
-        
-        t1 = micros();
-        #if DEBUG_INJECTED_COMMANDS
-        if ((t1 - t0) > 50000) {
-            Serial.printf("⏱️  line_coding took %lu ms\n", (t1 - t0) / 1000);
-        }
-        #endif
-    }
-
+   
+    // processPendingLineCoding();
 
     if (printCheckpoints) { Serial.write('5'); tud_task(); }
     
     // USB -> UART when either pending flag set or data available
     t0 = micros();
     if ( s_usb_rx_pending || ( tud_inited( ) && tud_cdc_n_available( ASYNC_PASSTHROUGH_CDC_ITF ) ) ) {
+        if (gpioReadingColors[8] != 0x1b0700) {
+         gpioReadingColors[8] = 0x1b0700;
+         showLEDsCore2 = 2;
+        }
+         last_usb_uart = millis();
         bridge_usb_to_uart( ASYNC_PASSTHROUGH_CDC_ITF );
         s_usb_rx_pending = false;
+        
+    } else if (millis() - last_usb_uart > 60) {
+        // No USB->UART activity for a while - reset color
+        if (gpioReadingColors[8] != 0x001b07) {
+        gpioReadingColors[8] = 0x001b07;
+        showLEDsCore2 = 2;
+        }
     }
     
     if (printCheckpoints) { Serial.write('6'); tud_task(); }
@@ -1849,7 +1992,21 @@ void task( ) {
     
     // UART -> USB (where tag parsing and command injection happen)
     t0 = micros();
+    if ( ring_available() > 0 ) {
+            if (gpioReadingColors[9] != 0x1b0700) {
+         gpioReadingColors[9] = 0x1b0700;
+         
+         showLEDsCore2 = 2;
+            }
+last_uart_usb = millis();
     bridge_uart_to_usb( ASYNC_PASSTHROUGH_CDC_ITF );
+    } else if (millis() - last_uart_usb > 60) {
+        // No UART->USB activity for a while - reset color
+        if (gpioReadingColors[9] != 0x001b07) {
+        gpioReadingColors[9] = 0x001b07;
+        showLEDsCore2 = 2;
+        }
+    }
     t1 = micros();
     
     if (printCheckpoints) { Serial.write('7'); tud_task(); }  // After UART->USB bridge
@@ -2042,6 +2199,7 @@ void checkDTRState(Adafruit_USBD_CDC& cdc) {
             // the service dispatch loop without USB servicing.
         }
     }
+
 }
 
 // Set DTR lockout — called after flash completes to suppress port-close DTR

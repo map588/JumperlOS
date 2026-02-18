@@ -2991,12 +2991,12 @@ bool dacChange = false;
             }
             else if (strcmp(line, "force_first_start") == 0 || strcmp(line, "factory_reset") == 0) {
                 cycleTerminalColor(true, 100.0, true, &Serial, 0, 1);
-                FatFS.remove("/config.txt");
+                safeFileDelete("/config.txt");
                 Serial.println("Config file deleted.");
                 Serial.flush();
-                
+
                 bool deleteSuccess = deleteDirectoryContents("/");
-                
+
                 cycleTerminalColor(false, 100.0, true, &Serial, 0, 1);
                 if (deleteSuccess) {
                     Serial.println("All filesystem contents deleted successfully.");
@@ -3155,11 +3155,11 @@ bool dacChange = false;
                 } else if (strcmp(line, "force_first_start") == 0 || strcmp(line, "factory_reset") == 0) {
                     //firstStart = 1;
                     cycleTerminalColor(true, 100.0, true,  &Serial, 0, 1);
-                    FatFS.remove("/config.txt");
+                    safeFileDelete("/config.txt");
 
                     Serial.println("Config file deleted.");
                     Serial.flush();
-                    
+
                     // // Delete all contents of the filesystem recursively
                     bool deleteSuccess = deleteDirectoryContents("/");
                     

@@ -415,6 +415,8 @@ void flashArduino( unsigned long timeoutTime ) {
     AsyncPassthrough::clearTagParserState();
     #endif
 
+    // checkForConfigChangesUSBSer1(1); // Check for any pending config changes before flashing
+
     // Service USB between steps
     tud_task();
 
@@ -485,6 +487,7 @@ void flashArduino( unsigned long timeoutTime ) {
     // timing relative to avrdude's first sync byte.
     bool last_dtr_in_loop = USBSer1.dtr();
 
+    // AsyncPassthrough::processPendingLineCoding(); // Ensure any pending line coding changes are applied before flashing
     #if ASYNC_PASSTHROUGH_ENABLED == 1
     // Loop until flash completion is detected (STK500 sniffing / inactivity / hard timeout)
     while ( !AsyncPassthrough::checkFlashDone() ) {

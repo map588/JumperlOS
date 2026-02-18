@@ -491,6 +491,8 @@ void ConfigState::setDefaults() {
         gpioPwmFrequency[i] = 1.0f;
         gpioPwmDutyCycle[i] = 0.5f;
         gpioPwmEnabled[i] = false;
+        // Pins 1-8 (indices 0-7) default to floating-read enabled; UART TX/RX (8-9) disabled
+        gpioReadFloating[i] = (i < 8) ? 1 : 0;
         gpioPythonOwned[i] = false;  // No pins owned by MicroPython by default
     }
     
@@ -1819,6 +1821,14 @@ void JumperlessState::serializeConfig(String& output) const {
         if (i < 9) output += ",";
     }
     output += "]\n";
+
+    // Floating-read enabled array (1 = detect tri-state, 0 = skip)
+    output += "    readFloating: [";
+    for (int i = 0; i < 10; i++) {
+        output += String(config.gpioReadFloating[i]);
+        if (i < 9) output += ",";
+    }
+    output += "]\n";
     
     // UART and OLED
     output += "  uart: {txFunction: " + String(config.uartTxFunction) + 
@@ -1956,6 +1966,29 @@ bool JumperlessState::deserializeConfig(const char* yamlContent, String& errorMs
                 bool parseSuccess;
                 config.gpioPwmEnabled[idx++] = parseBoolean(val, parseSuccess);
                 pos = commaIdx + 1;
+            }
+        }
+    }
+    // Parse floating-read enabled array
+    else if (line.startsWith("readFloating:")) {
+        int startIdx = line.indexOf('[');
+        int endIdx = line.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+            String arrayStr = line.substring(startIdx + 1, endIdx);
+            int idx = 0;
+            int pos = 0;
+            while (pos < (int)arrayStr.length() && idx < 10) {
+                int commaIdx = arrayStr.indexOf(',', pos);
+                if (commaIdx == -1) commaIdx = arrayStr.length();
+                String val = arrayStr.substring(pos, commaIdx);
+                val.trim();
+                config.gpioReadFloating[idx++] = (uint8_t)val.toInt();
+                pos = commaIdx + 1;
+            }
+            // Sync to the global array in Peripherals.cpp so it takes effect immediately
+            extern uint8_t gpioReadFloating[10];
+            for (int i = 0; i < 10; i++) {
+                gpioReadFloating[i] = config.gpioReadFloating[i];
             }
         }
     }
@@ -2618,14 +2651,14 @@ bool SlotManager::slotExists(int slotNum) const {
     }
     
     String filename = getSlotFilename(slotNum);
-    if (FatFS.exists(filename.c_str())) {
+    if (safeFileExists(filename.c_str())) {
         return true;
     }
-    
+
     // Check for legacy format (not applicable to Python slot)
     if (slotNum != 99) {
         String legacyFilename = getLegacySlotFilename(slotNum);
-        return FatFS.exists(legacyFilename.c_str());
+        return safeFileExists(legacyFilename.c_str());
     }
     
     return false;
@@ -2645,7 +2678,7 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
     // Serial.flush();
     
     // Try loading YAML slot file
-    if (FatFS.exists(filename.c_str())) {
+    if (safeFileExists(filename.c_str())) {
         // Serial.println("  File exists, reading...");
         // Serial.flush();
         
@@ -2714,17 +2747,17 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
 }
 
 bool SlotManager::loadSlotFromPath(const String& path, String& errorMsg) {
-    if (!FatFS.exists(path.c_str())) {
+    if (!safeFileExists(path.c_str())) {
         errorMsg = "File not found: " + path;
         return false;
     }
-    File file = FatFS.open(path.c_str(), "r");
+    File file = safeFileOpen(path.c_str(), "r");
     if (!file) {
         errorMsg = "Failed to open: " + path;
         return false;
     }
     String content = file.readString();
-    file.close();
+    safeFileClose(file, false);
     if (!activeState.fromYAML(content, errorMsg)) {
         errorMsg = "Failed to parse YAML: " + errorMsg;
         return false;
@@ -2756,11 +2789,9 @@ bool SlotManager::saveSlot(int slotNum, String& errorMsg, bool skipValidation) {
     
     // Cache /slots directory existence check (avoid FS call on every save)
     if (!slotsDirectoryExists) {
-        if (!FatFS.exists("/slots")) {
-            if (!FatFS.mkdir("/slots")) {
-                errorMsg = "Failed to create /slots directory";
-                return false;
-            }
+        if (!safeMkdir("/slots")) {
+            errorMsg = "Failed to create /slots directory";
+            return false;
         }
         slotsDirectoryExists = true;
     }
@@ -2813,8 +2844,8 @@ bool SlotManager::deleteSlot(int slotNum, String& errorMsg) {
     }
     
     String filename = getSlotFilename(slotNum);
-    if (FatFS.exists(filename.c_str())) {
-        if (!FatFS.remove(filename.c_str())) {
+    if (safeFileExists(filename.c_str())) {
+        if (!safeFileDelete(filename.c_str())) {
             errorMsg = "Failed to delete slot file: " + filename;
             return false;
         }
@@ -2912,7 +2943,7 @@ bool SlotManager::exitTemporarySlot(bool refreshHardware) {
     String errorMsg;
     String filename = getSlotFilename(temporarySlotOriginal);
     
-    if (FatFS.exists(filename.c_str())) {
+    if (safeFileExists(filename.c_str())) {
         if (readSlotFile(temporarySlotOriginal, content, errorMsg)) {
             activeState.fromYAML(content, errorMsg);
         }
@@ -2949,11 +2980,8 @@ bool SlotManager::ensureSlotExists(int slotNum) {
 
 // File I/O helpers
 bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
-    // THREAD SAFETY: Acquire filesystem mutex first
-    fs_mutex_acquire();
-    
     String filename = getSlotFilename(slotNum);
-    
+
     extern bool mscModeEnabled;
     if (mscModeEnabled && debugUSB) {
         Serial.print("USB: readSlotFile() called for slot ");
@@ -2963,75 +2991,32 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         Serial.println(")");
         Serial.flush();
     }
-    
-    // Detect which core we're running on and synchronize appropriately
-    uint coreNum = get_core_num();
-    
-    // Add timeout to prevent deadlock during boot or race conditions
-    unsigned long timeout = millis() + 5000;  // 5 second timeout
-    
-    if (coreNum == 0) {
-        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
-        while (core2busy) {
-            if (millis() > timeout) {
-                errorMsg = "Timeout waiting for core2 (possible deadlock)";
-                fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
-                return false;
-            }
-            delay(1);
-        }
-        core1busy = true;
-    } else {
-        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
-        while (core1busy) {
-            if (millis() > timeout) {
-                errorMsg = "Timeout waiting for core1 (possible deadlock)";
-                fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
-                return false;
-            }
-            delay(1);
-        }
-        core2busy = true;
-    }
-    
-    if (mscModeEnabled && debugUSB) {
-        Serial.println("USB: Core sync acquired, attempting to open file...");
-        Serial.flush();
-    }
-    
+
     // CRITICAL: In USB mode, add extra delay before opening
-    // NOTE: We don't sync here because we already synced before f_stat in the caller.
-    // Multiple rapid disk_ioctl(CTRL_SYNC) calls cause crashes.
     if (mscModeEnabled && debugUSB) {
         delay(50);
     }
-    
-    File file = FatFS.open(filename.c_str(), "r");
+
+    File file = safeFileOpen(filename.c_str(), "r", 5000);
     if (!file) {
         errorMsg = "Failed to open slot file: " + filename;
         if (mscModeEnabled && debugUSB) {
-            Serial.print("USB: ✗ Failed to open file: ");
+            Serial.print("USB: Failed to open file: ");
             Serial.println(errorMsg);
             Serial.flush();
         }
-        if (coreNum == 0) {
-            core1busy = false;
-        } else {
-            core2busy = false;
-        }
-        fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
         return false;
     }
-    
+
     if (mscModeEnabled && debugUSB) {
         Serial.println("USB: File opened successfully, reading content...");
         Serial.flush();
     }
-    
+
     content = "";
     size_t bytesRead = 0;
     const size_t maxBytes = 65536;  // 64KB safety limit
-    
+
     while (file.available() && bytesRead < maxBytes) {
         int c = file.read();
         if (c >= 0) {
@@ -3040,34 +3025,27 @@ bool SlotManager::readSlotFile(int slotNum, String& content, String& errorMsg) {
         } else {
             // Read error
             if (mscModeEnabled && debugUSB) {
-                Serial.println("USB: ⚠ Read error during file read");
+                Serial.println("USB: Read error during file read");
                 Serial.flush();
             }
             break;
         }
     }
-    
+
     if (mscModeEnabled && debugUSB) {
         Serial.print("USB: Read ");
         Serial.print(bytesRead);
         Serial.println(" bytes, closing file...");
         Serial.flush();
     }
-    
-    file.close();
-    
+
+    safeFileClose(file, false);  // Read-only
+
     if (mscModeEnabled && debugUSB) {
         Serial.println("USB: File closed successfully");
         Serial.flush();
     }
-    
-    if (coreNum == 0) {
-        core1busy = false;
-    } else {
-        core2busy = false;
-    }
-    
-    fs_mutex_release();  // THREAD SAFETY: Release mutex
+
     return true;
 }
 
@@ -3090,52 +3068,19 @@ bool SlotManager::writeSlotFile(int slotNum, const String& content, String& erro
 }
 
 bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
-    // THREAD SAFETY: Acquire filesystem mutex first
-    fs_mutex_acquire();
-    
     String legacyFilename = getLegacySlotFilename(slotNum);
-    
-    // Detect which core we're running on and synchronize appropriately
-    uint coreNum = get_core_num();
-    
-    if (coreNum == 0) {
-        // Running on core0 (core1 in RP2040 terms) - wait for core2, set core1busy
-        while (core2busy) {
-            delay(1);
-        }
-        core1busy = true;
-    } else {
-        // Running on core1 (core2 in RP2040 terms) - wait for core1, set core2busy
-        while (core1busy) {
-            delay(1);
-        }
-        core2busy = true;
-    }
-    
-    File file = FatFS.open(legacyFilename.c_str(), "r");
+
+    File file = safeFileOpen(legacyFilename.c_str(), "r", 5000);
     if (!file) {
         errorMsg = "Failed to open legacy slot file: " + legacyFilename;
-        if (coreNum == 0) {
-            core1busy = false;
-        } else {
-            core2busy = false;
-        }
-        fs_mutex_release();  // THREAD SAFETY: Release mutex before early return
         return false;
     }
-    
+
     String content = "";
     while (file.available()) {
         content += (char)file.read();
     }
-    file.close();
-    fs_mutex_release();  // THREAD SAFETY: Release mutex after file operations
-    
-    if (coreNum == 0) {
-        core1busy = false;
-    } else {
-        core2busy = false;
-    }
+    safeFileClose(file, false);  // Read-only
     
     // Parse legacy format
     JumperlessState newState;
@@ -3314,7 +3259,7 @@ bool SlotManager::enterPreviewMode(int slotToPreview, String& errorMsg) {
     String filename = getSlotFilename(slotToPreview);
     
     // Check if slot file exists
-    if (FatFS.exists(filename.c_str())) {
+    if (safeFileExists(filename.c_str())) {
         // Slot exists - load it normally
         if (!loadSlot(slotToPreview, errorMsg)) {
             return false;
@@ -3356,7 +3301,7 @@ bool SlotManager::exitPreview(bool applyPreview, String& errorMsg) {
         // User wants to keep the previewed slot
         // If the slot file doesn't exist yet, create it now
         String filename = getSlotFilename(previewSlotNumber);
-        if (!FatFS.exists(filename.c_str())) {
+        if (!safeFileExists(filename.c_str())) {
             // Slot was empty during preview - save it now
             if (!saveSlot(previewSlotNumber, errorMsg)) {
                 previewModeActive = false;

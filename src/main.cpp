@@ -124,7 +124,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.5.0"; //! remember to update this
+const char firmwareVersion[] = "5.6.5.4"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -489,6 +489,11 @@ unsigned long busyTimers[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 // Global storage for current command line (for backwards compatibility with parsers)
 String currentCommandLine = "";
 
+
+unsigned long loopStart = millis();
+
+
+
 void loop( ) {
     // Declare variables at function scope to avoid goto scope issues
     bool useLineBuffering = false;
@@ -656,6 +661,8 @@ dontshowmenu:
     static uint32_t heartbeatCounter = 0;
     static uint32_t lastHeartbeatPrint = 0;
 
+    
+loopStart = millis();
     while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
               ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
@@ -697,6 +704,11 @@ dontshowmenu:
             tud_task( );
             lastHeartbeatPrint = heartbeatCounter; // Update here so we get consistent '<{...}>'
         }
+
+
+        
+
+
 
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
         if ( printLoop ) {

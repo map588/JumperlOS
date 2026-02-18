@@ -66,6 +66,8 @@ void jl_gpio_set_dir( int pin, int direction );
 int jl_gpio_get_dir( int pin );
 void jl_gpio_set_pull( int pin, int pull );
 int jl_gpio_get_pull( int pin );
+void jl_gpio_set_floating_read( int pin, int floating );
+int jl_gpio_get_floating_read( int pin );
 void jl_gpio_claim_pin( int pin );
 void jl_gpio_release_pin( int pin );
 void jl_gpio_release_all_pins( void );
@@ -906,11 +908,11 @@ static mp_obj_t gpio_direction_unary_op( mp_unary_op_t op, mp_obj_t self_in ) {
     case MP_UNARY_OP_BOOL:
         return mp_obj_new_bool( self->value );
     case MP_UNARY_OP_INT_MAYBE:
-        // Support int(direction) conversion (OUTPUT=1, INPUT=0)
-        return mp_obj_new_int( self->value ? 1 : 0 );
+        // Support int(direction) conversion using firmware convention (OUTPUT=0, INPUT=1)
+        return mp_obj_new_int( self->value ? 0 : 1 );
     case MP_UNARY_OP_FLOAT_MAYBE:
-        // Support float(direction) conversion (OUTPUT=1.0, INPUT=0.0)
-        return mp_obj_new_float( self->value ? 1.0 : 0.0 );
+        // Support float(direction) conversion (OUTPUT=0.0, INPUT=1.0)
+        return mp_obj_new_float( self->value ? 0.0 : 1.0 );
     default:
         return MP_OBJ_NULL;
     }
@@ -926,7 +928,7 @@ static mp_obj_t gpio_direction_binary_op( mp_binary_op_t op, mp_obj_t lhs_in, mp
                 return mp_obj_new_bool( lhs->value == rhs->value );
             } else if ( mp_obj_is_int( rhs_in ) ) {
                 int rhs_val = mp_obj_get_int( rhs_in );
-                return mp_obj_new_bool( ( lhs->value ? 1 : 0 ) == rhs_val );
+                return mp_obj_new_bool( ( lhs->value ? 0 : 1 ) == rhs_val );
             } else if ( mp_obj_is_bool( rhs_in ) ) {
                 return mp_obj_new_bool( lhs->value == mp_obj_is_true( rhs_in ) );
             }
@@ -936,7 +938,7 @@ static mp_obj_t gpio_direction_binary_op( mp_binary_op_t op, mp_obj_t lhs_in, mp
                 return mp_obj_new_bool( lhs->value != rhs->value );
             } else if ( mp_obj_is_int( rhs_in ) ) {
                 int rhs_val = mp_obj_get_int( rhs_in );
-                return mp_obj_new_bool( ( lhs->value ? 1 : 0 ) != rhs_val );
+                return mp_obj_new_bool( ( lhs->value ? 0 : 1 ) != rhs_val );
             } else if ( mp_obj_is_bool( rhs_in ) ) {
                 return mp_obj_new_bool( lhs->value != mp_obj_is_true( rhs_in ) );
             }
@@ -2118,7 +2120,8 @@ static mp_obj_t jl_gpio_get_dir_func( mp_obj_t pin_obj ) {
     int direction = jl_gpio_get_dir( pin );
 
     // Return custom GPIO direction object that displays as INPUT/OUTPUT but behaves as boolean
-    return gpio_direction_new( direction );
+    // Convert numeric firmware convention (0 = OUTPUT, 1 = INPUT) into boolean (true=OUTPUT)
+    return gpio_direction_new( direction == 0 );
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_gpio_get_dir_obj, jl_gpio_get_dir_func );
 
@@ -2145,6 +2148,28 @@ static mp_obj_t jl_gpio_get_pull_func( mp_obj_t pin_obj ) {
     return gpio_pull_new( pull );
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_gpio_get_pull_obj, jl_gpio_get_pull_func );
+
+// GPIO read-floating control: control whether reads treat floating pins specially
+static mp_obj_t jl_gpio_set_floating_read_func( mp_obj_t pin_obj, mp_obj_t enabled_obj ) {
+    int pin = map_pin_obj_to_physical_gpio( pin_obj );
+    if ( pin < 0 ) {
+        mp_raise_ValueError( MP_ERROR_TEXT( "GPIO pin must be 1-10, GPIO_1-GPIO_8, GPIO_20-GPIO_27, or UART_TX/UART_RX" ) );
+    }
+    int enabled = mp_obj_is_true( enabled_obj ) ? 1 : 0;
+    jl_gpio_set_floating_read( pin, enabled );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2( jl_gpio_set_floating_read_obj, jl_gpio_set_floating_read_func );
+
+static mp_obj_t jl_gpio_get_floating_read_func( mp_obj_t pin_obj ) {
+    int pin = map_pin_obj_to_physical_gpio( pin_obj );
+    if ( pin < 0 ) {
+        mp_raise_ValueError( MP_ERROR_TEXT( "GPIO pin must be 1-10, GPIO_1-GPIO_8, GPIO_20-GPIO_27, or UART_TX/UART_RX" ) );
+    }
+    int val = jl_gpio_get_floating_read( pin );
+    return mp_obj_new_bool( val ? true : false );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_gpio_get_floating_read_obj, jl_gpio_get_floating_read_func );
 
 // GPIO pin ownership functions for timing-critical operations (e.g., NeoPixels)
 static mp_obj_t jl_gpio_claim_pin_func( mp_obj_t pin_obj ) {
@@ -3906,35 +3931,48 @@ static const gpio_state_obj_t gpio_state_high_obj = { .base = { &gpio_state_type
 static const gpio_state_obj_t gpio_state_low_obj = { .base = { &gpio_state_type }, .value = GPIO_STATE_LOW };
 static const gpio_state_obj_t gpio_state_floating_obj = { .base = { &gpio_state_type }, .value = GPIO_STATE_FLOATING };
 
-// GPIO Direction constants (INPUT=0, OUTPUT=1)
+// GPIO Direction constants (OUTPUT=0, INPUT=1)
+// Numeric convention used by firmware: 0 = OUTPUT, 1 = INPUT
 static const gpio_direction_obj_t gpio_direction_input_obj = { .base = { &gpio_direction_type }, .value = false };
 static const gpio_direction_obj_t gpio_direction_output_obj = { .base = { &gpio_direction_type }, .value = true };
 
 // Helper function to get direction value from various input types
+// Returns numeric firmware convention: 0 = OUTPUT, 1 = INPUT
 static int get_direction_value( mp_obj_t obj ) {
     if ( mp_obj_is_int( obj ) ) {
-        // Integer: 0=INPUT, 1=OUTPUT
-        return mp_obj_get_int( obj ) ? 1 : 0;
+        // Integer: 0=OUTPUT, 1=INPUT
+        int v = mp_obj_get_int( obj );
+        return v ? 1 : 0;
     } else if ( mp_obj_is_bool( obj ) ) {
-        // Boolean: False=INPUT, True=OUTPUT
-        return mp_obj_is_true( obj ) ? 1 : 0;
+        // Boolean: True=OUTPUT, False=INPUT  -> numeric: True -> 0, False -> 1
+        //  mp_raise_ValueError( MP_ERROR_TEXT( "Bool'" ) );
+        return mp_obj_is_true( obj ) ? 0 : 1;
     } else if ( mp_obj_is_str( obj ) ) {
-        // String: "INPUT"/"OUTPUT" (case insensitive)
+        // String: "OUTPUT"/"INPUT" (case insensitive)
         const char* str = mp_obj_str_get_str( obj );
         if ( strcmp( str, "OUTPUT" ) == 0 || strcmp( str, "output" ) == 0 || strcmp( str, "OUT" ) == 0 || strcmp( str, "out" ) == 0 ) {
-            return 1;
-        } else if ( strcmp( str, "INPUT" ) == 0 || strcmp( str, "input" ) == 0 || strcmp( str, "IN" ) == 0 || strcmp( str, "in" ) == 0 ) {
+            //  mp_raise_ValueError( MP_ERROR_TEXT( "String Output" ) );
             return 0;
+        } else if ( strcmp( str, "INPUT" ) == 0 || strcmp( str, "input" ) == 0 || strcmp( str, "IN" ) == 0 || strcmp( str, "in" ) == 0 ) {
+                // mp_raise_ValueError( MP_ERROR_TEXT( "String Input" ) );
+            return 1;
         } else {
             mp_raise_ValueError( MP_ERROR_TEXT( "Direction string must be 'INPUT' or 'OUTPUT'" ) );
         }
     } else if ( mp_obj_get_type( obj ) == &gpio_direction_type ) {
-        // GPIO Direction object
+        // GPIO Direction object (true == OUTPUT)
         gpio_direction_obj_t* dir = MP_OBJ_TO_PTR( obj );
-        return dir->value ? 1 : 0;
+        if ( dir->value == true) {
+            //  mp_raise_ValueError( MP_ERROR_TEXT( "Object True" ) );
+        } else {
+        //  mp_raise_ValueError( MP_ERROR_TEXT( "Object False" ) );
+        }
+        return dir->value ? 1 : 0; // Convert to numeric convention: true (OUTPUT) -> 0, false (INPUT) -> 1
     } else {
         // Try to convert to int as fallback
-        return mp_obj_get_int( obj ) ? 1 : 0;
+        int v = mp_obj_get_int( obj );
+        //  mp_raise_ValueError( MP_ERROR_TEXT( "Direction string must be 'INPUT' or 'OUTPUT'" ) );
+        return v ? 1 : 0;
     }
 }
 
@@ -6054,6 +6092,8 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_gpio_get_dir ), MP_ROM_PTR( &jl_gpio_get_dir_obj ) },
     { MP_ROM_QSTR( MP_QSTR_gpio_set_pull ), MP_ROM_PTR( &jl_gpio_set_pull_obj ) },
     { MP_ROM_QSTR( MP_QSTR_gpio_get_pull ), MP_ROM_PTR( &jl_gpio_get_pull_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_gpio_set_read_floating ), MP_ROM_PTR( &jl_gpio_set_floating_read_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_gpio_get_read_floating ), MP_ROM_PTR( &jl_gpio_get_floating_read_obj ) },
 
     // GPIO function aliases
     { MP_ROM_QSTR( MP_QSTR_set_gpio ), MP_ROM_PTR( &jl_gpio_set_obj ) },
@@ -6062,6 +6102,8 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_get_gpio_dir ), MP_ROM_PTR( &jl_gpio_get_dir_obj ) },
     { MP_ROM_QSTR( MP_QSTR_set_gpio_pull ), MP_ROM_PTR( &jl_gpio_set_pull_obj ) },
     { MP_ROM_QSTR( MP_QSTR_get_gpio_pull ), MP_ROM_PTR( &jl_gpio_get_pull_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_set_gpio_read_floating ), MP_ROM_PTR( &jl_gpio_set_floating_read_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_get_gpio_read_floating ), MP_ROM_PTR( &jl_gpio_get_floating_read_obj ) },
 
     // GPIO pin ownership functions (for timing-critical operations like NeoPixels)
     { MP_ROM_QSTR( MP_QSTR_gpio_claim_pin ), MP_ROM_PTR( &jl_gpio_claim_pin_obj ) },
@@ -6144,9 +6186,9 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     // Fake GPIO mode constants
     { MP_ROM_QSTR( MP_QSTR_FAKE_GPIO_INPUT ), MP_ROM_INT( FAKE_GPIO_MODE_INPUT ) },
     { MP_ROM_QSTR( MP_QSTR_FAKE_GPIO_OUTPUT ), MP_ROM_INT( FAKE_GPIO_MODE_OUTPUT ) },
-    // Short aliases for convenience
-    { MP_ROM_QSTR( MP_QSTR_OUTPUT ), MP_ROM_INT( FAKE_GPIO_MODE_OUTPUT ) },
-    { MP_ROM_QSTR( MP_QSTR_INPUT ), MP_ROM_INT( FAKE_GPIO_MODE_INPUT ) },
+    // Short aliases for convenience for fake-gpio modes were intentionally removed
+    // to avoid colliding with `INPUT`/`OUTPUT` GPIODirection objects used elsewhere.
+
     
     // Aliases for net API
     { MP_ROM_QSTR( MP_QSTR_net_name ), MP_ROM_PTR( &jl_get_net_name_obj ) },

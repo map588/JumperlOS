@@ -22,6 +22,16 @@ CompileFlags:
     - "-Wno-backslash-newline-escape"
     - "-Wno-macro-redefined"
     - "-Wno-unknown-pragmas"
+
+    # Enable unused warnings to highlight dead code
+    # - "-Wunused"
+    # - "-Wunused-function"
+    # - "-Wunused-variable"
+    # - "-Wunused-parameter"
+    # - "-Wunused-but-set-variable"
+    # - "-Wunused-private-field"
+    # - "-Wunused-member-function"
+    # - "-Wunneeded-internal-declaration"
     
     # # System include paths from ARM GCC
     # - "-I/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/lib/gcc/arm-none-eabi/14.2.0/include"
@@ -70,6 +80,10 @@ CompileFlags:
     # - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/pico-sdk/lib/"
     # - "-I/Users/kevinsanto/.platformio/packages/framework-arduinopico/pico-sdk/src/rp2_common/pico_lwip/include"
     
+    # Pico SDK macros for clangd parsing
+    - "-D__not_in_flash_func(x)=x"
+    - "-D__not_in_flash(x)=x"
+
     # Arduino preprocessor defines
     - "-DARDUINO=10607"
     - "-DARDUINO_RASPBERRY_PI_PICO"
@@ -132,11 +146,25 @@ CompileFlags:
 # Diagnostics configuration
 Diagnostics:
   ClangTidy:
-    Remove: 
+    # Add:
+    #   # Enable unused code detection
+    #   - readability-redundant-declaration
+    #   - readability-delete-null-pointer
+    #   - misc-unused-parameters
+    #   - misc-unused-using-decls
+    #   - readability-redundant-function-ptr-dereference
+    #   - readability-redundant-smartptr-get
+    #   - misc-redundant-expression
+    Remove:
       - misc-definitions-in-headers
       - readability-identifier-length
       - modernize-use-trailing-return-type
-  UnusedIncludes: None
+  # UnusedIncludes: Strict  # Show unused #include directives
+
+  # # Make sure all diagnostics are shown
+  # Severity:
+  #   Unused: Warning
+
   # Suppress some Arduino/embedded-specific warnings
   Suppress:
     - "pp_file_not_found"
@@ -154,3 +182,4 @@ Format:
   IndentWidth: 2
   TabWidth: 2
   UseTab: Never
+  Unused: Yes

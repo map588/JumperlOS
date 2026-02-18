@@ -26,6 +26,7 @@
 #include "hardware/gpio.h"
 
 #include "FilesystemStuff.h" // For safe file operations
+#include "AsyncPassthrough.h" // For UART IRQ suspension during flash writes
 #include "LogicAnalyzer.h"
 #include "States.h"
 #include "WaveGen.h"
@@ -374,8 +375,10 @@ float jl_ina_get_power( int sensor ) {
 // GPIO Functions
 void jl_gpio_set( int pin, int value ) {
     if ( pin >= 1 && pin <= 10 ) {
+        gpioState[ pin - 1 ] = value ? 1 : 0;
         digitalWrite( gpioDef[ pin - 1 ][ 0 ], value );
     } else if ( pin >= 20 && pin <= 27 ) {
+        gpioState[ pin - 20 ] = value ? 1 : 0;
         digitalWrite( pin, value );
     }
 }
@@ -396,22 +399,13 @@ int jl_gpio_get( int pin ) {
     return 0;
 }
 
-int jl_gpio_set_direction( int pin, int direction ) {
-    if ( pin >= 1 && pin <= 10 ) {
-        globalState.config.gpioDirection[ pin - 1 ] = direction;
-        pinMode( gpioDef[ pin - 1 ][ 0 ], direction ? OUTPUT : INPUT );
-    } else if ( pin >= 20 && pin <= 27 ) {
-        globalState.config.gpioDirection[ pin - 20 ] = direction;
-        pinMode( pin, direction ? OUTPUT : INPUT );
-    }
-    return 1;
-}
+
 
 int jl_gpio_get_dir( int pin ) {
     if ( pin >= 1 && pin <= 10 ) {
-        return gpio_get_dir( gpioDef[ pin - 1 ][ 0 ] );
+        return !gpio_get_dir( gpioDef[ pin - 1 ][ 0 ] );
     } else if ( pin >= 20 && pin <= 27 ) {
-        return gpio_get_dir( pin );
+        return !gpio_get_dir( pin );
     }
     return 0;
 }
@@ -420,25 +414,31 @@ void jl_gpio_set_dir( int pin, int direction ) {
     if ( pin >= 1 && pin <= 10 ) {
         int config_index = pin - 1;
         int physical_pin = gpioDef[ config_index ][ 0 ];
-        gpio_set_dir( physical_pin, direction );
+        // gpio_set_dir expects true == OUTPUT
+        gpio_set_dir( physical_pin, (direction == 0) );
+
         
-        // If setting to input, ensure input buffer is enabled
-        if ( direction == 0 ) {  // 0 = input
+        // If setting to input (numeric 1), ensure input buffer is enabled
+        if ( direction == 1 ) {  // 1 = input
             gpio_set_input_enabled( physical_pin, true );
+        } else {
+            gpio_set_input_enabled( physical_pin, false );
         }
         
-        // Update state using proper state management
+        // Update state using proper state management (0=OUTPUT,1=INPUT)
         globalState.setGpioDirection( config_index, direction );
     } else if ( pin >= 20 && pin <= 27 ) {
         int config_index = pin - 20;
-        gpio_set_dir( pin, direction );
+        gpio_set_dir( pin, (direction == 0) );
         
-        // If setting to input, ensure input buffer is enabled
-        if ( direction == 0 ) {  // 0 = input
+        // If setting to input (numeric 1), ensure input buffer is enabled
+        if ( direction == 1 ) {  // 1 = input
             gpio_set_input_enabled( pin, true );
+        } else {
+            gpio_set_input_enabled( pin, false );
         }
         
-        // Update state using proper state management
+        // Update state using proper state management (0=OUTPUT,1=INPUT)
         globalState.setGpioDirection( config_index, direction );
     }
 }
@@ -546,6 +546,32 @@ void jl_gpio_set_pull( int pin, int pull ) {
     }
 }
 
+void jl_gpio_set_floating_read( int pin, int floating ) {
+    if ( pin >= 1 && pin <= 10 ) {
+        int index = pin - 1;
+        gpioReadFloating[ index ] = floating;
+        globalState.config.gpioReadFloating[ index ] = (uint8_t)floating;
+        globalState.markDirty();
+    } else if ( pin >= 20 && pin <= 27 ) {
+        int index = pin - 20;
+        gpioReadFloating[ index ] = 0;
+        globalState.config.gpioReadFloating[ index ] = 0;
+        globalState.markDirty();
+    }
+}
+
+int jl_gpio_get_floating_read( int pin ) {
+    if ( pin >= 1 && pin <= 10 ) {
+        int index = pin - 1;
+        return gpioReadFloating[ index ] ? 1 : 0;
+    } else if ( pin >= 20 && pin <= 27 ) {
+        int index = pin - 20;
+        return gpioReadFloating[ index ] ? 1 : 0;
+    }
+    return 0;
+}
+
+
 } // temporarily close extern "C" for C++ declarations
 
 // Forward declaration of getGPIOIndexFromPin (C++ function defined in Peripherals.cpp)
@@ -575,7 +601,7 @@ void jl_gpio_claim_pin( int pin ) {
     // Use the system's existing pin-to-index mapping
     int index = getGPIOIndexFromPin(pin);
     if (index >= 0 && index < 10) {
-        globalState.config.gpioPythonOwned[index] = true;
+        // globalState.config.gpioPythonOwned[index] = true;
         
         // CRITICAL: Update the gpio_function_map to indicate this pin is in SIO mode
         // This prevents other parts of the system from changing the function
@@ -2242,6 +2268,7 @@ void jl_close_all_jfs_files( void ) {
         Serial.println( "DEBUG: jl_close_all_jfs_files: Closing all open JFS files" );
         Serial.flush( );
     }
+    AsyncPassthrough::suspendUARTRxIRQ( );
     // CRITICAL: Pause Core2 during flash operations (flush writes to flash)
     bool was_paused = pauseCore2ForFlash( 100 );
 
@@ -2263,6 +2290,7 @@ void jl_close_all_jfs_files( void ) {
 
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     if ( debug_fs ) {
         Serial.println( "DEBUG: jl_close_all_jfs_files: All open JFS files closed" );
@@ -2382,6 +2410,7 @@ void jl_fs_close_file( void* file_handle ) {
         File* file = (File*)file_handle;
         // Only close if the file is actually open (prevents double-close crashes)
         if ( *file ) {
+            AsyncPassthrough::suspendUARTRxIRQ( );
             // CRITICAL: Pause Core2 during flash operations (flush writes to flash)
             bool was_paused = pauseCore2ForFlash( 100 );
 
@@ -2392,6 +2421,7 @@ void jl_fs_close_file( void* file_handle ) {
             file->close( );
 
             unpauseCore2ForFlash( was_paused );
+            AsyncPassthrough::resumeUARTRxIRQ( );
         }
         delete file;
 
@@ -2431,6 +2461,7 @@ int jl_fs_write_bytes( void* file_handle, const char* data, int size ) {
     if ( !file_handle || !data || size <= 0 )
         return -1;
 
+    AsyncPassthrough::suspendUARTRxIRQ( );
     // CRITICAL: Pause Core2 during flash write operations
     bool was_paused = pauseCore2ForFlash( 100 );
 
@@ -2440,12 +2471,14 @@ int jl_fs_write_bytes( void* file_handle, const char* data, int size ) {
     if ( !*file ) {
         fs_mutex_release( );
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ( );
         return -1; // File not open
     }
     int result = file->write( (const uint8_t*)data, size );
 
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     if ( debug_fs ) {
         Serial.println( "DEBUG: jl_fs_write_bytes: Written bytes" );
@@ -2540,6 +2573,7 @@ int jl_fs_available( void* file_handle ) {
 // THREAD SAFETY: Acquires fs_mutex to prevent concurrent filesystem access
 void jl_fs_flush( void* file_handle ) {
     if ( file_handle ) {
+        AsyncPassthrough::suspendUARTRxIRQ( );
         // CRITICAL: Pause Core2 during flash write operations
         bool was_paused = pauseCore2ForFlash( 100 );
 
@@ -2556,6 +2590,7 @@ void jl_fs_flush( void* file_handle ) {
         }
         fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ( );
     }
 }
 
@@ -2641,9 +2676,13 @@ int jl_fs_rmdir( const char* path ) {
     if ( !path )
         return 0;
 
+    AsyncPassthrough::suspendUARTRxIRQ( );
+    bool was_paused = pauseCore2ForFlash( 100 );
     fs_mutex_acquire( ); // THREAD SAFETY: Lock filesystem
     int result = FatFS.rmdir( path ) ? 1 : 0;
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     return result;
 }
@@ -2652,9 +2691,13 @@ int jl_fs_remove( const char* path ) {
     if ( !path )
         return 0;
 
+    AsyncPassthrough::suspendUARTRxIRQ( );
+    bool was_paused = pauseCore2ForFlash( 100 );
     fs_mutex_acquire( ); // THREAD SAFETY: Lock filesystem
     int result = FatFS.remove( path ) ? 1 : 0;
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     return result;
 }
@@ -2663,9 +2706,13 @@ int jl_fs_rename( const char* pathFrom, const char* pathTo ) {
     if ( !pathFrom || !pathTo )
         return 0;
 
+    AsyncPassthrough::suspendUARTRxIRQ( );
+    bool was_paused = pauseCore2ForFlash( 100 );
     fs_mutex_acquire( ); // THREAD SAFETY: Lock filesystem
     int result = FatFS.rename( pathFrom, pathTo ) ? 1 : 0;
     fs_mutex_release( ); // THREAD SAFETY: Unlock filesystem
+    unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     return result;
 }

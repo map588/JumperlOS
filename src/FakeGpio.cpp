@@ -855,7 +855,7 @@ void readFakeGPIO(void) {
 
 void updateFakeGpioAfterConnectionChange(int node1, int node2) {
     if (!initialized) return;
-    // return;
+    return;
 
     // --- ADC reassignment: if someone claimed our ADC, find a new one ---
     if (tdmInputs.adcChannel >= 0) {
@@ -965,7 +965,6 @@ void updateFakeGpioAfterConnectionChange(int node1, int node2) {
 
 void initializeFakeGpioFromLoadedState() {
     if (!initialized) initFakeGpio();
-
     extern std::vector<FakeGpioRestorationInfo> pendingFakeGpioRestorations;
 
     if (!pendingFakeGpioRestorations.empty()) {

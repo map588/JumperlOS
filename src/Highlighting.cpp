@@ -1,4 +1,6 @@
 #include "Highlighting.h"
+#include "Adafruit_USBD_CDC.h"
+#include "AsyncPassthrough.h"
 #include "JumperlOS.h"
 #include "Graphics.h"
 #include "JumperlessDefines.h"
@@ -14,6 +16,7 @@
 #include "RotaryEncoder.h"
 #include "config.h"
 #include "hardware/i2c.h"
+#include "hardware/structs/io_bank0.h"
 #include "oled.h"
 #include "PersistentStuff.h"
 #include "Commands.h"
@@ -1015,9 +1018,29 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
              } else 
             if ( uartTxOnNet || uartRxOnNet ) {
 
+                    // Keep small persistent buffers so we can append only new bytes
+                static char prevTx[64] = {0};
+                static size_t prevTxLen = 0;
+                static char prevRx[64] = {0};
+                static size_t prevRxLen = 0;
+
+                // Snapshot buffers (small)
+                char txSnapshot[64];
+                char rxSnapshot[64];
+
+                size_t txLen = AsyncPassthrough::getLastUsbToUartSnapshot(txSnapshot, sizeof(txSnapshot));
+                size_t rxLen = AsyncPassthrough::getLastUartRxSnapshot(rxSnapshot, sizeof(rxSnapshot));
+
+                // If there's no data at all, fall back to the previous behavior (show UART config)
+                bool haveLiveData = (txLen > 0) || (rxLen > 0);
+
                 if ( lastPrintedNet != netHighlighted ) {
+                    // first time highlight -> reset previous-tracking
+                    prevTxLen = prevRxLen = 0;
+                    prevTx[0] = '\0';
+                    prevRx[0] = '\0';
+
                     if ( print == 1 ) {
-                        // Build UART config string like "115200 8N1"
                         int baud = USBSer1.baud( );
                         int bits = USBSer1.numbits( );
                         int stopbits = USBSer1.stopbits( ) + 1; // API returns 0->1 stop, 1->2 stops
@@ -1025,40 +1048,130 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
 
                         char parityChar = 'N';
                         switch ( parity ) {
-                        case 1:
-                            parityChar = 'O';
-                            break;
-                        case 2:
-                            parityChar = 'E';
-                            break;
-                        case 3:
-                            parityChar = 'M';
-                            break;
-                        case 4:
-                            parityChar = 'S';
-                            break;
-                        default:
-                            parityChar = 'N';
-                            break;
+                        case 1: parityChar = 'O'; break;
+                        case 2: parityChar = 'E'; break;
+                        case 3: parityChar = 'M'; break;
+                        case 4: parityChar = 'S'; break;
+                        default: parityChar = 'N'; break;
                         }
 
-                        Serial.print( uartTxOnNet && uartRxOnNet ? "UART Tx/Rx  " : ( uartTxOnNet ? "UART Tx    " : "UART Rx    " ) );
-                        Serial.print( baud );
-                        Serial.print( " " );
-                        Serial.print( bits );
-                        Serial.print( parityChar );
-                        Serial.print( stopbits );
-                        Serial.flush( );
+                        // If caller is encoder (encoderNetHighlighted != -1) show only static UART info
+                        bool calledFromEncoder = ( encoderNetHighlighted != -1 );
 
-                        char oledString[ 32 ];
-                        sprintf( oledString, "UART %s\n%d %d%c%d",
-                                 ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
-                                 baud, bits, parityChar, stopbits );
-                        oled.clear( );
-                        oled.clearPrintShow( oledString, 2, true, true, true );
-                        oled.show( );
+                        if ( calledFromEncoder || !haveLiveData ) {
+                            // No live data OR encoder-driven highlight -> keep old single-shot OLED behavior
+                            Serial.print( uartTxOnNet && uartRxOnNet ? "UART Tx/Rx  " : ( uartTxOnNet ? "UART Tx    " : "UART Rx    " ) );
+                            Serial.print( baud );
+                            Serial.print( " " );
+                            Serial.print( bits );
+                            Serial.print( parityChar );
+                            Serial.print( stopbits );
+                            Serial.flush( );
+
+                            char oledString[ 32 ];
+                            sprintf( oledString, "UART %s\n%d %d%c%d",
+                                     ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                                     baud, bits, parityChar, stopbits );
+                            oled.clear( );
+                            oled.clearPrintShow( oledString, 2, true, true, true );
+                            oled.show( );
+
+                        } else {
+                            // Non-encoder path + live data available — print header only; live data appended by checkForReadingChanges()
+                            OLEDOut.clear();
+                            char hdr[48];
+                            snprintf(hdr, sizeof(hdr), "UART %s %d %d%c%d\n",
+                                     ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                                     baud, bits, parityChar, stopbits );
+                            OLEDOut.print(hdr);
+                        }
                     }
                     lastPrintedNet = netHighlighted;
+                } else {
+                    // already highlighted -> if live data, append only the new bytes
+                    if ( print == 1 && haveLiveData ) {
+                        // TX: append any new suffix
+                        if ( txLen > prevTxLen ) {
+                            // if the previous content matches the start of the new snapshot, append the remainder
+                            if ( prevTxLen == 0 || memcmp(prevTx, txSnapshot, prevTxLen) == 0 ) {
+                                OLEDOut.print(&txSnapshot[prevTxLen]);
+                            } else {
+                                // content diverged or wrapped — refresh header+both lines
+                                OLEDOut.clear();
+                                char hdr2[48];
+                                int baud = USBSer1.baud( );
+                                int bits = USBSer1.numbits( );
+                                int stopbits = USBSer1.stopbits( ) + 1;
+                                int parity = USBSer1.paritytype( );
+                                char parityChar = (parity==1)?'O':(parity==2)?'E':(parity==3)?'M':(parity==4)?'S':'N';
+                                snprintf(hdr2, sizeof(hdr2), "UART %s %d %d%c%d\n",
+                                         ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                                         baud, bits, parityChar, stopbits );
+                                OLEDOut.print(hdr2);
+                                if ( txLen > 0 ) { OLEDOut.print("Tx: "); OLEDOut.print(txSnapshot); OLEDOut.print("\n"); }
+                                if ( rxLen > 0 ) { OLEDOut.print("Rx: "); OLEDOut.print(rxSnapshot); OLEDOut.print("\n"); }
+                            }
+                        } else if ( txLen < prevTxLen ) {
+                            // wrapped/shortened -> full refresh
+                            OLEDOut.clear();
+                            char hdr3[48];
+                            int baud = USBSer1.baud( );
+                            int bits = USBSer1.numbits( );
+                            int stopbits = USBSer1.stopbits( ) + 1;
+                            int parity = USBSer1.paritytype( );
+                            char parityChar = (parity==1)?'O':(parity==2)?'E':(parity==3)?'M':(parity==4)?'S':'N';
+                            snprintf(hdr3, sizeof(hdr3), "UART %s %d %d%c%d\n",
+                                     ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                                     baud, bits, parityChar, stopbits );
+                            OLEDOut.print(hdr3);
+                            if ( txLen > 0 ) { OLEDOut.print("Tx: "); OLEDOut.print(txSnapshot); OLEDOut.print("\n"); }
+                            if ( rxLen > 0 ) { OLEDOut.print("Rx: "); OLEDOut.print(rxSnapshot); OLEDOut.print("\n"); }
+                        }
+
+                        // RX: same logic
+                        if ( rxLen > prevRxLen ) {
+                            if ( prevRxLen == 0 || memcmp(prevRx, rxSnapshot, prevRxLen) == 0 ) {
+                                OLEDOut.print(&rxSnapshot[prevRxLen]);
+                            } else {
+                                OLEDOut.clear();
+                                char hdr4[48];
+                                int baud = USBSer1.baud( );
+                                int bits = USBSer1.numbits( );
+                                int stopbits = USBSer1.stopbits( ) + 1;
+                                int parity = USBSer1.paritytype( );
+                                char parityChar = (parity==1)?'O':(parity==2)?'E':(parity==3)?'M':(parity==4)?'S':'N';
+                                snprintf(hdr4, sizeof(hdr4), "UART %s %d %d%c%d\n",
+                                         ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                                         baud, bits, parityChar, stopbits );
+                                OLEDOut.print(hdr4);
+                                if ( txLen > 0 ) { OLEDOut.print("Tx: "); OLEDOut.print(txSnapshot); OLEDOut.print("\n"); }
+                                if ( rxLen > 0 ) { OLEDOut.print("Rx: "); OLEDOut.print(rxSnapshot); OLEDOut.print("\n"); }
+                            }
+                        } else if ( rxLen < prevRxLen ) {
+                            OLEDOut.clear();
+                            char hdr5[48];
+                            int baud = USBSer1.baud( );
+                            int bits = USBSer1.numbits( );
+                            int stopbits = USBSer1.stopbits( ) + 1;
+                            int parity = USBSer1.paritytype( );
+                            char parityChar = (parity==1)?'O':(parity==2)?'E':(parity==3)?'M':(parity==4)?'S':'N';
+                            snprintf(hdr5, sizeof(hdr5), "UART %s %d %d%c%d\n",
+                                     ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                                     baud, bits, parityChar, stopbits );
+                            OLEDOut.print(hdr5);
+                            if ( txLen > 0 ) { OLEDOut.print("Tx: "); OLEDOut.print(txSnapshot); OLEDOut.print("\n"); }
+                            if ( rxLen > 0 ) { OLEDOut.print("Rx: "); OLEDOut.print(rxSnapshot); OLEDOut.print("\n"); }
+                        }
+
+                        // Update prev buffers (store full snapshot)
+                        prevTxLen = txLen > sizeof(prevTx)-1 ? sizeof(prevTx)-1 : txLen;
+                        if ( prevTxLen ) { memcpy(prevTx, txSnapshot, prevTxLen); prevTx[prevTxLen] = '\0'; }
+                        else prevTx[0] = '\0';
+
+                        prevRxLen = rxLen > sizeof(prevRx)-1 ? sizeof(prevRx)-1 : rxLen;
+                        if ( prevRxLen ) { memcpy(prevRx, rxSnapshot, prevRxLen); prevRx[prevRxLen] = '\0'; }
+                        else prevRx[0] = '\0';
+                    }
                 }
                 specialPrint = 1;
 
@@ -1128,14 +1241,44 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                 if ( lastPrintedNet != netHighlighted ) {
                     if ( print == 1 ) {
                         // Pin-aware function name lookup
-                        gpio_function_t fun = gpio_function_map[ functionOnNetIndex ];
+                        gpio_function_t fun = gpio_get_function( gpioDef[ functionOnNetIndex ][ 0 ] );
                         uint gpioPin = gpioDef[ functionOnNetIndex ][ 0 ];
+
+                        int TxRx = 0;
+                        if ( fun == GPIO_FUNC_UART ) {
+                            if ( gpioPin == 0 ) {
+                                TxRx = 1; // UART Tx
+                            } else if ( gpioPin == 1 ) {
+                                TxRx = 2; // UART Rx
+                            }
+                        }
+                        // Serial.print(AsyncPassthrough::uartReceived[AsyncPassthrough::uartReceivedHead]);
+                        // gpio_function_t fun = gpio_function_map[ functionOnNetIndex ];
+                        // Serial.print( "Function: " );
+                        // Serial.print( fun );
+                        // Serial.print( " on GPIO " );
+                        // Serial.print( gpioDef[ functionOnNetIndex ][ 0 ] );
+                        // Serial.print( "   " );
+                        // Serial.print( "Function name: " );
+                        // Serial.print( gpio_function_name_for_pin( gpioDef[ functionOnNetIndex ][ 0 ], fun ) );
+                        // Serial.print("\t" );
+                        // Serial.print("functionOnNetIndex: ");
+                        // Serial.print(functionOnNetIndex);
+                        // Serial.flush( );
+
+
+                        
                         const char* fname = gpio_function_name_for_pin( gpioPin, fun );
+
+
                         Serial.print( fname );
                         Serial.flush( );
 
                         char oledString[ 32 ];
                         sprintf( oledString, "%s", fname );
+                        // Serial.print("oledString: ");
+                        // Serial.println(oledString);
+
                         //oled.clear( );
                         oled.clearPrintShow( oledString, 2, true, true, true );
                         //oled.show( );
@@ -1207,7 +1350,7 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
                             }
 
                             char oledString[ 30 ];
-                            sprintf( oledString, "GPIO %d in\n %s", gpioInputNumber + 1, stateString );
+                            sprintf( oledString, "GPIO %d input\n %s", gpioInputNumber + 1, stateString );
                             //oled.clear( );
                             oled.clearPrintShow( oledString, 2, true, true, true );
                             //oled.show( );
@@ -1309,11 +1452,16 @@ int Highlighting::checkForReadingChanges( void ) {
     static int lastMeasuredNet = -1;
     static unsigned long lastUpdateTime = 0;
 
+    // UART live-display state (small persistent buffers, display-only)
+    static char prevUartTx[64] = {0};
+    static size_t prevUartTxLen = 0;
+    static char prevUartRx[64] = {0};
+    static size_t prevUartRxLen = 0;
+
     // Don't update too frequently
     unsigned long currentTime = millis( );
-    if ( currentTime - lastUpdateTime < 50 ) { // Minimum 50ms between updates
-        return -1;
-    }
+    // NOTE: removed the 50ms early-exit so checkForReadingChanges() evaluates
+    // the UART snapshot and other sensors every time it's called by the service loop.
 
     // Update showReadingNet to track brightenedNet (but don't clear on timeout)
     if ( brightenedNet > 0 ) {
@@ -1333,6 +1481,11 @@ int Highlighting::checkForReadingChanges( void ) {
         prevGpioOutputState = -1;
         prevDacVoltage = 0.0;
         prevRailVoltage = 0.0;
+
+        // Reset UART live-display state when net changes
+        prevUartTxLen = 0; prevUartTx[0] = '\0';
+        prevUartRxLen = 0; prevUartRx[0] = '\0';
+
         lastMeasuredNet = showReadingNet;
         lastUpdateTime = currentTime;
         return -1;
@@ -1395,7 +1548,7 @@ int Highlighting::checkForReadingChanges( void ) {
             // oled.show();
 
             Serial.print( "\r                                 \r" );
-            Serial.printf( "GPIO %d in %s", gpioInputNumber + 1, stateString );
+            Serial.printf( "GPIO %d input %s", gpioInputNumber + 1, stateString );
             Serial.flush( );
 
             displayUpdated = true;
@@ -1427,6 +1580,53 @@ int Highlighting::checkForReadingChanges( void ) {
             displayUpdated = true;
         }
         showReadingRow = showReadingNet;
+
+        // --- UART live display: update OLED while this net stays highlighted ---
+        bool uartTxOnNet = false;
+        bool uartRxOnNet = false;
+        if ( showReadingNet > 0 ) {
+            if ( gpioNet[ 8 ] == showReadingNet && gpio_function_map[ 8 ] == GPIO_FUNC_UART ) uartTxOnNet = true;
+            if ( gpioNet[ 9 ] == showReadingNet && gpio_function_map[ 9 ] == GPIO_FUNC_UART ) uartRxOnNet = true;
+        }
+
+        if ( uartTxOnNet || uartRxOnNet ) {
+            // Ensure a static header exists for this highlighted net (printed once)
+            if ( lastPrintedNet != showReadingNet ) {
+                int baud = USBSer1.baud();
+                int bits = USBSer1.numbits();
+                int stopbits = USBSer1.stopbits() + 1;
+                int parity = USBSer1.paritytype();
+                char parityChar = (parity==1)?'O':(parity==2)?'E':(parity==3)?'M':(parity==4)?'S':'N';
+                char oledHeader[32];
+                snprintf(oledHeader, sizeof(oledHeader), "UART %s\n%d %d%c%d",
+                         ( uartTxOnNet && uartRxOnNet ) ? "Tx/Rx" : ( uartTxOnNet ? "Tx" : "Rx" ),
+                         baud, bits, parityChar, stopbits );
+                oled.clear();
+                oled.clearPrintShow(oledHeader, 2, true, true, true);
+                lastPrintedNet = showReadingNet;
+            }
+
+            // Always poll snapshots and append any newly-arrived bytes, then consume them
+            char txSnapshot[64];
+            char rxSnapshot[64];
+            size_t txLen = AsyncPassthrough::getLastUsbToUartSnapshot(txSnapshot, sizeof(txSnapshot));
+            size_t rxLen = AsyncPassthrough::getLastUartRxSnapshot(rxSnapshot, sizeof(rxSnapshot));
+
+            if ( txLen > 0 ) {
+                OLEDOut.print("Tx: ");
+                OLEDOut.print(txSnapshot);
+                AsyncPassthrough::clearLastUsbToUartSnapshot();
+                displayUpdated = true;
+            }
+            if ( rxLen > 0 ) {
+                OLEDOut.print("Rx: ");
+                OLEDOut.print(rxSnapshot);
+                AsyncPassthrough::clearLastUartRxSnapshot();
+                displayUpdated = true;
+            }
+
+            showReadingRow = showReadingNet;
+        }
     }
 
     // Check for DAC connections (nets 4 and 5)

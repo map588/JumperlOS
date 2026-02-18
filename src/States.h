@@ -214,6 +214,7 @@ struct ConfigState {
     float gpioPwmFrequency[10]; // PWM frequency in Hz
     float gpioPwmDutyCycle[10]; // PWM duty cycle (0.0 to 1.0)
     bool gpioPwmEnabled[10];    // PWM enabled flag
+    uint8_t gpioReadFloating[10]; // 1 = detect floating (tri-state), 0 = skip floating read
     volatile bool gpioPythonOwned[10];   // VOLATILE: True if MicroPython has exclusive control
                                          // Must be volatile since readGPIO() runs on Core 2 
                                          // and claiming happens on Core 1 (MicroPython)

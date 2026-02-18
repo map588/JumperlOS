@@ -1,7 +1,17 @@
-// #include "py/obj.h"
-// #include "py/runtime.h"
+#include "py/obj.h"
+#include "py/runtime.h"
 
-// // Minimal module stubs to satisfy linker requirements
+// Minimal module stubs to satisfy linker requirements
+
+// Force generation of QSTRs for newly-added Jumperless module symbols
+// (these identifiers are scanned by the qstr generator)
+static const uint32_t _jl_forced_qstrs[] = {
+    MP_QSTR_gpio_set_read_floating,
+    MP_QSTR_gpio_get_read_floating,
+    MP_QSTR_set_gpio_read_floating,
+    MP_QSTR_get_gpio_read_floating,
+};
+
 
 // // Empty os module
 // static const mp_rom_map_elem_t mp_module_os_globals_table[] = {

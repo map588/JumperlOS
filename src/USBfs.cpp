@@ -347,33 +347,26 @@ void setUSBDebug(bool enable) {
 String readSlotFileContent(int slot) {
     String filename = "/slots/slot" + String(slot) + ".yaml";
     String content = "";
-    
-    // Use core synchronization to prevent flash access conflicts
-    while (core2busy == true) {
-        // Wait for core2 to finish
-    }
-    core1busy = true;
-    
+
     // Try YAML file first (new format)
-    if (FatFS.exists(filename)) {
-        File slotFile = FatFS.open(filename, "r");
+    if (safeFileExists(filename.c_str())) {
+        File slotFile = safeFileOpen(filename.c_str(), "r");
         if (slotFile) {
             content = slotFile.readString();
-            slotFile.close();
+            safeFileClose(slotFile, false);
         }
     } else {
         // Fall back to legacy .txt format if YAML doesn't exist
         String legacyFilename = "nodeFileSlot" + String(slot) + ".txt";
-        if (FatFS.exists(legacyFilename)) {
-            File slotFile = FatFS.open(legacyFilename, "r");
+        if (safeFileExists(legacyFilename.c_str())) {
+            File slotFile = safeFileOpen(legacyFilename.c_str(), "r");
             if (slotFile) {
                 content = slotFile.readString();
-                slotFile.close();
+                safeFileClose(slotFile, false);
             }
         }
     }
-    
-    core1busy = false;
+
     return content;
 }
 

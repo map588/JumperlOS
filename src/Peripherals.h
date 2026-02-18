@@ -83,6 +83,7 @@ extern float adcRange[8][2];
 //   18-49: Fake GP Inputs (FAKE_GP_IN_0 through FAKE_GP_IN_31)
 extern uint8_t gpioState[50];
 extern uint8_t gpioReading[50];
+extern uint8_t gpioReadFloating[10];
 extern int gpioNet[50];
 extern bool debugFakeGpio;       // Debug flag for fake GPIO visual integration
 

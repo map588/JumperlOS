@@ -187,7 +187,7 @@ void updateFakeGpioInputDisplay(int slot);
 struct FakeGpioPinConfig {
     bool active;
     int node;
-    int mode;  // 0=INPUT, 1=OUTPUT
+    int mode;  // 0=OUTPUT, 1=INPUT
     float v_high;
     float v_low;
     float threshold_high;

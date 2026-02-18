@@ -19,7 +19,7 @@ struct FakeGpioPinConfig {
     float v_low;           // Voltage for LOW state (OUTPUT mode)
     float threshold_high;  // Threshold for reading HIGH (INPUT mode, e.g., 2.0V)
     float threshold_low;   // Threshold for reading LOW (INPUT mode, e.g., 0.8V)
-    int mode;              // INPUT=0, OUTPUT=1
+    int mode;              // OUTPUT=0, INPUT=1
 
     // For OUTPUT mode - chip K coordinates for fast switching
     int chip_k_x;          // Which X pin on chip K (0-15)

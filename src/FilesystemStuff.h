@@ -363,6 +363,15 @@ bool safeMkdir(const char* path, uint32_t timeout_ms = 2000);
 bool safeFileDelete(const char* path, uint32_t timeout_ms = 2000);
 
 /**
+ * Safely rename a file (thread-safe with Core2 pause + UART IRQ suspension)
+ * @param pathFrom Source file path
+ * @param pathTo Destination file path
+ * @param timeout_ms Mutex timeout (default 2000ms)
+ * @return true on success
+ */
+bool safeFileRename(const char* pathFrom, const char* pathTo, uint32_t timeout_ms = 2000);
+
+/**
  * Resolve a Python script filename to a full path by searching standard directories.
  * Searches: exact path, /python_scripts, /python_scripts/examples,
  *           /python_scripts/lib, /python_scripts/modules, and root /.

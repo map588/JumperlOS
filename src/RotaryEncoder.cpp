@@ -512,6 +512,8 @@ void holdAnimationStuff(void) {
     }
     showLEDsCore2 = 2;
     holdAnimLongHeldFlashed = true;
+    delay(500);
+    rp2040.reboot();
   }
 
   // ── Clean up when button is released ──

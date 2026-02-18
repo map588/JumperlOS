@@ -3192,10 +3192,7 @@ void ScriptHistory::flushToDisk() {
   // Atomic write: write to temp file first, then rename
   String tempPath = scripts_dir + "/history.tmp";
   String finalPath = scripts_dir + "/history.txt";
-  
-  // CRITICAL: Pause Core2 during flash write operations
-  bool was_paused_flush = pauseCore2ForFlash(100);
-  
+
   // Use safe file functions for all operations
   File file = safeFileOpen(tempPath.c_str(), "w", 500);
   if (file) {
@@ -3216,19 +3213,13 @@ void ScriptHistory::flushToDisk() {
     safeFileClose(file, true);  // Write mode, needs flush
     
     // Atomic rename: remove old file, rename temp to final
-    // Note: These need manual mutex since there's no safeRename yet
-    fs_mutex_acquire();
-    if (FatFS.exists(finalPath)) {
-      FatFS.remove(finalPath);
-    }
-    FatFS.rename(tempPath, finalPath);
-    fs_mutex_release();
+    safeFileDelete(finalPath.c_str());
+    safeFileRename(tempPath.c_str(), finalPath.c_str());
     
     dirty = false;
     last_flush_time = millis();
   }
-  
-  unpauseCore2ForFlash(was_paused_flush);
+
   flush_in_progress = false;
 }
 

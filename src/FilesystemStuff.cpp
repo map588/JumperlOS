@@ -11,6 +11,7 @@
 #include "SharedBuffer.h" // For zero-copy transfer debugging
 #include "config.h"
 #include "externVars.h" // For fs_mutex filesystem synchronization
+#include "AsyncPassthrough.h" // For suspendUARTRxIRQ/resumeUARTRxIRQ during flash ops
 #include "micropythonExamples.h"
 #include "oled.h"
 #include <cstring>
@@ -240,20 +241,7 @@ void FileManager::initializeFilesystem( ) {
                 "/python_scripts/examples" };
 
             for ( const char* dir : pythonDirs ) {
-                if ( !FatFS.exists( dir ) ) {
-                    // Serial.print("[FS] Creating directory: ");
-                    // Serial.println(dir);
-                    if ( FatFS.mkdir( dir ) ) {
-                        // Serial.print("[FS] Successfully created: ");
-                        // Serial.println(dir);
-                    } else {
-                        // Serial.print("[FS] Failed to create: ");
-                        // Serial.println(dir);
-                    }
-                } else {
-                    // Serial.print("[FS] Directory already exists: ");
-                    // Serial.println(dir);
-                }
+                safeMkdir( dir );
             }
         } else {
             // Serial.println("[FS] Warning: Root directory not accessible via Dir API");
@@ -1185,24 +1173,18 @@ void FileManager::selectCurrentFile( ) {
 bool FileManager::createFile( const String& filename ) {
     String fullPath = getFullPath( currentPath, filename );
 
-    // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire( );
-
-    if ( FatFS.exists( fullPath.c_str( ) ) ) {
-        fs_mutex_release( ); // THREAD SAFETY: Release before early return
+    if ( safeFileExists( fullPath.c_str( ) ) ) {
         outputToArea( "File already exists: " + filename, FileColors::ERROR );
         return false;
     }
 
-    File file = FatFS.open( fullPath.c_str( ), "w" );
+    File file = safeFileOpen( fullPath.c_str( ), "w" );
     if ( file ) {
-        file.close( );
-        fs_mutex_release( ); // THREAD SAFETY: Release mutex
+        safeFileClose( file, true );
         outputToArea( "Created file: " + filename, FileColors::STATUS );
         refreshListing( );
         return true;
     } else {
-        fs_mutex_release( ); // THREAD SAFETY: Release mutex on failure
         outputToArea( "Failed to create file: " + filename, FileColors::ERROR );
         return false;
     }
@@ -1211,11 +1193,7 @@ bool FileManager::createFile( const String& filename ) {
 bool FileManager::deleteFile( const String& filename ) {
     String fullPath = getFullPath( currentPath, filename );
 
-    // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire( );
-
-    bool success = FatFS.remove( fullPath.c_str( ) );
-    fs_mutex_release( ); // THREAD SAFETY: Release mutex
+    bool success = safeFileDelete( fullPath.c_str( ) );
 
     if ( success ) {
         outputToArea( "Deleted: " + filename, FileColors::STATUS );
@@ -1293,16 +1271,16 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
         // No content returned and no transfer path - editor was closed without saving
         else {
             // Check if file exists on disk (user may have previously saved it)
-            File file = FatFS.open( filename.c_str( ), "r" );
+            File file = safeFileOpen( filename.c_str( ), "r" );
             if ( file ) {
                 size_t fileSize = file.size( );
                 if ( fileSize > 8192 ) {
-                    file.close( );
+                    safeFileClose( file, false );
                     outputToArea( "WARNING: File too large for REPL mode (" + String( fileSize / 1024 ) + "KB)", FileColors::ERROR );
                     return false;
                 }
                 String existingContent = file.readString( );
-                file.close( );
+                safeFileClose( file, false );
                 if ( existingContent.length( ) > 0 ) {
                     lastOpenedFileContent = existingContent;
                 }
@@ -1318,12 +1296,8 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
 }
 
 bool FileManager::viewFile( const String& filename ) {
-    // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire( );
-
-    File file = FatFS.open( filename.c_str( ), "r" );
+    File file = safeFileOpen( filename.c_str( ), "r" );
     if ( !file ) {
-        fs_mutex_release( ); // THREAD SAFETY: Release before early return
         changeTerminalColor( FileColors::ERROR, false );
         Serial.println( "Failed to open file: " + filename );
         changeTerminalColor( -1, false ); // Reset colors
@@ -1351,8 +1325,7 @@ bool FileManager::viewFile( const String& filename ) {
         Serial.println( "\n... (file continues - use 'e' to edit full file)" );
     }
 
-    file.close( );
-    fs_mutex_release( );              // THREAD SAFETY: Release mutex after file operations
+    safeFileClose( file, false );
     changeTerminalColor( -1, false ); // Reset colors
     Serial.println( "\nPress any key to continue..." );
 
@@ -2176,12 +2149,8 @@ void FileManager::showInteractiveFileView( const String& filename ) {
     // Save current screen
     clearScreen( );
 
-    // THREAD SAFETY: Acquire filesystem mutex
-    fs_mutex_acquire( );
-
-    File file = FatFS.open( filename.c_str( ), "r" );
+    File file = safeFileOpen( filename.c_str( ), "r" );
     if ( !file ) {
-        fs_mutex_release( ); // THREAD SAFETY: Release before early return
         moveCursor( 5, 5 );
         changeTerminalColor( FileColors::ERROR, false );
         Serial.print( "Failed to open file: " + filename );
@@ -2222,8 +2191,7 @@ void FileManager::showInteractiveFileView( const String& filename ) {
         Serial.print( "... (file continues - press 'e' to edit full file)" );
     }
 
-    file.close( );
-    fs_mutex_release( ); // THREAD SAFETY: Release mutex after file operations
+    safeFileClose( file, false );
 
     moveCursor( 23, 3 );
     changeTerminalColor( FileColors::STATUS, false );
@@ -2434,8 +2402,8 @@ String pickPythonScriptFromClickMenu( ) {
     bool showOledInTerminal = jumperlessConfig.top_oled.show_in_terminal;
     jumperlessConfig.top_oled.show_in_terminal = false;
 
-    if ( !FatFS.exists( "/python_scripts" ) )
-        FatFS.mkdir( "/python_scripts" );
+    if ( !safeFileExists( "/python_scripts" ) )
+        safeMkdir( "/python_scripts" );
     initializeMicroPythonExamples( );
 
     saveScreenState( );
@@ -2713,15 +2681,13 @@ String generateNextScriptName( ) {
     String scripts_dir = "/python_scripts";
 
     // Create python_scripts directory if it doesn't exist
-    if ( !FatFS.exists( scripts_dir ) ) {
-        FatFS.mkdir( scripts_dir );
-    }
+    safeMkdir( scripts_dir.c_str( ) );
 
     // Find next available script number
     int next_script_number = 1;
     for ( int i = 1; i <= 100; i++ ) {
         String test_script = scripts_dir + "/script_" + String( i ) + ".py";
-        if ( FatFS.exists( test_script ) ) {
+        if ( safeFileExists( test_script.c_str( ) ) ) {
             next_script_number = i + 1;
         } else {
             break; // Found first gap, use it
@@ -2734,12 +2700,12 @@ String generateNextScriptName( ) {
 bool FileManager::createDirectory( const String& dirname ) {
     String fullPath = getFullPath( currentPath, dirname );
 
-    if ( FatFS.exists( fullPath.c_str( ) ) ) {
+    if ( safeFileExists( fullPath.c_str( ) ) ) {
         outputToArea( "Directory already exists: " + dirname, FileColors::ERROR );
         return false;
     }
 
-    if ( FatFS.mkdir( fullPath.c_str( ) ) ) {
+    if ( safeMkdir( fullPath.c_str( ) ) ) {
         outputToArea( "Created directory: " + dirname, FileColors::STATUS );
         refreshListing( );
         return true;
@@ -2779,15 +2745,13 @@ String filesystemAppPythonScriptsREPL( ) {
     manager.initInteractiveMode( );
 
     // Create python_scripts directory if it doesn't exist
-    if ( !FatFS.exists( "/python_scripts" ) ) {
-        FatFS.mkdir( "/python_scripts" );
-    }
+    safeMkdir( "/python_scripts" );
 
     // Automatically create MicroPython examples if needed
     initializeMicroPythonExamples( );
 
     // Navigate to python_scripts directory
-    if ( FatFS.exists( "/python_scripts" ) ) {
+    if ( safeFileExists( "/python_scripts" ) ) {
         manager.changeDirectory( "/python_scripts" );
     }
 
@@ -2928,7 +2892,7 @@ bool deleteDirectoryContents( const String& path ) {
             }
 
             // Then delete the empty directory
-            if ( !FatFS.rmdir( fullPath.c_str( ) ) ) {
+            if ( !FatFS.rmdir( fullPath.c_str( ) ) ) { // TODO: create safeRmdir
                 success = false;
                 Serial.print( "Failed to remove directory: " );
                 Serial.println( fullPath );
@@ -2938,7 +2902,7 @@ bool deleteDirectoryContents( const String& path ) {
             }
         } else {
             // Delete file
-            if ( !FatFS.remove( fullPath.c_str( ) ) ) {
+            if ( !safeFileDelete( fullPath.c_str( ) ) ) {
                 success = false;
                 Serial.print( "Failed to delete file: " );
                 Serial.println( fullPath );
@@ -3236,7 +3200,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
     }
 
     // Clean up old location if it exists (migration from previous version)
-    if ( FatFS.exists( "/micropython_examples" ) ) {
+    if ( safeFileExists( "/micropython_examples" ) ) {
         if ( useOutputArea ) {
             globalFileManager->outputToArea( "[MIGRATION] Cleaning up old location...", 155 );
         } else {
@@ -3248,11 +3212,11 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         while ( oldDir.next( ) ) {
             String fileName = oldDir.fileName( );
             String fullPath = "/micropython_examples/" + fileName;
-            FatFS.remove( fullPath.c_str( ) );
+            safeFileDelete( fullPath.c_str( ) );
         }
 
         // Then try to remove the directory itself
-        FatFS.rmdir( "/micropython_examples" );
+        FatFS.rmdir( "/micropython_examples" ); // TODO: create safeRmdir
 
         if ( useOutputArea ) {
             globalFileManager->outputToArea( "Old location cleaned up", 155 );
@@ -3262,14 +3226,14 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
     }
 
     // First ensure python_scripts directory exists
-    if ( !FatFS.exists( "/python_scripts" ) ) {
+    if ( !safeFileExists( "/python_scripts" ) ) {
         if ( useOutputArea ) {
             globalFileManager->outputToArea( "[CREATE] Creating /python_scripts directory...", 155 );
         } else {
             addFilesystemMessage( "[CREATE] Creating /python_scripts directory...", 155 );
         }
 
-        if ( !FatFS.mkdir( "/python_scripts" ) ) {
+        if ( !safeMkdir( "/python_scripts" ) ) {
             if ( useOutputArea ) {
                 globalFileManager->outputToArea( "ERROR: Failed to create /python_scripts", 196 );
             } else {
@@ -3286,7 +3250,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
     }
 
     // Ensure examples directory exists inside python_scripts
-    if ( !FatFS.exists( "/python_scripts/examples" ) ) {
+    if ( !safeFileExists( "/python_scripts/examples" ) ) {
         if ( useOutputArea ) {
             globalFileManager->outputToArea( "[CREATE] Creating examples directory...", 155 );
         } else {
@@ -3294,7 +3258,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         }
 
         // Create the examples directory
-        if ( !FatFS.mkdir( "/python_scripts/examples" ) ) {
+        if ( !safeMkdir( "/python_scripts/examples" ) ) {
             if ( useOutputArea ) {
                 globalFileManager->outputToArea( "ERROR: Failed to create examples directory", 196 );
             } else {
@@ -3311,7 +3275,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
     }
 
     // Ensure lib directory exists inside python_scripts for the jumperless module
-    if ( !FatFS.exists( "/python_scripts/lib" ) ) {
+    if ( !safeFileExists( "/python_scripts/lib" ) ) {
         if ( useOutputArea ) {
             globalFileManager->outputToArea( "[CREATE] Creating lib directory...", 155 );
         } else {
@@ -3319,7 +3283,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         }
 
         // Create the lib directory
-        if ( !FatFS.mkdir( "/python_scripts/lib" ) ) {
+        if ( !safeMkdir( "/python_scripts/lib" ) ) {
             if ( useOutputArea ) {
                 globalFileManager->outputToArea( "ERROR: Failed to create lib directory", 196 );
             } else {
@@ -3359,7 +3323,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 
     // First pass - count files that need to be created
     for ( int i = 0; i < totalExamples; i++ ) {
-        if ( !FatFS.exists( examples[ i ].path ) || forceInitialization ) {
+        if ( !safeFileExists( examples[ i ].path ) || forceInitialization ) {
             filesToCreate++;
         } else {
             filesSkipped++;
@@ -3392,7 +3356,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
             break;
         }
 
-        if ( !FatFS.exists( examples[ i ].path ) || forceInitialization ) {
+        if ( !safeFileExists( examples[ i ].path ) || forceInitialization ) {
             // Show progress for each file
             String action = forceInitialization ? "Overwriting" : "Creating";
             String progressMsg = action + " " + String( examples[ i ].name ) + " (" + String( filesCreated + 1 ) + "/" + String( filesToCreate ) + ")";
@@ -3491,16 +3455,16 @@ bool verifyMicroPythonExamples( ) {
     Serial.println( "Verifying MicroPython examples..." );
 
     for ( int i = 0; i < fileCount; i++ ) {
-        if ( !FatFS.exists( expectedFiles[ i ] ) ) {
+        if ( !safeFileExists( expectedFiles[ i ] ) ) {
             Serial.print( "  MISSING: " );
             Serial.println( expectedFiles[ i ] );
             allFilesExist = false;
         } else {
             // Check file size to ensure it's not empty
-            File checkFile = FatFS.open( expectedFiles[ i ], "r" );
+            File checkFile = safeFileOpen( expectedFiles[ i ], "r" );
             if ( checkFile ) {
                 size_t fileSize = checkFile.size( );
-                checkFile.close( );
+                safeFileClose( checkFile, false );
                 if ( fileSize > 0 ) {
                     Serial.print( "  OK: " );
                     Serial.print( expectedFiles[ i ] );
@@ -3616,12 +3580,20 @@ bool safeFileWriteAll( const char* path, const char* content, size_t content_len
         content_len = strlen( content );
     }
 
+    // Suspend UART IRQ before flash ops to prevent the priority-1 ISR from
+    // monopolizing the brief inter-flash-operation windows and starving USB.
+    // Without this, async passthrough's UART IRQ fires between each flash
+    // erase/program cycle, leaving no CPU time for the USB stack, causing
+    // the host to disconnect.
+    AsyncPassthrough::suspendUARTRxIRQ();
+
     // Pause Core2 for entire write operation
     bool was_paused = pauseCore2ForFlash( 100 );
 
     // Acquire filesystem mutex
     if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ();
         return false;
     }
 
@@ -3629,6 +3601,7 @@ bool safeFileWriteAll( const char* path, const char* content, size_t content_len
     if ( !file ) {
         fs_mutex_release( );
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ();
         return false;
     }
 
@@ -3638,6 +3611,7 @@ bool safeFileWriteAll( const char* path, const char* content, size_t content_len
 
     fs_mutex_release( );
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ();
 
     return ( written == content_len );
 }
@@ -3647,12 +3621,16 @@ int safeFileWrite( File& file, const uint8_t* data, size_t len ) {
         return -1;
 
     // Note: Assumes caller already holds fs_mutex from safeFileOpen()
+    // Suspend UART IRQ to prevent priority-1 ISR from starving USB during flash ops
+    AsyncPassthrough::suspendUARTRxIRQ();
+
     // Pause Core2 for the write operation
     bool was_paused = pauseCore2ForFlash( 100 );
 
     int written = file.write( data, len );
 
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ();
 
     return written;
 }
@@ -3661,12 +3639,16 @@ bool safeFileFlush( File& file ) {
     if ( !file )
         return false;
 
+    // Suspend UART IRQ to prevent priority-1 ISR from starving USB during flash ops
+    AsyncPassthrough::suspendUARTRxIRQ();
+
     // Pause Core2 for flush operation (commits to flash)
     bool was_paused = pauseCore2ForFlash( 100 );
 
     file.flush( );
 
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ();
 
     return true;
 }
@@ -3712,11 +3694,14 @@ bool safeMkdir( const char* path, uint32_t timeout_ms ) {
     if ( !path )
         return false;
 
+    AsyncPassthrough::suspendUARTRxIRQ( );
+
     // Pause Core2 for directory creation (flash write)
     bool was_paused = pauseCore2ForFlash( 100 );
 
     if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ( );
         return false;
     }
 
@@ -3724,6 +3709,7 @@ bool safeMkdir( const char* path, uint32_t timeout_ms ) {
     if ( FatFS.exists( path ) ) {
         fs_mutex_release( );
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ( );
         return true; // Already exists is success
     }
 
@@ -3731,6 +3717,7 @@ bool safeMkdir( const char* path, uint32_t timeout_ms ) {
 
     fs_mutex_release( );
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     return success;
 }
@@ -3739,11 +3726,14 @@ bool safeFileDelete( const char* path, uint32_t timeout_ms ) {
     if ( !path )
         return false;
 
+    AsyncPassthrough::suspendUARTRxIRQ( );
+
     // Pause Core2 for file deletion (flash write)
     bool was_paused = pauseCore2ForFlash( 100 );
 
     if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ( );
         return false;
     }
 
@@ -3751,6 +3741,31 @@ bool safeFileDelete( const char* path, uint32_t timeout_ms ) {
 
     fs_mutex_release( );
     unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
+
+    return success;
+}
+
+bool safeFileRename( const char* pathFrom, const char* pathTo, uint32_t timeout_ms ) {
+    if ( !pathFrom || !pathTo )
+        return false;
+
+    AsyncPassthrough::suspendUARTRxIRQ( );
+
+    // Pause Core2 for file rename (flash write)
+    bool was_paused = pauseCore2ForFlash( 100 );
+
+    if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
+        unpauseCore2ForFlash( was_paused );
+        AsyncPassthrough::resumeUARTRxIRQ( );
+        return false;
+    }
+
+    bool success = FatFS.rename( pathFrom, pathTo );
+
+    fs_mutex_release( );
+    unpauseCore2ForFlash( was_paused );
+    AsyncPassthrough::resumeUARTRxIRQ( );
 
     return success;
 }

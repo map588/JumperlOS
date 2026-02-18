@@ -1,0 +1,40 @@
+# cppcheck configuration for JumperlOS
+# Run with: cppcheck --project=.cppcheck
+
+# Enable checks
+enable=warning,style,performance,portability,unusedFunction
+
+# Suppress common false positives in embedded/Arduino code
+suppress=missingIncludeSystem
+suppress=unmatchedSuppression
+suppress=useStlAlgorithm
+
+# Platform
+platform=unix32
+
+# C++ standard
+std=c++11
+
+# Defines (from your PlatformIO config)
+-DARDUINO=10607
+-DARDUINO_RASPBERRY_PI_PICO
+-DBOARD_NAME="jumperless_v5"
+-DF_CPU=150000000L
+-DUSE_TINYUSB
+-DPICO_RP2350A=0
+
+# Macros to expand for parsing
+-D__not_in_flash_func(x)=x
+-D__not_in_flash(x)=x
+
+# Include paths (add your main include dirs)
+-Iinclude
+-Isrc
+-Ilib
+
+# Files to check
+src/*.cpp
+src/*.c
+include/*.h
+lib/**/*.cpp
+lib/**/*.c

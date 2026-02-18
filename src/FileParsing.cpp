@@ -407,30 +407,19 @@ bool saveStateToSlot(int slot) {
 
 void createSlots(int slot, int overwrite) {
   // Create slots directory if it doesn't exist
-  if (!FatFS.exists("/slots")) {
-    if (FatFS.mkdir("/slots")) {
-      if (debugFP) {
-        Jerial.println("Created /slots/ directory");
-      }
-    } else {
-      if (debugFP) {
-        Jerial.println("Failed to create /slots/ directory");
-      }
-      return;
+  if (!safeMkdir("/slots")) {
+    if (debugFP) {
+      Jerial.println("Failed to create /slots/ directory");
     }
+    return;
   }
 
   // Create python_scripts directory if it doesn't exist
-  if (!FatFS.exists("/python_scripts")) {
-    if (FatFS.mkdir("/python_scripts")) {
-      if (debugFP) {
-        Jerial.println("Created /python_scripts/ directory");
-      }
-    } else {
-      if (debugFP) {
-        Jerial.println("Failed to create /python_scripts/ directory");
-      }
+  if (!safeMkdir("/python_scripts")) {
+    if (debugFP) {
+      Jerial.println("Failed to create /python_scripts/ directory");
     }
+    return;
   }
 
   // Create empty history.txt file if it doesn't exist
@@ -488,22 +477,19 @@ void createSlots(int slot, int overwrite) {
 void createConfigFile(int overwrite) {
 
   if (overwrite == 0) {
-    if (FatFS.exists("config.txt")) {
+    if (safeFileExists("config.txt")) {
       return;
     }
   }
-  while (core2busy == true) {
-    // Jerial.println("waiting for core2 to finish");
-  }
-  core1busy = true;
 
-  File configFile = FatFS.open("config.txt", "w");
+  File configFile = safeFileOpen("config.txt", "w");
+  if (!configFile) return;
   configFile.print("#Jumperless Config file\n\r");
   configFile.println("version: 5");
   configFile.print("revision: ");
   configFile.println(EEPROM.read(REVISIONADDRESS));
 
-  configFile.close();
+  safeFileClose(configFile, true);
 }
 
 // int checkIfBridgeExists(int node1, int node2, int slot, int flashOrLocal) {
@@ -1115,17 +1101,12 @@ void savePreformattedNodeFile(int source, int slot, int keepEncoder, const Strin
 int getSlotLength(int slot, int flashOrLocal) {
   int slotLength = 0;
   if (flashOrLocal == 0) {
-    while (core2busy == true) {
-      // Jerial.println("waiting for core2 to finish");
-    }
-    core1busy = true;
-    nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r");
+    nodeFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "r");
     while (nodeFile.available()) {
       nodeFile.read();
       slotLength++;
     }
-    nodeFile.close();
-    core1busy = false;
+    safeFileClose(nodeFile, false);
   } else {
     slotLength = nodeFileString.length();
   }
@@ -1137,16 +1118,10 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
                    int definesInts, bool printEmpty) {
 
   if (flashOrLocal == 0) {
-    while (core2busy == true) {
-      // Jerial.println("waiting for core2 to finish");
-    }
-    core1busy = true;
-
-    nodeFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r");
+    nodeFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "r");
     if (!nodeFile) {
       // if (debugFP)
       // Jerial.println("Failed to open nodeFile");
-      core1busy = false;
       return;
     } else {
       // if (debugFP)
@@ -1156,8 +1131,7 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
     specialFunctionsString.clear();
 
     specialFunctionsString.read(nodeFile);
-    nodeFile.close();
-    core1busy = false;
+    safeFileClose(nodeFile, false);
   } else {
     specialFunctionsString.clear();
     nodeFileString.printTo(specialFunctionsString);
@@ -2200,42 +2174,43 @@ void openNodeFile(int slot, int flashOrLocal) {
       }
       
       // Do minimal validation - just check if file exists and has basic structure
-      if (FatFS.exists("nodeFileSlot" + String(slot) + ".txt")) {
-        File quickCheck = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "r");
+      String slotFilename = "nodeFileSlot" + String(slot) + ".txt";
+      if (safeFileExists(slotFilename.c_str())) {
+        File quickCheck = safeFileOpen(slotFilename.c_str(), "r");
         if (quickCheck) {
           size_t fileSize = quickCheck.size();
-          
+
           // For very small files, check everything
           if (fileSize <= 64) {
             bool hasOpenBrace = false, hasCloseBrace = false;
             char buffer[65];
             int bytesRead = quickCheck.readBytes(buffer, fileSize);
             buffer[bytesRead] = '\0';
-            
+
             for (int i = 0; i < bytesRead; i++) {
               if (buffer[i] == '{') hasOpenBrace = true;
               if (buffer[i] == '}') hasCloseBrace = true;
             }
-            
+
             // Only fix if actually missing braces in small files
             if (!hasOpenBrace || !hasCloseBrace) {
-              quickCheck.close();
+              safeFileClose(quickCheck, false);
               if (debugFP) {
                 Jerial.println("◇ Small file missing braces, fixing");
               }
-              File fixFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
+              File fixFile = safeFileOpen(slotFilename.c_str(), "w");
               if (fixFile) {
                 fixFile.print("{ }");
-                fixFile.close();
+                safeFileClose(fixFile, true);
               }
             } else {
-              quickCheck.close();
+              safeFileClose(quickCheck, false);
             }
           } else {
             // For larger files, check beginning and end for braces
             bool hasOpenBrace = false, hasCloseBrace = false;
             char startBuffer[32], endBuffer[32];
-            
+
             // Check beginning for opening brace
             int startRead = quickCheck.readBytes(startBuffer, 31);
             for (int i = 0; i < startRead; i++) {
@@ -2244,8 +2219,8 @@ void openNodeFile(int slot, int flashOrLocal) {
                 break;
               }
             }
-            
-            // Check end for closing brace  
+
+            // Check end for closing brace
             if (fileSize > 31) {
               quickCheck.seek(fileSize - 31);
               int endRead = quickCheck.readBytes(endBuffer, 31);
@@ -2256,9 +2231,9 @@ void openNodeFile(int slot, int flashOrLocal) {
                 }
               }
             }
-            
-            quickCheck.close();
-            
+
+            safeFileClose(quickCheck, false);
+
             // For larger files, assume they're probably OK even if we don't find braces
             // (they might be in the middle section we didn't read)
             if (debugFP && (!hasOpenBrace || !hasCloseBrace)) {
@@ -2271,10 +2246,10 @@ void openNodeFile(int slot, int flashOrLocal) {
         if (debugFP) {
           Jerial.println("◇ File doesn't exist, creating empty file");
         }
-        File createFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
+        File createFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "w");
         if (createFile) {
           createFile.print("{ }");
-          createFile.close();
+          safeFileClose(createFile, true);
         }
       }
       
@@ -2870,8 +2845,8 @@ void setSlotHasNetColors(int slot, bool hasColors) {
 
 void removeNetColorFile(int slot) {
   String colorFileName = "/net_colors/netColorsSlot" + String(slot) + ".txt";
-  if (FatFS.exists(colorFileName.c_str())) {
-    FatFS.remove(colorFileName.c_str());
+  if (safeFileExists(colorFileName.c_str())) {
+    safeFileDelete(colorFileName.c_str());
     if (debugFP) {
       Jerial.println("Removed empty net color file: " + colorFileName);
     }
@@ -3046,30 +3021,23 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
 
   String colorFileName = "/net_colors/netColorsSlot" + String(slot) + ".txt";
 
-  if (!FatFS.exists(colorFileName.c_str())) {
+  if (!safeFileExists(colorFileName.c_str())) {
     Jerial.println("Color file " + colorFileName + " does not exist.");
     // File doesn't exist but tracking says it should - clear the tracking bit
     setSlotHasNetColors(slot, false);
     return 0;
   }
 
-  core1request = 1;
-  while (core2busy == true) {
-  }
-  core1request = 0;
-  core1busy = true;
-
   if (::colorFile) {
-    ::colorFile.close();
+    safeFileClose(::colorFile, false);
   }
 
-  ::colorFile = FatFS.open(colorFileName.c_str(), "r");
+  ::colorFile = safeFileOpen(colorFileName.c_str(), "r");
 
   if (!::colorFile) {
     if (debugFP) {
       Jerial.println("Failed to open " + colorFileName + " for printing.");
     }
-    core1busy = false;
     return 0;
   }
 
@@ -3091,7 +3059,6 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
   }
 
   ::colorFile.close();
-  core1busy = false;
   return 1;
 }
 
@@ -3225,20 +3192,14 @@ bool attemptNodeFileRepair(int slot) {
   }
 
   // Write the repaired content back to file
-  core1request = 1;
-  while (core2busy == true) {
-  }
-  core1request = 0;
-  core1busy = true;
-
-  File slotFile = FatFS.open("nodeFileSlot" + String(slot) + ".txt", "w");
+  File slotFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "w");
   if (slotFile) {
     slotFile.print("{ ");
     if (repairedConnections.length() > 0) {
       slotFile.print(repairedConnections);
     }
     slotFile.print(" }");
-    slotFile.close();
+    safeFileClose(slotFile, true);
 
     if (debugFP) {
       Jerial.println("◆ Repaired nodeFileSlot" + String(slot) + ".txt with " +
@@ -3246,7 +3207,6 @@ bool attemptNodeFileRepair(int slot) {
     }
   }
 
-  core1busy = false;
   return validConnections >=
          0; // Success even if no valid connections (empty is valid)
 }

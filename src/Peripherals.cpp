@@ -214,6 +214,9 @@ uint8_t gpioState[ 50 ] = {
     0xff, 0xff                                                   // Fake GP In 30-31 (48-49)
 };
 
+
+uint8_t gpioReadFloating [10] = { 1,1,1,1,1,1,1,1, 0, 0 }; // For real GPIO pins - tracks if we should read floating (1 = yes, 0 = no)
+
 uint8_t gpioReading[ 50 ] = {
     3, 3, 3, 3, 3, 3, 3, 3, 3, 3,  // Real GPIO (3 = unknown)
     3, 3, 3, 3, 3, 3, 3, 3,        // Fake GP Out
@@ -604,6 +607,12 @@ void setGPIO( void ) {
     for ( int i = 0; i < 10; i++ ) {
         uint8_t gpio_pin = gpioDef[ i ][ 0 ];
 
+        // Skip PWM-enabled pins — setGPIO() must not override the PWM function
+        // or drive the pin with gpio_put() while PWM is active.
+        if ( globalState.config.gpioPwmEnabled[ i ] ) {
+            continue;
+        }
+
         // Set direction
         if ( globalState.config.gpioDirection[ i ] == 0 ) {
             gpio_set_dir( gpio_pin, true ); // Set as output
@@ -873,7 +882,7 @@ const char* gpio_function_name_for_pin( uint gpio, gpio_function_t function ) {
 
     // GPIO_FUNC_NULL (0x1f) or other special values
     if ( function == GPIO_FUNC_NULL ) {
-        return "";
+        return "NULL";
     }
 
     return "UNKNOWN";
@@ -1040,7 +1049,7 @@ void __not_in_flash_func(readGPIO)( ) {
     // Without this, Core 2 might use cached values and not skip claimed pins
     __dmb();  // Data Memory Barrier
     
-    for ( int i = 0; i < 10; i++ ) { // if you want to read the UART pins, set this to 10
+    for ( int i = 0; i < 8; i++ ) { // if you want to read the UART pins, set this to 10
 
         // Skip pins owned by MicroPython for timing-critical operations (e.g., NeoPixels)
         // The volatile keyword + memory barrier ensures we see the latest value from Core 1
@@ -1058,9 +1067,7 @@ void __not_in_flash_func(readGPIO)( ) {
            continue;
         }
 
-        if (gpio_get_function(gpioDef[i][0]) == GPIO_FUNC_UART) {
-            continue;
-        }
+
 
 
         uint8_t pin = gpioDef[ i ][ 0 ];
@@ -1070,7 +1077,11 @@ void __not_in_flash_func(readGPIO)( ) {
         } else if ( i == 9 ) {
             pin = gpioDef[ i ][ 0 ];
         }
-
+        if (gpio_get_function(gpioDef[i][0]) == GPIO_FUNC_UART) {
+            // int read = gpio_get(pin);
+            // gpioReadingColors[i] = read == 0 ? 0x002004 : 0x200400;
+            continue;
+        }
 
         if ( gpioNet[ i ] == -1 ) {
             gpioState[ i ] = 4;
@@ -1120,11 +1131,16 @@ void __not_in_flash_func(readGPIO)( ) {
                 // Bus keeper mode - just read current state, no floating detection
                 // needed
                 reading = gpio_get( gpioDef[ i ][ 0 ] );
-            } else {
+            } else if (gpio_get_function(gpioDef[i][0]) == GPIO_FUNC_UART) {
+                // For UART pins, just read the current state without floating detection
+                reading = gpio_get( gpioDef[ i ][ 0 ] );
+            } else if (gpioReadFloating[i] == 1) {
                 reading = gpioReadWithFloating(gpioDef[ i ][ 0 ] ); // check if the pin is floating or has a state
+            } else {
+                reading = gpio_get( gpioDef[ i ][ 0 ] );
             }
 
-            delayMicroseconds( 5 );
+            delayMicroseconds( 2 );
             
             switch ( reading ) {
 
@@ -2503,6 +2519,9 @@ int stopSlowPWM( int gpio_pin ) {
     globalState.config.gpioPwmEnabled[ gpio_index ] = false;
     globalState.markDirty();
 
+    // Restore gpioState to LOW so setGPIO() drives the pin LOW on the next refresh.
+    gpioState[ gpio_index ] = 0;
+
     return 0; // Success
 }
 
@@ -2661,6 +2680,11 @@ int stopPWM( int gpio_pin ) {
     gpioPWMEnabled[ gpio_index ] = false;
     globalState.config.gpioPwmEnabled[ gpio_index ] = false;
     globalState.markDirty();
+
+    // Restore gpioState to LOW so setGPIO() drives the pin LOW on the next refresh.
+    // (The pin is now in SIO/output mode; drive it LOW immediately to match.)
+    gpioState[ gpio_index ] = 0;
+    gpio_put( physical_pin, 0 );
 
     return 0; // Success
 }

@@ -270,7 +270,10 @@ String JsonState::getJumperlessStateJSON(const char* section) {
         json += "      \"pull\": \"" + String(getPullName(i)) + "\",\n";
         
         // Reading (low/high/float/unknown)
-        json += "      \"reading\": \"" + String(getReadingName(gpioReading[i])) + "\"";
+        json += "      \"reading\": \"" + String(getReadingName(gpioReading[i])) + "\",\n";
+        
+        // Floating-read enabled (1 = detect tri-state, 0 = skip)
+        json += "      \"floating_read\": " + String(gpioReadFloating[i]);
         
         json += "\n    }";
     }
@@ -660,6 +663,14 @@ bool JsonStateParser::parseGpioSection(const String& json) {
             else if (pull == "up") globalState.config.gpioPulls[idx] = 1;
             else if (pull == "none") globalState.config.gpioPulls[idx] = 2;
             else if (pull == "keeper") globalState.config.gpioPulls[idx] = 3;
+        }
+        
+        // Floating-read enabled
+        int floatingRead = extractInt(gpioObj, "floating_read", -1);
+        if (floatingRead >= 0) {
+            extern uint8_t gpioReadFloating[10];
+            globalState.config.gpioReadFloating[idx] = (uint8_t)(floatingRead ? 1 : 0);
+            gpioReadFloating[idx] = globalState.config.gpioReadFloating[idx];
         }
     }
     

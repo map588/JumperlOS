@@ -189,7 +189,21 @@ namespace AsyncPassthrough {
      * Use this when you suspect both sides might be out of sync
      */
     void fullBidirectionalResync();
-    
+
+    // ---------------------------------------------------------------------------
+    // Last-data snapshots for UI (lightweight, display-only)
+    // - getLastUsbToUartSnapshot(): most-recent USB→UART bytes (host → remote)
+    // - getLastUartRxSnapshot(): most-recent UART→USB bytes (remote → host)
+    // These are non-blocking, inexpensive copies of an internal ring and are
+    // intended for small OLED display use only.
+    // ---------------------------------------------------------------------------
+    size_t getLastUsbToUartSnapshot(char* out, size_t outSize);
+    size_t getLastUartRxSnapshot(char* out, size_t outSize);
+
+    // Clear the saved snapshots after they've been consumed by the UI
+    void clearLastUsbToUartSnapshot();
+    void clearLastUartRxSnapshot();
+
     // ============================================================================
     // Idle Line Detection and Timing Validation
     // ============================================================================
@@ -232,6 +246,9 @@ namespace AsyncPassthrough {
      * @return true if line became idle, false if timeout
      */
     bool waitForLineIdle(uint32_t timeout_ms);
+
+
+    void processPendingLineCoding(void);
 }
 
 #endif

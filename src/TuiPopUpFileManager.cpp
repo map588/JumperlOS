@@ -528,8 +528,8 @@ void PopupFileManager::deleteItem() {
   if (!confirmSync("Delete", String("Delete '") + e.name + "'?")) { status("Cancelled"); return; }
 
   bool ok = false;
-  if (e.dir) ok = FatFS.rmdir(e.fullPath.c_str());
-  else       ok = FatFS.remove(e.fullPath.c_str());
+  if (e.dir) ok = FatFS.rmdir(e.fullPath.c_str()); // TODO: create safeRmdir
+  else       ok = safeFileDelete(e.fullPath.c_str());
 
   if (ok) status(String("Deleted: ") + e.name);
   else    status(String("Delete failed: ") + e.name);
