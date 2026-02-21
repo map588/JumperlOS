@@ -1,4 +1,5 @@
 #include "SyntaxHighlighting.h"
+#include "SingleCharCommands.h"
 #include <string.h>
 
 // Map editor highlight class to 256-color index
@@ -55,19 +56,30 @@ static const char* jumperless_functions[] = {
     // GPIO
     "gpio_set", "gpio_get", "gpio_set_dir", "gpio_get_dir", "gpio_set_pull", "gpio_get_pull",
     "set_gpio", "get_gpio", "set_gpio_dir", "get_gpio_dir", "set_gpio_pull", "get_gpio_pull",
+    "gpio_set_read_floating", "gpio_get_read_floating",
+    "set_gpio_read_floating", "get_gpio_read_floating",
+    // GPIO pin ownership
+    "gpio_claim_pin", "gpio_release_pin", "gpio_release_all_pins",
     // Node connections
     "connect", "disconnect", "fast_connect", "fast_disconnect", "is_connected", "nodes_clear", "node",
     "nodes_save", "nodes_discard", "nodes_has_changes", "switch_slot",
     // Net information API
     "get_net_name", "set_net_name", "get_net_color", "get_net_color_name", "set_net_color", "set_net_color_hsv",
-    "get_num_nets", "get_num_bridges", "get_net_nodes", "get_bridge", "get_net_info",
-    "net_name", "net_color", "net_info",
+    "get_num_nets", "get_num_bridges", "get_net_nodes", "get_bridge", "get_net_info", "get_all_nets",
+    "net_name", "net_info",
     // Path query functions
     "get_num_paths", "get_path_info", "get_all_paths", "get_path_between",
+    // State functions
+    "get_state", "set_state",
     // Context
     "context_toggle", "context_get",
     // OLED
     "oled_print", "oled_clear", "oled_show", "oled_connect", "oled_disconnect",
+    "oled_set_text_size", "oled_get_text_size", "oled_copy_print",
+    "oled_get_fonts", "oled_set_font", "oled_get_current_font",
+    "oled_load_bitmap", "oled_display_bitmap", "oled_show_bitmap_file",
+    "oled_get_framebuffer", "oled_set_framebuffer", "oled_get_framebuffer_size",
+    "oled_set_pixel", "oled_get_pixel",
     // Clickwheel
     "clickwheel_up", "clickwheel_down", "clickwheel_press",
     "clickwheel_get_position", "clickwheel_reset_position", "clickwheel_get_direction",
@@ -80,10 +92,10 @@ static const char* jumperless_functions[] = {
     "probe_wait", "wait_probe", "probe_touch", "wait_touch", "button_read", "read_button",
     "check_button", "button_check",
     // Probe switch
-    "get_switch_position", "set_switch_position", "check_switch_position",
+    "get_switch_position", "set_switch_position", "check_switch_position", "probe_tap",
     // Misc
-    "arduino_reset", "probe_tap", "run_app", "format_output",
-    "help", "nodes_help", "help_nodes", "pause_core2", "send_raw",
+    "arduino_reset", "run_app", "pause_core2", "send_raw",
+    "help", "nodes_help",
     "change_terminal_color", "cycle_term_color",
     // Service management
     "force_service", "force_service_by_index", "get_service_index",
@@ -106,6 +118,18 @@ static const char* jumperless_functions[] = {
     "wavegen_get_amplitude", "get_wavegen_amplitude",
     "wavegen_get_offset", "get_wavegen_offset",
     "wavegen_is_running",
+    // Logic Analyzer
+    "la_set_trigger", "la_capture_single_sample", "la_start_continuous_capture",
+    "la_stop_capture", "la_is_capturing", "la_set_sample_rate", "la_set_num_samples",
+    "la_enable_channel", "la_set_control_analog", "la_set_control_digital",
+    "la_get_control_analog", "la_get_control_digital",
+    // Graphic Overlays
+    "overlay_set", "overlay_clear", "overlay_clear_all", "overlay_set_pixel",
+    "overlay_count", "overlay_shift", "overlay_place", "overlay_serialize",
+    // FakeGPIO classes
+    "FakeGpioPin", "FakeGpioDisconnect",
+    // Legacy filesystem
+    "fs_exists", "fs_listdir", "fs_read", "fs_write", "fs_cwd",
     nullptr
 };
 
@@ -114,21 +138,20 @@ static const char* jumperless_types[] = {
     "HIGH", "LOW", "FLOATING",
     // GPIO directions
     "INPUT", "OUTPUT",
-    // GPIO pull modes
-    "PULLUP", "PULLDOWN",
     // Power rails
     "TOP_RAIL", "T_RAIL", "BOTTOM_RAIL", "BOT_RAIL", "B_RAIL", "GND",
     // DAC/ADC
     "DAC0", "DAC1", "DAC_0", "DAC_1",
-    "ADC0", "ADC1", "ADC2", "ADC3", "ADC4", "ADC7", "PROBE",
+    "ADC0", "ADC1", "ADC2", "ADC3", "ADC4", "ADC7",
     // Current sense
     "ISENSE_PLUS", "ISENSE_MINUS", "ISENSE_P", "ISENSE_N", "I_P", "I_N",
-    "CURRENT_SENSE_PLUS", "CURRENT_SENSE_MINUS",
+    "CURRENT_SENSE_PLUS", "CURRENT_SENSE_MINUS", "CURRENT_SENSE_P", "CURRENT_SENSE_N",
     // UART/Buffer
     "UART_TX", "UART_RX", "TX", "RX", "BUFFER_IN", "BUFFER_OUT", "BUF_IN", "BUF_OUT",
     // GPIO pins
     "GPIO_1", "GPIO_2", "GPIO_3", "GPIO_4", "GPIO_5", "GPIO_6", "GPIO_7", "GPIO_8",
-    "GPIO1", "GPIO2", "GPIO3", "GPIO4", "GPIO5", "GPIO6", "GPIO7", "GPIO8",
+    "GP1", "GP2", "GP3", "GP4", "GP5", "GP6", "GP7", "GP8",
+    "GPIO_20", "GPIO_21", "GPIO_22", "GPIO_23", "GPIO_24", "GPIO_25", "GPIO_26", "GPIO_27",
     // Arduino digital pins
     "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13",
     "NANO_D0", "NANO_D1", "NANO_D2", "NANO_D3", "NANO_D4", "NANO_D5", "NANO_D6", "NANO_D7",
@@ -136,14 +159,24 @@ static const char* jumperless_types[] = {
     // Arduino analog pins
     "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7",
     "NANO_A0", "NANO_A1", "NANO_A2", "NANO_A3", "NANO_A4", "NANO_A5", "NANO_A6", "NANO_A7",
-    // Probe pads
+    // Probe pads - digital
     "D0_PAD", "D1_PAD", "D2_PAD", "D3_PAD", "D4_PAD", "D5_PAD", "D6_PAD", "D7_PAD",
     "D8_PAD", "D9_PAD", "D10_PAD", "D11_PAD", "D12_PAD", "D13_PAD",
+    // Probe pads - analog
     "A0_PAD", "A1_PAD", "A2_PAD", "A3_PAD", "A4_PAD", "A5_PAD", "A6_PAD", "A7_PAD",
+    // Probe pads - rails/special
     "TOP_RAIL_PAD", "BOTTOM_RAIL_PAD", "BOT_RAIL_PAD",
-    "LOGO_PAD_TOP", "LOGO_PAD_BOTTOM", "RESET_PAD", "AREF_PAD", "NO_PAD",
+    "TOP_RAIL_GND", "TOP_GND_PAD", "BOTTOM_RAIL_GND", "BOT_RAIL_GND", "BOTTOM_GND_PAD", "BOT_GND_PAD",
+    "LOGO_PAD_TOP", "LOGO_PAD_BOTTOM", "BUILDING_PAD_TOP", "BUILDING_PAD_BOTTOM",
+    "GPIO_PAD", "DAC_PAD", "ADC_PAD",
+    "RESET_PAD", "AREF_PAD", "NO_PAD",
+    // Probe pads - nano power/control
+    "NANO_VIN", "VIN_PAD", "NANO_RESET_0", "RESET_0_PAD", "NANO_RESET_1", "RESET_1_PAD",
+    "NANO_GND_0", "GND_0_PAD", "NANO_GND_1", "GND_1_PAD",
+    "NANO_3V3", "3V3_PAD", "NANO_5V", "5V_PAD",
     // Probe buttons
-    "CONNECT_BUTTON", "REMOVE_BUTTON", "BUTTON_NONE", "CONNECT", "REMOVE", "NONE",
+    "BUTTON_NONE", "BUTTON_CONNECT", "BUTTON_REMOVE",
+    "CONNECT_BUTTON", "REMOVE_BUTTON",
     // Probe switch states
     "SWITCH_MEASURE", "SWITCH_SELECT", "SWITCH_UNKNOWN",
     // Clickwheel states
@@ -152,6 +185,8 @@ static const char* jumperless_types[] = {
     "CLICKWHEEL_RELEASED", "CLICKWHEEL_DOUBLECLICKED",
     // Waveforms
     "SINE", "TRIANGLE", "SAWTOOTH", "SQUARE", "RAMP", "ARBITRARY",
+    // FakeGPIO modes
+    "FAKE_GPIO_INPUT", "FAKE_GPIO_OUTPUT",
     // Slot
     "CURRENT_SLOT",
     nullptr
@@ -346,15 +381,9 @@ char* SyntaxHighlighting::highlightString(const char* string, enum SyntaxHighlig
   return out;
 }
 
-// Check if character is a terminal command
+// Check if character is a registered terminal command
 bool SyntaxHighlighting::isTerminalCommand(char c) {
-  switch (c) {
-    case '+': case '-': case 'x': case 'c': case 'p': case 'm': case 'n':
-    case 'e': case 'U': case 'u': case '/': case '~': case '>':
-      return true;
-    default:
-      return false;
-  }
+  return singleCharCommands.getCommand( c ) != nullptr;
 }
 
 // Get friendly name for a node (number -> name mapping)

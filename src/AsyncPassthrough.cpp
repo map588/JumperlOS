@@ -1536,6 +1536,8 @@ void begin( unsigned long baud ) {
     uart_init( ASYNC_PASSTHROUGH_UART, baud );
     uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
     uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
+
+    setDTRLockout(3000);
     
     // =========================================================================
     // AGGRESSIVE STARTUP RESYNC SEQUENCE
@@ -2142,6 +2144,11 @@ static int8_t s_dtr_accepted_edge = 0;
 static uint32_t s_dtr_lockout_until = 0;
 
 void checkDTRState(Adafruit_USBD_CDC& cdc) {
+
+    // if (jumperlessConfig.usb_cdc.ignore_dtr == true) {
+    //     return;
+    // }
+
     bool current_dtr = cdc.dtr();
 
     // Post-flash lockout: suppress DTR detection entirely

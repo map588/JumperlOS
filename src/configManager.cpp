@@ -16,6 +16,7 @@
 #include "Jerial.h" // TermControl is now part of Jerial
 #include "externVars.h"  // For fs_mutex filesystem synchronization
 #include "usb_interface_config.h"  // For USB CDC DTR ignore configuration
+#include "AsyncPassthrough.h"
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -75,15 +76,23 @@ ServiceStatus ConfigSaveService::service() {
     }
     
     // Do the actual save
-    saveConfig();
+    bool saved = saveConfig();
     
-    // Clear flags after successful save
-    configSavePending = false;
-    configChanged = false;
-    
-    if (debugConfigSaveTiming) {
-        Serial.println("[ConfigSaveService] Background save complete - flags cleared");
-        Serial.flush();
+    if (saved) {
+        // Clear flags only after successful save
+        configSavePending = false;
+        configChanged = false;
+        
+        if (debugConfigSaveTiming) {
+            Serial.println("[ConfigSaveService] Background save complete - flags cleared");
+            Serial.flush();
+        }
+    } else {
+        if (debugConfigSaveTiming) {
+            Serial.println("[ConfigSaveService] Save postponed - Core 2 busy or write failed");
+            Serial.flush();
+        }
+        // Flags remain set, will retry next loop
     }
     
     return ServiceStatus::IDLE;
@@ -232,6 +241,10 @@ int parseArbitraryFunction(const char* str) {
 
 int parseTagParsing(const char* str) {
     return parseFromTable(tagParsingTable, tagParsingTableSize, str);
+}
+
+int parseFlashType(const char* str) {
+    return parseFromTable(flashTypeTable, flashTypeTableSize, str);
 }
 
 // Parse font name from config - reads directly from fontList in oled.cpp
@@ -679,6 +692,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "autoconnect_flashing") == 0) jumperlessConfig.serial_1.autoconnect_flashing = parseBool(value);
             else if (strcmp(key, "async_passthrough") == 0) jumperlessConfig.serial_1.async_passthrough = parseBool(value);
             else if (strcmp(key, "tag_parsing") == 0) jumperlessConfig.serial_1.tag_parsing = parseTagParsing(value);
+            else if (strcmp(key, "flash_reset_type") == 0) jumperlessConfig.serial_1.flash_reset_type = parseFlashType(value);
         } else if (strcmp(section, "serial_2") == 0) {
             if (strcmp(key, "function") == 0) jumperlessConfig.serial_2.function = parseUartFunction(value);
             else if (strcmp(key, "baud_rate") == 0) jumperlessConfig.serial_2.baud_rate = parseInt(value);
@@ -876,14 +890,23 @@ void updateConfigFromFile(const char* filename) {
     //initChipStatus();
 }
 
-void saveConfigToFile(const char* filename) {
+bool saveConfigToFile(const char* filename) {
     uint32_t startTime = micros();
     if (debugConfigSaveTiming) {
         Serial.println("[ConfigSave] FULL SAVE starting...");
     }
     
-    // CRITICAL: Pause Core2 during flash write operations
-    bool was_paused = pauseCore2ForFlash(100);
+    // CRITICAL: Ensure Core 2 is actually paused before writing to flash
+    // Increase timeout to 1000ms to allow long operations to finish
+    bool was_paused = pauseCore2ForFlash(1000);
+    
+    extern volatile bool core2busy;
+    if (core2busy) {
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] Core 2 busy! Aborting full save.");
+        else Serial.println("[ConfigSave] Full save aborted: Core 2 busy");
+        unpauseCore2ForFlash(was_paused);
+        return false;
+    }
     
     // Save hardware revision to EEPROM only if changed or invalid (survives config reset)
     // EEPROM writes are slow and have limited endurance (~100K cycles)
@@ -921,7 +944,7 @@ void saveConfigToFile(const char* filename) {
     if (!file) {
         Serial.println("Failed to create config file");
         unpauseCore2ForFlash(was_paused);
-        return;
+        return false;
     }
  //! this is a place to add new config options
     // Write config metadata section
@@ -1039,6 +1062,7 @@ void saveConfigToFile(const char* filename) {
     file.print("autoconnect_flashing = "); file.print(jumperlessConfig.serial_1.autoconnect_flashing); file.println(";");
     file.print("async_passthrough = "); file.print(jumperlessConfig.serial_1.async_passthrough ? 1:0); file.println(";");
     file.print("tag_parsing = "); file.print(jumperlessConfig.serial_1.tag_parsing); file.println(";");
+    file.print("flash_reset_type = "); file.print(jumperlessConfig.serial_1.flash_reset_type); file.println(";");
     file.println();
 
     file.println("[serial_2]");
@@ -1083,6 +1107,7 @@ void saveConfigToFile(const char* filename) {
         Serial.print(micros() - startTime);
         Serial.println(" us");
     }
+    return true;
 }
 
 // Copy current config to shadow (call after successful save)
@@ -1197,6 +1222,7 @@ bool configHasChanges() {
     if (jumperlessConfig.serial_1.autoconnect_flashing != lastSavedConfig.serial_1.autoconnect_flashing) return true;
     if (jumperlessConfig.serial_1.async_passthrough != lastSavedConfig.serial_1.async_passthrough) return true;
     if (jumperlessConfig.serial_1.tag_parsing != lastSavedConfig.serial_1.tag_parsing) return true;
+    if (jumperlessConfig.serial_1.flash_reset_type != lastSavedConfig.serial_1.flash_reset_type) return true;
     
     // Serial 2 section
     if (jumperlessConfig.serial_2.function != lastSavedConfig.serial_2.function) return true;
@@ -1304,9 +1330,13 @@ void setConfigSaveDebug(bool enable) {
     Serial.println(enable ? "ENABLED" : "DISABLED");
 }
 
+/*
 // Optimized incremental save - reads existing file, updates changed values, writes once
 // This minimizes flash writes by only updating when necessary
-void saveConfigIncremental(const char* filename) {
+void saveConfigIncremental(const char* filename) { return false; }
+*/
+
+bool saveConfigIncremental(const char* filename) {
     uint32_t totalStartTime = micros();
     uint32_t stepTime;
     
@@ -1327,7 +1357,7 @@ void saveConfigIncremental(const char* filename) {
             Serial.print(micros() - totalStartTime);
             Serial.println(" us");
         }
-        return;
+        return true; // Considered success since nothing needed saving
     }
     
     // Allocate buffer for file content (config is ~4KB)
@@ -1336,18 +1366,22 @@ void saveConfigIncremental(const char* filename) {
     char* fileContent = (char*)malloc(MAX_CONFIG_SIZE);
     if (!fileContent) {
         Serial.println("saveConfigIncremental: malloc1 failed, falling back to full save");
-        saveConfigToFile(filename);
-        updateShadowConfig();
-        return;
+        if (saveConfigToFile(filename)) {
+            updateShadowConfig();
+            return true; // Fallback succeeded
+        }
+        return false; // Fallback failed
     }
     
     char* newContent = (char*)malloc(MAX_CONFIG_SIZE);
     if (!newContent) {
         Serial.println("saveConfigIncremental: malloc2 failed, falling back to full save");
         free(fileContent);
-        saveConfigToFile(filename);
-        updateShadowConfig();
-        return;
+        if (saveConfigToFile(filename)) {
+            updateShadowConfig();
+            return true;
+        }
+        return false;
     }
     
     // Read existing file content
@@ -1367,9 +1401,11 @@ void saveConfigIncremental(const char* filename) {
         if (debugConfigSaveTiming) Serial.println("[ConfigSave] No existing file, doing full save");
         free(fileContent);
         free(newContent);
-        saveConfigToFile(filename);
-        updateShadowConfig();
-        return;
+        if (saveConfigToFile(filename)) {
+            updateShadowConfig();
+            return true;
+        }
+        return false;
     }
     
     // Check if file has all required sections and keys
@@ -1387,9 +1423,11 @@ void saveConfigIncremental(const char* filename) {
         Serial.println("Config file incomplete, doing full save to add new options");
         free(fileContent);
         free(newContent);
-        saveConfigToFile(filename);
-        updateShadowConfig();
-        return;
+        if (saveConfigToFile(filename)) {
+            updateShadowConfig();
+            return true;
+        }
+        return false;
     }
     
     // Parse and rebuild file with updated values
@@ -1731,6 +1769,9 @@ void saveConfigIncremental(const char* filename) {
                 } else if (strcmp(key, "tag_parsing") == 0) {
                     snprintf(newLine, sizeof(newLine), "tag_parsing = %d;", jumperlessConfig.serial_1.tag_parsing);
                     updated = true;
+                } else if (strcmp(key, "flash_reset_type") == 0) {
+                    snprintf(newLine, sizeof(newLine), "flash_reset_type = %s;", getStringFromTable(jumperlessConfig.serial_1.flash_reset_type, flashTypeTable));
+                    updated = true;
                 }
             }
             //! [serial_2] section
@@ -1850,7 +1891,7 @@ void saveConfigIncremental(const char* filename) {
         free(fileContent);
         free(newContent);
         updateShadowConfig();
-        return;
+        return true;
     }
     
     // Write the updated content using r+ mode (overwrite in place, no truncate)
@@ -1858,7 +1899,20 @@ void saveConfigIncremental(const char* filename) {
     stepTime = micros();
     uint32_t opTime;
     
-    bool was_paused = pauseCore2ForFlash(100);
+    // CRITICAL: Ensure Core 2 is actually paused before writing to flash
+    // Increase timeout to 1000ms to allow long operations (like LED updates) to finish
+    // This prevents the XIP crash when leaving probe mode
+    bool was_paused = pauseCore2ForFlash(1000);
+    
+    extern volatile bool core2busy; // Check if it actually stopped
+    if (core2busy) {
+        if (debugConfigSaveTiming) Serial.println("[ConfigSave] Core 2 still busy after timeout! Aborting save to prevent crash.");
+        else Serial.println("[ConfigSave] Aborted: Core 2 busy");
+        unpauseCore2ForFlash(was_paused);
+        free(fileContent);
+        free(newContent);
+        return false; // Retry later
+    }
     
     // Use "r+" mode to overwrite in place - avoids cluster reallocation
     // This is significantly faster than truncate + write
@@ -1878,7 +1932,7 @@ void saveConfigIncremental(const char* filename) {
             unpauseCore2ForFlash(was_paused);
             free(fileContent);
             free(newContent);
-            return;
+            return false;
         }
     }
     
@@ -1956,11 +2010,12 @@ void saveConfigIncremental(const char* filename) {
         }
     } else {
         Serial.println("saveConfigIncremental: write failed");
+        return false;
     }
-
+    return true; 
 }
 
-void saveConfig(void) {
+bool saveConfig(void) {
     if (jumperlessConfig.calibration.probe_min == 0 || jumperlessConfig.calibration.probe_max == 0) {
         jumperlessConfig.calibration.probe_min = 15;
         jumperlessConfig.calibration.probe_max = 4040;
@@ -1968,9 +2023,12 @@ void saveConfig(void) {
 
     // Use optimized incremental save - only writes if config has changed
     // Falls back to full save if file doesn't exist or incremental fails
-    saveConfigIncremental("/config.txt");
+    bool success = saveConfigIncremental("/config.txt");
     
-    readSettingsFromConfig();
+    if (success) {
+        readSettingsFromConfig();
+    }
+    return success;
 }
 
 // Firmware versioning and file provisioning system
@@ -2496,6 +2554,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("async_passthrough = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.async_passthrough, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[serial_1] ");
         Serial.print("tag_parsing = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.tag_parsing, tagParsingTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[serial_1] ");
+        Serial.print("flash_reset_type = "); Serial.print(getStringFromTable(jumperlessConfig.serial_1.flash_reset_type, flashTypeTable)); Serial.println(";");
     }
     cycleTerminalColor();
     // Print serial_2 section
@@ -3418,6 +3478,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "autoconnect_flashing") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.autoconnect_flashing);
         else if (strcmp(key, "async_passthrough") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.async_passthrough);
         else if (strcmp(key, "tag_parsing") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.tag_parsing);
+        else if (strcmp(key, "flash_reset_type") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_1.flash_reset_type);
     }
     else if (strcmp(section, "serial_2") == 0) {
         if (strcmp(key, "function") == 0) sprintf(oldValue, "%d", jumperlessConfig.serial_2.function);
@@ -3497,7 +3558,11 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
     else if (strcmp(section, "usb_cdc") == 0) {
         if (strcmp(key, "ignore_dtr") == 0) {
             jumperlessConfig.usb_cdc.ignore_dtr = parseBool(value);
+            usb_cdc_set_ignore_dtr(jumperlessConfig.usb_cdc.ignore_dtr);
             // Apply USB CDC config immediately so the change takes effect
+            // extern void setDTRLockout(uint32_t ms);
+            AsyncPassthrough::setDTRLockout(3000);
+            
             usb_cdc_apply_config();
         }
     }
@@ -3558,6 +3623,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "autoconnect_flashing") == 0) jumperlessConfig.serial_1.autoconnect_flashing = parseBool(value);
         else if (strcmp(key, "async_passthrough") == 0) jumperlessConfig.serial_1.async_passthrough = parseBool(value);
         else if (strcmp(key, "tag_parsing") == 0) jumperlessConfig.serial_1.tag_parsing = parseBool(value);
+        else if (strcmp(key, "flash_reset_type") == 0) jumperlessConfig.serial_1.flash_reset_type = parseFlashType(value);
     }
     else if (strcmp(section, "serial_2") == 0) {
         if (strcmp(key, "function") == 0) jumperlessConfig.serial_2.function = parseUartFunction(value);

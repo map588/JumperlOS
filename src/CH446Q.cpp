@@ -11,6 +11,7 @@
 #include "States.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
+#include "externVars.h"
 
 
 #include "hardware/pio.h"
@@ -669,9 +670,10 @@ static const int LIVE_CROSSBAR_HEIGHT = 18;  // Header + 16 rows + separator lin
 void setLiveCrossbarEnabled(bool enabled) {
   liveCrossbarEnabled = enabled;
   if (enabled) {
+     Serial.flush();
     // Clear screen and move to home
     Serial.print("\033[2J\033[H");
-    
+     Serial.flush();
     // Draw the initial crossbar display
     updateLiveCrossbarDisplay();
     
@@ -679,6 +681,7 @@ void setLiveCrossbarEnabled(bool enabled) {
     // This makes rows 1-LIVE_CROSSBAR_HEIGHT fixed (non-scrolling)
     // and rows LIVE_CROSSBAR_HEIGHT+1 to bottom scrollable
     Serial.printf("\033[%d;999r", LIVE_CROSSBAR_HEIGHT + 1);
+     Serial.flush();
     
     // Move cursor to the scrolling region and print status
     Serial.printf("\033[%d;1H", LIVE_CROSSBAR_HEIGHT + 1);
@@ -698,7 +701,9 @@ void setLiveCrossbarEnabled(bool enabled) {
 /// @brief Update the live crossbar display at top of terminal
 /// Uses DECSTBM scrolling region - crossbar is in non-scrolling area at top
 /// Uses DECSC/DECRC (ESC 7 / ESC 8) to save/restore cursor position
-void updateLiveCrossbarDisplay(void) {
+/// All output is buffered into a single String and written in one shot
+/// to prevent garbled display from fragmented escape sequences
+void __not_in_flash_func(updateLiveCrossbarDisplay)(void) {
   if (!liveCrossbarEnabled) return;
   
   // Make sure terminal colors are assigned
@@ -726,25 +731,30 @@ void updateLiveCrossbarDisplay(void) {
     }
   }
   
-  // Save cursor position with DECSC (more reliable than CSI s)
-  Serial.print("\0337");
+  // Buffer the entire frame to avoid garbled output from fragmented serial writes
+  // ~4KB is enough for 12 chips × 16 rows × 8 cols with color escapes
+  String buf;
+  buf.reserve(4096);
   
+  char tmp[32];  // Scratch buffer for sprintf formatting
+  
+  // Save cursor position with DECSC
+  buf += "\0337";
   // Move to home position for drawing (top-left, in non-scrolling area)
-  Serial.print("\033[H");
+  buf += "\033[H";
   
   // Print chip headers
- // Serial.print("   ");
   for (int chip = 0; chip < 12; chip++) {
-    Serial.print(chipNumToChar(chip));
-    Serial.print("        ");
+    buf += chipNumToChar(chip);
+    buf += "        ";
   }
-  Serial.print("\033[K\r\n");  // Clear to EOL + CR + newline
-
+  buf += "\033[K\r\n";  // Clear to EOL + CR + newline
+  
+  // Track last color to avoid redundant escape sequences
+  int lastColor = -2;  // -2 = unset, -1 = reset, >= 0 = color
+  
   // Print each X row (16 rows)
   for (int x = 0; x < 16; x++) {
-    // Row number
-    // Serial.printf("%2d ", x);
-
     for (int chip = 0; chip < 12; chip++) {
       for (int y = 0; y < 8; y++) {
         // Check connection state
@@ -782,47 +792,63 @@ void updateLiveCrossbarDisplay(void) {
           color = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
         }
         
+        // Determine the character and color for this cell
+        int cellColor;
+        const char *cellChar;
+        
         if (isConnected) {
-          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
-          changeTerminalColor(color, false, &Serial, false);
-          Serial.print("█");
-          changeTerminalColor(-1, false, &Serial, false);
-          if (color >= 0) Serial.print("\033[0m");
+          cellColor = color;
+          cellChar = "█";
         } else if (verticalLine && horizontalLine) {
-          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
-          changeTerminalColor(color, false, &Serial, false);
-          Serial.print("┼");
-          changeTerminalColor(-1, false, &Serial, false);
-          if (color >= 0) Serial.print("\033[0m");
+          cellColor = color;
+          cellChar = "┼";
         } else if (verticalLine) {
-          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
-          changeTerminalColor(color, false, &Serial, false);
-          Serial.print("│");
-          changeTerminalColor(-1, false, &Serial, false);
-          if (color >= 0) Serial.print("\033[0m");
+          cellColor = color;
+          cellChar = "│";
         } else if (horizontalLine) {
-          if (color >= 0) Serial.printf("\033[38;5;%dm", color);
-          changeTerminalColor(color, false, &Serial, false);
-          Serial.print("─");
-          changeTerminalColor(-1, false, &Serial, false);
-          if (color >= 0) Serial.print("\033[0m");
+          cellColor = color;
+          cellChar = "─";
         } else {
-          changeTerminalColor( 238 , false, &Serial, false);
-          Serial.print(".");
-          changeTerminalColor(-1, false, &Serial, false);
+          cellColor = 238;  // Dim gray for empty cells
+          cellChar = ".";
         }
+        
+        // Only emit color escape if it changed from previous cell
+        if (cellColor != lastColor) {
+          if (cellColor >= 0) {
+            snprintf(tmp, sizeof(tmp), "\033[38;5;%dm", cellColor);
+            buf += tmp;
+          } else {
+            buf += "\033[0m";
+          }
+          lastColor = cellColor;
+        }
+        buf += cellChar;
       }
-      Serial.print(" ");
+      // Reset color between chips and add separator space
+      if (lastColor != -1) {
+        buf += "\033[0m";
+        lastColor = -1;
+      }
+      buf += " ";
     }
-    Serial.print("\033[K\r\n");  // Clear to EOL + CR + newline
+    buf += "\033[K\r\n";  // Clear to EOL + CR + newline
   }
   
   // Separator line (row 18)
-  Serial.print("                                                                                            \033[K");
+  buf += "                                                                                            \033[K";
   
   // Restore cursor position with DECRC (returns to where it was in scrolling region)
-  Serial.print("\0338");
+  buf += "\0338";
+  
+  // Write entire frame in one shot - prevents garbled escape sequences
+
+  Serial.print(buf);
   Serial.flush();
+
+  // Reset changeTerminalColor's internal tracking state since we bypassed it
+  // force=true ensures it resets even though terminal was already reset by buffer content
+  changeTerminalColor(-1, false, &Serial, true);
 }
 
 // New function to update the current chip state array based on paths

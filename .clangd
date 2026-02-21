@@ -159,7 +159,9 @@ Diagnostics:
       - misc-definitions-in-headers
       - readability-identifier-length
       - modernize-use-trailing-return-type
-  # UnusedIncludes: Strict  # Show unused #include directives
+      
+
+  UnusedIncludes: None
 
   # # Make sure all diagnostics are shown
   # Severity:

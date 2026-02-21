@@ -35,10 +35,10 @@
 #include "FakeGpio.h"
 #include "USBfs.h"
 #include "WokwiParser.h"
+#include "configManager.h"
 #include "externVars.h"
 #include "hardware/gpio.h"
 #include "oled.h"
-#include "user_functions.h"
 #include "JsonState.h"
 
 #include <algorithm>
@@ -163,12 +163,12 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
 
     if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
         Jerial.write( 0x0E ); // Turn ON interactive mode
-        Jerial.print( "Turning on interactive mode\n\r" );
+        // Jerial.print( "Turning on interactive mode\n\r" );
         Jerial.flush( );
         termInInteractiveMode = 1;
     } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
         Jerial.write( 0x0F ); // Turn OFF interactive mode
-        Jerial.print( "Turning off interactive mode\n\r" );
+        // Jerial.print( "Turning off interactive mode\n\r" );
         Jerial.flush( );
         termInInteractiveMode = 0;
     }
@@ -251,9 +251,11 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tt = OLED terminal mode\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tR = show board LEDs\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\t* = raw speed test\n\r" );
+
         // shownMenuItems += printMenuLine( showExtraMenu, 3, "\t% = list all filesystem contents\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tE = don't show this menu\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tW = disable terminal colors\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tB = toggle line buffering\n\r" );
 
         if ( showExtraMenu >= 2 ) {
 
@@ -624,6 +626,10 @@ void SingleCharCommands::initializeCommands( ) {
                      "Toggle terminal color output on/off.",
                      cmd_toggleTerminalColors, MENU_DEBUG, CAT_SETTINGS );
 
+    registerCommand( 'B', "toggle line buffering",
+                     "Toggle line buffering on/off. For raw terminals without line buffering.",
+                     cmd_toggleLineBuffering, MENU_DEBUG, CAT_SETTINGS );
+
     registerCommand( 'E', "don't show this menu",
                      "Toggle automatic menu display.",
                      cmd_dontShowMenu, MENU_DEBUG, CAT_SETTINGS );
@@ -692,10 +698,6 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( 'q', "DMX Serial mode",
                      "Enter DMX Serial application mode.",
                      cmd_dmxSerial, MENU_DEBUG, CAT_APPS );
-
-    registerCommand( 'z', "user function",
-                     "Execute user-defined function.",
-                     cmd_userFunction, MENU_DEBUG, CAT_ADVANCED );
 
     registerCommand( '|', "eratta clear GPIO",
                      "Clear GPIO eratta workaround.",
@@ -1281,50 +1283,47 @@ CommandResult cmd_showNetlist( char c, const String& line ) {
     return CMD_SHOW_MENU;
 }
 
-// Read optional argument from serial (e.g. " overlays" after "J") when line buffering is off
-static String readOptionalArgFromSerial( unsigned int timeoutMs = 50 ) {
-    String arg;
+// Get the argument string that follows the trigger character.
+// In line-buffered mode, the full command is in `line` (e.g. "J power").
+// In char-by-char mode, only the trigger char arrived and the rest is still in the serial buffer.
+// This function handles both cases transparently.
+static String getCommandArgs( const String& line, unsigned int timeoutMs = 50 ) {
+    // If line already has content after the trigger character, use it
+    if ( line.length( ) > 1 ) {
+        String args = line.substring( 1 );
+        args.trim( );
+        if ( args.length( ) > 0 ) return args;
+    }
+
+    // Otherwise read from Jerial (char-by-char mode)
+    String args;
     unsigned long start = millis( );
     while ( millis( ) - start < timeoutMs ) {
         while ( Jerial.available( ) > 0 ) {
             char ch = (char) Jerial.read( );
-            if ( ch == '\n' || ch == '\r' ) return arg;
-            arg += ch;
+            if ( ch == '\n' || ch == '\r' ) {
+                args.trim( );
+                return args;
+            }
+            args += ch;
         }
         delay( 1 );
     }
-    return arg;
+    args.trim( );
+    return args;
 }
 
 CommandResult cmd_showJsonState( char c, const String& line ) {
-    // Optional section: J or J power | J nets | J gpio | J overlays
-    // line often has only "J" when not using line buffering, so read from serial
-    String section;
-    if ( line.length( ) > 1 ) {
-        section = line.substring( 1 );
-        section.trim( );
-    }
-    if ( section.length( ) == 0 )
-        section = readOptionalArgFromSerial( );
-    section.trim( );
+    String section = getCommandArgs( line );
     const char* sectionPtr = ( section.length( ) > 0 ) ? section.c_str( ) : nullptr;
     Jerial.print( "\n\n\r" );
-    Jerial.print( JsonState::getJumperlessStateJSON( sectionPtr ) );
+    Jerial.printNormalized( JsonState::getJumperlessStateJSON( sectionPtr ) );
     Jerial.print( "\n\r" );
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_loadJsonState( char c, const String& line ) {
-    // Optional section: L or L overlays | L power | etc. — load only that section (partial update)
-    // line often has only "L" when not using line buffering, so read from serial
-    String section;
-    if ( line.length( ) > 1 ) {
-        section = line.substring( 1 );
-        section.trim( );
-    }
-    // if ( section.length( ) == 0 )
-    //     section = readOptionalArgFromSerial( );
-    // section.trim( );
+    String section = getCommandArgs( line );
     bool partialLoad = ( section.length( ) > 0 );
     if ( partialLoad )
         Jerial.print( "\n\rPaste JSON for '" + section + "' (end with empty line):\n\r" );
@@ -1386,12 +1385,11 @@ CommandResult cmd_loadJsonState( char c, const String& line ) {
 
 CommandResult cmd_showBridgeArray( char c, const String& line ) {
     int showDupes = 1;
-    delay(2);
-    if ( Jerial.available( ) > 0 ) {
-        char in = Jerial.read( );
-        if ( in == '0' ) {
+    String arg = getCommandArgs( line, 20 );
+    if ( arg.length( ) > 0 ) {
+        if ( arg[ 0 ] == '0' ) {
             showDupes = 0;
-        } else if ( in == '2' ) {
+        } else if ( arg[ 0 ] == '2' ) {
             showDupes = 2;
         }
     }
@@ -1417,19 +1415,11 @@ CommandResult cmd_showBridgeArray( char c, const String& line ) {
 
 CommandResult cmd_showCrossbar( char c, const String& line ) {
     // Check if user typed 'c!' to toggle live mode
-    // Need to peek at serial buffer for the '!' since command system only consumed 'c'
-    
-    // Small delay to let the '!' arrive if user typed quickly
-    delay( 10 );
-    
-    if ( Jerial.available( ) > 0 ) {
-        char nextChar = Jerial.peek( );
-        if ( nextChar == '!' ) {
-            Jerial.read( );  // Consume the '!'
-            extern bool liveCrossbarEnabled;
-            setLiveCrossbarEnabled( !liveCrossbarEnabled );
-            return CMD_SHOW_MENU;
-        }
+    String arg = getCommandArgs( line, 100 );
+    if ( arg.length( ) > 0 && arg[ 0 ] == '!' ) {
+        extern bool liveCrossbarEnabled;
+        setLiveCrossbarEnabled( !liveCrossbarEnabled );
+        return CMD_SHOW_MENU;
     }
     
     // Otherwise show compact crossbar view
@@ -1457,6 +1447,15 @@ CommandResult cmd_queryActiveSlot( char c, const String& line ) {
     Jerial.flush( );
 
     return CMD_DONT_SHOW_MENU;
+}
+
+
+CommandResult cmd_toggleLineBuffering( char c, const String& line ) {
+    jumperlessConfig.display.terminal_line_buffering = !jumperlessConfig.display.terminal_line_buffering;
+    Jerial.print( "Line buffering " );
+    Jerial.println( jumperlessConfig.display.terminal_line_buffering ? "enabled" : "disabled" );
+    configChanged = true;
+    return CMD_SHOW_MENU;
 }
 
 // Python commands
@@ -1769,34 +1768,16 @@ static String stripLeadingArrows( const String& input ) {
 
 
 CommandResult cmd_pythonCommand( char c, const String& line ) {
-    String pythonCommand = "";
+    // Use getCommandArgs to handle both line-buffered and char-by-char modes
+    // It strips the trigger char '>' and reads from serial if needed
+    String pythonCommand = getCommandArgs( line );
 
-    // PRIORITY 1: Use the line parameter if it has content (CommandBuffer path)
-    // This ensures commands from UART tags work regardless of terminal_line_buffering setting
-    String trimmedLine = line;
-    trimmedLine.trim( );
-
-    if ( trimmedLine.length( ) > 1 && trimmedLine[ 0 ] == '>' ) {
-        // Line has ACTUAL content after '>' - use it directly (line buffering or CommandBuffer path)
-        pythonCommand = trimmedLine.substring( 1 );
-        pythonCommand.trim( );
-    } else if ( trimmedLine.length( ) > 1 ) {
-        // Line has content but no '>' prefix - use as-is
-        pythonCommand = trimmedLine;
-    } else {
-        // Line is empty OR just the trigger character '>'
-        // This happens when terminal_line_buffering == 0 (char-by-char mode)
-        // Read the rest of the command from Jerial
-        // CRITICAL FIX: Only read until the FIRST newline to process one command at a time
-        // This prevents long Python execution from blocking DTR checks
-        while ( Jerial.available( ) > 0 ) {
-            char ch = Jerial.read( );
-            if ( ch == '\n' ) {
-                break; // Stop at first newline - process one command at a time
-            }
-            if ( ch != '\r' ) { // Skip carriage returns
-                pythonCommand += ch;
-            }
+    // If getCommandArgs returned empty but line had content without '>' prefix, use as-is
+    if ( pythonCommand.length( ) == 0 ) {
+        String trimmedLine = line;
+        trimmedLine.trim( );
+        if ( trimmedLine.length( ) > 1 && trimmedLine[ 0 ] != '>' ) {
+            pythonCommand = trimmedLine;
         }
     }
 
@@ -1884,28 +1865,8 @@ CommandResult cmd_pythonCommand( char c, const String& line ) {
 
 // File system commands
 CommandResult cmd_showFilesystem( char c, const String& line ) {
-    // Check if a filename/path was provided after '/'
-    String arg = line;
-    arg.trim( );
-    // Strip the leading '/' trigger character
-    if ( arg.startsWith( "/" ) )
-        arg = arg.substring( 1 );
-    arg.trim( );
+    String arg = getCommandArgs( line );
 
-    // If line only had the trigger char, read the rest from Jerial
-    // (happens when terminal_line_buffering == 0, char-by-char mode)
-    if ( arg.length( ) == 0 && Jerial.available( ) > 0 ) {
-        while ( Jerial.available( ) > 0 ) {
-            char ch = Jerial.read( );
-            if ( ch == '\n' ) {
-                break;
-            }
-            if ( ch != '\r' ) {
-                arg += ch;
-            }
-        }
-        arg.trim( );
-    }
 
     if ( arg.length( ) > 0 ) {
         // User provided a path like "/adc_basics.py" — resolve and run it
@@ -2010,8 +1971,9 @@ CommandResult cmd_reloadConfig( char c, const String& line ) {
 
 // Hardware commands
 CommandResult cmd_resetArduino( char c, const String& line ) {
-    if ( Jerial.available( ) > 0 ) {
-        char ch = Jerial.read( );
+    String arg = getCommandArgs( line, 20 );
+    if ( arg.length( ) > 0 ) {
+        char ch = arg[ 0 ];
         if ( ch == '0' || ch == '2' || ch == 't' ) {
             resetArduino( 0 );
         }
@@ -2025,24 +1987,22 @@ CommandResult cmd_resetArduino( char c, const String& line ) {
 }
 
 CommandResult cmd_connectArduino( char c, const String& line ) {
+    String arg = getCommandArgs( line, 20 );
     int justAsk = 0;
-    if ( Jerial.available( ) > 0 ) {
-        char ch = Jerial.read( );
-        if ( ch == '?' ) {
-            justAsk = 1;
-            int isConnected = checkIfArduinoIsConnected( );
-            int isPresent = checkArduinoPresence( );
+    if ( arg.length( ) > 0 && arg[ 0 ] == '?' ) {
+        justAsk = 1;
+        int isConnected = checkIfArduinoIsConnected( );
+        int isPresent = checkArduinoPresence( );
 
-            // Response format: "connection,presence"
-            // connection: Y=connected, n=not connected
-            // presence: Y=detected, n=not detected
-            // NOTE: DC4 (0x14) in replyWithJerialInfo() is now the preferred method
-            // for presence checks (faster response). This A? handler is kept for
-            // backwards compatibility.
-            Jerial.print( isConnected ? "Y," : "n," );
-            Jerial.println( isPresent ? "Y" : "n" );
-            Jerial.flush( );
-        }
+        // Response format: "connection,presence"
+        // connection: Y=connected, n=not connected
+        // presence: Y=detected, n=not detected
+        // NOTE: DC4 (0x14) in replyWithJerialInfo() is now the preferred method
+        // for presence checks (faster response). This A? handler is kept for
+        // backwards compatibility.
+        Jerial.print( isConnected ? "Y," : "n," );
+        Jerial.println( isPresent ? "Y" : "n" );
+        Jerial.flush( );
     }
     if ( justAsk == 0 ) {
         connectArduino( 0 );
@@ -2053,20 +2013,16 @@ CommandResult cmd_connectArduino( char c, const String& line ) {
 }
 
 CommandResult cmd_disconnectArduino( char c, const String& line ) {
+    String arg = getCommandArgs( line, 20 );
     int justAsk = 0;
-    while ( Jerial.available( ) > 0 ) {
-        char ch = Jerial.read( );
-        if ( ch == '?' ) {
-            if ( checkIfArduinoIsConnected( ) == 1 ) {
-                justAsk = 1;
-                Jerial.println( "Y" );
-                Jerial.flush( );
-            } else {
-                justAsk = 1;
-                Jerial.println( "n" );
-                Jerial.flush( );
-            }
+    if ( arg.indexOf( '?' ) != -1 ) {
+        justAsk = 1;
+        if ( checkIfArduinoIsConnected( ) == 1 ) {
+            Jerial.println( "Y" );
+        } else {
+            Jerial.println( "n" );
         }
+        Jerial.flush( );
     }
     if ( justAsk == 0 ) {
         disconnectArduino( 0 );
@@ -2077,8 +2033,9 @@ CommandResult cmd_disconnectArduino( char c, const String& line ) {
 }
 
 CommandResult cmd_readADC( char c, const String& line ) {
-    if ( Jerial.available( ) > 0 ) {
-        char ch = Jerial.read( );
+    String arg = getCommandArgs( line, 20 );
+    if ( arg.length( ) > 0 ) {
+        char ch = arg[ 0 ];
 
         if ( isdigit( ch ) ) {
             int adc = ch - '0';
@@ -2093,15 +2050,12 @@ CommandResult cmd_readADC( char c, const String& line ) {
                 Jerial.println( adcVoltage );
             }
         } else if ( ch == 'i' ) {
-            if ( Jerial.available( ) > 0 ) {
-                char ch2 = Jerial.read( );
-                if ( ch2 == '1' ) {
-                    extern INA219 INA1;
-                    float iSense = INA1.getCurrent_mA( );
-                    Jerial.print( "ina1 = " );
-                    Jerial.print( iSense );
-                    Jerial.println( "mA" );
-                }
+            if ( arg.length( ) > 1 && arg[ 1 ] == '1' ) {
+                extern INA219 INA1;
+                float iSense = INA1.getCurrent_mA( );
+                Jerial.print( "ina1 = " );
+                Jerial.print( iSense );
+                Jerial.println( "mA" );
             } else {
                 extern INA219 INA0;
                 float iSense = INA0.getCurrent_mA( );
@@ -2182,9 +2136,8 @@ CommandResult cmd_setDAC( char c, const String& line ) {
 CommandResult cmd_i2cScan( char c, const String& line ) {
     Jerial.flush( );
 
-    if ( Jerial.available( ) > 0 ) {
-        String input = Jerial.readString( );
-        input.trim( );
+    String input = getCommandArgs( line, 100 );
+    if ( input.length( ) > 0 ) {
         if ( input.indexOf( 'i' ) != -1 ) {
             i2cScan( 0, 0, 26, 27, 1, 1 );
             return CMD_DONT_SHOW_MENU;
@@ -2831,19 +2784,19 @@ CommandResult cmd_printYAML( char c, const String& line ) {
 
     // Jerial.println( "\n\r─── YAML Output ───\n\r" );
 
-    // Parse Y0/Y1/Y2: 0=no color, 1=colored hex (default), 2=colored blocks (read from serial)
+    // Parse Y0/Y1/Y2: 0=no color, 1=colored hex (default), 2=colored blocks
     int showANSI = 2;
-    if ( Jerial.available( ) > 0 ) {
-        char arg = Jerial.read( );
-        if ( arg == '0' ) showANSI = 0;
-        else if ( arg == '2' ) showANSI = 2;
-        else if ( arg == '1' ) showANSI = 1;
-        // else: newline/space/other - keep default 1, arg already consumed
+    String yamlArg = getCommandArgs( line, 20 );
+    if ( yamlArg.length( ) > 0 ) {
+        if ( yamlArg[ 0 ] == '0' ) showANSI = 0;
+        else if ( yamlArg[ 0 ] == '2' ) showANSI = 2;
+        else if ( yamlArg[ 0 ] == '1' ) showANSI = 1;
     }
 
     String yamlOutput;
     if ( globalState.toYAML( yamlOutput, showANSI ) ) {
-        Jerial.println( yamlOutput );
+        Jerial.printNormalized( yamlOutput );
+        Jerial.println();
     } else {
         Jerial.println( "✗ Failed to generate YAML" );
     }
@@ -3004,10 +2957,7 @@ CommandResult cmd_dmxJerial( char c, const String& line ) {
     return CMD_DONT_SHOW_MENU;
 }
 
-CommandResult cmd_userFunction( char c, const String& line ) {
-    handleUserFunction( );
-    return CMD_DONT_SHOW_MENU;
-}
+
 
 CommandResult cmd_erattaClear( char c, const String& line ) {
     erattaClearGPIO( -1 );

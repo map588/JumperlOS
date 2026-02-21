@@ -431,21 +431,27 @@ void flashArduino( unsigned long timeoutTime ) {
     // Service USB after potentially heavy connectArduino
     tud_task();
 
-    // Step 3: Reset the Arduino
-    // Suspend UART IRQ during reset to prevent phantom 0xFF bytes from
-    // entering the ring buffer (ATmega TX goes tri-state during reset,
-    // UART RX sees glitches that look like valid 0xFF data bytes).
+    // Step 3: Reset the Arduino (or enter ESP32 bootloader)
+    // flash_reset_type: 0 = none, 1 = AVR, 2 = ESP32 (B1 then RST sequence)
     #if ASYNC_PASSTHROUGH_ENABLED == 1
     AsyncPassthrough::suspendUARTRxIRQ();
     #endif
     {
-        unsigned long resetStart = micros();
-        SetArduinoResetLine( LOW, 0 );
-        while ( micros() - resetStart < 12000 ) {
-            tud_task();
-            delayMicroseconds( 100 );
+        int resetType = jumperlessConfig.serial_1.flash_reset_type;
+        if ( resetType == 1 ) {
+            // AVR: pulse reset line (e.g. bottom slot = 0)
+            unsigned long resetStart = micros();
+            SetArduinoResetLine( LOW, 0 );
+            while ( micros() - resetStart < 12000 ) {
+                tud_task();
+                delayMicroseconds( 100 );
+            }
+            SetArduinoResetLine( HIGH, 0 );
+        } else if ( resetType == 2 ) {
+            // ESP32 (e.g. Nano ESP32): B1 low then pulse RST
+            ESPReset();
         }
-        SetArduinoResetLine( HIGH, 0 );
+        // resetType == 0: no reset
     }
 
     // Drain any phantom bytes that entered before IRQ was suspended,
@@ -505,13 +511,18 @@ void flashArduino( unsigned long timeoutTime ) {
                 ARDUINO_DEBUG_PRINTLN("Re-reset: DTR transition before flash data (pre-avrdude)");
                 AsyncPassthrough::suspendUARTRxIRQ();
                 {
-                    unsigned long resetStart = micros();
-                    SetArduinoResetLine( LOW, 0 );
-                    while ( micros() - resetStart < 12000 ) {
-                        tud_task();
-                        delayMicroseconds( 100 );
+                    int resetType = jumperlessConfig.serial_1.flash_reset_type;
+                    if ( resetType == 1 ) {
+                        unsigned long resetStart = micros();
+                        SetArduinoResetLine( LOW, 0 );
+                        while ( micros() - resetStart < 12000 ) {
+                            tud_task();
+                            delayMicroseconds( 100 );
+                        }
+                        SetArduinoResetLine( HIGH, 0 );
+                    } else if ( resetType == 2 ) {
+                        ESPReset();
                     }
-                    SetArduinoResetLine( HIGH, 0 );
                 }
                 AsyncPassthrough::drainUARTRxBuffers();
                 tud_task();
@@ -533,6 +544,10 @@ void flashArduino( unsigned long timeoutTime ) {
 
     // Flash complete — clean up
     #if ASYNC_PASSTHROUGH_ENABLED == 1
+    // Release both reset lines so ESP32 B1 is released and board can boot
+    if ( jumperlessConfig.serial_1.flash_reset_type == 2 ) {
+        SetArduinoResetLine( HIGH, 2 );
+    }
     AsyncPassthrough::exitFlashMode();
     // Suppress DTR detection for 2s to prevent port-close from re-triggering
     AsyncPassthrough::setDTRLockout(2000);
@@ -769,22 +784,24 @@ void SetArduinoResetLine( bool state, int topBottomBoth ) {
     }
 }
 
+// Arduino Nano ESP32 bootloader sequence: B1 (boot strap) to GND first, then
+// pulse RST. RESET_1 = B1, RESET_0 = RST. B1 must stay low so chip enters
+// download mode on reset; release RST after ~50 ms.
 void ESPReset( ) {
-    Serial.println( "ESP Boot Mode" );
-    pinMode( ARDUINO_RESET_0_PIN, OUTPUT );
-    digitalWrite( ARDUINO_RESET_0_PIN, LOW );
-    
-    // Skip RESET_1 if PSRAM mod installed - GPIO 19 is used for PSRAM CS
+    ARDUINO_DEBUG_PRINTLN( "ESP32 bootloader: B1 low, pulse RST" );
+    // Skip RESET_1 (B1) if PSRAM mod installed - GPIO 19 is used for PSRAM CS
     if ( !jumperlessConfig.hardware.psram_installed ) {
-        pinMode( ARDUINO_RESET_1_PIN, OUTPUT );
-        digitalWrite( ARDUINO_RESET_1_PIN, LOW );
-        delay( 1 );
-        digitalWrite( ARDUINO_RESET_1_PIN, HIGH );
-        delay( 2 );
-    } else {
-        delay( 3 ); // Equivalent delay when PSRAM mod is installed
+        pinMode( ARDUINO_RESET_1_PIN, OUTPUT_12MA );
+        digitalWrite( ARDUINO_RESET_1_PIN, LOW );  // B1 = GND (boot strap, hold)
+        rstColors[ 0 ] = 0x002a10;
     }
-    digitalWrite( ARDUINO_RESET_0_PIN, HIGH );
+    pinMode( ARDUINO_RESET_0_PIN, OUTPUT_12MA );
+    digitalWrite( ARDUINO_RESET_0_PIN, LOW );     // RST low
+    rstColors[ 1 ] = 0x002a10;
+    showLEDsCore2 = 2;
+    delay( 50 );   // Hold RST low ~50 ms
+    pinMode( ARDUINO_RESET_0_PIN, INPUT );        // Release RST; B1 stays low → download mode
+    // RESET_1 (B1) left LOW until flash is done (released in flashArduino cleanup)
 }
 
 void applyPsramModeChange( int psramEnabled ) {

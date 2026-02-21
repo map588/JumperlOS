@@ -1,5 +1,5 @@
 #pragma once
-#include "TuiGlue.h"
+// #include "TuiGlue.h"
 
 // Pico SDK multicore synchronization primitives
 #include "pico/mutex.h"
@@ -23,7 +23,7 @@ extern int filesystemIndicatorPalette;
 // Used by LEDs.cpp to show pink logo during voltage measurement
 extern volatile bool measureModeActive;
 extern int measureModeIndicatorPalette;
-extern TuiGlue tuiGlue;
+// extern TuiGlue tuiGlue;
 
 // =============================================================================
 // MULTICORE SYNCHRONIZATION SYSTEM
@@ -44,6 +44,8 @@ extern mutex_t core_sync_mutex;
 // Filesystem mutex - protects all FatFS operations
 extern mutex_t fs_mutex;
 
+
+
 // Initialize synchronization primitives (call once in setup())
 void core_sync_init(void);
 
@@ -52,6 +54,7 @@ void core_sync_init(void);
 void core_sync_acquire(void);     // Blocking acquire
 void core_sync_release(void);     // Release
 bool core_sync_try_acquire(void); // Non-blocking, returns true if acquired
+
 
 // Filesystem mutex functions
 // Use these around ALL filesystem operations to prevent concurrent access

@@ -593,10 +593,10 @@ ServiceStatus TermSerialService::service() {
         return lastStatus;
     }
     
-    // Service returns true when line is complete
-    if (jerialInstance->service()) {
-        lastStatus = ServiceStatus::BUSY;
-    }
+    // // Service returns true when line is complete
+    // if (jerialInstance->service()) {
+    //     lastStatus = ServiceStatus::BUSY;
+    // }
     
     return lastStatus;
 }

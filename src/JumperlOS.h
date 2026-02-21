@@ -462,8 +462,8 @@ private:
     bool updatePending;
     bool extraUpdateNeeded;  // Allow one extra update after changes stop (to catch late colors)
     unsigned long lastUpdateTime;
-    static const unsigned long REFRESH_INTERVAL_MS = 400;        // Normal refresh rate
-    static const unsigned long PROBE_REFRESH_INTERVAL_MS = 200;  // Faster refresh during probe mode
+    static const unsigned long REFRESH_INTERVAL_MS = 60000;        // Normal refresh rate
+    static const unsigned long PROBE_REFRESH_INTERVAL_MS = 400;  // Faster refresh during probe mode
 };
 
 // =============================================================================

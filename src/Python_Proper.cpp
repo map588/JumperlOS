@@ -610,11 +610,11 @@ extern "C" void mp_hal_check_interrupt(void) {
     return;
   }
 
-  // Click-menu path: LONG_HELD (3-second hold) always acts as KeyboardInterrupt.
+  // Click-menu path: MEDUIM_HELD (3-second hold) always acts as KeyboardInterrupt.
   // The encoder state machine drives a logo LED animation from white→red during
-  // the hold, then fires LONG_HELD at 3 seconds.  We always honour it regardless
+  // the hold, then fires MEDIUM_HELD at 3 seconds.  We always honour it regardless
   // of clickWheelPythonInterrupt because a 3-second deliberate hold is unambiguous.
-  if (encoderButtonState == LONG_HELD &&
+  if (encoderButtonState == MEDIUM_HELD &&
       millis() >= clickwheel_interrupt_ignore_until) {
     mp_interrupt_requested = true;
     mp_sched_keyboard_interrupt();
@@ -4621,11 +4621,13 @@ bool executeSinglePythonCommand(const char* command, char* result_buffer, size_t
     // if (response_target != nullptr) {
     //   global_mp_stream = response_target;
     // }
-
+if (jumperlessConfig.display.terminal_line_buffering == 0) {
   SyntaxHighlighting highlighter(&Jerial);
+  Jerial.print("\r                                                                \r");
   highlighter.displayPythonWithHighlighting(parsed_command, &Jerial);
   Jerial.println();
   Jerial.flush();
+}
   
   // Service USB before execution to prevent port disconnect during long commands
   tud_task();

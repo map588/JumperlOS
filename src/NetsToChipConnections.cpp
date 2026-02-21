@@ -132,6 +132,7 @@ static int numFakeGpioInputPaths = 0;
 static bool pathIsFakeGpioInput(int pathIdx) {
     int pathNode1 = globalState.connections.paths[pathIdx].node1;
     int pathNode2 = globalState.connections.paths[pathIdx].node2;
+    
     return IS_FAKE_GP_IN(pathNode1) || IS_FAKE_GP_IN(pathNode2);
 }
 

@@ -138,6 +138,7 @@ struct config {
             int autoconnect_flashing = 1;
             bool async_passthrough = true;
             int tag_parsing = 1; // 0 = disabled, 1 = passthrough + tag parsing, 2 = parsing + strip tags
+            int flash_reset_type = 1; // 0 = no reset, 1 = AVR, 2 = ESP32
         } serial_1;
 
         

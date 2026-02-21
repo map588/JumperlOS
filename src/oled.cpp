@@ -612,7 +612,8 @@ int oled::init( ) {
     }
 
     if ( oledConnected ) {
-        getDisplay().display( );
+        show();
+        //getDisplay().display( );
     }
     setCursor( 0, 0 );
     if ( jumperlessConfig.top_oled.connection_type != 2 ) {
@@ -1780,8 +1781,9 @@ void oled::printSmallText( const char* text, int16_t x, int16_t y, bool clear ) 
     getDisplay().setFont( currentFont );
     usingSmallFont = false;
 
-    if ( clear ) {
-        getDisplay().display( );
+    if ( clear  ) {
+        show();
+        //getDisplay().display( );
     }
 }
 
@@ -1815,7 +1817,8 @@ void oled::printSmallTextLine( const char* text, int line, bool clear ) {
     usingSmallFont = false;
 
     if ( clear && oledConnected ) {
-        getDisplay().display( );
+        show();
+        //getDisplay().display( );
     }
 }
 
@@ -1861,7 +1864,8 @@ void oled::showFileStatus( const char* currentPath, int fileCount, const char* s
     }
 
     getDisplay().setTextWrap( true );
-    getDisplay().display( );
+    show();
+    //getDisplay().display( );
 
     // Restore previous font
     currentFont = savedFont;
@@ -1896,7 +1900,8 @@ void oled::showFileStatusBreadboard( const char* lineTop7, const char* lineBotto
     drawText( 0, 8, top );
     drawText( 0, 20, bot );
 
-    getDisplay().display( );
+    show();
+    //getDisplay().display( );
 
     currentFont = savedFont;
     currentFontFamily = savedFamily;
@@ -2341,7 +2346,8 @@ void oled::showJogo32h( ) {
         int x = ( displayWidth - customBitmapWidth ) / 2;
         int y = ( displayHeight - customBitmapHeight ) / 2;
         getDisplay().drawBitmap( x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE );
-        getDisplay().display( );
+        show();
+        //getDisplay().display( );
         return;
     }
 
@@ -2350,7 +2356,8 @@ void oled::showJogo32h( ) {
     int y = ( displayHeight - jumperlessConfig.top_oled.height ) / 2;
 
     getDisplay().drawBitmap( x, y, jogo32h, jumperlessConfig.top_oled.width, jumperlessConfig.top_oled.height, SSD1306_WHITE );
-    getDisplay().display( );
+    show();
+    //getDisplay().display( );
 }
 
 void oled::oledPeriodic( ) {
@@ -2502,7 +2509,8 @@ void oled::oledPeriodic( ) {
                 #endif
                 getDisplay().clearDisplay();
                 showJogo32h();
-                getDisplay().display();
+                show();
+                //getDisplay().display();
                 
                 // Give the display time to stabilize after refresh
                 delay(150);
@@ -2858,7 +2866,7 @@ void oled::useSmallFont( SmallFont smallFont, const char* text, int16_t x, int16
     getDisplay().print( text );
 }
 
-void oled::useSmallFontAndRestore( SmallFont smallFont, const char* text, int16_t x, int16_t y, bool clear, bool show ) {
+void oled::useSmallFontAndRestore( SmallFont smallFont, const char* text, int16_t x, int16_t y, bool clear, bool showw ) {
     if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false )
         return;
 
@@ -2877,8 +2885,9 @@ void oled::useSmallFontAndRestore( SmallFont smallFont, const char* text, int16_
     setCursor( x, adjustedY );
     getDisplay().print( text );
 
-    if ( show ) {
-        getDisplay().display( );
+    if ( showw ) {
+        show();
+        //getDisplay().display( );
     }
 
     restoreNormalFont( );

@@ -16,8 +16,8 @@
 
 #include "ArduinoStuff.h"
 #include "Images.h"
-#include "Tui.h"
-#include "TuiGlue.h"
+// #include "Tui.h"
+// #include "TuiGlue.h"
 
 #include "Jerial.h"
 #include "hardware/gpio.h"

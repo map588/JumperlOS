@@ -189,6 +189,18 @@ bool TermControl::service( ) {
         }
     }
 
+            if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
+        Serial.write( 0x0E ); // Turn ON interactive mode
+        Serial.print( "Turning on interactive mode\n\r" );
+        Serial.flush( );
+        termInInteractiveMode = 1;
+    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
+        Serial.write( 0x0F ); // Turn OFF interactive mode
+        Serial.print( "Turning off interactive mode\n\r" );
+        Serial.flush( );
+        termInInteractiveMode = 0;
+    }
+
     return false; // No line ready
 }
 
@@ -335,8 +347,9 @@ void TermControl::handleNormalChar( char c ) {
 
     case '?':
         if (stream) {
+            extern const char firmwareVersion[]; // Assume this is defined somewhere
             stream->print( "Jumperless firmware version: " );
-            stream->println( "5.4.9.9" ); //TODO: fix this
+            stream->println( firmwareVersion );
             stream->flush( );
         }
         break;
@@ -700,7 +713,7 @@ JerialClass::~JerialClass() {
 // ============================================================================
 // Stream Interface Implementation
 // ============================================================================
-#define DEBUG_JERIAL 1
+#define DEBUG_JERIAL 0
 int JerialClass::available() {
     // CRITICAL: Check InjectionBufferStream first (with tag filtering!)
     // This works regardless of line buffering mode
@@ -860,7 +873,18 @@ bool JerialClass::service() {
     // 1. InjectionBufferStream (priority) - for AsyncPassthrough commands
     // 2. Real input stream (Serial) - for user input
     // No manual switching needed!
-    
+        if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
+        Serial.write( 0x0E ); // Turn ON interactive mode
+        Serial.print( "Turning on interactive mode\n\r" );
+        Serial.flush( );
+        termInInteractiveMode = 1;
+    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
+        Serial.write( 0x0F ); // Turn OFF interactive mode
+        Serial.print( "Turning off interactive mode\n\r" );
+        Serial.flush( );
+        termInInteractiveMode = 0;
+    }
+
     static uint32_t last_debug = 0;
     #if DEBUG_JERIAL == 1
     if (millis() - last_debug > 1000) {
@@ -1588,9 +1612,36 @@ size_t JerialClass::writeToOutputs(const uint8_t *buffer, size_t size) {
     return written;
 }
 
-
 // ============================================================================
-// OLEDStream Implementation (with enhanced filtering)
+// Line Ending Normalization
+// ============================================================================
+// When terminal_line_buffering is enabled and the user connects via a terminal
+// like Tabby (rather than the Jumperless App which auto-normalizes), bare \n
+// characters don't produce proper line breaks. This converts \n to \r\n.
+
+size_t JerialClass::printNormalized(const String& str) {
+    return printNormalized(str.c_str());
+}
+
+size_t JerialClass::printNormalized(const char* str) {
+    if (!str) return 0;
+    
+    size_t written = 0;
+    char prev = 0;
+    
+    while (*str) {
+        if (*str == '\n' && prev != '\r') {
+            written += write((uint8_t)'\r');
+        }
+        written += write((uint8_t)*str);
+        prev = *str;
+        str++;
+    }
+    
+    return written;
+}
+
+
 // ============================================================================
 
 // Global instance

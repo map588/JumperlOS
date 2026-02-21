@@ -37,6 +37,7 @@ int measureModeIndicatorPalette = PALETTE_PURPLE;
 mutex_t core_sync_mutex;
 mutex_t fs_mutex;
 
+
 // Track if we've been initialized
 static bool sync_initialized = false;
 
@@ -73,6 +74,8 @@ bool core_sync_acquire_timeout_ms(uint32_t timeout_ms) {
     if (!sync_initialized) return true;
     return mutex_enter_timeout_ms(&core_sync_mutex, timeout_ms);
 }
+
+
 
 // =============================================================================
 // Filesystem Mutex Functions

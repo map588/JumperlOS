@@ -15,7 +15,7 @@ KevinC@ppucc.io
 #include "pico.h"
 #define PICO_RP2350A 0
 // #include <pico/stdlib.h>
-#include "user_functions.h"
+
 #include <Arduino.h>
 
 #ifdef USE_TINYUSB
@@ -26,8 +26,8 @@ KevinC@ppucc.io
 #include "ArduinoStuff.h"
 #include "CH446Q.h"
 #include "Commands.h"
-#include <JeoPixel.h>
 #include <EEPROM.h>
+#include <JeoPixel.h>
 #include <SPI.h>
 #include <Wire.h>
 
@@ -39,6 +39,7 @@ KevinC@ppucc.io
 #include "FakeGpio.h"
 #include "FileParsing.h"
 #include "FilesystemStuff.h"
+#include "GraphicOverlays.h"
 #include "Graphics.h"
 #include "HelpDocs.h"
 #include "Highlighting.h"
@@ -46,7 +47,6 @@ KevinC@ppucc.io
 #include "JumperlOS.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
-#include "GraphicOverlays.h"
 #include "LogicAnalyzer.h"
 #include "MatrixState.h"
 #include "Menus.h"
@@ -59,19 +59,18 @@ KevinC@ppucc.io
 #include "RotaryEncoder.h"
 #include "States.h" // New state management system
 // TermControl is now part of Jerial.h
-#include "TuiGlue.h"
+
 #include "USBfs.h"
 #include "configManager.h"
 #include "externVars.h"
 #include "oled.h"
-#include "user_functions.h"
 #include <hardware/adc.h>
 
+#include "MeasureMode.h"
 #include "MpRemoteService.h"    // mpremote/ViperIDE raw REPL service
 #include "SingleCharCommands.h" // Single-character command system
 #include "WaveGen.h"            // New async wavegen
 #include "externVars.h"
-#include "MeasureMode.h"
 
 bread b;
 
@@ -79,8 +78,7 @@ bread b;
 bool debugWaitLoopTiming = false;
 bool debugUSB = false; // USB mass storage debug output
 
-// Tui UI/UX System
-TuiGlue tuiGlue;
+
 
 // Global async waveform generator
 WaveGen wavegen;
@@ -124,7 +122,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.5.4"; //! remember to update this
+const char firmwareVersion[] = "5.6.5.5"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -135,11 +133,10 @@ void setup( ) {
     pinMode( RESETPIN, OUTPUT_12MA );
 
     digitalWrite( RESETPIN, HIGH );
-    
+
     // CRITICAL: Hold Arduino in reset during JumperlOS boot
     // This prevents the Arduino from sending commands before the system is ready
     // The reset will be released in AsyncPassthrough::signalStartupComplete()
-
 
     // FatFS.begin();
     if ( !FatFS.begin( ) ) {
@@ -152,22 +149,19 @@ void setup( ) {
     // This provides proper mutex-based protection for shared resources
     core_sync_init( );
     Serial.begin( 115200 );
-    
 
     // Configure Jerial for both input and output
     // Jerial automatically enables terminal control (line editing, history) for USB Serial endpoints
     // InjectionBufferStream is automatically prioritized via MultiSourceStream layer
     Jerial.setInputStream( JerialEndpoint::USB_SERIAL );  // Input with terminal control
     Jerial.addOutputStream( JerialEndpoint::USB_SERIAL ); // Output to USB
-    
 
-    
     startupTimers[ 0 ] = millis( );
 
     // Load hardware revision from EEPROM first (survives config resets)
     // This reads directly from EEPROM and initializes it if needed
     loadHardwareFromEEPROM( );
-    
+
     loadConfig( );
 
     // Check for firmware updates and provision new files if needed
@@ -203,7 +197,6 @@ void setup( ) {
         jumperlessConfig.top_oled.show_in_terminal = 3;
     }
 
-
     // Jerial.addOutputStream(JerialEndpoint::USB_SER2);  // Output to Serial1
     // Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
     // Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
@@ -229,7 +222,7 @@ void setup( ) {
 
     // Serial.println("INA219 initialized");
     // Serial.flush();
-    SetArduinoResetLine(LOW, 1);  // Hold both Arduinos in reset
+    SetArduinoResetLine( LOW, 1 ); // Hold both Arduinos in reset
     delayMicroseconds( 100 );
 
     digitalWrite( RESETPIN, LOW );
@@ -258,14 +251,13 @@ void setup( ) {
     // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
     // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
     // Serial.flush();
-//delay(50);
-    
+    // delay(50);
 
     startupTimers[ 5 ] = millis( );
     // Serial.println("NTCC initialized");
     // Serial.flush();
     delayMicroseconds( 100 );
-    
+
     // Serial.println("Arduino initialized");
     // Serial.flush();
     // delay(100);
@@ -277,7 +269,6 @@ void setup( ) {
     // Serial.flush();
 
     getNothingTouched( );
-
 
     startupTimers[ 8 ] = millis( );
     // createSlots( -1, 0 );
@@ -321,9 +312,7 @@ void setup( ) {
     jOS.registerService( &highlighting );    // HIGH - visual feedback
     jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
 
-
     jOS.registerService( &measureModeService );
-
 
     // NORMAL priority services - periodic tasks
     jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
@@ -331,11 +320,11 @@ void setup( ) {
     jOS.registerService( &singleCharCommands ); // NORMAL - command execution (synchronous, not periodic)
 
     // LOW priority services - background tasks
-    jOS.registerService( &oledService );          // LOW - display updates
-    jOS.registerService( &liveCrossbarService );  // LOW - live crossbar terminal display
-    jOS.registerService( &probeSwitch );          // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );            // LOW - expensive ADC pad reading
-    jOS.registerService( &configSaveService );    // LOW - background config save (non-blocking)
+    jOS.registerService( &oledService );         // LOW - display updates
+    jOS.registerService( &liveCrossbarService ); // LOW - live crossbar terminal display
+    jOS.registerService( &probeSwitch );         // LOW - switch position (not time-critical)
+    jOS.registerService( &probePads );           // LOW - expensive ADC pad reading
+    jOS.registerService( &configSaveService );   // LOW - background config save (non-blocking)
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts
@@ -352,7 +341,7 @@ void setup( ) {
     ContextManager::getInstance( ).pushContext( mainMenuCtx );
     // Clear any non-scrolling region that may persist from a previous session
     // This resets terminal state in case LED dump or crossbar display was active before reboot
-    clearNonScrollingRegion();
+    clearNonScrollingRegion( );
     // Serial.println("Service registration complete");
     // Serial.flush();
 }
@@ -403,31 +392,29 @@ void setup1( ) {
     startupCore2timers[ 8 ] = millis( );
 }
 
-
 #define TEST_PSRAM 0
 
 #if TEST_PSRAM == 1
 
-int buff[4 *1024 ] PSRAM;   // 4MB array
+int buff[ 4 * 1024 ] PSRAM; // 4MB array
 
-void initBuff() {
-    //bzero(buff, sizeof(buff));
-    for (int i = 0; i < 4 *1024 ; i += 1) {
-        buff[i] = i;
+void initBuff( ) {
+    // bzero(buff, sizeof(buff));
+    for ( int i = 0; i < 4 * 1024; i += 1 ) {
+        buff[ i ] = i;
     }
 }
 
-void printBuff() {
-    for (int i = 0; i < 4 *1024 ; i += 1) {
-        Serial.print(buff[i]);
-        Serial.print(" ");
-        Serial.flush();
+void printBuff( ) {
+    for ( int i = 0; i < 4 * 1024; i += 1 ) {
+        Serial.print( buff[ i ] );
+        Serial.print( " " );
+        Serial.flush( );
     }
     Serial.println( );
-    Serial.flush();
+    Serial.flush( );
 }
 #endif
-
 
 char connectFromArduino = '\0';
 
@@ -471,7 +458,6 @@ unsigned long core1Timeout = millis( );
 
 #define SETUP_LOGIC_ANALYZER_ON_BOOT 0
 
-
 #define debug_startup_timers 0
 #define debug_busy_timers 0
 
@@ -489,10 +475,7 @@ unsigned long busyTimers[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 // Global storage for current command line (for backwards compatibility with parsers)
 String currentCommandLine = "";
 
-
-unsigned long loopStart = millis();
-
-
+unsigned long loopStart = millis( );
 
 void loop( ) {
     // Declare variables at function scope to avoid goto scope issues
@@ -533,23 +516,23 @@ menu:
             oled.init( );
         }
         checkProbeCurrentZero( );
- 
+
         printColorJogoSmall( );
 #if TEST_PSRAM == 1
-        while (1) {
+        while ( 1 ) {
             initBuff( );
             printBuff( );
-            delay(1000);
+            delay( 1000 );
         }
 #endif
         firstLoop = 0;
-        
-        // Defer startup complete by STARTUP_COMPLETE_DELAY_MS to avoid crashing
-        // if an Arduino is already sending UART data at boot
-        #if ASYNC_PASSTHROUGH_ENABLED == 1
-        startupCompleteRequestTime = millis();
+
+// Defer startup complete by STARTUP_COMPLETE_DELAY_MS to avoid crashing
+// if an Arduino is already sending UART data at boot
+#if ASYNC_PASSTHROUGH_ENABLED == 1
+        startupCompleteRequestTime = millis( );
         startupCompletePending = true;
-        #endif
+#endif
 
 #if SETUP_LOGIC_ANALYZER_ON_BOOT == 1
         goto setupla;
@@ -582,17 +565,6 @@ menu:
     // Jerial.print("clearHighlighting");
     // Jerial.flush();
 
-    if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
-        Serial.write( 0x0E ); // Turn ON interactive mode
-        Serial.print( "Turning on interactive mode\n\r" );
-        Serial.flush( );
-        termInInteractiveMode = 1;
-    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
-        Serial.write( 0x0F ); // Turn OFF interactive mode
-        Serial.print( "Turning off interactive mode\n\r" );
-        Serial.flush( );
-        termInInteractiveMode = 0;
-    }
     // Serial.print("termInInteractiveMode = ");
     // Serial.println(termInInteractiveMode);
     // Serial.flush();
@@ -661,12 +633,11 @@ dontshowmenu:
     static uint32_t heartbeatCounter = 0;
     static uint32_t lastHeartbeatPrint = 0;
 
-    
-loopStart = millis();
+    loopStart = millis( );
     while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
               ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
-        
+
         // Heartbeat disabled for production
         heartbeatCounter++;
         bool printHeartbeat = false; // Was: (heartbeatCounter - lastHeartbeatPrint >= 10000)
@@ -691,8 +662,6 @@ loopStart = millis();
         } // Loop start
 #endif
 
-
-
         // Service all registered subsystems via jOSmanager
         // This now includes: Jerial, tud_task, usbPeriodic, oledPeriodic, and all other services
         jOS.serviceAll( );
@@ -704,11 +673,6 @@ loopStart = millis();
             tud_task( );
             lastHeartbeatPrint = heartbeatCounter; // Update here so we get consistent '<{...}>'
         }
-
-
-        
-
-
 
 #if DEBUG_MAIN_LOOP_CHECKPOINTS
         if ( printLoop ) {
@@ -744,7 +708,7 @@ loopStart = millis();
         // CRITICAL: Handle Arduino flashing (DTR pulse detection) on Core 0
         // This MUST run on Core 0 because it can call refreshLocalConnections()
         // via flashArduino() -> connectArduino() -> refresh() chain
-        // 
+        //
         // AsyncPassthrough::task() is now handled by asyncPassthroughService (CRITICAL priority)
         // but secondSerialHandler() is still needed for:
         //   1. Detecting DTR pulse (checked via wasDTRPulseDetected())
@@ -752,11 +716,11 @@ loopStart = millis();
         static unsigned long lastSecondSerialCheck = 0;
         if ( millis( ) - lastSecondSerialCheck > 10 ) {
             lastSecondSerialCheck = millis( );
-            
+
             // Handle Arduino flashing - checks DTR pulse and auto-connects UART
             // Note: DTR detection now happens in AsyncPassthrough::checkDTRState()
             // but we still need this for the auto-connect and active servicing
-            secondSerialHandler();
+            secondSerialHandler( );
         }
         busyTimers[ 2 ] = micros( );
 
@@ -770,7 +734,7 @@ loopStart = millis();
         // Note: clickMenu() is called within menus.service(), but we need to detect result
         // This will be refactored when we remove gotos entirely
         if ( menus.inClickMenu != 0 ) {
-           
+
             goto loadfile;
         }
         busyTimers[ 3 ] = micros( );
@@ -829,17 +793,18 @@ loopStart = millis();
         // This prevents crashes if commands somehow get queued before system is ready
         if ( firstLoop > 0 ) {
             // Discard the command - system not ready
-            CommandBuffer::getInstance( ).consumePendingCommand( );  // Consume and discard
+            CommandBuffer::getInstance( ).consumePendingCommand( ); // Consume and discard
             // Serial.println( "Warning: Command ignored during startup" );
         } else {
             // Use zero-copy consume to avoid heap-allocating a String for every command
             // String heap fragmentation was causing crashes after minutes of continuous commands
             const char* cmdPtr = CommandBuffer::getInstance( ).consumePendingCommandPtr( );
-            
+
             if ( cmdPtr != nullptr ) {
                 // Trim leading whitespace manually (avoid extra String heap ops)
-                while ( *cmdPtr == ' ' || *cmdPtr == '\t' || *cmdPtr == '\r' || *cmdPtr == '\n' ) cmdPtr++;
-                
+                while ( *cmdPtr == ' ' || *cmdPtr == '\t' || *cmdPtr == '\r' || *cmdPtr == '\n' )
+                    cmdPtr++;
+
                 if ( *cmdPtr != '\0' ) {
                     // SAFETY: Validate command has printable content before processing
                     // This prevents garbled/corrupted serial data from reaching command handlers
@@ -855,50 +820,50 @@ loopStart = millis();
                     }
 
                     if ( hasValidContent ) {
-                    // Single String creation for compatibility with executeCommand API
-                    currentCommandLine = cmdPtr;
-                    currentCommandLine.trim( );
-                    input = cmdPtr[ 0 ];
+                        // Single String creation for compatibility with executeCommand API
+                        currentCommandLine = cmdPtr;
+                        currentCommandLine.trim( );
+                        input = cmdPtr[ 0 ];
 
-                // Service USB to prevent port disconnect during command execution
-                tud_task( );
+                        // Service USB to prevent port disconnect during command execution
+                        tud_task( );
 
-                // Execute the command
-                inMainMenu = true;
-                CommandResult cmdResult = singleCharCommands.executeCommand( (char)input, currentCommandLine );
-                inMainMenu = false;
+                        // Execute the command
+                        inMainMenu = true;
+                        CommandResult cmdResult = singleCharCommands.executeCommand( (char)input, currentCommandLine );
+                        inMainMenu = false;
 
-            // Queue response to UART if command came from there
-            if ( CommandBuffer::getInstance( ).shouldRespondToUART( ) ) {
-                // Response already sent to Serial - copy to UART buffer
-                // (The command handler writes to Serial, which we can intercept)
-                // For now, the command handlers need to check shouldRespondToUART()
-                // and queue responses via CommandBuffer::getInstance().queueForUART()
-                CommandBuffer::getInstance( ).setRespondToUART( false ); // Reset flag
-            }
+                        // Queue response to UART if command came from there
+                        if ( CommandBuffer::getInstance( ).shouldRespondToUART( ) ) {
+                            // Response already sent to Serial - copy to UART buffer
+                            // (The command handler writes to Serial, which we can intercept)
+                            // For now, the command handlers need to check shouldRespondToUART()
+                            // and queue responses via CommandBuffer::getInstance().queueForUART()
+                            CommandBuffer::getInstance( ).setRespondToUART( false ); // Reset flag
+                        }
 
-            // Clear the command-from-UART flag now that we've processed it
-            AsyncPassthrough::clearCommandFromUARTFlag();
+                        // Clear the command-from-UART flag now that we've processed it
+                        AsyncPassthrough::clearCommandFromUARTFlag( );
 
-            CommandBuffer::getInstance( ).incrementCommandsProcessed( );
+                        CommandBuffer::getInstance( ).incrementCommandsProcessed( );
 
-            // Handle special command results
-            switch ( cmdResult ) {
-            case CMD_LOAD_FILE:
-                goto loadfile;
-            case CMD_SHOW_MENU:
-                // Refresh display
-                break;
-            default:
-                break;
-            }
+                        // Handle special command results
+                        switch ( cmdResult ) {
+                        case CMD_LOAD_FILE:
+                            goto loadfile;
+                        case CMD_SHOW_MENU:
+                            // Refresh display
+                            break;
+                        default:
+                            break;
+                        }
 
-            goto dontshowmenu; // Skip menu display
-                    }  // end if (hasValidContent)
-            }  // end if (*cmdPtr != '\0')
-            }  // end if (cmdPtr != nullptr)
-        }  // end else (firstLoop == 0)
-    }  // end if (hasPendingCommand)
+                        goto dontshowmenu; // Skip menu display
+                    } // end if (hasValidContent)
+                } // end if (*cmdPtr != '\0')
+            } // end if (cmdPtr != nullptr)
+        } // end else (firstLoop == 0)
+    } // end if (hasPendingCommand)
 
     // Check for completed lines first (includes both injected and buffered input)
     // This works regardless of line buffering mode - injected commands always work
@@ -954,7 +919,8 @@ loopStart = millis();
     // All help reads use Jerial (same stream as the first character).
     if ( input == 'h' ) {
         unsigned long helpTimer = millis( );
-        while ( Jerial.available( ) == 0 && millis( ) - helpTimer < HELP_WAIT_MS ) {}
+        while ( Jerial.available( ) == 0 && millis( ) - helpTimer < HELP_WAIT_MS ) {
+        }
         if ( Jerial.available( ) > 0 ) {
             String helpString = "h";
             while ( Jerial.available( ) > 0 && helpString.length( ) < 50 ) {
@@ -981,7 +947,8 @@ loopStart = millis();
     if ( input != '\n' && input != '\r' && input != ' ' &&
          ( input != 'A' && input != 'a' ) ) {
         unsigned long helpTimer = millis( );
-        while ( Jerial.available( ) == 0 && millis( ) - helpTimer < HELP_WAIT_MS ) {}
+        while ( Jerial.available( ) == 0 && millis( ) - helpTimer < HELP_WAIT_MS ) {
+        }
         if ( Jerial.available( ) > 0 && Jerial.peek( ) == '?' ) {
             Jerial.read( ); // consume '?'
             showCommandHelp( input );
@@ -1131,7 +1098,6 @@ bool debugWaitLoopTimingCore2 = false; // Enable via 'core2timing' command
 unsigned long lastCore2LoopStart = 5000000;
 unsigned long t[ 22 ];
 
-
 // Core 2 timing stats - smart accumulation
 unsigned long core2LoopIterations = 0;
 unsigned long lastTimingPrint = 0;
@@ -1143,7 +1109,6 @@ unsigned long ledShowTime = 0;
 unsigned long ledShowTotalTime = 0;
 unsigned long ledShowMinTime = 999999;
 unsigned long ledShowMaxTime = 0;
-
 
 #define POWER_SUPPLY_SENSE_ENABLED 1
 
@@ -1237,23 +1202,23 @@ void loop1( ) {
             // Serial.printf( "CORE2: logicAnalyzer.handler() took %lu us\n", t[1] - t[0] );
         }
     }
-    
-    #if POWER_SUPPLY_SENSE_ENABLED == 1
 
-    if (  millis( ) - powerSupplySenseTimer > powerSupplySenseRate ) {
+#if POWER_SUPPLY_SENSE_ENABLED == 1
+
+    if ( millis( ) - powerSupplySenseTimer > powerSupplySenseRate ) {
 
         supplySense = readAdcVoltage( 6, 4 );
 
         if ( printPowerSupplySense == 1 ) {
-        Serial.print( "supplySense = " );
-        Serial.println( supplySense );
+            Serial.print( "supplySense = " );
+            Serial.println( supplySense );
 
-        Serial.flush( );
+            Serial.flush( );
         }
 
         powerSupplySenseTimer = millis( );
     }
-    #endif
+#endif
     // OPTIMIZATION: Only service wavegen when it's actually running
     // wavegen.service() contains a blocking while() loop for I2C streaming!
     t[ 2 ] = micros( );
@@ -1328,7 +1293,7 @@ void loop1( ) {
 unsigned long lastForcedShow = 0;
 
 // DEBUG: Set to 1 to disable Core 2 processing for crash debugging
-#define DEBUG_DISABLE_CORE2_PROCESSING 0  // TEMP: Testing if crash is in Core 2
+#define DEBUG_DISABLE_CORE2_PROCESSING 0 // TEMP: Testing if crash is in Core 2
 
 void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 {
@@ -1620,7 +1585,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             //     }
 
             //     rotaryEncoderStuff( );
-       
+
         } else {
             t[ 20 ] = micros( );
             rotaryEncoderStuff( );
@@ -1634,7 +1599,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
         schedulerTimer = micros( );
         core2busy = false;
-    }  else if ( checkingButton == 0 && ProbeButton::getInstance().getButtonState() == 0 ) {
+    } else if ( checkingButton == 0 && ProbeButton::getInstance( ).getButtonState( ) == 0 ) {
         t[ 14 ] = micros( );
         probeLEDhandler( );
         t[ 15 ] = micros( );

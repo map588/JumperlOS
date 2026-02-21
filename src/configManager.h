@@ -24,7 +24,7 @@ struct StringIntEntry {
 
 // Core configuration functions
 void loadConfig(void);
-void saveConfig(void);
+bool saveConfig(void);
 void resetConfigToDefaults(int clearCalibration = 0, int clearHardware = 0);
 void loadHardwareFromEEPROM(void);  // Load hardware revision from EEPROM (survives config reset)
 
@@ -36,8 +36,8 @@ int compareVersions(const char* v1, const char* v2);  // Compare version strings
 
 // File operations
 void updateConfigFromFile(const char* filename);
-void saveConfigToFile(const char* filename);
-void saveConfigIncremental(const char* filename);  // Optimized save - only writes changed values
+bool saveConfigToFile(const char* filename);
+bool saveConfigIncremental(const char* filename);  // Optimized save - only writes changed values
 bool configHasChanges();  // Returns true if config differs from last saved
 void updateShadowConfig();  // Copy current config to shadow
 
@@ -282,6 +282,20 @@ const StringIntEntry tagParsingTable[] = {
 
 };
 const int tagParsingTableSize = sizeof(tagParsingTable) / sizeof(tagParsingTable[0]);
+
+// Table for parseFlashType
+const StringIntEntry flashTypeTable[] = {
+
+    {"none", 0},
+    {"off", 0},
+    {"disable", 0},
+    {"avr", 1},
+    {"atmega328p", 1},
+    {"esp32", 2},
+    {"rp2040", 3},
+};
+const int flashTypeTableSize = sizeof(flashTypeTable) / sizeof(flashTypeTable[0]);
+
 // Table for parseArbitraryFunction
 const StringIntEntry arbitraryFunctionTable[] = {
     {"off", -1},
@@ -362,3 +376,5 @@ const StringIntEntry arbitraryFunctionTable[] = {
     {"pwm_stop_all", 59},
 };
 const int arbitraryFunctionTableSize = sizeof(arbitraryFunctionTable) / sizeof(arbitraryFunctionTable[0]);
+
+

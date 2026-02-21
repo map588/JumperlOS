@@ -486,6 +486,15 @@ public:
     // ============================================================================
     
     /**
+     * Print a string with line ending normalization.
+     * Converts bare \n (not preceded by \r) to \r\n.
+     * Use this for multiline output (YAML, JSON, etc.) when terminal_line_buffering
+     * is enabled, so terminals like Tabby render line breaks correctly.
+     */
+    size_t printNormalized(const String& str);
+    size_t printNormalized(const char* str);
+    
+    /**
      * Check if a specific stream is registered as output
      */
     bool hasOutputStream(Stream* stream) const;
