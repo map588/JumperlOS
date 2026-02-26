@@ -696,7 +696,7 @@ bool firstRead = true;
        
             if ( millis( ) - finishCountdownTimer > 350 ) {
                 int countup = 0;
-                if ( ( encoderButtonState == 4 && lastButtonEncoderState == 4 ) || ( encoderButtonState == 2 && lastButtonEncoderState == 2 ) ) {
+                if ( ( encoderButtonState == 4 && lastButtonEncoderState == 4 ) || ( encoderButtonState == 2 && lastButtonEncoderState == 2 ) || encoderButtonState >= 4 ) {
                     
                 finishCountdown++;
                 countup = 1;

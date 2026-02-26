@@ -72,6 +72,15 @@ get_gpio_dir = _native.get_gpio_dir
 set_gpio_pull = _native.set_gpio_pull
 get_gpio_pull = _native.get_gpio_pull
 
+# GPIO read-floating and pin-claim (from C source of truth)
+gpio_set_read_floating = _native.gpio_set_read_floating
+gpio_get_read_floating = _native.gpio_get_read_floating
+set_gpio_read_floating = _native.set_gpio_read_floating
+get_gpio_read_floating = _native.get_gpio_read_floating
+gpio_claim_pin = _native.gpio_claim_pin
+gpio_release_pin = _native.gpio_release_pin
+gpio_release_all_pins = _native.gpio_release_all_pins
+
 # ============================================================================
 # PWM Functions
 # ============================================================================
@@ -159,6 +168,7 @@ get_net_info = _native.get_net_info
 net_name = _native.net_name
 net_color = _native.net_color
 net_info = _native.net_info
+get_all_nets = _native.get_all_nets
 
 # ============================================================================
 # Path Query Functions
@@ -249,6 +259,18 @@ check_switch_position = _native.check_switch_position
 SWITCH_MEASURE = _native.SWITCH_MEASURE
 SWITCH_SELECT = _native.SWITCH_SELECT
 SWITCH_UNKNOWN = _native.SWITCH_UNKNOWN
+
+# ============================================================================
+# Overlay Functions
+# ============================================================================
+overlay_set = _native.overlay_set
+overlay_clear = _native.overlay_clear
+overlay_clear_all = _native.overlay_clear_all
+overlay_set_pixel = _native.overlay_set_pixel
+overlay_count = _native.overlay_count
+overlay_shift = _native.overlay_shift
+overlay_place = _native.overlay_place
+overlay_serialize = _native.overlay_serialize
 
 # ============================================================================
 # Status/Debug Functions
@@ -568,6 +590,9 @@ __all__ = [
     # GPIO Functions
     'gpio_set', 'gpio_get', 'gpio_set_dir', 'gpio_get_dir', 'gpio_set_pull', 'gpio_get_pull',
     'set_gpio', 'get_gpio', 'set_gpio_dir', 'get_gpio_dir', 'set_gpio_pull', 'get_gpio_pull',
+    'gpio_set_read_floating', 'gpio_get_read_floating',
+    'set_gpio_read_floating', 'get_gpio_read_floating',
+    'gpio_claim_pin', 'gpio_release_pin', 'gpio_release_all_pins',
     
     # PWM Functions
     'pwm', 'pwm_set_duty_cycle', 'pwm_set_frequency', 'pwm_stop',
@@ -589,7 +614,7 @@ __all__ = [
     
     # Net Information Functions
     'get_net_name', 'set_net_name', 'get_net_color', 'get_net_color_name', 'set_net_color', 'set_net_color_hsv',
-    'get_num_nets', 'get_num_bridges', 'get_net_nodes', 'get_bridge', 'get_net_info',
+    'get_num_nets', 'get_num_bridges', 'get_net_nodes', 'get_bridge', 'get_net_info', 'get_all_nets',
     'net_name', 'net_color', 'net_info',
     
     # Path Query Functions
@@ -614,6 +639,10 @@ __all__ = [
     
     # Probe Switch Functions
     'get_switch_position', 'set_switch_position', 'check_switch_position',
+    
+    # Overlay Functions
+    'overlay_set', 'overlay_clear', 'overlay_clear_all', 'overlay_set_pixel',
+    'overlay_count', 'overlay_shift', 'overlay_place', 'overlay_serialize',
     
     # Status Functions
     'print_bridges', 'print_paths', 'print_crossbars', 'print_nets', 'print_chip_status',
@@ -693,7 +722,7 @@ __all__ = [
     # Clickwheel Constants
     'CLICKWHEEL_NONE', 'CLICKWHEEL_UP', 'CLICKWHEEL_DOWN', 
     'CLICKWHEEL_IDLE', 'CLICKWHEEL_PRESSED', 'CLICKWHEEL_HELD', 
-    'CLICKWHEEL_RELEASED', 'CLICKWHEEL_DOUBLECLICKED',
+    'CLICKWHEEL_RELEASED', 'CLICKWHEEL_DOUBLECLICKED', 
     
     # Probe Pad Constants
     'NO_PAD', 'LOGO_PAD_TOP', 'LOGO_PAD_BOTTOM', 'GPIO_PAD', 'DAC_PAD', 'ADC_PAD',

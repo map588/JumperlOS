@@ -180,30 +180,57 @@ uint8_t const desc_hid_report[] =
 // Configuration Descriptor
 //--------------------------------------------------------------------+
 
+// Same as TUD_CDC_DESCRIPTOR but also sets iFunction in the IAD so that both
+// the IAD string and the interface string carry the CDC name.  The stock macro
+// already puts _stridx in the interface descriptor's iInterface field, but
+// Chrome/macOS doesn't always surface it.  Adding it to the IAD too helps
+// Windows Device Manager show the correct name.
+#define TUD_CDC_DESCRIPTOR_NAMED(_itfnum, _stridx, _ep_notif, _ep_notif_size, _epout, _epin, _epsize) \
+  /* Interface Association — iFunction = _stridx (stock has 0) */\
+  8, TUSB_DESC_INTERFACE_ASSOCIATION, _itfnum, 2, TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, CDC_COMM_PROTOCOL_NONE, _stridx,\
+  /* CDC Control Interface — iInterface = _stridx (same as stock) */\
+  9, TUSB_DESC_INTERFACE, _itfnum, 0, 1, TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, CDC_COMM_PROTOCOL_NONE, _stridx,\
+  /* CDC Header */\
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_HEADER, U16_TO_U8S_LE(0x0120),\
+  /* CDC Call Management */\
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_CALL_MANAGEMENT, 0, (uint8_t)((_itfnum) + 1),\
+  /* CDC ACM: line coding + send break (bmCapabilities = 0x06) */\
+  4, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_ABSTRACT_CONTROL_MANAGEMENT, 6,\
+  /* CDC Union */\
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_UNION, _itfnum, (uint8_t)((_itfnum) + 1),\
+  /* Endpoint Notification */\
+  7, TUSB_DESC_ENDPOINT, _ep_notif, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(_ep_notif_size), 1,\
+  /* CDC Data Interface */\
+  9, TUSB_DESC_INTERFACE, (uint8_t)((_itfnum)+1), 0, 2, TUSB_CLASS_CDC_DATA, 0, 0, 0,\
+  /* Endpoint Out */\
+  7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, U16_TO_U8S_LE(_epsize), 0,\
+  /* Endpoint In */\
+  7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, U16_TO_U8S_LE(_epsize), 0
+
 uint8_t const desc_fs_configuration[] =
 {
   // Config number, interface count, string index, total length, attribute, power in mA
   TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x80, 500),
 
-  // CDC interfaces with IADs for better enumeration
+  // CDC interfaces — uses _NAMED variant so WebUSB can read interfaceName
 #if USB_CDC_ENABLE_COUNT >= 1
-  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_0, 4, EPNUM_CDC_0_NOTIF, 8, EPNUM_CDC_0_OUT, EPNUM_CDC_0_IN, 64),
+  TUD_CDC_DESCRIPTOR_NAMED(ITF_NUM_CDC_0, 4, EPNUM_CDC_0_NOTIF, 8, EPNUM_CDC_0_OUT, EPNUM_CDC_0_IN, 64),
 #endif
 
 #if USB_CDC_ENABLE_COUNT >= 2
-  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_1, 5, EPNUM_CDC_1_NOTIF, 8, EPNUM_CDC_1_OUT, EPNUM_CDC_1_IN, 64),
+  TUD_CDC_DESCRIPTOR_NAMED(ITF_NUM_CDC_1, 5, EPNUM_CDC_1_NOTIF, 8, EPNUM_CDC_1_OUT, EPNUM_CDC_1_IN, 64),
 #endif
 
 #if USB_CDC_ENABLE_COUNT >= 3
-  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_2, 6, EPNUM_CDC_2_NOTIF, 8, EPNUM_CDC_2_OUT, EPNUM_CDC_2_IN, 64),
+  TUD_CDC_DESCRIPTOR_NAMED(ITF_NUM_CDC_2, 6, EPNUM_CDC_2_NOTIF, 8, EPNUM_CDC_2_OUT, EPNUM_CDC_2_IN, 64),
 #endif
 
 #if USB_CDC_ENABLE_COUNT >= 4
-  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_3, 7, EPNUM_CDC_3_NOTIF, 8, EPNUM_CDC_3_OUT, EPNUM_CDC_3_IN, 64),
+  TUD_CDC_DESCRIPTOR_NAMED(ITF_NUM_CDC_3, 7, EPNUM_CDC_3_NOTIF, 8, EPNUM_CDC_3_OUT, EPNUM_CDC_3_IN, 64),
 #endif
 
 #if USB_CDC_ENABLE_COUNT >= 5
-  TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_4, 8, EPNUM_CDC_4_NOTIF, 8, EPNUM_CDC_4_OUT, EPNUM_CDC_4_IN, 64),
+  TUD_CDC_DESCRIPTOR_NAMED(ITF_NUM_CDC_4, 8, EPNUM_CDC_4_NOTIF, 8, EPNUM_CDC_4_OUT, EPNUM_CDC_4_IN, 64),
 #endif
 
   // MSC interface - place after CDC interfaces for better compatibility

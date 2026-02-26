@@ -144,6 +144,9 @@ void initArduino( void ) // if the UART is set up, the Arduino won't flash from
 
     pinMode( 18, INPUT );
     SetArduinoResetLine(LOW, 1);
+
+
+    USBSer3.begin(115200);
    // pinMode( 19, INPUT );
 }
 
@@ -371,6 +374,16 @@ int serialPassthroughStatusTimeout = 50;
 int secondSerialHandler( void ) {
     // AsyncPassthrough handles all serial bridging via asyncPassthroughService (CRITICAL priority)
     // This function now only handles DTR pulse detection for Arduino flashing
+
+   if( USBSer3.available() > 0 ) {
+        char c = USBSer3.read();
+     //   USBSer2.write(c);
+        USBSer3.println("JL TUI: " + String(c));
+        USBSer3.flush();
+       
+     //   Serial.print(c);
+    }
+
 
     #if ASYNC_PASSTHROUGH_ENABLED == 1
     // DTR checking happens automatically in AsyncPassthrough::task()

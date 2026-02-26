@@ -8,6 +8,9 @@ The output format is:
 
 Usage:
     python image_to_oled_bitmap.py input_image.png output.bin [--width 128] [--height 32]
+
+The same conversion is available in JumperIDE: use Tools → "Convert PNG to OLED bitmap"
+or open any .bin in the bitmap viewer and click "Import PNG" to upload a 128×32 image.
 """
 
 import sys

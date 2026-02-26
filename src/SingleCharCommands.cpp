@@ -1421,7 +1421,15 @@ CommandResult cmd_showCrossbar( char c, const String& line ) {
         setLiveCrossbarEnabled( !liveCrossbarEnabled );
         return CMD_SHOW_MENU;
     }
-    
+    // c0 / c1 — force live mode off or on
+    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+        extern bool liveCrossbarEnabled;
+        bool enable = ( arg[ 0 ] == '1' );
+        setLiveCrossbarEnabled( enable );
+        Jerial.println( enable ? "Live crossbar enabled" : "Live crossbar disabled" );
+        return CMD_SHOW_MENU;
+    }
+
     // Otherwise show compact crossbar view
     printChipStateArrayColorCompact( 12 , '.');
     return CMD_DONT_SHOW_MENU;
@@ -1451,7 +1459,12 @@ CommandResult cmd_queryActiveSlot( char c, const String& line ) {
 
 
 CommandResult cmd_toggleLineBuffering( char c, const String& line ) {
-    jumperlessConfig.display.terminal_line_buffering = !jumperlessConfig.display.terminal_line_buffering;
+    String arg = getCommandArgs( line, 50 );
+    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+        jumperlessConfig.display.terminal_line_buffering = ( arg[ 0 ] == '1' ) ? 1 : 0;
+    } else {
+        jumperlessConfig.display.terminal_line_buffering = !jumperlessConfig.display.terminal_line_buffering;
+    }
     Jerial.print( "Line buffering " );
     Jerial.println( jumperlessConfig.display.terminal_line_buffering ? "enabled" : "disabled" );
     configChanged = true;
@@ -2535,17 +2548,23 @@ CommandResult cmd_ledBrightness( char c, const String& line ) {
 }
 
 CommandResult cmd_toggleOLED( char c, const String& line ) {
-    if ( jumperlessConfig.top_oled.enabled == 0 ) {
+    String arg = getCommandArgs( line, 50 );
+    bool enable;
+    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+        enable = ( arg[ 0 ] == '1' );
+    } else {
+        enable = ( jumperlessConfig.top_oled.enabled == 0 ); // toggle
+    }
+    extern bool configChanged;
+    if ( enable ) {
         Jerial.println( "oled enabled" );
         oled.init( );
         jumperlessConfig.top_oled.enabled = 1;
-        extern bool configChanged;
         configChanged = true;
     } else {
         oled.disconnect( );
         jumperlessConfig.top_oled.enabled = 0;
         oled.oledConnected = false;
-        extern bool configChanged;
         configChanged = true;
         Jerial.println( "oled disconnected" );
     }
@@ -2554,7 +2573,14 @@ CommandResult cmd_toggleOLED( char c, const String& line ) {
 
 CommandResult cmd_toggleTerminalColors( char c, const String& line ) {
     extern bool disableTerminalColors;
-    disableTerminalColors = !disableTerminalColors;
+    String arg = getCommandArgs( line, 50 );
+    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+        // '0' = enable colors (disableTerminalColors = false)
+        // '1' = disable colors (disableTerminalColors = true)
+        disableTerminalColors = ( arg[ 0 ] == '0' ) ? false : true;
+    } else {
+        disableTerminalColors = !disableTerminalColors;
+    }
     if ( disableTerminalColors ) {
         Jerial.println( "Terminal colors disabled" );
     } else {
@@ -2574,11 +2600,14 @@ CommandResult cmd_dontShowMenu( char c, const String& line ) {
 }
 
 CommandResult cmd_oledInTerminal( char c, const String& line ) {
-    if ( jumperlessConfig.top_oled.show_in_terminal > 0 ) {
-        jumperlessConfig.top_oled.show_in_terminal = 1;
+    String arg = getCommandArgs( line, 50 );
+    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+        jumperlessConfig.top_oled.show_in_terminal = ( arg[ 0 ] == '1' ) ? 1 : 0;
     } else {
-        jumperlessConfig.top_oled.show_in_terminal = 0;
+        jumperlessConfig.top_oled.show_in_terminal = ( jumperlessConfig.top_oled.show_in_terminal > 0 ) ? 0 : 1;
     }
+    Jerial.print( "OLED in terminal " );
+    Jerial.println( jumperlessConfig.top_oled.show_in_terminal ? "enabled" : "disabled" );
     extern bool configChanged;
     configChanged = true;
     return CMD_SHOW_MENU;
@@ -2613,7 +2642,12 @@ CommandResult cmd_logicAnalyzer( char c, const String& line ) {
 CommandResult cmd_showBoardLEDs( char c, const String& line ) {
     // Use scrolling region approach for LED dump display
     // ledDumpEnabled is defined in Graphics.cpp
-    setLedDumpEnabled( !ledDumpEnabled );
+    String arg = getCommandArgs( line, 50 );
+    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+        setLedDumpEnabled( arg[ 0 ] == '1' );
+    } else {
+        setLedDumpEnabled( !ledDumpEnabled );
+    }
     return CMD_DONT_SHOW_MENU;
 }
 

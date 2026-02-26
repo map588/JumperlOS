@@ -231,6 +231,34 @@ def get_gpio_pull(pin: GPIOPin) -> GPIOPull:
     """Alias for gpio_get_pull()"""
     ...
 
+def gpio_set_read_floating(pin: GPIOPin, enable: bool) -> None:
+    """Set whether GPIO reads as floating when disconnected"""
+    ...
+
+def gpio_get_read_floating(pin: GPIOPin) -> bool:
+    """Get whether GPIO reads as floating when disconnected"""
+    ...
+
+def set_gpio_read_floating(pin: GPIOPin, enable: bool) -> None:
+    """Alias for gpio_set_read_floating()"""
+    ...
+
+def get_gpio_read_floating(pin: GPIOPin) -> bool:
+    """Alias for gpio_get_read_floating()"""
+    ...
+
+def gpio_claim_pin(pin: GPIOPin) -> None:
+    """Claim pin for timing-critical use (e.g. NeoPixels); release when done"""
+    ...
+
+def gpio_release_pin(pin: GPIOPin) -> None:
+    """Release a previously claimed pin"""
+    ...
+
+def gpio_release_all_pins() -> None:
+    """Release all claimed GPIO pins"""
+    ...
+
 # ============================================================================
 # PWM Functions
 # ============================================================================
@@ -532,6 +560,10 @@ def net_color(netNum: int) -> int:
 
 def net_info(netNum: int) -> Dict[str, Union[str, int]]:
     """Alias for get_net_info()"""
+    ...
+
+def get_all_nets() -> List[Dict[str, Union[str, int]]]:
+    """Get list of all nets with full info"""
     ...
 
 def set_net_color_hsv(netNum: int, h: float, s: float = -1, v: float = -1) -> bool:
@@ -1125,6 +1157,42 @@ def fs_write(path: str, content: str) -> bool:
 
 def fs_cwd() -> str:
     """Get current working directory"""
+    ...
+
+# ============================================================================
+# Overlay Functions
+# ============================================================================
+
+def overlay_set(netNum: int, r: int, g: int, b: int) -> None:
+    """Set overlay color for a net (RGB 0-255)"""
+    ...
+
+def overlay_clear(netNum: int) -> None:
+    """Clear overlay for a net"""
+    ...
+
+def overlay_clear_all() -> None:
+    """Clear all overlays"""
+    ...
+
+def overlay_set_pixel(x: int, y: int, r: int, g: int, b: int) -> None:
+    """Set overlay pixel at (x, y) to RGB"""
+    ...
+
+def overlay_count() -> int:
+    """Return number of active overlays"""
+    ...
+
+def overlay_shift(dx: int = 0, dy: int = 0) -> None:
+    """Shift overlay position"""
+    ...
+
+def overlay_place(netNum: int, x: int, y: int) -> None:
+    """Place overlay for net at (x, y)"""
+    ...
+
+def overlay_serialize() -> str:
+    """Serialize overlays to YAML string"""
     ...
 
 # ============================================================================
