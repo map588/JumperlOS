@@ -37,6 +37,7 @@ TermControl::TermControl( Stream* underlying_stream, bool create_own_history )
       echo_enabled( true ),
       syntax_highlighter( underlying_stream ),
       ansi_state( ANSI_NORMAL ),
+      brace_depth( 0 ),
       queue_head( 0 ),
       queue_tail( 0 ),
       queue_count( 0 ),
@@ -356,9 +357,20 @@ void TermControl::handleNormalChar( char c ) {
 
     default:
         if ( c >= 32 && c <= 126 ) { // Printable characters
+            if ( c == '{' || c == '[' || c == '(' ) {
+                brace_depth++;
+            } else if ( c == '}' || c == ']' || c == ')' ) {
+                if ( brace_depth > 0 ) {
+                    brace_depth--;
+                }
+            }
+
             insertCharAtCursor( c );
             if ( echo_enabled ) {
-                renderCurrentLine( );
+                if ( brace_depth == 0 ) {
+                    renderCurrentLine( );
+                }
+                // No rerender while inside braces/brackets/parens to avoid spam
             }
         }
         break;
@@ -394,8 +406,10 @@ void TermControl::handleEnter( ) {
     #endif
     
     if ( echo_enabled && stream ) {
-        stream->print( JERIAL_NEWLINE_OUT );
-        stream->flush( );
+        if ( brace_depth == 0 ) {
+            stream->print( JERIAL_NEWLINE_OUT );
+            stream->flush( );
+        }
     }
 
     // Add to history if we have a history manager and non-empty line
@@ -432,6 +446,23 @@ void TermControl::handleEnter( ) {
         Jerial.clearPendingResponseTarget();
         clearCurrentLine( );
         return;
+    }
+
+    // If terminal line buffering is enabled and we're inside braces,
+    // only submit if the line doesn't start with a command character
+    // (This allows "W{...}" to submit immediately on newline)
+    extern struct config jumperlessConfig;
+    if ( jumperlessConfig.display.terminal_line_buffering == 1 && brace_depth > 0 ) {
+        // Simple heuristic: if the first character is a letter, it's likely a command, not a raw JSON object
+        char firstChar = current_line[0];
+        bool isCommand = (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z');
+
+        if ( !isCommand && line_length < JERIAL_MAX_LINE_LENGTH - 1 ) {
+            insertCharAtCursor( '\n' );
+            // Don't echo the newline if we're suppressing echo inside braces,
+            // but we might want a visual indicator that we're still collecting
+            return;
+        }
     }
 
     // Make line available for parsing (normal user input)
@@ -568,6 +599,7 @@ void TermControl::clearCurrentLine( ) {
     line_length = 0;
     display_length = 0;
     cursor_position = 0;
+    brace_depth = 0;
 }
 
 void TermControl::moveCursorTo( int position ) {

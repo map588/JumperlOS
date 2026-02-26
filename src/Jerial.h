@@ -38,7 +38,7 @@ extern int termInInteractiveMode;
  */
 
 #define JERIAL_MAX_OUTPUTS 10
-#define JERIAL_MAX_LINE_LENGTH 512
+#define JERIAL_MAX_LINE_LENGTH 1024
 #define JERIAL_NEWLINE_OUT "\r\n"
 
 enum class JerialEndpoint {
@@ -690,6 +690,8 @@ private:
         ANSI_BRACKET,
         ANSI_MAIN_SERIAL_ENQ
     } ansi_state;
+
+    int brace_depth; // Nesting level of curly braces
     
     // Internal methods
     void handleNormalChar(char c);

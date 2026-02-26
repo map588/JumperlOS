@@ -539,15 +539,15 @@ menu:
 #endif
     }
 
-    if ( Jerial.available( ) >
-         20 ) { // this is so if you dump a lot of data into the serial buffer, it
-                // will consume it and not keep looping
-        while ( Jerial.available( ) > 0 ) {
-            char c = Jerial.read( );
-            // Jerial.print(c);
-            // Jerial.flush();
-        }
-    }
+    // if ( Jerial.available( ) >
+    //      20 ) { // this is so if you dump a lot of data into the serial buffer, it
+    //             // will consume it and not keep looping
+    //     while ( Jerial.available( ) > 0 ) {
+    //         char c = Jerial.read( );
+    //         // Jerial.print(c);
+    //         // Jerial.flush();
+    //     }
+    // }
 
     if ( lastProbePowerDAC != probePowerDAC ) {
         probePowerDACChanged = true;

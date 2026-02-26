@@ -234,6 +234,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tL = load JSON state (paste)\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tY = print YAML (0/1/2)\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\tS = load YAML state (paste)\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tW = parse Wokwi diagram (paste)\n\r" );
 // shownMenuItems += printMenuLine( showExtraMenu, 1, "\n\r" );
 
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\ty = refresh connections\n\r" );
@@ -254,7 +255,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
 
         // shownMenuItems += printMenuLine( showExtraMenu, 3, "\t% = list all filesystem contents\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tE = don't show this menu\n\r" );
-        shownMenuItems += printMenuLine( showExtraMenu, 3, "\tW = disable terminal colors\n\r" );
+        // shownMenuItems += printMenuLine( showExtraMenu, 3, "\tW = disable terminal colors\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 3, "\tB = toggle line buffering\n\r" );
 
         if ( showExtraMenu >= 2 ) {
@@ -547,9 +548,9 @@ void SingleCharCommands::initializeCommands( ) {
                      "Display current configuration to serial.",
                      cmd_printConfig, MENU_BASIC, CAT_SETTINGS );
 
-    registerCommand( 'W', "reload config.txt",
-                     "Reload configuration from config.txt file.",
-                     cmd_reloadConfig, MENU_ADVANCED, CAT_SETTINGS );
+    // registerCommand( 'W', "reload config.txt",
+    //                  "Reload configuration from config.txt file.",
+    //                  cmd_reloadConfig, MENU_ADVANCED, CAT_SETTINGS );
 
     // Hardware commands
     registerCommand( 'r', "reset Arduino (rt/rb)",
@@ -1088,86 +1089,107 @@ CommandResult cmd_parseWokwi( char c, const String& line ) {
             Jerial.println( "  Target slot: " + String( slotNum ) + " (app mode - no prompt)" );
         }
 
-        // Wait for input (only show help prompt if interactive)
-        unsigned long humanTime = millis( );
-        int shown = 0;
-        while ( Jerial.available( ) == 0 ) {
-            if ( !fromApp && millis( ) - humanTime == 2000 && shown == 0 ) {
-                Jerial.println( "\n  Waiting for JSON paste..." );
-                Jerial.println( "  (Copy from Wokwi editor: diagram.json tab)" );
-                shown = 1;
-            }
-        }
-
         // Read pasted JSON content
         String jsonContent = "";
-        jsonContent.reserve( 8192 ); // Pre-allocate to avoid fragmentation
+        jsonContent.reserve( 8192 ); 
 
-        unsigned long lastCharTime = millis( );
-        bool foundOpenBrace = false;
         int braceCount = 0;
+        bool foundOpenBrace = false;
 
-        while ( true ) {
-            if ( Jerial.available( ) > 0 ) {
-                char c = Jerial.read( );
-                jsonContent += c;
-                lastCharTime = millis( );
-
-                // Track braces to detect complete JSON
-                if ( c == '{' ) {
-                    foundOpenBrace = true;
-                    braceCount++;
-                } else if ( c == '}' ) {
-                    braceCount--;
-                    // If we found opening brace and brace count is back to 0, we're done
-                    if ( foundOpenBrace && braceCount == 0 ) {
-                        if ( !fromApp || debugFP ) {
-                            Jerial.print( "." );
-                        }
-                        delay( 100 ); // Allow any trailing characters
-                        // Consume any trailing whitespace/newlines
-                        while ( Jerial.available( ) > 0 ) {
-                            char trailing = Jerial.read( );
-                            if ( trailing == '\n' || trailing == '\r' || trailing == ' ' ) {
-                                continue;
-                            } else {
-                                jsonContent += trailing; // Might be more JSON
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                // Show progress every 256 bytes (only if interactive or debug)
-                if ( !fromApp || debugFP ) {
-                    if ( jsonContent.length( ) % 256 == 0 ) {
-                        Jerial.print( "." );
-                    }
-                }
-            } else {
-                // No data available
-                if ( jsonContent.length( ) > 0 ) {
-                    // Check timeout (500ms after last character)
-                    if ( millis( ) - lastCharTime > 500 ) {
-                        if ( debugFP ) {
-                            Jerial.println( "\n  Timeout: 500ms since last character" );
-                        }
-                        break;
-                    }
-                    delay( 10 ); // Small delay waiting for more data
-                } else {
-                    delay( 10 ); // Waiting for first character
-                }
+        // Check if we already have JSON content in the command line (e.g. "W{...")
+        int startBrace = line.indexOf('{');
+        if (startBrace == -1) startBrace = line.indexOf('[');
+        
+        if (startBrace != -1) {
+            String initialChunk = line.substring(startBrace);
+            jsonContent = initialChunk;
+            foundOpenBrace = true;
+            for (unsigned int i = 0; i < initialChunk.length(); i++) {
+                if (initialChunk[i] == '{' || initialChunk[i] == '[' || initialChunk[i] == '(') braceCount++;
+                else if (initialChunk[i] == '}' || initialChunk[i] == ']' || initialChunk[i] == ')') braceCount--;
             }
-
-            // Safety: max 32KB
-            if ( jsonContent.length( ) > 32000 ) {
-                Jerial.println( "\n◇ Warning: JSON too large (>32KB), truncating" );
-                break;
+            if (debugFP) {
+                Jerial.println("  Initial chunk: " + String(initialChunk.length()) + " bytes, braceCount=" + String(braceCount));
             }
         }
 
+        if (!(foundOpenBrace && braceCount <= 0)) {
+            // Only show hint if interactive and we don't have a complete object yet
+            unsigned long humanTime = millis( );
+            int shown = 0;
+            while ( Jerial.available( ) == 0 && jsonContent.length() == 0 ) {
+                if ( !fromApp && millis( ) - humanTime == 2000 && shown == 0 ) {
+                    Jerial.println( "\n  Waiting for JSON paste..." );
+                    Jerial.println( "  (Copy from Wokwi editor: diagram.json tab)" );
+                    shown = 1;
+                }
+                delay( 10 );
+                if (millis() - humanTime > 10000) break; // 10s timeout waiting for start
+            }
+
+            unsigned long lastCharTime = millis( );
+            while ( true ) {
+                if ( Jerial.available( ) > 0 ) {
+                    char c = Jerial.read( );
+                    jsonContent += c;
+                    lastCharTime = millis( );
+
+                    // Track braces to detect complete JSON
+                    if ( c == '{' || c == '[' || c == '(' ) {
+                        foundOpenBrace = true;
+                        braceCount++;
+                    } else if ( c == '}' || c == ']' || c == ')' ) {
+                        braceCount--;
+                        // If we found opening brace and brace count is back to 0, we're done
+                        if ( foundOpenBrace && braceCount <= 0 ) {
+                            break;
+                        }
+                    }
+
+                    // Show progress every 256 bytes (only if interactive or debug)
+                    if ( !fromApp || debugFP ) {
+                        if ( jsonContent.length( ) % 256 == 0 ) {
+                            Jerial.print( "." );
+                        }
+                    }
+                } else {
+                    // No data available
+                    if ( jsonContent.length( ) > 0 ) {
+                        // Check timeout (increased to 1000ms after last character for safety)
+                        if ( millis( ) - lastCharTime > 1000 ) {
+                            if ( debugFP ) {
+                                Jerial.println( "\n  Timeout: 1000ms since last character, braceCount=" + String(braceCount) );
+                            }
+                            break;
+                        }
+                        delay( 5 ); // Small delay waiting for more data
+                    } else {
+                        delay( 5 ); 
+                        if (millis() - humanTime > 15000) break; // Final exit if nothing happens
+                    }
+                }
+
+                // Safety: max 8KB
+                if ( jsonContent.length( ) > 8000 ) {
+                    Jerial.println( "\n◇ Warning: JSON too large (>8KB), truncating" );
+                    break;
+                }
+            }
+            
+            // Allow trailing characters if object is complete
+            if (foundOpenBrace && braceCount <= 0) {
+                delay( 50 );
+                while ( Jerial.available( ) > 0 ) {
+                    char trailing = Jerial.read( );
+                    if ( trailing == '\n' || trailing == '\r' || trailing == ' ' ) continue;
+                    jsonContent += trailing;
+                }
+                }
+        }
         jsonContent.trim( );
+
+        // Print final JSON once as requested
+        // Jerial.println(jsonContent);
 
         // Only show "Received" message if interactive or debug
         if ( !fromApp ) {
