@@ -82,11 +82,15 @@ int TermControl::available( ) {
 int TermControl::read( ) {
     if ( !stream )
         return -1;
+    
+    int c = stream->read();
     #if ECHO_TERMINAL_INPUT == 1
-    Serial.print((char)stream->read());
-    Serial.flush();
+    if (c >= 0) {
+        Serial.print((char)c);
+        Serial.flush();
+    }
     #endif
-    return stream->read( );
+    return c;
 }
 
 int TermControl::peek( ) {
@@ -276,11 +280,11 @@ void TermControl::injectCompletedLine( const char* line, Stream* response_target
     if ( queue_count >= COMMAND_QUEUE_SIZE ) {
         // Queue full - drop this command with warning
         if ( stream ) {
-            stream->print( "⚠️  Command queue full (" );
-            stream->print( COMMAND_QUEUE_SIZE );
-            stream->print( "), dropped: '" );
-            stream->print( line );
-            stream->println( "'" );
+            // stream->print( "⚠️  Command queue full (" );
+            // stream->print( COMMAND_QUEUE_SIZE );
+            // stream->print( "), dropped: '" );
+            // stream->print( line );
+            // stream->println( "'" );
             // stream->flush(); // Blocking flush causes latency in AsyncPassthrough!
         }
         return;
@@ -928,7 +932,26 @@ bool JerialClass::service() {
         Serial.flush();
     }
     #endif
-    if (term_control_active && term_control) {
+    // Port 4 (USBSer3) for TUI commands - single char commands with localized response
+    while (USBSer3.available() > 0) {
+        char c = (char)USBSer3.read();
+        
+        // Handle single character commands immediately
+        // (Most TUI commands are single chars: 'c', 'l', 'm', 'i', 'v', 'b', 'f', 'n', 'w')
+        if (c > 32 && c < 127) {
+            char cmdStr[2] = {c, 0};
+            if (term_control) {
+                term_control->injectCompletedLine(cmdStr, &USBSer3);
+            }
+            
+            #if DEBUG_JERIAL == 1
+            Serial.printf("USBSer3 Command Injected: '%c'\n", c);
+            Serial.flush();
+            #endif
+        }
+    }
+
+    if (term_control_active && term_control && jumperlessConfig.display.terminal_line_buffering == 1) {
         return term_control->service();
     }
     #if DEBUG_JERIAL == 1
@@ -1162,6 +1185,16 @@ void JerialClass::setInputStream(Stream* stream) {
     
     if (supportsTerminalControl(endpoint)) {
         createTermControlIfNeeded(stream);
+        
+        // If this is a secondary USB serial port, automatically set it as the response target
+        // for any commands received on it. Main Serial (USB_SERIAL) typically broadcasts.
+        if (endpoint == JerialEndpoint::USB_SER1 || 
+            endpoint == JerialEndpoint::USB_SER2 || 
+            endpoint == JerialEndpoint::USB_SER3) {
+            setPendingResponseTarget(stream);
+        } else if (endpoint == JerialEndpoint::USB_SERIAL) {
+            clearPendingResponseTarget();
+        }
     } else {
         destroyTermControl();
     }

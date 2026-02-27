@@ -375,14 +375,7 @@ int secondSerialHandler( void ) {
     // AsyncPassthrough handles all serial bridging via asyncPassthroughService (CRITICAL priority)
     // This function now only handles DTR pulse detection for Arduino flashing
 
-   if( USBSer3.available() > 0 ) {
-        char c = USBSer3.read();
-     //   USBSer2.write(c);
-        USBSer3.println("JL TUI: " + String(c));
-        USBSer3.flush();
-       
-     //   Serial.print(c);
-    }
+   // USBSer3 is now handled via Jerial for TUI back channel
 
 
     #if ASYNC_PASSTHROUGH_ENABLED == 1

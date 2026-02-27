@@ -198,7 +198,7 @@ public:
     
     // Debug functions
     void dumpFrameBufferQuarterSize(int clearFirst = 0, int x_pos = 40, int y_pos = 24, int border = 1);
-    void dumpFrameBuffer();
+    void dumpFrameBuffer(Stream* stream = nullptr);
     
     // Positioning functions (simplified)
     void getCenteredPosition(const char* str, int16_t* x, int16_t* y, PositionMode mode);

@@ -860,8 +860,7 @@ float measureVoltage(int adcNumber, int node, bool checkForFloating) {
   waitCore2();
 
   if (floating == 1) {
-
-    return 0xFFFFFFFF;
+    return (float)0xFFFFFFFF;
   }
 
   return voltage;
@@ -1036,7 +1035,9 @@ void connectGPIO(int gpioNumber, int node) {
   refreshConnections();
 }
 
-void printSlots(int fileNo) {
+void printSlots(int fileNo, Stream *stream) {
+  if (stream == nullptr) stream = &Jerial;
+
   if (fileNo == -1)
 
     if (Serial.available() > 0) {
@@ -1044,44 +1045,44 @@ void printSlots(int fileNo) {
       // break;
     }
 
-  Serial.print("\n\n\r");
+  stream->print("\n\n\r");
   if (fileNo == -1) {
-    Serial.print("\tSlot Files");
+    stream->print("\tSlot Files");
   } else {
-    Serial.print("\tSlot File ");
-    Serial.print(fileNo - '0');
+    stream->print("\tSlot File ");
+    stream->print(fileNo - '0');
   }
-  Serial.print("\n\n\r");
-  Serial.print(
+  stream->print("\n\n\r");
+  stream->print(
       "\n\ryou can paste this text reload this circuit (enter 'o' first)");
-  Serial.print("\n\r(or even just a single slot)\n\n\n\r");
+  stream->print("\n\r(or even just a single slot)\n\n\n\r");
   if (fileNo == -1) {
     for (int i = 0; i < NUM_SLOTS; i++) {
       if (getSlotLength(i, 0) > 0) {  // Only print headers and content if slot has content
-        Serial.print("\n\rSlot ");
-        Serial.print(i);
+        stream->print("\n\rSlot ");
+        stream->print(i);
         if (i == netSlot) {
-          Serial.print("        <--- current slot");
+          stream->print("        <--- current slot");
         }
 
-        Serial.print("\n\r/slots/slot");
-        Serial.print(i);
-        Serial.print(".yaml\n\r");
-        Serial.print("\n\rf ");
-        printNodeFile(i, 0, 0, 0, false);
-        Serial.print("\n\n\r");
+        stream->print("\n\r/slots/slot");
+        stream->print(i);
+        stream->print(".yaml\n\r");
+        stream->print("\n\rf ");
+        printNodeFile(i, 0, 0, 0, false, stream);
+        stream->print("\n\n\r");
       }
     }
   } else {
 
-    Serial.print("\n\r/slots/slot");
-    Serial.print(fileNo - '0');
-    Serial.print(".yaml\n\r");
+    stream->print("\n\r/slots/slot");
+    stream->print(fileNo - '0');
+    stream->print(".yaml\n\r");
 
-    Serial.print("\n\rf ");
+    stream->print("\n\rf ");
 
-    printNodeFile(fileNo - '0', 0, 0, 0, true); // Print empty slots when showing specific slot
-    Serial.print("\n\r");
+    printNodeFile(fileNo - '0', 0, 0, 0, true, stream); // Print empty slots when showing specific slot
+    stream->print("\n\r");
   }
 }
 

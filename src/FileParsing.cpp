@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "FileParsing.h"
+#include "PersistentStuff.h" // For firmwareVersion
 #include "ArduinoJson.h"
 #include "JumperlessDefines.h"
 #include "LEDs.h"
@@ -483,13 +484,18 @@ void createConfigFile(int overwrite) {
   }
 
   File configFile = safeFileOpen("config.txt", "w");
-  if (!configFile) return;
-  configFile.print("#Jumperless Config file\n\r");
-  configFile.println("version: 5");
-  configFile.print("revision: ");
-  configFile.println(EEPROM.read(REVISIONADDRESS));
+  if (configFile) {
+    const char* header = "#Jumperless Config file\n\r";
+    configFile.write((const uint8_t*)header, strlen(header));
+    const char* verLabel = "version: 5\n\r";
+    configFile.write((const uint8_t*)verLabel, strlen(verLabel));
+    const char* revLabel = "revision: ";
+    configFile.write((const uint8_t*)revLabel, strlen(revLabel));
+    String r = String(EEPROM.read(REVISIONADDRESS)) + "\n\r";
+    configFile.write((const uint8_t*)r.c_str(), r.length());
 
-  safeFileClose(configFile, true);
+    safeFileClose(configFile, true);
+  }
 }
 
 // int checkIfBridgeExists(int node1, int node2, int slot, int flashOrLocal) {
@@ -1115,22 +1121,26 @@ int getSlotLength(int slot, int flashOrLocal) {
 }
 
 void printNodeFile(int slot, int printOrString, int flashOrLocal,
-                   int definesInts, bool printEmpty) {
+                   int definesInts, bool printEmpty, Stream *stream) {
+  if (stream == nullptr) stream = &Jerial;
+
+  if (stream == nullptr) stream = &Jerial;
 
   if (flashOrLocal == 0) {
     nodeFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "r");
     if (!nodeFile) {
       // if (debugFP)
-      // Jerial.println("Failed to open nodeFile");
+      // stream->println("Failed to open nodeFile");
       return;
     } else {
       // if (debugFP)
-      // Jerial.println("\n\ropened nodeFile.txt\n\n\rloading bridges from
+      // stream->println("\n\ropened nodeFile.txt\n\n\rloading bridges from
       // file\n\r");
     }
     specialFunctionsString.clear();
-
-    specialFunctionsString.read(nodeFile);
+    while (nodeFile.available() > 0) {
+      specialFunctionsString += (char)nodeFile.read();
+    }
     safeFileClose(nodeFile, false);
   } else {
     specialFunctionsString.clear();
@@ -1144,10 +1154,11 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
   }
 
   //     int newLines = 0;
-  // Jerial.println(specialFunctionsString.indexOf(","));
-  // Jerial.println(specialFunctionsString.charAt(specialFunctionsString.indexOf(",")+1));
-  // Jerial.println(specialFunctionsString.indexOf(","));
+  // stream->println(specialFunctionsString.indexOf(","));
+  // stream->println(specialFunctionsString.charAt(specialFunctionsString.indexOf(",")+1));
+  // stream->println(specialFunctionsString.indexOf(","));
   if (debugFP == 0 || definesInts == 0) {
+    // ... (rest of the mapping code)
 
     // specialFunctionsString.replace("116-80, 117-82, 114-83, 85-100, 81-100,",
     // "rotEnc_0,");
@@ -1246,8 +1257,8 @@ void printNodeFile(int slot, int printOrString, int flashOrLocal,
   // specialFunctionsString.removeLast(9);
   // Jerial.print("*");
   if (printOrString == 0) {
-    Jerial.println(specialFunctionsString);
-    //     Jerial.println('*');
+    stream->println(specialFunctionsString);
+    //     stream->println('*');
     // specialFunctionsString.clear();
   }
 }
@@ -1967,7 +1978,7 @@ void readStringFromSerial(int source, int addRemove) {
     }
 
   } while (finished == 0);
-  printNodeFile(netSlot, 0, 0, 0, true);
+  printNodeFile(netSlot, 0, 0, 0, true, &Jerial);
 }
 
 int parseStringToNode(int source) { return 0; }
@@ -2200,7 +2211,8 @@ void openNodeFile(int slot, int flashOrLocal) {
               }
               File fixFile = safeFileOpen(slotFilename.c_str(), "w");
               if (fixFile) {
-                fixFile.print("{ }");
+                const char* emptyJson = "{ }";
+                fixFile.write((const uint8_t*)emptyJson, strlen(emptyJson));
                 safeFileClose(fixFile, true);
               }
             } else {
@@ -2248,7 +2260,8 @@ void openNodeFile(int slot, int flashOrLocal) {
         }
         File createFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "w");
         if (createFile) {
-          createFile.print("{ }");
+          const char* emptyJson = "{ }";
+          createFile.write((const uint8_t*)emptyJson, strlen(emptyJson));
           safeFileClose(createFile, true);
         }
       }
@@ -2290,7 +2303,10 @@ void openNodeFile(int slot, int flashOrLocal) {
 
       // createSlots(slot, 0);
       openFileThreadSafe(w, slot);
-      nodeFile.print("{ } ");
+      if (nodeFile) {
+        const char* emptyJson = "{ } ";
+        nodeFile.write((const uint8_t*)emptyJson, strlen(emptyJson));
+      }
       // core1busy = false;
       // return;
     } else {
@@ -2300,7 +2316,9 @@ void openNodeFile(int slot, int flashOrLocal) {
     }
 
     nodeFileString.clear();
-    nodeFileString.read(nodeFile);
+    while (nodeFile.available() > 0) {
+      nodeFileString += (char)nodeFile.read();
+    }
     // delay(10);
     // Jerial.println(nodeFileString);
 
@@ -3194,11 +3212,13 @@ bool attemptNodeFileRepair(int slot) {
   // Write the repaired content back to file
   File slotFile = safeFileOpen(("nodeFileSlot" + String(slot) + ".txt").c_str(), "w");
   if (slotFile) {
-    slotFile.print("{ ");
+    const char* openBrace = "{ ";
+    slotFile.write((const uint8_t*)openBrace, strlen(openBrace));
     if (repairedConnections.length() > 0) {
-      slotFile.print(repairedConnections);
+      slotFile.write((const uint8_t*)repairedConnections.c_str(), repairedConnections.length());
     }
-    slotFile.print(" }");
+    const char* closeBrace = " }";
+    slotFile.write((const uint8_t*)closeBrace, strlen(closeBrace));
     safeFileClose(slotFile, true);
 
     if (debugFP) {

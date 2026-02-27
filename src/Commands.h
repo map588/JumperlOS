@@ -34,7 +34,7 @@ void fastRefresh(int ledShowOption = 1);
 int handleLockedConnections();
 
 void updateLEDs(void);
-void printSlots(int fileNo = -1);
+void printSlots(int fileNo = -1, Stream *stream = nullptr);
 bool checkFloating(int node);
 struct rowLEDs getRowLEDdata (int row);
 void setRowLEDdata (int row, struct rowLEDs);

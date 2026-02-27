@@ -3,6 +3,8 @@
 #define CH446Q_H
 
 #include <stdint.h>  // For uint16_t
+#include <Arduino.h>
+#include "Jerial.h"
 
 
 extern int netNumberC2;
@@ -58,9 +60,9 @@ void findDifferentPaths(void);
 void createXYarray(void);
 void refreshPaths(void);
 void sortPathsByChipXY(void);
-void printChipStateArray(void);
-void printChipStateArrayColor(void);  // Color-coded version showing net ownership
-void printChipStateArrayColorCompact(int chipsPerRow = 6, char blankChar = ' ');  // Compact color version
+void printChipStateArray(Stream *stream = &Jerial);
+void printChipStateArrayColor(Stream *stream = &Jerial);  // Color-coded version showing net ownership
+void printChipStateArrayColorCompact(int chipsPerRow = 6, char blankChar = ' ', Stream *stream = &Jerial);  // Compact color version
 void updateChipStateArray(void);
 
 // Live crossbar display - shows at top of terminal, updates on connection changes

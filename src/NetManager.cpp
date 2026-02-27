@@ -2,6 +2,7 @@
 
 #include "NetManager.h"
 //#include "FileParsing.h"
+#include "ArduinoStuff.h"
 #include "JumperlessDefines.h"
 #include <string.h>
 #include <math.h>
@@ -1133,10 +1134,10 @@ void assignTermColor(int startIndex) {
 
 /// @brief list all nets
 /// @param liveUpdate 0 = no live update, 1 = live update
-void listNets(int liveUpdate)
+void listNets(int liveUpdate, Stream *stream)
   {
-  // Serial.print("liveUpdate: ");
-  // Serial.println(liveUpdate);
+  // stream->print("liveUpdate: ");
+  // stream->println(liveUpdate);
   int boldNode = highlightedRow;
   int boldNet = highlightedNet;
 
@@ -1161,12 +1162,12 @@ void listNets(int liveUpdate)
 
   if (liveUpdate < 0) {
     liveUpdate = 0;
-    } else if (liveUpdate >= 0) {
+    } else if (liveUpdate >= 0 && stream != &USBSer3) {
       liveUpdate = 1;
       }
 
-    // Serial.print("liveUpdate: ");
-    // Serial.println(liveUpdate);
+    // stream->print("liveUpdate: ");
+    // stream->println(liveUpdate);
 
     ///0 = none, 1 = adc, 2 = gpio input, 3 = gpio output, 4 = uart tx, 5 = uart rx, 6 = fake gpio input
     int netsShowingSpecial[MAX_NETS];
@@ -1189,8 +1190,8 @@ void listNets(int liveUpdate)
         // Values from JumperlessDefines.h: ADC0(110), ADC1(111), ADC2(112), ADC3(113), ADC4(114), ADC7(115)
         if ((globalState.connections.nets[i].nodes[j] >= ADC0 && globalState.connections.nets[i].nodes[j] <= ADC4) ||
             globalState.connections.nets[i].nodes[j] == ADC7 ) {
-          // Serial.print("adc  ");
-          // Serial.println(globalState.connections.nets[i].nodes[j]);
+          // stream->print("adc  ");
+          // stream->println(globalState.connections.nets[i].nodes[j]);
           showVoltage = 1;
           netsShowingSpecial[i] = 1;
           }
@@ -1207,8 +1208,8 @@ void listNets(int liveUpdate)
         // Values from JumperlessDefines.h: RP_GPIO_1(131)-RP_GPIO_4(134), RP_GPIO_5(135)-RP_GPIO_8(138)
         if ((globalState.connections.nets[i].nodes[j] >= RP_GPIO_1 && globalState.connections.nets[i].nodes[j] <= RP_GPIO_4) ||
             (globalState.connections.nets[i].nodes[j] >= RP_GPIO_5 && globalState.connections.nets[i].nodes[j] <= RP_GPIO_8)) {
-          // Serial.print("gpio");
-          // Serial.println(globalState.connections.nets[i].nodes[j]);
+          // stream->print("gpio");
+          // stream->println(globalState.connections.nets[i].nodes[j]);
           showGPIO = 1;
           if (gpioState[globalState.connections.nets[i].nodes[j] - RP_GPIO_1] == 0) {
             netsShowingSpecial[i] = 3;
@@ -1284,26 +1285,26 @@ void listNets(int liveUpdate)
         }
       }
 
-    // Serial.print("maxNodes: ");
-    // Serial.println(maxNodes);
-    // Serial.print("maxChars: ");
-    // Serial.println(maxChars);
-    // Serial.print("showVoltage: ");
-    // Serial.println(showVoltage);
-    // Serial.print("showGPIO: ");
-    // Serial.println(showGPIO);
+    // stream->print("maxNodes: ");
+    // stream->println(maxNodes);
+    // stream->print("maxChars: ");
+    // stream->println(maxChars);
+    // stream->print("showVoltage: ");
+    // stream->println(showVoltage);
+    // stream->print("showGPIO: ");
+    // stream->println(showGPIO);
 
 
 
     int lineCount = 0;
 
     // if (liveUpdate == 1) {
-    //   Serial.println("\tlive update mode");
-    //   Serial.println("\t  (send any character to exit)");
+    //   stream->println("\tlive update mode");
+    //   stream->println("\t  (send any character to exit)");
     //   lineCount+=2;
     //   }
 
-    Serial.print("\n\rIndex\tName\t\tVoltage\t    Nodes\t\n\r");
+    stream->print("\n\rIndex\tName\t\tVoltage\t    Nodes\t\n\r");
 
 
 
@@ -1321,55 +1322,55 @@ void listNets(int liveUpdate)
         int floatingTermColor = -1;
 
         if (i == 6) {
-          Serial.printf("\033[0m");
-          Serial.print("\n\rIndex\tName\t\tColor\t    Nodes");
+          stream->printf("\033[0m");
+          stream->print("\n\rIndex\tName\t\tColor\t    Nodes");
 
           lineCount += 2;
 
           if (showGPIO == 1 && showVoltage == 1) {
             for (int i = 0; i < maxChars; i++) {
-              Serial.print(" ");
+              stream->print(" ");
               }
-            Serial.print("ADC / GPIO");
+            stream->print("ADC / GPIO");
             }
 
           else if (showVoltage == 1) {
             for (int i = 0; i < maxChars; i++) {
-              Serial.print(" ");
+              stream->print(" ");
               }
-            Serial.print(" Voltage");
+            stream->print(" Voltage");
             }
 
 
           else if (showGPIO == 1) {
             for (int i = 0; i < maxChars; i++) {
-              Serial.print(" ");
+              stream->print(" ");
               }
-            Serial.print(" GPIO");
+            stream->print(" GPIO");
             }
 
-          Serial.println(" ");
+          stream->println(" ");
           lineCount += 1;
           }
         for (int j = 0; j < 10; j++) {
           if (gpioNet[j] == i) {
             floatingTermColor = floatingTermColors[j];
-            Serial.printf("\033[38;5;%dm", floatingTermColors[j]);
+            stream->printf("\033[38;5;%dm", floatingTermColors[j]);
             break;
             }
           }
 
         if (floatingTermColor == -1 && i >= 6) {
-          Serial.printf("\033[38;5;%dm", colorToVT100(packRgb(netColors[i])));
+        stream->printf("\033[38;5;%dm", colorToVT100(packRgb(netColors[i])));
           } else if (floatingTermColor == -1 && i < 6) {
-            Serial.printf("\033[38;5;%dm", railTermColors[i - 1]);
+            stream->printf("\033[38;5;%dm", railTermColors[i - 1]);
             }
 
           if (globalState.connections.nets[i].number == 0 ||
               globalState.connections.nets[i].nodes[0] ==
                   -1) // stops searching if it gets to an unallocated net
             {
-            // Serial.print("Done listing nets");
+            // stream->print("Done listing nets");
             break;
             }
 
@@ -1390,45 +1391,45 @@ void listNets(int liveUpdate)
             }
 
           // if (gpioOrAdcNumber != 0) {
-          //   Serial.println(gpioOrAdcNumber);
+          //   stream->println(gpioOrAdcNumber);
           // }
 
 
 
-       // Serial.print("\n\r ");
-          Serial.print(i);
-          Serial.print("\t ");
+       // stream->print("\n\r ");
+          stream->print(i);
+          stream->print("\t ");
           // Check for custom name in DisplayState first (tracked by net number)
           const char* customName = globalState.display.getNetName(i);
-          int netNameLength = Serial.print(customName ? customName : globalState.connections.nets[i].name);
+          int netNameLength = stream->print(customName ? customName : globalState.connections.nets[i].name);
           if (netNameLength < 8) {
-            Serial.print("\t");
+            stream->print("\t");
             }
-          Serial.print("\t ");
+          stream->print("\t ");
 
           if (netsShowingSpecial[i] == 2 || netsShowingSpecial[i] == 3) {
-            Serial.print("\b\b* ");
+            stream->print("\b\b* ");
             if (gpioReading[gpioOrAdcNumber] == 0) {
 
               if (TERM_SUPPORTS_RGB == 0 && TERM_SUPPORTS_ANSI_COLORS == 1)
                 {
-                Serial.printf("\033[38;5;%dm%s", colorToVT100(packRgb(netColors[i])), "green  - l");
+                stream->printf("\033[38;5;%dm%s", colorToVT100(packRgb(netColors[i])), "green  - l");
                 } else if (TERM_SUPPORTS_RGB == 1 && TERM_SUPPORTS_ANSI_COLORS == 1)
                   {
-                  Serial.printf("\033[38;2;0;255;0m%s\033[0m", "green  - l");
+                  stream->printf("\033[38;2;0;255;0m%s\033[0m", "green  - l");
                   } else {
-                  Serial.print("green  - l");
+                  stream->print("green  - l");
                   }
 
               } else if (gpioReading[gpioOrAdcNumber] == 1) {
                 if (TERM_SUPPORTS_RGB == 0 && TERM_SUPPORTS_ANSI_COLORS == 1)
                   {
-                  Serial.printf("\033[38;5;%dm%s", colorToVT100(packRgb(netColors[i])), "red    - h");
+                  stream->printf("\033[38;5;%dm%s", colorToVT100(packRgb(netColors[i])), "red    - h");
                   } else if (TERM_SUPPORTS_RGB == 1 && TERM_SUPPORTS_ANSI_COLORS == 1)
                     {
-                    Serial.printf("\033[38;2;255;0;0m%s", "red    - h");
+                    stream->printf("\033[38;2;255;0;0m%s", "red    - h");
                     } else {
-                    Serial.print("red    - h");
+                    stream->print("red    - h");
                     }
                 } else {
                 int length = 0;
@@ -1440,18 +1441,18 @@ void listNets(int liveUpdate)
                   hsv.v = 255;
 
                   uint32_t color = HsvToRaw(hsv);
-                  length = Serial.printf("\033[38;5;%dm%-7s- f", floatingTermColors[gpioOrAdcNumber], colorToName(gpioAnimationBaseHues[gpioOrAdcNumber], -1));
+                  length = stream->printf("\033[38;5;%dm%-7s- f", floatingTermColors[gpioOrAdcNumber], colorToName(gpioAnimationBaseHues[gpioOrAdcNumber], -1));
 
                   } else if (TERM_SUPPORTS_RGB == 1 && TERM_SUPPORTS_ANSI_COLORS == 1)
                     {
-                    length = Serial.printf("\033[38;2;255;255;30m%s - f", colorToName(gpioAnimationBaseHues[gpioOrAdcNumber], -1));
+                    length = stream->printf("\033[38;2;255;255;30m%s - f", colorToName(gpioAnimationBaseHues[gpioOrAdcNumber], -1));
                     } else {
 
-                    length = Serial.print(colorToName(gpioAnimationBaseHues[gpioOrAdcNumber], -1));
-                    length += Serial.print(" - f");
+                    length = stream->print(colorToName(gpioAnimationBaseHues[gpioOrAdcNumber], -1));
+                    length += stream->print(" - f");
                     }
                   for (int i = 0; i < 10 - length; i++) {
-                    Serial.print(" ");
+                    stream->print(" ");
                     }
 
                 }
@@ -1466,30 +1467,30 @@ void listNets(int liveUpdate)
 
 
 
-                Serial.printf("\033[38;5;%dm", railTermColors[i - 1]);
+                stream->printf("\033[38;5;%dm", railTermColors[i - 1]);
                 int spaces = 0;
                 switch (i) {
                   case 1:
-                    spaces = Serial.print("0 V       ");
+                    spaces = stream->print("0 V       ");
                     break;
                   case 2:
-                    spaces = Serial.printf("%-.2f V", globalState.power.topRail);
+                    spaces = stream->printf("%-.2f V", globalState.power.topRail);
 
                     break;
                   case 3:
-                    spaces = Serial.printf("%-.2f V", globalState.power.bottomRail);
+                    spaces = stream->printf("%-.2f V", globalState.power.bottomRail);
 
                     break;
                   case 4:
-                    spaces = Serial.printf("%-.2f V", globalState.power.dac0);
+                    spaces = stream->printf("%-.2f V", globalState.power.dac0);
                     break;
                   case 5:
-                    spaces = Serial.printf("%-.2f V", globalState.power.dac1);
+                    spaces = stream->printf("%-.2f V", globalState.power.dac1);
                     break;
                   }
 
                 for (int i = 0; i < 10 - spaces; i++) {
-                  Serial.print(" ");
+                  stream->print(" ");
                   }
 
 
@@ -1497,7 +1498,7 @@ void listNets(int liveUpdate)
                 } else {
                 // Use effective color (checks DisplayState for custom colors)
                 rgbColor effectiveColor = getEffectiveNetColor(i);
-                Serial.printf("\033[38;5;%dm%s", colorToVT100(packRgb(effectiveColor)), getEffectiveNetColorName(i));
+                stream->printf("\033[38;5;%dm%s", colorToVT100(packRgb(effectiveColor)), getEffectiveNetColorName(i));
                 }
               } else if (TERM_SUPPORTS_RGB == 1 && TERM_SUPPORTS_ANSI_COLORS == 1)
                 {
@@ -1517,40 +1518,40 @@ void listNets(int liveUpdate)
                 itoa(rgb.g, colorG, 10);
                 itoa(rgb.b, colorB, 10);
 
-                Serial.printf("\033[38;2;%s;%s;%sm%s", colorR, colorG, colorB, getEffectiveNetColorName(i));
+                stream->printf("\033[38;2;%s;%s;%sm%s", colorR, colorG, colorB, getEffectiveNetColorName(i));
                 } else {
-                Serial.print(getEffectiveNetColorName(i));
+                stream->print(getEffectiveNetColorName(i));
                 }
 
-              // Serial.print(colorToVT100(packRgb(netColors[i])));
+              // stream->print(colorToVT100(packRgb(netColors[i])));
     //lineCount+=1;
               // for (int c = 0; c < 128 ; c++) {
-              //   Serial.printf("\033[%dm%d\033[0m", c, c);
-              //   Serial.print(" ");
+              //   stream->printf("\033[%dm%d\033[0m", c, c);
+              //   stream->print(" ");
               // }
             }
 
 
-          Serial.print("  ");
+          stream->print("  ");
 
           int showVoltage = 0;
 
           tabs = 0;
           for (int j = 0; j < MAX_NODES; j++) {
             if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
-              Serial.printf("\033[7m");
+              stream->printf("\033[7m");
               }
-            tabs += printNodeOrName(globalState.connections.nets[i].nodes[j], 0, i);
+            tabs += printNodeOrName(globalState.connections.nets[i].nodes[j], 0, i, stream);
             if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
-              Serial.printf("\033[27m");
+              stream->printf("\033[27m");
               }
             // if (brightenedNode == globalState.connections.nets[i].nodes[j]) {
             //   if (floatingTermColor != -1) {
-            //     Serial.printf("\033[38;5;%dm", floatingTermColors[gpioOrAdcNumber]);
+            //     stream->printf("\033[38;5;%dm", floatingTermColors[gpioOrAdcNumber]);
             //     } else {
-            //     Serial.printf("\033[38;5;%dm", colorToVT100(packRgb(netColors[i])));
+            //     stream->printf("\033[38;5;%dm", colorToVT100(packRgb(netColors[i])));
             //     }
-              //Serial.printf("\033[0m");
+              //stream->printf("\033[0m");
 
 
 
@@ -1558,14 +1559,14 @@ void listNets(int liveUpdate)
               break;
               } else {
 
-              tabs += Serial.print(",");
+              tabs += stream->print(",");
               }
             }
 
           for (int i = tabs; i < maxChars; i++) {
-            Serial.print(" ");
+            stream->print(" ");
             }
-          Serial.print("\t    ");
+          stream->print("\t    ");
 
           if (netsShowingSpecial[i] != 0) {
             if (netsShowingSpecial[i] == 1) {
@@ -1577,13 +1578,13 @@ void listNets(int liveUpdate)
               // Apply voltage color using measurementToColor
               uint32_t vColor = measurementToColor(voltage, -8.0, 8.0);
               if (TERM_SUPPORTS_ANSI_COLORS == 1) {
-                Serial.printf("\033[38;5;%dm", colorToAnsi(vColor));
+                stream->printf("\033[38;5;%dm", colorToAnsi(vColor));
               }
               if (voltage < 0.0) {
-                Serial.print("\b");
+                stream->print("\b");
                 }
-              Serial.print(voltage, 2);
-              Serial.print(" V");
+              stream->print(voltage, 2);
+              stream->print(" V");
 
               } else if (netsShowingSpecial[i] == 6) {
                 // Fake GPIO input - get voltage from TDM and display with color
@@ -1601,53 +1602,54 @@ void listNets(int liveUpdate)
                 // Apply voltage color using measurementToColor
                 uint32_t vColor = measurementToColor(voltage, -8.0, 8.0);
                 if (TERM_SUPPORTS_ANSI_COLORS == 1) {
-                  Serial.printf("\033[38;5;%dm", colorToAnsi(vColor));
+                  stream->printf("\033[38;5;%dm", colorToAnsi(vColor));
                 }
                 if (voltage < 0.0) {
-                  Serial.print("\b");
+                  stream->print("\b");
                   }
-                Serial.print(voltage, 2);
-                Serial.print(" V");
+                stream->print(voltage, 2);
+                stream->print(" V");
 
 
 
               } else if (netsShowingSpecial[i] == 2) {
                 if (gpioReading[gpioOrAdcNumber] == 0) {
-                  Serial.print("input - low");
+                  stream->print("input - low");
                   } else if (gpioReading[gpioOrAdcNumber] == 1) {
-                    Serial.print("input - high");
+                    stream->print("input - high");
                     } else {
-                    Serial.print("input - floating");
+                    stream->print("input - floating");
                     }
                 } else if (netsShowingSpecial[i] == 3) {
                   if (gpioState[gpioOrAdcNumber] == 0) {
-                    Serial.print("output - high");
+                    stream->print("output - high");
                     } else if (gpioState[gpioOrAdcNumber] == 1) {
-                      Serial.print("output - low");
+                      stream->print("output - low");
                       }
                   }
             }
-          // Serial.print("netsShowingSpecial[");
-          // Serial.print(i);
-          // Serial.print("]: ");
-          // Serial.println(netsShowingSpecial[i]);
+          // stream->print("netsShowingSpecial[");
+          // stream->print(i);
+          // stream->print("]: ");
+          // stream->println(netsShowingSpecial[i]);
 
 
           tabs = 0;
 
           // for (int i = 0; i < 3 - (tabs / 8); i++) {
-          //   Serial.print("\t");
+          //   stream->print("\t");
           //   }
-          //Serial.print(changedNetColors[i].color, HEX);
-          Serial.println();
+          //stream->print(changedNetColors[i].color, HEX);
+          // stream->println();
+          stream->println();
           lineCount += 1;
         }
 
 
-      Serial.printf("\033[0m");
+      stream->printf("\033[0m");
 
 
-      Serial.flush();
+      stream->flush();
 
 
 
@@ -1657,20 +1659,20 @@ void listNets(int liveUpdate)
       //   liveUpdate = 0;
       //   }
 
-        //     Serial.print("liveUpdate = ");
-        // Serial.println(liveUpdate);
-        // Serial.flush();
+        //     stream->print("liveUpdate = ");
+        // stream->println(liveUpdate);
+        // stream->flush();
 
       if (liveUpdate == 1) {
-        // Serial.println(lineCount);
+        // stream->println(lineCount);
 
 
         int changed = 0;
 
         unsigned long startTime = millis();
-        //Serial.print("\033[2J\033[H");
-        while (Serial.available() == 0 && liveUpdate == 1 && changed == 0) {
-          //Serial.println("waiting for serial");
+        //stream->print("\033[2J\033[H");
+        while (stream->available() == 0 && liveUpdate == 1 && changed == 0) {
+          //stream->println("waiting for serial");
           for (int i = 0; i < 10; i++) {
             if (lastGPIO[i] != gpioReading[i]) {
               changed = 1;
@@ -1708,7 +1710,7 @@ void listNets(int liveUpdate)
             startTime = millis();
             }
 
-          if (Serial.available() > 0) {
+          if (stream->available() > 0) {
             liveUpdate = 0;
             break;
             }
@@ -1729,10 +1731,10 @@ void listNets(int liveUpdate)
           }
 
 
-        if (Serial.available() > 0 || liveUpdate == 0) {
+        if (stream->available() > 0 || liveUpdate == 0) {
           liveUpdate = 0;
-          Serial.println();
-          Serial.flush();
+          stream->println();
+          stream->flush();
           return;
           }
 
@@ -1740,14 +1742,14 @@ void listNets(int liveUpdate)
 
 
 
-        // Serial.flush();
+        // stream->flush();
         //delay(10);
         // for (int i = 0; i < lineCount; i++) {
         if (liveUpdate == 1) {
-          Serial.printf("\033[%dA", lineCount - 1);
-          //Serial.print("   ffdflkj;ldfkj ");
-          Serial.printf("\033[J");
-          Serial.flush();
+          stream->printf("\033[%dA", lineCount - 1);
+          //stream->print("   ffdflkj;ldfkj ");
+          stream->printf("\033[J");
+          stream->flush();
           lineCount = 0;
           }
         } else {
@@ -1755,18 +1757,18 @@ void listNets(int liveUpdate)
         }
 
 
-      //Serial.println("done");
+      //stream->println("done");
 
 
 
       } while (liveUpdate == 1);
 
-    // while (Serial.available() == 0) {
+    // while (stream->available() == 0) {
 
-    Serial.print("\n\r");
-    Serial.flush();
-    // while (Serial.available() > 0) {
-    //   Serial.read();
+    stream->print("\n\r");
+    stream->flush();
+    // while (stream->available() > 0) {
+    //   stream->read();
     //   }
     //  
 
@@ -1887,24 +1889,24 @@ void listSpecialNets() {
   Serial.print("\n\r");
   }
 
-void printBridgeArray(void) {
+void printBridgeArray(Stream *stream) {
 
-  Serial.print("\n\r");
+  stream->print("\n\r");
   int tabs = 0;
   int lineCount = 0;
   // Print from the actual bridge array (not paths) so virtual nodes show correctly
   for (int i = 0; i < globalState.connections.numBridges; i++) {
-    tabs += Serial.print(i);
+    tabs += stream->print(i);
     if (i < 10) {
-      tabs += Serial.print(" ");
+      tabs += stream->print(" ");
       }
     if (i < 100) {
-      tabs += Serial.print(" ");
+      tabs += stream->print(" ");
       }
-    tabs += Serial.print("[");
-    tabs += printNodeOrName(globalState.connections.bridges[i][0]);
-    tabs += Serial.print(",");
-    tabs += printNodeOrName(globalState.connections.bridges[i][1]);
+    tabs += stream->print("[");
+    tabs += printNodeOrName(globalState.connections.bridges[i][0], 0, -1, stream);
+    tabs += stream->print(",");
+    tabs += printNodeOrName(globalState.connections.bridges[i][1], 0, -1, stream);
     // Find the net for this bridge from paths
     int bridgeNet = -1;
     for (int p = 0; p < numberOfPaths; p++) {
@@ -1931,22 +1933,22 @@ void printBridgeArray(void) {
         }
       }
     }
-    tabs += Serial.print(",Net ");
+    tabs += stream->print(",Net ");
     if (bridgeNet >= 0) {
-      tabs += Serial.print(bridgeNet);
+      tabs += stream->print(bridgeNet);
     } else {
-      tabs += Serial.print("?");
+      tabs += stream->print("?");
     }
-    tabs += Serial.print("],");
+    tabs += stream->print("],");
     lineCount++;
-    // Serial.print(tabs);
+    // stream->print(tabs);
     for (int j = 0; j < 24 - (tabs); j++) {
-      Serial.print(" ");
+      stream->print(" ");
       }
     tabs = 0;
 
     if (lineCount == 4) {
-      Serial.print("\n\r");
+      stream->print("\n\r");
       lineCount = 0;
       }
     }
@@ -1967,7 +1969,8 @@ void printBridgeArray(void) {
 int printNodeOrName(
     int node,
     int longOrShort,
-    int netIndex) // returns number of characters printed (for tabs)
+    int netIndex,
+    Stream *stream) // returns number of characters printed (for tabs)
                   // netIndex: when >= 0, used to disambiguate shared ADC/voltage nodes
   {
   // --- FakeGPIO Output: voltage source node → FGPOx ---
@@ -1986,7 +1989,7 @@ int printNodeOrName(
       if (netIndex >= 0 && fakeGpioOutputs[slot].netIndex != netIndex) continue;
       char name[8];
       snprintf(name, sizeof(name), "FGPO%d", slot);
-      return Serial.print(name);
+      return stream->print(name);
     }
   }
 
@@ -2000,10 +2003,10 @@ int printNodeOrName(
     if (slot >= 0 && slot < MAX_FAKE_GP_IN && fakeGpioInputs[slot].active) {
       char name[8];
       snprintf(name, sizeof(name), "FGPI%d", slot);
-      return Serial.print(name);
+      return stream->print(name);
     }
     // Fallback if slot not active
-    return Serial.print("FGPI?");
+    return stream->print("FGPI?");
   }
   
   if (node >= ADC0 && node <= ADC3) {
@@ -2016,7 +2019,7 @@ int printNodeOrName(
           if (fakeGpioInputs[slot].active && fakeGpioInputs[slot].netIndex == netIndex) {
             char name[8];
             snprintf(name, sizeof(name), "FGPI%d", slot);
-            return Serial.print(name);
+            return stream->print(name);
           }
         }
       }
@@ -2032,19 +2035,19 @@ int printNodeOrName(
       if (activeCount == 1 && lastActiveSlot >= 0) {
         char name[8];
         snprintf(name, sizeof(name), "FGPI%d", lastActiveSlot);
-        return Serial.print(name);
+        return stream->print(name);
       }
       // Multiple active - show generic label indicating TDM
-      return Serial.print("FGPI*");
+      return stream->print("FGPI*");
     }
   }
 
   if (node >= 100) {
-    return Serial.print(definesToChar(node, longOrShort));
+    return stream->print(definesToChar(node, longOrShort));
     } else if (node >= NANO_D0) {
-      return Serial.print(definesToChar(node, longOrShort));
+      return stream->print(definesToChar(node, longOrShort));
       } else {
-      return Serial.print(node);
+      return stream->print(node);
       }
   }
 

@@ -2745,57 +2745,42 @@ void oled::dumpFrameBufferQuarterSize( int clearFirst, int x_pos, int y_pos, int
     dumpingToSerial = false;
 }
 
-void oled::dumpFrameBuffer( ) {
-    // if (!oledConnected) {
-    //     Serial.println("OLED not connected");
-    //     return;
-    // }
+void oled::dumpFrameBuffer( Stream* stream ) {
+    if ( stream == nullptr ) {
+        stream = &Jerial;
+    }
 
-    uint8_t* buffer = getDisplay().getBuffer( );
+    uint8_t* buffer = getDisplay( ).getBuffer( );
     if ( !buffer ) {
-        Serial.println( "No framebuffer available" );
+        stream->println( "No framebuffer available" );
         return;
     }
 
-    Jerial.printf( "OLED Framebuffer Dump (%dx%d):\n\r", displayWidth, displayHeight );
-    Jerial.println( "┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐" );
-
-    // The SSD1306 framebuffer is organized as:
-    // - 128 columns (width)
-    // - 32 rows / 8 = 4 pages (height in pages of 8 pixels each)
-    // - Each byte represents 8 vertical pixels in a column
-    // - Buffer layout: [col0_page0, col1_page0, ..., col127_page0, col0_page1, col1_page1, ...]
+    stream->printf( "OLED Framebuffer Dump (%dx%d):\n\r", displayWidth, displayHeight );
+    stream->println( "┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐" );
 
     for ( int row = 0; row < displayHeight; row++ ) {
-        Jerial.print( "│" ); // Left border
+        stream->print( "│" ); // Left border
 
         for ( int col = 0; col < displayWidth; col++ ) {
-            // Calculate which page (group of 8 rows) this pixel is in
             int page = row / 8;
-            // Calculate which bit within the byte (0 = top of page, 7 = bottom of page)
             int bit = row % 8;
-            // Calculate buffer index: page * width + column
             int bufferIndex = page * displayWidth + col;
 
-            // Extract the specific bit for this pixel
             uint8_t pixelByte = buffer[ bufferIndex ];
             bool pixelOn = ( pixelByte >> bit ) & 0x01;
 
-            // Print block character based on pixel state
             if ( pixelOn ) {
-                Jerial.print( "█" ); // Full block for lit pixel
+                stream->print( "█" ); // Full block for lit pixel
             } else {
-                Jerial.print( " " ); // Space for dark pixel
+                stream->print( " " ); // Space for dark pixel
             }
         }
 
-        Jerial.println( "│" ); // Right border and newline
+        stream->println( "│" ); // Right border and newline
     }
 
-    Jerial.println( "└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘" );
-    // Jerial.print( "Buffer size: " );
-    // Jerial.print( displayWidth * displayHeight / 8 );
-    // Serial.println( " bytes" );
+    stream->println( "└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘" );
 }
 
 // SMALL FONT FUNCTIONS

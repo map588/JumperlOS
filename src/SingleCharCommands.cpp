@@ -655,9 +655,13 @@ void SingleCharCommands::initializeCommands( ) {
                      "Load state from JSON. L = full (paste all); L overlays|power|... = paste that section only.",
                      cmd_loadJsonState, MENU_STANDARD, CAT_CONNECTIONS );
 
-    registerCommand( 'R', "show board LEDs",
-                     "Display board LEDs in terminal.",
+    registerCommand( 'R', "show board LEDs (R!=toggle R=one-shot)",
+                     "Display board LEDs in terminal. R to toggle persistent mode, R! for one-shot dump.",
                      cmd_showBoardLEDs, MENU_ADVANCED, CAT_APPS );
+
+    // registerCommand( 'B', "one-shot board LEDs",
+    //                  "Display board LEDs in terminal once.",
+    //                  cmd_showBoardLEDs, MENU_ADVANCED, CAT_APPS );
 
     registerCommand( '\'', "show startup animation",
                      "Play the startup animation.",
@@ -1299,10 +1303,13 @@ CommandResult cmd_toggleExtraMenu( char c, const String& line ) {
 CommandResult cmd_showNetlist( char c, const String& line ) {
     extern volatile int core1passthrough;
     couldntFindPath( 1 );
+    
+    Stream* target = Jerial.getResponseTarget();
+    if (target == nullptr) target = &Jerial;
   
-    Jerial.print( "\n\n\rnetlist\n\r" );
-    listNets( anythingInteractiveConnected( -1 ) );
-    return CMD_SHOW_MENU;
+    target->print( "\n\n\rnetlist\n\r" );
+    listNets( anythingInteractiveConnected( -1 ), target );
+    return CMD_DONT_SHOW_MENU;
 }
 
 // Get the argument string that follows the trigger character.
@@ -1341,7 +1348,7 @@ CommandResult cmd_showJsonState( char c, const String& line ) {
     Jerial.print( "\n\n\r" );
     Jerial.printNormalized( JsonState::getJumperlessStateJSON( sectionPtr ) );
     Jerial.print( "\n\r" );
-    return CMD_SHOW_MENU;
+    return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_loadJsonState( char c, const String& line ) {
@@ -1402,7 +1409,7 @@ CommandResult cmd_loadJsonState( char c, const String& line ) {
         Jerial.print( "\n\r" );
     }
 
-    return CMD_SHOW_MENU;
+    return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_showBridgeArray( char c, const String& line ) {
@@ -1432,7 +1439,7 @@ CommandResult cmd_showBridgeArray( char c, const String& line ) {
     Jerial.print( "\n\n\rChip Status\n\r" );
     printChipStatus( );
     Jerial.print( "\n\n\r" );
-    return CMD_SHOW_MENU;
+    return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_showCrossbar( char c, const String& line ) {
@@ -1441,7 +1448,7 @@ CommandResult cmd_showCrossbar( char c, const String& line ) {
     if ( arg.length( ) > 0 && arg[ 0 ] == '!' ) {
         extern bool liveCrossbarEnabled;
         setLiveCrossbarEnabled( !liveCrossbarEnabled );
-        return CMD_SHOW_MENU;
+        return CMD_DONT_SHOW_MENU;
     }
     // c0 / c1 — force live mode off or on
     if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
@@ -1452,18 +1459,25 @@ CommandResult cmd_showCrossbar( char c, const String& line ) {
         return CMD_SHOW_MENU;
     }
 
+    Stream* target = Jerial.getResponseTarget();
+    if (target == nullptr) target = &Jerial;
+
     // Otherwise show compact crossbar view
-    printChipStateArrayColorCompact( 12 , '.');
+    printChipStateArrayColorCompact( 12 , '.', target );
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_showCrossbarFull( char c, const String& line ) {
-    printChipStateArrayColor( );  // Full detailed view with 3-char symbols
+    Stream* target = Jerial.getResponseTarget();
+    if (target == nullptr) target = &Jerial;
+    printChipStateArrayColor( target );  // Full detailed view with 3-char symbols
     return CMD_DONT_SHOW_MENU;
 }
 
 CommandResult cmd_showSlots( char c, const String& line ) {
-    printSlots( -1 );
+    Stream* target = Jerial.getResponseTarget();
+    if (target == nullptr) target = &Jerial;
+    printSlots( -1, target );
     return CMD_SHOW_MENU;
 }
 
@@ -1471,10 +1485,13 @@ CommandResult cmd_queryActiveSlot( char c, const String& line ) {
     SlotManager& mgr = SlotManager::getInstance( );
     int activeSlot = mgr.getActiveSlot( );
 
+    Stream* target = Jerial.getResponseTarget();
+    if (target == nullptr) target = &Jerial;
+
     // Output in a format easy for the app to parse
-    Jerial.print( "ACTIVE_SLOT:" );
-    Jerial.println( activeSlot );
-    Jerial.flush( );
+    target->print( "ACTIVE_SLOT:" );
+    target->println( activeSlot );
+    target->flush( );
 
     return CMD_DONT_SHOW_MENU;
 }
@@ -2662,13 +2679,29 @@ CommandResult cmd_logicAnalyzer( char c, const String& line ) {
 }
 
 CommandResult cmd_showBoardLEDs( char c, const String& line ) {
+    // Capture response target first
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) {
+        target = &Jerial;
+    }
+
     // Use scrolling region approach for LED dump display
     // ledDumpEnabled is defined in Graphics.cpp
     String arg = getCommandArgs( line, 50 );
-    if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
-        setLedDumpEnabled( arg[ 0 ] == '1' );
+    
+    // Check for one-shot request: command char 'B' or '!' in arguments
+    bool toggleLive =( arg.indexOf( '!' ) != -1 );
+
+    if ( !toggleLive ) {
+        // Just dump once to the target stream
+        dumpLEDs( -1, -1, 0, 0, 0, 0, target );
     } else {
-        setLedDumpEnabled( !ledDumpEnabled );
+        // Persistent toggle mode
+        if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
+            setLedDumpEnabled( arg[ 0 ] == '1', target );
+        } else {
+            setLedDumpEnabled( !ledDumpEnabled, target );
+        }
     }
     return CMD_DONT_SHOW_MENU;
 }
@@ -2974,8 +3007,12 @@ CommandResult cmd_printColorSpectrum( char c, const String& line ) {
 }
 
 CommandResult cmd_dumpOLED( char c, const String& line ) {
-    Jerial.println( "\n\r" );
-    oled.dumpFrameBuffer( );
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) {
+        target = &Jerial;
+    }
+    target->println( "\n\r" );
+    oled.dumpFrameBuffer( target );
     return CMD_DONT_SHOW_MENU;
 }
 

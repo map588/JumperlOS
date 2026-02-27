@@ -122,7 +122,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.5.6"; //! remember to update this
+const char firmwareVersion[] = "5.6.5.7"; //! remember to update this
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -201,6 +201,7 @@ void setup( ) {
     // Jerial.addOutputStream(JerialEndpoint::OLED);     // Optional: also show on OLED
     // Jerial.addOutputStream(JerialEndpoint::SERIAL1);  // Optional: UART to Arduino
     Jerial.addInputSource( Jerial.getInjectionStream( ) ); // Add injection stream as high-priority input source
+    Jerial.addInputSource( JerialEndpoint::USB_SER3 );     // Add Port 4 as an input source
 
     // Enable automatic tag stripping for input
     // This removes <j> and </j> tags from incoming USB commands to prevent weird behavior
@@ -634,8 +635,8 @@ dontshowmenu:
     static uint32_t lastHeartbeatPrint = 0;
 
     loopStart = millis( );
-    while ( ( ( useLineBuffering && !Jerial.hasCompletedLine( ) ) ||
-              ( !useLineBuffering && Jerial.available( ) == 0 ) ) &&
+    while ( !Jerial.hasCompletedLine( ) &&
+            ( useLineBuffering || Jerial.available( ) == 0 ) &&
             connectFromArduino == '\0' && slotChanged == 0 ) {
 
         // Heartbeat disabled for production
@@ -772,10 +773,8 @@ dontshowmenu:
             tud_task( ); // Non-blocking USB service instead of flush
         }
 #endif
-        if ( useLineBuffering ) {
-            // Service Jerial to process line buffering (user input or injected commands)
-            Jerial.service( );
-        }
+        // Service Jerial to process line buffering and poll Port 4 (USBSer3) TUI commands
+        Jerial.service( );
 
         // NEW: Check for pending commands from CommandBuffer (from UART tags)
         // This is the synchronous, simplified path that replaces InjectedCommandService
@@ -869,7 +868,7 @@ dontshowmenu:
     // This works regardless of line buffering mode - injected commands always work
     // CRITICAL: Use line buffering when injection buffer has data
     static unsigned long lastCommandProcessedTime = 0;
-    if ( useLineBuffering && Jerial.hasCompletedLine( ) ) {
+    if ( Jerial.hasCompletedLine( ) ) {
         // Track command processing latency
 
         unsigned long timeSinceLastCommand = millis( ) - lastCommandProcessedTime;

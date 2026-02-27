@@ -271,22 +271,24 @@ void __not_in_flash_func(sendAllPaths)(int clean) {
 }
 
 
-void printChipStateArray(void) {
+void printChipStateArray(Stream *stream) {
+  if (stream == nullptr) stream = &Jerial;
 
-  Serial.println("Analog Crossbar Array\n\r");
+  stream->println("Analog Crossbar Array\n\r");
 
 
   // for (int i = 0; i < 12; i++) {
-  //   Serial.print("chip ");
-  //   Serial.print(i);
-  //   Serial.print(" ");
+  //   stream->print("chip ");
+  //   stream->print(i);
+  //   stream->print(" ");
   //   for (int j = 0; j < 16; j++) {
-  //     Serial.print(xName(i, j));
-  //     Serial.print(" ");
+  //     stream->print(xName(i, j));
+  //     stream->print(" ");
   //     }
-  //   Serial.println();
+  //   stream->println();
   //   }
-  // Serial.println();
+  // stream->println();
+  // ... (rest of the function with stream-> instead of Serial.)
 
   // for (int i = 0; i < 12; i++) {
   //   for (int j = 0; j < 8; j++) {
@@ -305,57 +307,57 @@ void printChipStateArray(void) {
     int startChip = blockRow * 4;
     int endChip = startChip + 4;
     // Print chip headers
-    Serial.print("           ");
+    stream->print("           ");
     for (int chip = startChip; chip < endChip; chip++) {
-      Serial.print("  chip ");
-      Serial.print(chipNumToChar(chip));
-      Serial.print(" ");
+      stream->print("  chip ");
+      stream->print(chipNumToChar(chip));
+      stream->print(" ");
       if (chip < endChip - 1) {
-        for (int s = 0; s < 25; s++) Serial.print(" "); // spacing between blocks
+        for (int s = 0; s < 25; s++) stream->print(" "); // spacing between blocks
         }
       }
-    Serial.println("");
+    stream->println("");
     // Print Y headers for each chip block
     if (showY) {
-    Serial.print("     ");
+    stream->print("     ");
     } else {
-    Serial.print("     ");
+    stream->print("     ");
       }
     for (int j = 0; j < 4; j++)
       {
       for (int i = 0; i < 8; i++)
         {
-        //Serial.print(" ");
+        //stream->print(" ");
         if (showY)
           {
-          Serial.print(i);
-          Serial.print("  ");
+          stream->print(i);
+          stream->print("  ");
           } else {
-            Serial.print("   ");
+            stream->print("   ");
             }
         }
         if (showY && j < 3)
           {
-          Serial.print("          ");
+          stream->print("          ");
           } else {
-          Serial.print("          ");
+          stream->print("          ");
             }
       }
 
-    Serial.println();
+    stream->println();
     // Print each X row for all 4 chips in this block row
     for (int x = 0; x < 16; x++) {
       for (int chip = startChip; chip < endChip; chip++) {
-        //Serial.print("x");
+        //stream->print("x");
         if (showX) {
-        Serial.print(" ");
-        if (x < 10) Serial.print(" ");
-        Serial.print(x);
+        stream->print(" ");
+        if (x < 10) stream->print(" ");
+        stream->print(x);
         } else {
-          Serial.print("   ");
+          stream->print("   ");
           }
 
-        Serial.print(" "); // space between chip blocks
+        stream->print(" "); // space between chip blocks
 
         for (int y = 0; y < 8; y++) {
           int verticalLine = 0;
@@ -373,45 +375,45 @@ void printChipStateArray(void) {
           }
           
           if (lastChipXY[chip].connected[y] & (1 << x)) {
-            Serial.print("─█─");
-            Serial.flush();
+            stream->print("─█─");
+            stream->flush();
           } else {
             if (verticalLine && horizontalLine) {
-              Serial.print("─┼─");
-              Serial.flush();
+              stream->print("─┼─");
+              stream->flush();
             } else if (verticalLine) {
-              Serial.print(" │ ");
-              Serial.flush();
+              stream->print(" │ ");
+              stream->flush();
             } else if (horizontalLine) {
-              Serial.print("───");
-              Serial.flush();
+              stream->print("───");
+              stream->flush();
             } else {
-              Serial.print(" . ");
-              Serial.flush();
+              stream->print(" . ");
+              stream->flush();
             }
           }
         }
 
-        Serial.print(" "); // space between chip blocks
-        Serial.print(xName(chip, x));
-        Serial.print("  ");
+        stream->print(" "); // space between chip blocks
+        stream->print(xName(chip, x));
+        stream->print("  ");
         }
 
-      Serial.println();
+      stream->println();
       }
     for (int chip = startChip; chip < endChip; chip++) {
-      Serial.print("     ");
-      //Serial.print("y");
+      stream->print("     ");
+      //stream->print("y");
       for (int y = 0; y < 8; y++) {
 
-        Serial.print(yName(chip, y));
-        //Serial.print(" ");
+        stream->print(yName(chip, y));
+        //stream->print(" ");
         }
-      Serial.print("     "); // spacing between blocks
+      stream->print("     "); // spacing between blocks
       }
-    Serial.println("\n\n\r"); // extra space between block rows
+    stream->println("\n\n\r"); // extra space between block rows
     }
-    Serial.flush();
+    stream->flush();
   }
 
 void printLastChipStateArray(void) {
@@ -421,8 +423,8 @@ void printLastChipStateArray(void) {
 /// @brief Print the crossbar array with colors showing which net owns each line
 /// At crossings, horizontal segments show in the horizontal net's color,
 /// vertical segments show in the vertical net's color
-void printChipStateArrayColor(void) {
-  Serial.println("Analog Crossbar Array (Colored by Net)\n\r");
+void printChipStateArrayColor(Stream *stream) {
+  stream->println("Analog Crossbar Array (Colored by Net)\n\r");
   
   // Make sure terminal colors are assigned to nets
   assignTermColor();
@@ -435,51 +437,51 @@ void printChipStateArrayColor(void) {
     int endChip = startChip + 4;
     
     // Print chip headers
-    Serial.print("           ");
+    stream->print("           ");
     for (int chip = startChip; chip < endChip; chip++) {
-      Serial.print("  chip ");
-      Serial.print(chipNumToChar(chip));
-      Serial.print(" ");
+      stream->print("  chip ");
+      stream->print(chipNumToChar(chip));
+      stream->print(" ");
       if (chip < endChip - 1) {
-        for (int s = 0; s < 25; s++) Serial.print(" ");
+        for (int s = 0; s < 25; s++) stream->print(" ");
       }
     }
-    Serial.println("");
+    stream->println("");
     
     // Print Y headers
     if (showY) {
-      Serial.print("     ");
+      stream->print("     ");
     } else {
-      Serial.print("     ");
+      stream->print("     ");
     }
     for (int j = 0; j < 4; j++) {
       for (int i = 0; i < 8; i++) {
         if (showY) {
-          Serial.print(i);
-          Serial.print("  ");
+          stream->print(i);
+          stream->print("  ");
         } else {
-          Serial.print("   ");
+          stream->print("   ");
         }
       }
       if (showY && j < 3) {
-        Serial.print("          ");
+        stream->print("          ");
       } else {
-        Serial.print("          ");
+        stream->print("          ");
       }
     }
-    Serial.println();
+    stream->println();
 
     // Print each X row for all 4 chips in this block row
     for (int x = 0; x < 16; x++) {
       for (int chip = startChip; chip < endChip; chip++) {
         if (showX) {
-          Serial.print(" ");
-          if (x < 10) Serial.print(" ");
-          Serial.print(x);
+          stream->print(" ");
+          if (x < 10) stream->print(" ");
+          stream->print(x);
         } else {
-          Serial.print("   ");
+          stream->print("   ");
         }
-        Serial.print(" ");
+        stream->print(" ");
 
         for (int y = 0; y < 8; y++) {
           int verticalLine = 0;
@@ -509,63 +511,63 @@ void printChipStateArrayColor(void) {
             // Use the net that "owns" this crosspoint - typically the X line's net
             int connNet = xNet > 0 ? xNet : yNet;
             int connColor = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
-            changeTerminalColor(connColor, false, &Serial, false);
-            Serial.print("─█─");
-            changeTerminalColor(-1, false, &Serial, false);
+            changeTerminalColor(connColor, false, stream, false);
+            stream->print("─█─");
+            changeTerminalColor(-1, false, stream, false);
           } else {
             if (verticalLine && horizontalLine) {
               // Crossing - horizontal in X color, center in Y color
-              changeTerminalColor(xColor, false, &Serial, false);
-              Serial.print("─");
-              changeTerminalColor(yColor, false, &Serial, false);
-              Serial.print("┼");
-              changeTerminalColor(xColor, false, &Serial, false );
-              Serial.print("─");
-              changeTerminalColor(-1, false, &Serial, false);
+              changeTerminalColor(xColor, false, stream, false);
+              stream->print("─");
+              changeTerminalColor(yColor, false, stream, false);
+              stream->print("┼");
+              changeTerminalColor(xColor, false, stream, false );
+              stream->print("─");
+              changeTerminalColor(-1, false, stream, false);
             } else if (verticalLine) {
               // Just vertical line
-              changeTerminalColor(yColor, false, &Serial, false);
-              Serial.print(" │ ");
-              changeTerminalColor(-1, false, &Serial, false);
+              changeTerminalColor(yColor, false, stream, false);
+              stream->print(" │ ");
+              changeTerminalColor(-1, false, stream, false);
             } else if (horizontalLine) {
               // Just horizontal line
-              changeTerminalColor(xColor, false, &Serial, false);
-              Serial.print("───");
-              changeTerminalColor(-1, false, &Serial, false);
+              changeTerminalColor(xColor, false, stream, false);
+              stream->print("───");
+              changeTerminalColor(-1, false, stream, false);
             } else {
               // No line - just a dot
-              changeTerminalColor( 238 , false, &Serial, false);
-              Serial.print(" . ");
-              changeTerminalColor(-1, false, &Serial, false);
+              changeTerminalColor( 238 , false, stream, false);
+              stream->print(" . ");
+              changeTerminalColor(-1, false, stream, false);
             }
           }
         }
 
-        Serial.print(" ");
-        Serial.print(xName(chip, x));
-        Serial.print("  ");
+        stream->print(" ");
+        stream->print(xName(chip, x));
+        stream->print("  ");
       }
-      Serial.println();
+      stream->println();
     }
     
     // Print Y names at bottom
     for (int chip = startChip; chip < endChip; chip++) {
-      Serial.print("     ");
+      stream->print("     ");
       for (int y = 0; y < 8; y++) {
-        Serial.print(yName(chip, y));
+        stream->print(yName(chip, y));
       }
-      Serial.print("     ");
+      stream->print("     ");
     }
-    Serial.println("\n\n\r");
+    stream->println("\n\n\r");
   }
-  Serial.flush();
+  stream->flush();
 }
 
 /// @brief Compact color-coded crossbar display - uses single characters per cell
 /// Fits more information in less screen space while still showing net colors
 /// @param chipsPerRow Number of chips to display per row (default 6)
-void printChipStateArrayColorCompact(int chipsPerRow, char blankChar) {
-  Serial.println("Crossbar (Compact)\n\r");
+void printChipStateArrayColorCompact(int chipsPerRow, char blankChar, Stream *stream) {
+  stream->println("Crossbar (Compact)\n\r");
   
   // Make sure terminal colors are assigned to nets
   assignTermColor();
@@ -582,19 +584,19 @@ void printChipStateArrayColorCompact(int chipsPerRow, char blankChar) {
     if (endChip > 12) endChip = 12;
     
     // Print chip headers (compact)
-    Serial.print("   ");
+    stream->print("   ");
     for (int chip = startChip; chip < endChip; chip++) {
-      Serial.print(chipNumToChar(chip));
-      Serial.print("         ");  // 8 chars for 8 Y columns
+      stream->print(chipNumToChar(chip));
+      stream->print("         ");  // 8 chars for 8 Y columns
     }
-    Serial.println();
+    stream->println();
 
     // Print each X row for all chips in this block row
     for (int x = 0; x < 16; x++) {
       // Row number (compact, no leading space for single digit)
-      if (x < 10) Serial.print(" ");
-      Serial.print(x);
-      Serial.print(" ");
+      if (x < 10) stream->print(" ");
+      stream->print(x);
+      stream->print(" ");
 
       for (int chip = startChip; chip < endChip; chip++) {
         for (int y = 0; y < 8; y++) {
@@ -624,39 +626,39 @@ void printChipStateArrayColorCompact(int chipsPerRow, char blankChar) {
             // Connection point - use the net color
             int connNet = xNet > 0 ? xNet : yNet;
             int connColor = (connNet > 0 && connNet < MAX_NETS) ? globalState.connections.nets[connNet].termColor : -1;
-            changeTerminalColor(connColor, false, &Serial, false);
-            Serial.print("█");
-            changeTerminalColor(-1, false, &Serial, false);
+            changeTerminalColor(connColor, false, stream, false);
+            stream->print("█");
+            changeTerminalColor(-1, false, stream, false);
           } else if (verticalLine && horizontalLine) {
             // Crossing - show in vertical line's color (Y net)
-            changeTerminalColor(yColor, false, &Serial, false);
-            Serial.print("┼");
-            changeTerminalColor(-1, false, &Serial, false);
+            changeTerminalColor(yColor, false, stream, false);
+            stream->print("┼");
+            changeTerminalColor(-1, false, stream, false);
           } else if (verticalLine) {
             // Just vertical line
-            changeTerminalColor(yColor, false, &Serial, false);
-            Serial.print("│");
-            changeTerminalColor(-1, false, &Serial, false);
+            changeTerminalColor(yColor, false, stream, false);
+            stream->print("│");
+            changeTerminalColor(-1, false, stream, false);
           } else if (horizontalLine) {
             // Just horizontal line
-            changeTerminalColor(xColor, false, &Serial, false);
-            Serial.print("─");
-            changeTerminalColor(-1, false, &Serial, false);
+            changeTerminalColor(xColor, false, stream, false);
+            stream->print("─");
+            changeTerminalColor(-1, false, stream, false);
           } else {
             // No line
-            changeTerminalColor( 238 , false, &Serial, false);
-            Serial.print(blankChar);
-            changeTerminalColor(-1, false, &Serial, false);
+            changeTerminalColor( 238 , false, stream, false);
+            stream->print(blankChar);
+            changeTerminalColor(-1, false, stream, false);
           }
         }
-        Serial.print("  ");  // Single space between chips
+        stream->print("  ");  // Single space between chips
       }
-      Serial.println();
-      Serial.flush();
+      stream->println();
+      stream->flush();
     }
-    Serial.println();  // Single blank line between block rows
+    stream->println();  // Single blank line between block rows
   }
-  Serial.flush();
+  stream->flush();
 }
 
 // ============================================================================

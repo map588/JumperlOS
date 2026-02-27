@@ -19,6 +19,7 @@
 #include <Wire.h>
 #include "oled.h"
 #include "CH446Q.h"
+#include "NetsToChipConnections.h"
 
 #include "SingleCharCommands.h"
 
@@ -671,16 +672,7 @@ bool statusDiagnosticsMenu() {
 // Menu Action Implementations
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// External function declarations - these are defined in other source files
-extern void printGPIOState();
-extern void printPIOStateMachines();
-extern void printChipStateArrayColor();
-extern void listNets(int);
-extern void printBridgeArray();
-extern void printPathsCompact(int);
-extern void printChipStatus();
-extern void couldntFindPath(int);
-extern int anythingInteractiveConnected(int);
+// External function declarations - these are now included via headers
 extern void sendXYraw(int, int, int, int);
 extern volatile bool pauseCore2;
 

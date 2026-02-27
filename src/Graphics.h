@@ -203,15 +203,25 @@ void drawAnimatedImage(int imageIndex = 0, int speed = 2000);
 void printRLEimageData(int imageIndex);
 void printAllRLEimageData(void);
 
-void dumpLEDs(int posX = 50, int posY = 27, int pixelsOrRows = 0,
-              int header = 0, int rgbOrRaw = 0, int logo = 0,
-              Stream *stream = &Jerial);
+// Draw current LED state to a terminal stream.  Normally the function
+// saves the cursor, clears and/or repositions to a fixed area and then
+// renders a 30×14 grid of coloured blocks.  However if *both* `posX` and
+// `posY` are negative the "inline mode" is enabled: the screen is *not*
+// cleared, the cursor is left where it is, and the ANSI sequences are
+// simply printed consecutively.  This is useful when you want to log an LED
+// snapshot inline with other text.
+//
+// The parameter values are mostly ignored in inline mode; they exist for
+// backwards compatibility with other dump routines.
+void dumpLEDs( int posX = 50, int posY = 27, int pixelsOrRows = 0,
+               int header = 0, int rgbOrRaw = 0, int logo = 0,
+               Stream* stream = &Jerial );
 
 // Free dumpLEDs screen buffer (call when LED dumping is disabled to save 34KB)
-void freeDumpLEDsBuffer();
+void freeDumpLEDsBuffer( );
 
 // LED dump scrolling region control (similar to live crossbar display)
-void setLedDumpEnabled(bool enabled);
+void setLedDumpEnabled( bool enabled, Stream* target = &Jerial );
 extern bool ledDumpEnabled;
 
 // Clear any non-scrolling region from previous session (call at startup)

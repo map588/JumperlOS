@@ -1,4 +1,5 @@
 #include "Graphics.h"
+#include <vector>
 #include "JeoPixel.h"
 #include "Commands.h"
 #include "Highlighting.h"
@@ -27,6 +28,7 @@
 #define Serial SerialWrap
 #endif
 #include <math.h>
+#include <vector>
 
 
 bool disableTerminalColors = false;
@@ -3734,37 +3736,41 @@ void freeDumpLEDsBuffer() {
 /// @brief Enable/disable LED dump display with scrolling region
 /// Uses DECSTBM scrolling region - LED display is in non-scrolling area at top
 /// Similar to setLiveCrossbarEnabled() in CH446Q.cpp
-void setLedDumpEnabled(bool enabled) {
+void setLedDumpEnabled(bool enabled, Stream* target) {
   extern int dumpLED;
   ledDumpEnabled = enabled;
   dumpLED = enabled ? 1 : 0;
   
+  if (target == nullptr) {
+    target = &Jerial;
+  }
+
   if (enabled) {
     // Clear screen and move to home
-    Serial.print("\033[2J\033[H");
+    target->print("\033[2J\033[H");
     
     // Draw the initial LED display
-    dumpLEDs();
+    dumpLEDs(50, 27, 0, 0, 0, 0, target);
     
     // Set scrolling region BELOW the LED display area (DECSTBM)
     // This makes rows 1-LED_DUMP_HEIGHT fixed (non-scrolling)
     // and rows LED_DUMP_HEIGHT+1 to bottom scrollable
-    Serial.printf("\033[%d;999r", LED_DUMP_HEIGHT);
+    target->printf("\033[%d;999r", LED_DUMP_HEIGHT);
     
     // Move cursor to the scrolling region
-    Serial.printf("\033[%d;1H", LED_DUMP_HEIGHT);
-    Serial.println("--- LED Display Mode (R to disable) ---\r");
-    Serial.println("\r");
-    Serial.flush();
+    target->printf("\033[%d;1H", LED_DUMP_HEIGHT);
+    target->println("--- LED Display Mode (R to disable) ---\r");
+    target->println("\r");
+    target->flush();
   } else {
     // Reset scrolling region to full screen (DECSTBM with no params)
-    Serial.print("\033[r");
+    target->print("\033[r");
     // Clear screen and home
-    Serial.print("\033[2J\033[H");
-    Serial.println("LED display disabled.\r");
+    target->print("\033[2J\033[H");
+    target->println("LED display disabled.\r");
     // Free the screen buffer to save memory
     freeDumpLEDsBuffer();
-    Serial.flush();
+    target->flush();
   }
 }
 
@@ -3784,6 +3790,13 @@ void clearNonScrollingRegion(void) {
 
 void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
               int logo, Stream *stream) {
+
+  // When both coordinates are negative we enter "inline mode".  In this
+  // special case the function must not move the cursor, clear the screen or
+  // otherwise reposition the terminal – it simply emits the ANSI lines
+  // consecutively at the current cursor position.  This is useful for
+  // callers that want to print an LED snapshot inline in a scrolling log.
+  bool inlineMode = (posX < 0 && posY < 0);
 
   // return;
   bool mainSerial = false;
@@ -3827,9 +3840,12 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
     // Send clear screen 1 second after connection is established
     if (serial2Connected && serial2ClearSent < 2 &&
         (millis() - serial2ConnectTime >= 100)) {
-      if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) {
-        dumpingToSerial = false;
-        return;
+      if (!inlineMode) {
+        // only clear the screen when we are laying out in a fixed region
+        if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) {
+          dumpingToSerial = false;
+          return;
+        }
       }
       serial2ClearSent++;
     }
@@ -3857,9 +3873,11 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
     // Send clear screen 1 second after connection is established
     if (serial1Connected && serial1ClearSent < 2 &&
         (millis() - serial1ConnectTime >= 100)) {
-      if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) {
-        dumpingToSerial = false;
-        return;
+      if (!inlineMode) {
+        if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) {
+          dumpingToSerial = false;
+          return;
+        }
       }
       serial1ClearSent++;
     }
@@ -3868,10 +3886,16 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
     // if (!useWindowing) {
       // Legacy positioning for non-windowing mode
-      saveCursorPosition(stream);
+      if (!inlineMode) {
+        saveCursorPosition(stream);
+      }
    
     // Windowing mode: WindowManager handles all positioning
-    mainSerial = true;
+    // if we're printing inline there is no special area so don't use the
+    // scroll-region path later.
+    if (!inlineMode) {
+      mainSerial = true;
+    }
   }
 
   if (logoLedAccess == true) {
@@ -4146,57 +4170,30 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   logoLedAccess = false;
 
   // Output handling - use scrolling region approach when ledDumpEnabled
-  if (mainSerial == true && ledDumpEnabled) {
+  if (mainSerial == true && ledDumpEnabled && (stream == &Jerial || stream == &Serial)) {
     // Scrolling region mode: use DECSC/DECRC (ESC 7 / ESC 8) for save/restore cursor
     // This draws in the non-scrolling area at top without disturbing scrolling region
-    Serial.print("\0337");  // DECSC - save cursor position
-    Serial.print("\033[H"); // Move to home (top-left, non-scrolling area)
+    stream->print("\0337");  // DECSC - save cursor position
+    stream->print("\033[H"); // Move to home (top-left, non-scrolling area)
     
     // Send all lines to the fixed area
     for (int i = 0; i < currentLine; i++) {
       if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
         break;
       }
-      Serial.print(screenLines[i]);
-      Serial.print("\033[K\r\n");  // Clear to EOL + newline
+      stream->print(screenLines[i]);
+      stream->print("\033[K\r\n");  // Clear to EOL + newline
     }
     
-    Serial.print("\0338");  // DECRC - restore cursor position
-    Serial.flush();
-  } else if (mainSerial == true) {
-    // Legacy cursor management for non-scrolling-region mode
-    int clearAbove = 6;
-    Jerial.printf("\033[%dA", 30);
-    Jerial.printf("\033[%dA", clearAbove);
-    for (int i = 0; i < clearAbove; i++) {
-      Jerial.printf("\033[%dC\033[0K\033[1B\033[0G", xOffset);
-    }
-    Jerial.print("\033[0G");
-    
-    // Send all lines with offset
-    for (int i = 0; i < currentLine; i++) {
-      if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
-        break;
-      }
-
-      int lineLen = strlen(screenLines[i]);
-      if (Jerial.availableForWrite() < lineLen + 3) {
-        unsigned long waitStart = millis();
-        while (Jerial.availableForWrite() < lineLen + 3 &&
-               (millis() - waitStart) < 10) {
-          delayMicroseconds(10);
-        }
-      }
-
-      Jerial.printf("\033[%dC", xOffset);
-      Jerial.print(screenLines[i]);
-      Jerial.print("\r\n");
-    }
-
-    Jerial.printf("\033[%dB", 4);
+    stream->print("\0338");  // DECRC - restore cursor position
+    stream->flush();
   } else {
-    // USBSer1/USBSer2 mode - position at 0,0
-    snprintf(screenLines[currentLine++], LINE_WIDTH, "\033[0;0H\033[0m");
+    // Standard stream output (Port 4, Serial 1, Serial 2, or broadcast)
+    // Position at 0,0 if it's a TUI port.  When printing inline we leave
+    // the cursor where it is.
+    if (!inlineMode && stream != &Jerial && stream != &Serial) {
+        stream->print("\033[0;0H\033[0m");
+    }
     
     for (int i = 0; i < currentLine; i++) {
       if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
@@ -4204,16 +4201,16 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
       }
 
       int lineLen = strlen(screenLines[i]);
-      if (Jerial.availableForWrite() < lineLen + 3) {
+      if (stream->availableForWrite() < lineLen + 3) {
         unsigned long waitStart = millis();
-        while (Jerial.availableForWrite() < lineLen + 3 &&
+        while (stream->availableForWrite() < lineLen + 3 &&
                (millis() - waitStart) < 10) {
           delayMicroseconds(10);
         }
       }
 
-      Jerial.print(screenLines[i]);
-      Jerial.print("\r\n");
+      stream->print(screenLines[i]);
+      stream->print("\r\n");
     }
   }
 

@@ -75,6 +75,17 @@ ServiceStatus ConfigSaveService::service() {
         Serial.flush();
     }
     
+    // Check if filesystem is busy before starting save
+    // This prevents Core 0 from blocking if Core 1/MicroPython is using the FS
+    if (!fs_mutex_try_acquire()) {
+        if (debugConfigSaveTiming) {
+            Serial.println("[ConfigSaveService] POSTPONED - Filesystem busy (fs_mutex)");
+            Serial.flush();
+        }
+        return ServiceStatus::IDLE;
+    }
+    fs_mutex_release(); // Release immediately, saveConfig() will re-acquire as needed
+    
     // Do the actual save
     bool saved = saveConfig();
     
@@ -900,11 +911,15 @@ bool saveConfigToFile(const char* filename) {
     // Increase timeout to 1000ms to allow long operations to finish
     bool was_paused = pauseCore2ForFlash(1000);
     
+    // Suspend UART IRQ before flash ops to prevent starvation of USB stack
+    AsyncPassthrough::suspendUARTRxIRQ();
+    
     extern volatile bool core2busy;
     if (core2busy) {
         if (debugConfigSaveTiming) Serial.println("[ConfigSave] Core 2 busy! Aborting full save.");
         else Serial.println("[ConfigSave] Full save aborted: Core 2 busy");
         unpauseCore2ForFlash(was_paused);
+        AsyncPassthrough::resumeUARTRxIRQ();
         return false;
     }
     
@@ -1101,6 +1116,7 @@ bool saveConfigToFile(const char* filename) {
     file.flush();
     safeFileClose(file, true);  // Write mode, needs flush
     unpauseCore2ForFlash(was_paused);
+    AsyncPassthrough::resumeUARTRxIRQ();
     
     if (debugConfigSaveTiming) {
         Serial.print("[ConfigSave] FULL SAVE complete: ");
@@ -1904,11 +1920,15 @@ bool saveConfigIncremental(const char* filename) {
     // This prevents the XIP crash when leaving probe mode
     bool was_paused = pauseCore2ForFlash(1000);
     
+    // Suspend UART IRQ before flash ops to prevent starvation of USB stack
+    AsyncPassthrough::suspendUARTRxIRQ();
+    
     extern volatile bool core2busy; // Check if it actually stopped
     if (core2busy) {
         if (debugConfigSaveTiming) Serial.println("[ConfigSave] Core 2 still busy after timeout! Aborting save to prevent crash.");
         else Serial.println("[ConfigSave] Aborted: Core 2 busy");
         unpauseCore2ForFlash(was_paused);
+        AsyncPassthrough::resumeUARTRxIRQ();
         free(fileContent);
         free(newContent);
         return false; // Retry later
@@ -1987,6 +2007,7 @@ bool saveConfigIncremental(const char* filename) {
     }
     
     unpauseCore2ForFlash(was_paused);
+    AsyncPassthrough::resumeUARTRxIRQ();
     
     bool success = (written == writeSize);
     
@@ -2047,12 +2068,16 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
     // CRITICAL: Pause Core2 during flash write operations
     bool was_paused = pauseCore2ForFlash(100);
     
+    // Suspend UART IRQ before flash ops
+    AsyncPassthrough::suspendUARTRxIRQ();
+    
     // Write file using safe function
     File file = safeFileOpen(filename, "w", 2000);
     if (!file) {
         Serial.print("Failed to create file: ");
         Serial.println(filename);
         unpauseCore2ForFlash(was_paused);
+        AsyncPassthrough::resumeUARTRxIRQ();
         return false;
     }
     
@@ -2068,6 +2093,7 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
             Serial.println(filename);
             safeFileClose(file, true);
             unpauseCore2ForFlash(was_paused);
+            AsyncPassthrough::resumeUARTRxIRQ();
             return false;
         }
         bytesWritten += written;
@@ -2076,6 +2102,7 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
     file.flush();
     safeFileClose(file, true);  // Write mode, needs flush
     unpauseCore2ForFlash(was_paused);
+    AsyncPassthrough::resumeUARTRxIRQ();
     changeTerminalColor( 163, true );
     Serial.print("Provisioned: ");
     Serial.println(filename);

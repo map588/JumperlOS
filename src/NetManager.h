@@ -4,6 +4,7 @@
 #define NETMANAGER_H
 
 #include <Arduino.h>
+#include "Jerial.h"
 #include "JumperlessDefines.h"
 //#include "MatrixStateRP2040.h"
 
@@ -41,7 +42,7 @@ int findNodeInNet(int node);
 
 void writeJSONtoFile();
 
-int printNodeOrName(int node, int longOrShort = 0, int netIndex = -1); //0 = short, 1 = long; netIndex disambiguates shared ADC/voltage-source nodes
+int printNodeOrName(int node, int longOrShort = 0, int netIndex = -1, Stream *stream = &Jerial); //0 = short, 1 = long; netIndex disambiguates shared ADC/voltage-source nodes
 
 void loadBridgesFromState(); //load bridges from globalState into newBridge[] array
 void loadBridgesFromStateIncremental(int startIndex); //INCREMENTAL: load only NEW bridges starting from startIndex
@@ -80,7 +81,7 @@ void deleteNode(); //disconnects everything connected to that one node
 
 const char* definesToChar (int defined, int longOrShort = 0); //0 = short, 1 = long
 
-void printBridgeArray();
+void printBridgeArray(Stream *stream = &Jerial);
 
 void populateSpecialFunctions(int net, int node);
 
@@ -100,7 +101,7 @@ void deleteNodesAndShift(); //delete the nodes and bridges that were copied from
 
 void leftShiftNodesBridgesNets();
 
-void listNets(int liveUpdate = 1);
+void listNets(int liveUpdate = 1, Stream *stream = &Jerial);
 
 void listSpecialNets();
 
