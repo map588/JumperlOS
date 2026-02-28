@@ -3157,6 +3157,10 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #endif
 #ifdef INCLUDE_TEST_OLED_FEATURES
         { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py" },
+
+        #ifdef INCLUDE_EXCEL_LISTENER
+            { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py" },
+            #endif
 #endif
     };
 

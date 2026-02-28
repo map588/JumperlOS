@@ -537,6 +537,21 @@ BOT_RAIL_GND = _native.BOT_RAIL_GND
 BOTTOM_GND_PAD = _native.BOTTOM_GND_PAD
 BOT_GND_PAD = _native.BOT_GND_PAD
 
+# Probe Switch Constants
+SWITCH_MEASURE = _native.SWITCH_MEASURE
+SWITCH_SELECT = _native.SWITCH_SELECT
+SWITCH_UNKNOWN = _native.SWITCH_UNKNOWN
+
+# Clickwheel Constants
+CLICKWHEEL_NONE = _native.CLICKWHEEL_NONE
+CLICKWHEEL_UP = _native.CLICKWHEEL_UP
+CLICKWHEEL_DOWN = _native.CLICKWHEEL_DOWN
+CLICKWHEEL_IDLE = _native.CLICKWHEEL_IDLE
+CLICKWHEEL_PRESSED = _native.CLICKWHEEL_PRESSED
+CLICKWHEEL_HELD = _native.CLICKWHEEL_HELD
+CLICKWHEEL_RELEASED = _native.CLICKWHEEL_RELEASED
+CLICKWHEEL_DOUBLECLICKED = _native.CLICKWHEEL_DOUBLECLICKED
+
 # ============================================================================
 # Clickwheel Functions
 # ============================================================================
@@ -737,5 +752,29 @@ __all__ = [
     
     # JFS Module
     'jfs',
+
+    # Added constants and functions for new APIs
+    'SWITCH_MEASURE', 'SWITCH_SELECT', 'SWITCH_UNKNOWN',
+    'CLICKWHEEL_NONE', 'CLICKWHEEL_UP', 'CLICKWHEEL_DOWN',
+    'CLICKWHEEL_IDLE', 'CLICKWHEEL_PRESSED', 'CLICKWHEEL_HELD',
+    'CLICKWHEEL_RELEASED', 'CLICKWHEEL_DOUBLECLICKED',
+    'gpio_set_read_floating', 'gpio_get_read_floating',
+    'set_gpio_read_floating', 'get_gpio_read_floating',
+    'gpio_claim_pin', 'gpio_release_pin', 'gpio_release_all_pins',
+    'fast_connect', 'fast_disconnect',
+    'set_net_color_hsv', 'get_all_nets',
+    'get_num_paths', 'get_path_info', 'get_all_paths', 'get_path_between',
+    'FakeGpioDisconnect', 'FakeGpioPin', 'FAKE_GPIO_INPUT', 'FAKE_GPIO_OUTPUT',
+    'oled_set_text_size', 'oled_get_text_size', 'oled_copy_print',
+    'oled_get_fonts', 'oled_set_font', 'oled_get_current_font',
+    'oled_load_bitmap', 'oled_display_bitmap', 'oled_show_bitmap_file',
+    'oled_get_framebuffer', 'oled_set_framebuffer', 'oled_get_framebuffer_size',
+    'oled_set_pixel', 'oled_get_pixel',
+    'overlay_set', 'overlay_clear', 'overlay_clear_all', 'overlay_set_pixel',
+    'overlay_count', 'overlay_shift', 'overlay_place', 'overlay_serialize',
+    'force_service', 'force_service_by_index', 'get_service_index',
+    'get_switch_position', 'set_switch_position', 'check_switch_position',
+    'clickwheel_get_position', 'clickwheel_reset_position',
+    'clickwheel_get_direction', 'clickwheel_get_button', 'clickwheel_is_initialized',
 ]
 

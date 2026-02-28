@@ -425,6 +425,98 @@ nodes_help()        # All node names
 dir()               # List everything
 ```
 
+## � Board State
+```python
+state_json = get_state()
+set_state(state_json)
+# from_wokwi parameter when needed
+```
+
+## �🔧 Advanced GPIO & Pin Utilities
+```python
+# Floating-read enable/disable
+gpio_set_read_floating(pin, True)
+state = gpio_get_read_floating(pin)
+# Pin ownership for timing-critical operations
+gpio_claim_pin(pin)
+gpio_release_pin(pin)
+gpio_release_all_pins()
+```
+
+## ⚡ Fast Node Operations
+```python
+fast_connect(node1, node2)       # skip LED update
+fast_disconnect(node1, node2)    # skip LED update
+```
+
+## 🌐 Network & Path Queries
+```python
+set_net_color_hsv(netNum, h, s, v)
+get_all_nets()
+get_num_paths()
+get_path_info(idx)
+get_all_paths()
+get_path_between(node1, node2)
+```
+
+## 🧪 Fake GPIO Support
+```python
+# Class constructors
+fg = FakeGpioPin( node )
+# Mode constants
+FAKE_GPIO_INPUT
+FAKE_GPIO_OUTPUT
+```
+
+## 🖼️ OLED Extras
+```python
+oled_set_text_size(size)
+oled_get_text_size()
+oled_copy_print(True)
+oled_get_fonts()
+oled_set_font("fontname")
+oled_get_current_font()
+oled_load_bitmap("file.bmp")
+oled_display_bitmap(x, y, w, h, data)
+oled_show_bitmap_file("file.bmp", x, y)
+oled_get_framebuffer()
+oled_set_framebuffer(data, len)
+oled_get_framebuffer_size()
+oled_set_pixel(x,y,color)
+oled_get_pixel(x,y)
+```
+
+## 🖥️ Graphic Overlays
+```python
+overlay_set(name, row, col, w, h, colors)
+overlay_clear(name)
+overlay_clear_all()
+overlay_set_pixel(row, col, color)
+overlay_count()
+overlay_shift(name, dr, dc)
+overlay_place(name, row, col)
+overlay_serialize()
+```
+
+## ⚙️ System & Service Helpers
+```python
+force_service("name")
+force_service_by_index(idx)
+get_service_index("name")
+get_switch_position()
+set_switch_position(pos)
+check_switch_position()
+```
+
+## 🎛️ Clickwheel Extras
+```python
+clickwheel_get_position()
+clickwheel_reset_position()
+clickwheel_get_direction()
+clickwheel_get_button()
+clickwheel_is_initialized()
+```
+
 ---
 
 **Full Documentation:** See `docs/09.5-micropythonAPIreference.md`  

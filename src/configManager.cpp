@@ -2129,6 +2129,7 @@ void provisionFirmwareFiles(bool print) {
     provisionEmbeddedFile("images/bubbleJump.bin", bubbleJump_bin, bubbleJump_bin_len);
     provisionEmbeddedFile("images/jogo32h.bin", jogo32h_file_bin, jogo32h_file_bin_len);
     provisionEmbeddedFile("images/bubbleJumpThiccWhite.bin", bubbleJumpThiccWhite_bin, bubbleJumpThiccWhite_bin_len);
+    provisionEmbeddedFile("images/excelGUI.bin", excelGUI_bin, excelGUI_bin_len);
     // ---- Paste into provisionFirmwareFiles() in src/configManager.cpp ----
 
     provisionEmbeddedFile("images/dayglow.bin", dayglow_bin, dayglow_bin_len);

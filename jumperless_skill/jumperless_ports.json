@@ -1,0 +1,90 @@
+{
+  "/dev/cu.debug-console": {
+    "description": "n/a",
+    "hwid": "n/a",
+    "interface": null,
+    "vid": null,
+    "pid": null,
+    "is_jumperless": false,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.Y813BT-4BD4": {
+    "description": "n/a",
+    "hwid": "n/a",
+    "interface": null,
+    "vid": null,
+    "pid": null,
+    "is_jumperless": false,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.Bluetooth-Incoming-Port": {
+    "description": "n/a",
+    "hwid": "n/a",
+    "interface": null,
+    "vid": null,
+    "pid": null,
+    "is_jumperless": false,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.Maker-8594": {
+    "description": "n/a",
+    "hwid": "n/a",
+    "interface": null,
+    "vid": null,
+    "pid": null,
+    "is_jumperless": false,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.usbmodemJLV5port5": {
+    "description": "Jumperless V5",
+    "hwid": "USB VID:PID=1D50:ACAB SER=JLV5port LOCATION=0-1",
+    "interface": null,
+    "vid": null,
+    "pid": "1D50",
+    "is_jumperless": true,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.usbmodemJLV5port1": {
+    "description": "Jumperless V5",
+    "hwid": "USB VID:PID=1D50:ACAB SER=JLV5port LOCATION=0-1",
+    "interface": null,
+    "vid": null,
+    "pid": "1D50",
+    "is_jumperless": true,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.usbmodemJLV5port7": {
+    "description": "Jumperless V5",
+    "hwid": "USB VID:PID=1D50:ACAB SER=JLV5port LOCATION=0-1",
+    "interface": null,
+    "vid": null,
+    "pid": "1D50",
+    "is_jumperless": true,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  },
+  "/dev/cu.usbmodemJLV5port3": {
+    "description": "Jumperless V5",
+    "hwid": "USB VID:PID=1D50:ACAB SER=JLV5port LOCATION=0-1",
+    "interface": null,
+    "vid": null,
+    "pid": "1D50",
+    "is_jumperless": true,
+    "usb_function": "",
+    "cdc_index": null,
+    "enq_response": ""
+  }
+}

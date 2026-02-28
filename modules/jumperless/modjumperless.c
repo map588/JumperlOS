@@ -89,7 +89,7 @@ int jl_switch_slot( int slot );
 void jl_restore_micropython_entry_state( void );
 int jl_has_unsaved_changes( void );
 const char* jl_get_state( void );
-int jl_set_state( const char* jsonState, int clearFirst );
+int jl_set_state( const char* jsonState, int clearFirst, int fromWokwi );
 
 // Net Information API Functions
 const char* jl_get_net_name( int netNum );
@@ -5692,19 +5692,25 @@ static mp_obj_t mp_jl_get_state( void ) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0( jl_get_state_obj, mp_jl_get_state );
 
-// set_state(json, clear_first=True) -> int
+// set_state(json, clear_first=True, from_wokwi=False) -> int
+// If `from_wokwi` is true the first argument may be a board-filepath or
+// raw Wokwi diagram JSON.  The contents are converted into Jumperless state
+// before applying.
 static mp_obj_t mp_jl_set_state( size_t n_args, const mp_obj_t* args ) {
     const char* json = mp_obj_str_get_str( args[ 0 ] );
     int clear_first = 1;
+    int from_wokwi = 0;
     if ( n_args > 1 ) {
         clear_first = mp_obj_is_true( args[ 1 ] ) ? 1 : 0;
     }
+    if ( n_args > 2 ) {
+        from_wokwi = mp_obj_is_true( args[ 2 ] ) ? 1 : 0;
+    }
     
-    int result = jl_set_state( json, clear_first );
+    int result = jl_set_state( json, clear_first, from_wokwi );
     return mp_obj_new_int( result );
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_set_state_obj, 1, 2, mp_jl_set_state );
-
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_set_state_obj, 1, 3, mp_jl_set_state );
 // Overlay functions
 
 // overlay_set(name, x, y, width, height, colors_list)

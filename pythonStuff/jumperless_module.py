@@ -164,6 +164,12 @@ net_info = _native.net_info
 switch_slot = _native.switch_slot
 CURRENT_SLOT = _native.CURRENT_SLOT
 
+# State API
+# ============================================================================
+get_state = _native.get_state
+
+set_state = _native.set_state(json_str, clear_first, from_wokwi)
+
 # ============================================================================
 # Context Control
 # ============================================================================
@@ -462,6 +468,21 @@ BOT_RAIL_GND = _native.BOT_RAIL_GND
 BOTTOM_GND_PAD = _native.BOTTOM_GND_PAD
 BOT_GND_PAD = _native.BOT_GND_PAD
 
+# Probe Switch Constants
+SWITCH_MEASURE = _native.SWITCH_MEASURE
+SWITCH_SELECT = _native.SWITCH_SELECT
+SWITCH_UNKNOWN = _native.SWITCH_UNKNOWN
+
+# Clickwheel Constants
+CLICKWHEEL_NONE = _native.CLICKWHEEL_NONE
+CLICKWHEEL_UP = _native.CLICKWHEEL_UP
+CLICKWHEEL_DOWN = _native.CLICKWHEEL_DOWN
+CLICKWHEEL_IDLE = _native.CLICKWHEEL_IDLE
+CLICKWHEEL_PRESSED = _native.CLICKWHEEL_PRESSED
+CLICKWHEEL_HELD = _native.CLICKWHEEL_HELD
+CLICKWHEEL_RELEASED = _native.CLICKWHEEL_RELEASED
+CLICKWHEEL_DOUBLECLICKED = _native.CLICKWHEEL_DOUBLECLICKED
+
 # ============================================================================
 # Clickwheel Functions
 # ============================================================================
@@ -500,6 +521,78 @@ fs_cwd = _native.fs_cwd
 jfs = _native.jfs
 
 # ============================================================================
+# Extended GPIO utilities
+gpio_set_read_floating = _native.gpio_set_read_floating
+gpio_get_read_floating = _native.gpio_get_read_floating
+# Aliases
+set_gpio_read_floating = _native.set_gpio_read_floating
+get_gpio_read_floating = _native.get_gpio_read_floating
+
+gpio_claim_pin = _native.gpio_claim_pin
+gpio_release_pin = _native.gpio_release_pin
+gpio_release_all_pins = _native.gpio_release_all_pins
+
+# Fast node operations
+fast_connect = _native.fast_connect
+fast_disconnect = _native.fast_disconnect
+
+# Network/color utilities
+set_net_color_hsv = _native.set_net_color_hsv
+get_all_nets = _native.get_all_nets
+
+# Path query utilities
+get_num_paths = _native.get_num_paths
+get_path_info = _native.get_path_info
+get_all_paths = _native.get_all_paths
+get_path_between = _native.get_path_between
+
+# Fake GPIO support
+FakeGpioDisconnect = _native.FakeGpioDisconnect
+FakeGpioPin = _native.FakeGpioPin
+FAKE_GPIO_INPUT = _native.FAKE_GPIO_INPUT
+FAKE_GPIO_OUTPUT = _native.FAKE_GPIO_OUTPUT
+
+# OLED advanced functions
+oled_set_text_size = _native.oled_set_text_size
+oled_get_text_size = _native.oled_get_text_size
+oled_copy_print = _native.oled_copy_print
+oled_get_fonts = _native.oled_get_fonts
+oled_set_font = _native.oled_set_font
+oled_get_current_font = _native.oled_get_current_font
+oled_load_bitmap = _native.oled_load_bitmap
+oled_display_bitmap = _native.oled_display_bitmap
+oled_show_bitmap_file = _native.oled_show_bitmap_file
+oled_get_framebuffer = _native.oled_get_framebuffer
+oled_set_framebuffer = _native.oled_set_framebuffer
+oled_get_framebuffer_size = _native.oled_get_framebuffer_size
+oled_set_pixel = _native.oled_set_pixel
+oled_get_pixel = _native.oled_get_pixel
+
+# Graphic overlay functions
+overlay_set = _native.overlay_set
+overlay_clear = _native.overlay_clear
+overlay_clear_all = _native.overlay_clear_all
+overlay_set_pixel = _native.overlay_set_pixel
+overlay_count = _native.overlay_count
+overlay_shift = _native.overlay_shift
+overlay_place = _native.overlay_place
+overlay_serialize = _native.overlay_serialize
+
+# Service & switch utilities
+force_service = _native.force_service
+force_service_by_index = _native.force_service_by_index
+get_service_index = _native.get_service_index
+get_switch_position = _native.get_switch_position
+set_switch_position = _native.set_switch_position
+check_switch_position = _native.check_switch_position
+
+# Clickwheel extras
+clickwheel_get_position = _native.clickwheel_get_position
+clickwheel_reset_position = _native.clickwheel_reset_position
+clickwheel_get_direction = _native.clickwheel_get_direction
+clickwheel_get_button = _native.clickwheel_get_button
+clickwheel_is_initialized = _native.clickwheel_is_initialized
+
 # Python-level helper functions
 # ============================================================================
 
@@ -585,7 +678,7 @@ __all__ = [
     'net_name', 'net_color', 'net_info',
     
     # Slot Management
-    'switch_slot', 'CURRENT_SLOT',
+    'switch_slot', 'CURRENT_SLOT', 'get_state', 'set_state',
     
     # Context Control
     'context_toggle', 'context_get',
@@ -684,5 +777,29 @@ __all__ = [
     
     # JFS Module
     'jfs',
+
+    # Added constants and functions for new APIs
+    'SWITCH_MEASURE', 'SWITCH_SELECT', 'SWITCH_UNKNOWN',
+    'CLICKWHEEL_NONE', 'CLICKWHEEL_UP', 'CLICKWHEEL_DOWN',
+    'CLICKWHEEL_IDLE', 'CLICKWHEEL_PRESSED', 'CLICKWHEEL_HELD',
+    'CLICKWHEEL_RELEASED', 'CLICKWHEEL_DOUBLECLICKED',
+    'gpio_set_read_floating', 'gpio_get_read_floating',
+    'set_gpio_read_floating', 'get_gpio_read_floating',
+    'gpio_claim_pin', 'gpio_release_pin', 'gpio_release_all_pins',
+    'fast_connect', 'fast_disconnect',
+    'set_net_color_hsv', 'get_all_nets',
+    'get_num_paths', 'get_path_info', 'get_all_paths', 'get_path_between',
+    'FakeGpioDisconnect', 'FakeGpioPin', 'FAKE_GPIO_INPUT', 'FAKE_GPIO_OUTPUT',
+    'oled_set_text_size', 'oled_get_text_size', 'oled_copy_print',
+    'oled_get_fonts', 'oled_set_font', 'oled_get_current_font',
+    'oled_load_bitmap', 'oled_display_bitmap', 'oled_show_bitmap_file',
+    'oled_get_framebuffer', 'oled_set_framebuffer', 'oled_get_framebuffer_size',
+    'oled_set_pixel', 'oled_get_pixel',
+    'overlay_set', 'overlay_clear', 'overlay_clear_all', 'overlay_set_pixel',
+    'overlay_count', 'overlay_shift', 'overlay_place', 'overlay_serialize',
+    'force_service', 'force_service_by_index', 'get_service_index',
+    'get_switch_position', 'set_switch_position', 'check_switch_position',
+    'clickwheel_get_position', 'clickwheel_reset_position',
+    'clickwheel_get_direction', 'clickwheel_get_button', 'clickwheel_is_initialized',
 ]
 

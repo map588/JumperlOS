@@ -360,6 +360,8 @@ extern const unsigned char jogo32h_file_bin[];
 extern const unsigned int jogo32h_file_bin_len;
 extern const unsigned char bubbleJumpThiccWhite_bin[];
 extern const unsigned int bubbleJumpThiccWhite_bin_len;
+extern const unsigned char excelGUI_bin[];
+extern const unsigned int excelGUI_bin_len;
 // ---- Paste into src/oled.h (extern declarations) ----
 
 // Embedded binary images for filesystem provisioning (generated)
@@ -367,6 +369,8 @@ extern const unsigned char dayglow_bin[];
 extern const unsigned int dayglow_bin_len;
 extern const unsigned char eevblog_bin[];
 extern const unsigned int eevblog_bin_len;
+extern const unsigned char excelGUI_bin[];
+extern const unsigned int excelGUI_bin_len;
 extern const unsigned char jogo32h_bin[];
 extern const unsigned int jogo32h_bin_len;
 extern const unsigned char jogotextInv_bin[];

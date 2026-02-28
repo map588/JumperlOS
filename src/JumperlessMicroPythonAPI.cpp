@@ -53,6 +53,7 @@ extern SafeString nodeFileString;
 #include "Jerial.h"  // For OLEDOut stream
 #include "JsonState.h"
 #include "GraphicOverlays.h"
+#include "WokwiParser.h"  // for parseWokwiDiagram()
 
 
 // MicroPython includes for soft reset
@@ -2751,18 +2752,64 @@ const char* jl_get_state() {
     return jsonCache.c_str();
 }
 
-int jl_set_state(const char* jsonState, int clearFirst) {
+int jl_set_state(const char* jsonState, int clearFirst, int fromWokwi) {
     if (jsonState == nullptr) return -1;
-    
+
+    // When user requests Wokwi parsing we treat the first argument as either
+    // a filename on the board or raw Wokwi JSON content.  If the string does
+    // not begin with '{' and the file exists we load the file first.
+    if (fromWokwi) {
+        String json = String(jsonState);
+        String errorMsg;
+
+        if (clearFirst) {
+            globalState.clear();
+        }
+
+        // Load file if it looks like a path
+        if (json.length() > 0 && json.charAt(0) != '{' && safeFileExists(json.c_str(), 500)) {
+            File f = safeFileOpen(json.c_str(), "r", 1000);
+            if (!f) {
+                Serial.print("set_state wokwi error: cannot open file ");
+                Serial.println(json);
+                return -1;
+            }
+            json = "";
+            while (f.available()) {
+                json += (char)f.read();
+            }
+            safeFileClose(f, false);
+        }
+
+        int activeSlot = SlotManager::getInstance().getActiveSlot();
+        bool success = parseWokwiDiagram(json, globalState, activeSlot, errorMsg);
+
+        if (!success) {
+            Serial.print("set_state wokwi error: ");
+            Serial.println(errorMsg);
+            return -1;
+        }
+
+        // Apply hardware routing
+        // Unpause Core 2 BEFORE refreshConnections since it internally waits
+        bool was_paused = pauseCore2;
+        pauseCore2 = false;
+        refreshConnections(-1, 1, 1);
+        pauseCore2 = was_paused;
+
+        return 0;
+    }
+
+    // Default JSON-based state
     String json = String(jsonState);
     bool success = JsonStateParser::applyJSONState(json, clearFirst != 0);
-    
+
     if (!success) {
         Serial.print("set_state error: ");
         Serial.println(JsonStateParser::getLastError());
         return -1;
     }
-    
+
     return 0; // Success
 }
 
