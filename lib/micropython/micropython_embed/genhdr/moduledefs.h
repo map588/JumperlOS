@@ -16,9 +16,21 @@ extern const struct _mp_obj_module_t mp_module_errno;
 #undef MODULE_DEF_ERRNO
 #define MODULE_DEF_ERRNO { MP_ROM_QSTR(MP_QSTR_errno), MP_ROM_PTR(&mp_module_errno) },
 
+extern const struct _mp_obj_module_t mp_module_hashlib;
+#undef MODULE_DEF_HASHLIB
+#define MODULE_DEF_HASHLIB { MP_ROM_QSTR(MP_QSTR_hashlib), MP_ROM_PTR(&mp_module_hashlib) },
+
+extern const struct _mp_obj_module_t mp_module_heapq;
+#undef MODULE_DEF_HEAPQ
+#define MODULE_DEF_HEAPQ { MP_ROM_QSTR(MP_QSTR_heapq), MP_ROM_PTR(&mp_module_heapq) },
+
 extern const struct _mp_obj_module_t mp_module_io;
 #undef MODULE_DEF_IO
 #define MODULE_DEF_IO { MP_ROM_QSTR(MP_QSTR_io), MP_ROM_PTR(&mp_module_io) },
+
+extern const struct _mp_obj_module_t mp_module_json;
+#undef MODULE_DEF_JSON
+#define MODULE_DEF_JSON { MP_ROM_QSTR(MP_QSTR_json), MP_ROM_PTR(&mp_module_json) },
 
 extern const struct _mp_obj_module_t mp_module_machine;
 #undef MODULE_DEF_MACHINE
@@ -31,6 +43,14 @@ extern const struct _mp_obj_module_t mp_module_os;
 extern const struct _mp_obj_module_t mp_module_platform;
 #undef MODULE_DEF_PLATFORM
 #define MODULE_DEF_PLATFORM { MP_ROM_QSTR(MP_QSTR_platform), MP_ROM_PTR(&mp_module_platform) },
+
+extern const struct _mp_obj_module_t mp_module_random;
+#undef MODULE_DEF_RANDOM
+#define MODULE_DEF_RANDOM { MP_ROM_QSTR(MP_QSTR_random), MP_ROM_PTR(&mp_module_random) },
+
+extern const struct _mp_obj_module_t mp_module_re;
+#undef MODULE_DEF_RE
+#define MODULE_DEF_RE { MP_ROM_QSTR(MP_QSTR_re), MP_ROM_PTR(&mp_module_re) },
 
 extern const struct _mp_obj_module_t mp_module_select;
 #undef MODULE_DEF_SELECT
@@ -51,6 +71,10 @@ extern const struct _mp_obj_module_t mp_module___main__;
 extern const struct _mp_obj_module_t mp_module_asyncio;
 #undef MODULE_DEF__ASYNCIO
 #define MODULE_DEF__ASYNCIO { MP_ROM_QSTR(MP_QSTR__asyncio), MP_ROM_PTR(&mp_module_asyncio) },
+
+extern const struct _mp_obj_module_t mp_module_onewire;
+#undef MODULE_DEF__ONEWIRE
+#define MODULE_DEF__ONEWIRE { MP_ROM_QSTR(MP_QSTR__onewire), MP_ROM_PTR(&mp_module_onewire) },
 
 extern const struct _mp_obj_module_t mp_module_builtins;
 #undef MODULE_DEF_BUILTINS
@@ -115,6 +139,7 @@ extern const struct _mp_obj_module_t mp_module_uctypes;
     MODULE_DEF_SYS \
     MODULE_DEF_UCTYPES \
     MODULE_DEF__ASYNCIO \
+    MODULE_DEF__ONEWIRE \
     MODULE_DEF___MAIN__ \
 // MICROPY_REGISTERED_MODULES
 
@@ -123,10 +148,15 @@ extern const struct _mp_obj_module_t mp_module_uctypes;
     MODULE_DEF_BINASCII \
     MODULE_DEF_COLLECTIONS \
     MODULE_DEF_ERRNO \
+    MODULE_DEF_HASHLIB \
+    MODULE_DEF_HEAPQ \
     MODULE_DEF_IO \
+    MODULE_DEF_JSON \
     MODULE_DEF_MACHINE \
     MODULE_DEF_OS \
     MODULE_DEF_PLATFORM \
+    MODULE_DEF_RANDOM \
+    MODULE_DEF_RE \
     MODULE_DEF_SELECT \
     MODULE_DEF_STRUCT \
     MODULE_DEF_TIME \

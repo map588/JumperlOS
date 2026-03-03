@@ -1,41 +1,59 @@
-/*
- * This file is part of the MicroPython project, http://micropython.org/
- *
- * The MIT License (MIT)
- *
- * Copyright (c) 2022-2023 Damien P. George
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 #ifndef MICROPY_INCLUDED_MICROPYTHON_EMBED_H
 #define MICROPY_INCLUDED_MICROPYTHON_EMBED_H
 
-#include <stddef.h>
-#include <stdint.h>
+// Main header for MicroPython embedding in Jumperless
+// This file provides the interface for integrating MicroPython into C/C++ applications
 
-void mp_embed_init(void *gc_heap, size_t gc_heap_size, void *stack_top);
+#include "py/obj.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// MicroPython embedding functions
+
+// Initialize the MicroPython runtime
+int mp_embed_init(void *heap, size_t heap_size, void *stack_top);
+
+// Deinitialize the MicroPython runtime
 void mp_embed_deinit(void);
 
-// Only available if MICROPY_ENABLE_COMPILER is enabled.
-void mp_embed_exec_str(const char *src);
+// Execute a Python string and return the result
+int mp_embed_exec_str(const char *str);
 
-// Only available if MICROPY_PERSISTENT_CODE_LOAD is enabled.
-void mp_embed_exec_mpy(const uint8_t *mpy, size_t len);
+// Execute a Python file
+int mp_embed_exec_file(const char *filename);
 
-#endif // MICROPY_INCLUDED_MICROPYTHON_EMBED_H
+// REPL functionality
+void mp_embed_repl(void);
+
+// Get/set global variables from/to MicroPython
+mp_obj_t mp_embed_get_global(const char *name);
+void mp_embed_set_global(const char *name, mp_obj_t obj);
+
+// Convert between C types and MicroPython objects
+mp_obj_t mp_embed_obj_from_int(int val);
+mp_obj_t mp_embed_obj_from_float(float val);
+mp_obj_t mp_embed_obj_from_str(const char *str);
+mp_obj_t mp_embed_obj_from_bool(bool val);
+
+int mp_embed_obj_to_int(mp_obj_t obj);
+float mp_embed_obj_to_float(mp_obj_t obj);
+const char* mp_embed_obj_to_str(mp_obj_t obj);
+bool mp_embed_obj_to_bool(mp_obj_t obj);
+
+// Error handling
+const char* mp_embed_get_last_error(void);
+
+// Hardware control functions
+int getCurrentInterruptChar(void);
+
+// Memory information functions
+// Get PSRAM heap size (returns 0 if PSRAM not enabled or not present)
+size_t mp_embed_get_psram_size(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // MICROPY_INCLUDED_MICROPYTHON_EMBED_H 

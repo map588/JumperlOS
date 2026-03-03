@@ -132,6 +132,12 @@ SRC_EXTMOD_C = \
 	extmod/modasyncio.c \
 	extmod/moddeflate.c \
 	extmod/modframebuf.c \
+	extmod/modonewire.c \
+	extmod/modjson.c \
+	extmod/modre.c \
+	extmod/modhashlib.c \
+	extmod/modrandom.c \
+	extmod/modheapq.c \
 
 # Define shared source files we want
 SRC_SHARED_C = \
@@ -182,7 +188,7 @@ clean-micropython-embed-package:
 	$(RM) -rf $(PACKAGE_DIR)
 
 PACKAGE_DIR ?= micropython_embed
-PACKAGE_DIR_LIST = $(addprefix $(PACKAGE_DIR)/,py extmod shared/runtime shared/timeutils shared/readline genhdr port drivers/bus drivers/spi lib/uzlib)
+PACKAGE_DIR_LIST = $(addprefix $(PACKAGE_DIR)/,py extmod shared/runtime shared/timeutils shared/readline genhdr port drivers/bus drivers/spi lib/uzlib lib/crypto-algorithms lib/re1.5)
 
 .PHONY: micropython-embed-package
 micropython-embed-package: $(GENHDR_OUTPUT)
@@ -219,6 +225,14 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/extmod/font_petme128_8x8.h $(PACKAGE_DIR)/extmod
 	# Machine bitstream support (compiled)
 	$(Q)$(CP) $(TOP)/extmod/machine_bitstream.c $(PACKAGE_DIR)/extmod || true
+	# Onewire module
+	$(Q)$(CP) $(TOP)/extmod/modonewire.c $(PACKAGE_DIR)/extmod || true
+	# JSON, RE, Hashlib, Random, Heapq
+	$(Q)$(CP) $(TOP)/extmod/modjson.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/modre.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/modhashlib.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/modrandom.c $(PACKAGE_DIR)/extmod || true
+	$(Q)$(CP) $(TOP)/extmod/modheapq.c $(PACKAGE_DIR)/extmod || true
 	# Machine peripheral support files (glue layer from extmod)
 	# These are generic glue that connects to port-specific implementations via INCLUDEFILE
 	$(Q)$(CP) $(TOP)/extmod/machine_adc.c $(PACKAGE_DIR)/extmod || true
@@ -247,6 +261,14 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/lib/uzlib/*.[ch] $(PACKAGE_DIR)/lib/uzlib
 	# Keep all uzlib files — lz77.c includes defl_static.c, and moddeflate.c includes lz77.c
 
+	$(ECHO) "- lib/crypto-algorithms"
+	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/lib/crypto-algorithms || true
+	$(Q)$(CP) $(TOP)/lib/crypto-algorithms/*.[ch] $(PACKAGE_DIR)/lib/crypto-algorithms || true
+
+	$(ECHO) "- lib/re1.5"
+	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/lib/re1.5 || true
+	$(Q)$(CP) $(TOP)/lib/re1.5/*.[ch] $(PACKAGE_DIR)/lib/re1.5 || true
+
 	$(ECHO) "- shared"
 	$(Q)$(CP) $(TOP)/shared/runtime/gchelper.h $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(CP) $(TOP)/shared/runtime/gchelper_generic.c $(PACKAGE_DIR)/shared/runtime
@@ -267,23 +289,23 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(MICROPYTHON_EMBED_PORT)/port/*.[ch] $(PACKAGE_DIR)/port
 	$(ECHO) "- port (Jumperless-specific files from lib/micropython/port/)"
 	# Copy Jumperless-specific machine implementations
-	$(Q)$(CP) ../../lib/micropython/port/machine_pin_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_uart_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_timer_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_rtc_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_wdt_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_pwm_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_adc_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_i2c_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_spi_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/machine_bitstream_jl.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/modmachine_jl.inc $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_pin_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_uart_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_timer_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_rtc_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_wdt_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_pwm_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_adc_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_i2c_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_spi_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/machine_bitstream_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/modmachine_jl.inc $(PACKAGE_DIR)/port/ || true
 	# Copy Jumperless mpconfigport.h and mphalport files
-	$(Q)$(CP) ../../lib/micropython/port/mpconfigport.h $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/mphalport.h $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/mphalport.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/micropython_embed.c $(PACKAGE_DIR)/port/ || true
-	$(Q)$(CP) ../../lib/micropython/port/micropython_embed.h $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/mpconfigport.h $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/mphalport.h $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/mphalport.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/micropython_embed.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/micropython_embed.h $(PACKAGE_DIR)/port/ || true
 
 # Include remaining core make rules.
 include $(TOP)/py/mkrules.mk
@@ -329,6 +351,8 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     PERIPHERAL_QSTRS=$(grep -c "duty_u16\|duty_ns\|freq\|baudrate\|read_u16\|datetime\|feed\|scan\|writeto\|readfrom" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     SELECT_QSTRS=$(grep -c "select\|poll\|ipoll" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     ASYNCIO_QSTRS=$(grep -c "asyncio\|TaskQueue\|CancelledError" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
+    ONEWIRE_QSTRS=$(grep -c "_onewire\|crc8" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
+    JSON_QSTRS=$(grep -c "json\|dumps\|loads" "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" || true)
     
     echo -e "${GREEN}◆ MicroPython embed build successful!${NC}"
     echo -e "${GREEN}   Generated $QSTR_COUNT total QSTR definitions${NC}"
@@ -342,6 +366,8 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     echo -e "${GREEN}   Peripheral method QSTRs found: $PERIPHERAL_QSTRS${NC}"
     echo -e "${GREEN}   Select/poll QSTRs found: $SELECT_QSTRS${NC}"
     echo -e "${GREEN}   Asyncio QSTRs found: $ASYNCIO_QSTRS${NC}"
+    echo -e "${GREEN}   Onewire QSTRs found: $ONEWIRE_QSTRS${NC}"
+    echo -e "${GREEN}   JSON QSTRs found: $JSON_QSTRS${NC}"
     echo -e "${GREEN}   Files ready for PlatformIO integration with embed API${NC}"
     echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, select, asyncio, deflate, framebuf, etc.${NC}"
 else
