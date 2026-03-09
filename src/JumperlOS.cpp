@@ -169,7 +169,7 @@ void jOSmanager::serviceAll() {
     {
         extern bool startupCompletePending;
         extern unsigned long startupCompleteRequestTime;
-        if (startupCompletePending && (millis() - startupCompleteRequestTime >= 4000)) {
+        if (startupCompletePending && (millis() - startupCompleteRequestTime >= 3000)) {
             startupCompletePending = false;
             AsyncPassthrough::signalStartupComplete();
         }

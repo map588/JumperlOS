@@ -628,9 +628,45 @@ extern "C" void mp_hal_check_interrupt(void) {
 
 
 
+// Execute a user boot script (boot.py) once at startup, like standard MicroPython boards.
+static void runBootPyIfPresent(void) {
+  if (!mp_initialized) {
+    return;
+  }
+
+  static bool boot_py_executed = false;
+  if (boot_py_executed) {
+    return;
+  }
+  boot_py_executed = true;
+
+  changeTerminalColor(replColors[13], true, global_mp_stream);
+  mp_embed_exec_str(
+    "import sys\n"
+    "candidates = [\n"
+    "    'boot.py',\n"
+    "    '/python_scripts/boot.py',\n"
+    "    '/python_scripts/lib/boot.py',\n"
+    "    '/python_scripts/modules/boot.py',\n"
+    "    '/python_scripts/examples/boot.py',\n"
+    "]\n"
+    "for _path in candidates:\n"
+    "    try:\n"
+    "        f = open(_path)\n"
+    "    except OSError:\n"
+    "        continue\n"
+    "    try:\n"
+    "        __file__ = _path\n"
+    "        exec(f.read(), globals())\n"
+    "    finally:\n"
+    "        f.close()\n"
+    "    break\n"
+  );
+}
+
 bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
   // global_mp_stream = stream;
-
+ 
   if (mp_initialized) {
     return true;
   }
@@ -666,13 +702,16 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
 
   setupFilesystemAndPaths();
     
-    mp_initialized = true;
+  mp_initialized = true;
   mp_repl_active = false;
 
   addJumperlessPythonFunctions();
 
   changeTerminalColor(replColors[11], true, global_mp_stream);
   addMicroPythonModules();
+
+  // Execute user boot script if present (boot.py), like standard MicroPython boards
+  runBootPyIfPresent();
 
   changeTerminalColor(replColors[11], true, global_mp_stream);
   //global_mp_stream->println("[MP] MicroPython initialized successfully");
