@@ -2190,26 +2190,19 @@ void performConfigMigrations(const char* oldVersion, const char* newVersion) {
         Serial.println("  - Set default startup image to images/bubbleJumpThin.bin");
     }
     
-    // Force update Python examples when upgrading to 5.6.0.0+
-    // This ensures users get the new automated example system
-    if (compareVersions(oldVersion, "5.6.0.0") < 0 && compareVersions(newVersion, "5.6.0.0") >= 0) {
-        if (debugFP) {
-            Serial.println("\n\r╔═══════════════════════════════════════╗");
-            Serial.println("║  Python Examples Update Required     ║");
-            Serial.println("╚═══════════════════════════════════════╝");
-            Serial.println("  - Updating to new automated example system");
-            Serial.println("  - Force-overwriting all Python examples...");
-        }
-        
-        // Force initialization will overwrite all Python examples
-        initializeMicroPythonExamples(true);
-        
-        if (debugFP) {
-            Serial.println("  ✓ Python examples updated successfully\n\r");
-        }
+    // Refresh built-in examples on every firmware update.
+    // The hash system in initializeMicroPythonExamples protects user-edited files:
+    // unmodified defaults are updated in-place; user-modified files are left alone
+    // and a new firmware default is written as _original / _original1 / etc.
+    if (debugFP) {
+        Serial.println("  - Refreshing built-in MicroPython examples (preserving user edits)...");
     }
-    
-    // Add more migrations here as needed for future firmware updates
+    initializeMicroPythonExamples(true);
+    if (debugFP) {
+        Serial.println("  ✓ Python examples refreshed\n\r");
+    }
+
+    // Add one-time migrations here as needed for specific version transitions.
     // Example:
     // if (compareVersions(oldVersion, "5.5.0.4") <= 0) {
     //     // Migration for versions <= 5.5.0.4

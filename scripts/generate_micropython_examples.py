@@ -4,14 +4,16 @@ Generate micropythonExamples.h from Python files
 Converts .py files into C string literals for embedding in firmware
 """
 
+import json
 import os
 import sys
 from pathlib import Path
 
+
 def py_to_c_string(py_content: str) -> str:
     """
     Convert Python source to C raw string literal.
-    Uses R"(...)" format, or R"delimiter(...)delimiter" if content contains )"
+    Uses R\"(...)\" format, or R\"delimiter(...)delimiter\" if content contains )\"
     """
     # Check if content contains the )" sequence that would break raw string literal
     if ')"' in py_content:
@@ -22,14 +24,64 @@ def py_to_c_string(py_content: str) -> str:
         while f'){delimiter}"' in py_content and attempt < 10:
             delimiter += "="
             attempt += 1
-        
+
         if attempt >= 10:
             raise ValueError("Cannot find suitable delimiter for raw string literal")
-        
+
         return f'R"{delimiter}({py_content}){delimiter}"'
     else:
         # Standard raw string literal
         return f'R"({py_content})"'
+
+
+def fnv1a32(data: bytes) -> int:
+    """
+    Compute 32-bit FNV-1a hash of the given bytes.
+    This must match the C++ implementation used at runtime.
+    """
+    fnv_offset_basis = 0x811C9DC5
+    fnv_prime = 0x01000193
+
+    h = fnv_offset_basis
+    for b in data:
+        h ^= b
+        h = (h * fnv_prime) & 0xFFFFFFFF
+    return h
+
+
+def load_hash_history(history_path: Path) -> dict:
+    """Load the hash history file, returning an empty dict if it doesn't exist."""
+    if history_path.exists():
+        with open(history_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_hash_history(history_path: Path, history: dict) -> None:
+    """Save the hash history file, sorted by filename for stable diffs."""
+    with open(history_path, "w", encoding="utf-8") as f:
+        json.dump(dict(sorted(history.items())), f, indent=2)
+        f.write("\n")
+
+
+def update_history(history: dict, filename: str, current_hash: int) -> list:
+    """
+    Ensure current_hash is first in the history list for filename.
+    Returns the updated list of hex strings (current first, then older versions).
+    """
+    current_hex = f"0x{current_hash:08X}"
+    existing = history.get(filename, [])
+    # Remove current hash from wherever it might be, then prepend it
+    deduped = [h for h in existing if h.lower() != current_hex.lower()]
+    updated = [current_hex] + deduped
+    history[filename] = updated
+    return updated
+
+
+def hashes_to_c_array(hex_list: list) -> str:
+    """Convert a list of hex strings to a C array initialiser body."""
+    return ", ".join(hex_list)
+
 
 def filename_to_define_name(filename: str) -> str:
     """
@@ -47,7 +99,9 @@ def filename_to_var_name(filename: str) -> str:
     base = filename.replace('.py', '').upper()
     return f"{base}_PY"
 
-def generate_header_from_directory(source_dir: Path, output_file: Path, additional_includes=None):
+def generate_header_from_directory(source_dir: Path, output_file: Path,
+                                   history_path: Path = None,
+                                   additional_includes=None):
     """
     Generate complete micropythonExamples.h from a directory of Python files.
     
@@ -59,6 +113,8 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     
     if additional_includes is None:
         additional_includes = []
+
+    history = load_hash_history(history_path) if history_path else {}
     
     # Files to exclude from examples (test files, incomplete demos, utilities)
     exclude_files = {
@@ -79,11 +135,13 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     
     # Start building the header
     lines = []
-    
+
     # Header guard and intro
     lines.extend([
         "#ifndef MICROPYTHON_EXAMPLES_H",
         "#define MICROPYTHON_EXAMPLES_H",
+        "",
+        "#include <stdint.h>",
         "",
         "//==============================================================================",
         "// MicroPython Examples - Compile-time Configuration",
@@ -161,21 +219,30 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     # Process each Python file
     for py_file in py_files:
         print(f"Processing {py_file.name}...")
-        
+
         define_name = filename_to_define_name(py_file.name)
         var_name = filename_to_var_name(py_file.name)
-        
+
         # Read the Python file
-        with open(py_file, 'r', encoding='utf-8') as f:
+        with open(py_file, "r", encoding="utf-8") as f:
             py_content = f.read()
-        
+
         # Generate the C string
         c_string = py_to_c_string(py_content)
-        
+        # Compute default content hash (must match C++ FNV-1a implementation)
+        content_hash = fnv1a32(py_content.encode("utf-8"))
+
+        # Update hash history for this file (current hash is always first)
+        all_hashes = update_history(history, py_file.name, content_hash)
+        hash_count = len(all_hashes)
+        hash_array = hashes_to_c_array(all_hashes)
+
         # Add to header
         lines.extend([
             f"#ifdef {define_name}",
             f"const char* {var_name} = {c_string};",
+            f"const uint32_t {var_name}_HASHES[{hash_count}] = {{ {hash_array} }};",
+            f"const int {var_name}_HASH_COUNT = {hash_count};",
             "#endif",
             "",
         ])
@@ -198,12 +265,18 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     
     if jumperless_module_path.exists():
         print(f"Found jumperless module at {jumperless_module_path}")
-        with open(jumperless_module_path, 'r', encoding='utf-8') as f:
+        with open(jumperless_module_path, "r", encoding="utf-8") as f:
             module_content = f.read()
-        
+
+        module_hash = fnv1a32(module_content.encode("utf-8"))
+        module_hashes = update_history(history, "jumperless.py", module_hash)
+        module_hash_array = hashes_to_c_array(module_hashes)
+
         lines.extend([
             "#ifdef INCLUDE_JUMPERLESS_MODULE",
             f"const char* JUMPERLESS_MODULE_PY = {py_to_c_string(module_content)};",
+            f"const uint32_t JUMPERLESS_MODULE_PY_HASHES[{len(module_hashes)}] = {{ {module_hash_array} }};",
+            f"const int JUMPERLESS_MODULE_PY_HASH_COUNT = {len(module_hashes)};",
             "#endif",
             "",
         ])
@@ -220,9 +293,13 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     stub_path = source_dir.parent / 'jumperless.pyi'
     if stub_path.exists():
         print(f"Found type stub at {stub_path}")
-        with open(stub_path, 'r', encoding='utf-8') as f:
+        with open(stub_path, "r", encoding="utf-8") as f:
             stub_content = f.read()
-        
+
+        stub_hash = fnv1a32(stub_content.encode("utf-8"))
+        stub_hashes = update_history(history, "jumperless.pyi", stub_hash)
+        stub_hash_array = hashes_to_c_array(stub_hashes)
+
         lines.extend([
             "//==============================================================================",
             "// Jumperless Type Stub (Minimal - For ViperIDE Autocomplete)",
@@ -230,6 +307,8 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
             "",
             "#ifdef INCLUDE_JUMPERLESS_STUB",
             f"const char* JUMPERLESS_STUB_PYI = {py_to_c_string(stub_content)};",
+            f"const uint32_t JUMPERLESS_STUB_PYI_HASHES[{len(stub_hashes)}] = {{ {stub_hash_array} }};",
+            f"const int JUMPERLESS_STUB_PYI_HASH_COUNT = {len(stub_hashes)};",
             "#endif",
             "",
         ])
@@ -241,9 +320,13 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     
     if viperide_reinit_exists:
         print(f"Found ViperIDE reinit script at {viperide_reinit_path}")
-        with open(viperide_reinit_path, 'r', encoding='utf-8') as f:
+        with open(viperide_reinit_path, "r", encoding="utf-8") as f:
             viperide_content = f.read()
-        
+
+        viperide_hash = fnv1a32(viperide_content.encode("utf-8"))
+        viperide_hashes = update_history(history, "viperide_reinit.py", viperide_hash)
+        viperide_hash_array = hashes_to_c_array(viperide_hashes)
+
         lines.extend([
             "//==============================================================================",
             "// ViperIDE Reinit Script (Sends filesystem info on USBSer2 connection)",
@@ -251,6 +334,8 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
             "",
             "#define INCLUDE_VIPERIDE_REINIT",
             f"const char* VIPERIDE_REINIT_PY = {py_to_c_string(viperide_content)};",
+            f"const uint32_t VIPERIDE_REINIT_PY_HASHES[{len(viperide_hashes)}] = {{ {viperide_hash_array} }};",
+            f"const int VIPERIDE_REINIT_PY_HASH_COUNT = {len(viperide_hashes)};",
             "",
         ])
     else:
@@ -265,6 +350,11 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
             "",
         ])
     
+    # Save updated hash history
+    if history_path:
+        save_hash_history(history_path, history)
+        print(f"✓ Updated hash history: {history_path}")
+
     # Add helper comment section for FilesystemStuff.cpp array entries
     lines.extend([
         "//==============================================================================",
@@ -272,6 +362,7 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
         "//==============================================================================",
         "// Copy the following entries into the examples[] array in FilesystemStuff.cpp",
         "// inside the initializeMicroPythonExamples() function.",
+        "// ExampleInfo struct: { path, content, name, knownHashes, hashCount }",
         "//",
         "// The array should include these entries (already sorted alphabetically):",
         "//",
@@ -280,12 +371,12 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
     # Add the lib files first
     if jumperless_module_path.exists():
         lines.append("// #ifdef INCLUDE_JUMPERLESS_MODULE")
-        lines.append("//     { \"/python_scripts/lib/jumperless.py\", JUMPERLESS_MODULE_PY, \"jumperless.py\" },")
+        lines.append("//     { \"/python_scripts/lib/jumperless.py\", JUMPERLESS_MODULE_PY, \"jumperless.py\", JUMPERLESS_MODULE_PY_HASHES, JUMPERLESS_MODULE_PY_HASH_COUNT },")
         lines.append("// #endif")
     
     if stub_path.exists():
         lines.append("// #ifdef INCLUDE_JUMPERLESS_STUB")
-        lines.append("//     { \"/python_scripts/lib/jumperless.pyi\", JUMPERLESS_STUB_PYI, \"jumperless.pyi\" },")
+        lines.append("//     { \"/python_scripts/lib/jumperless.pyi\", JUMPERLESS_STUB_PYI, \"jumperless.pyi\", JUMPERLESS_STUB_PYI_HASHES, JUMPERLESS_STUB_PYI_HASH_COUNT },")
         lines.append("// #endif")
     
     # Add all the example files
@@ -295,13 +386,13 @@ def generate_header_from_directory(source_dir: Path, output_file: Path, addition
         filename = py_file.name
         
         lines.append(f"// #ifdef {define_name}")
-        lines.append(f"//     {{ \"/python_scripts/examples/{filename}\", {var_name}, \"{filename}\" }},")
+        lines.append(f"//     {{ \"/python_scripts/examples/{filename}\", {var_name}, \"{filename}\", {var_name}_HASHES, {var_name}_HASH_COUNT }},")
         lines.append("// #endif")
     
     # Add viperide_reinit if it exists
     if viperide_reinit_exists:
         lines.append("// #ifdef INCLUDE_VIPERIDE_REINIT")
-        lines.append("//     { \"/python_scripts/examples/viperide_reinit.py\", VIPERIDE_REINIT_PY, \"viperide_reinit.py\" },")
+        lines.append("//     { \"/python_scripts/examples/viperide_reinit.py\", VIPERIDE_REINIT_PY, \"viperide_reinit.py\", VIPERIDE_REINIT_PY_HASHES, VIPERIDE_REINIT_PY_HASH_COUNT },")
         lines.append("// #endif")
     
     lines.append("//")
@@ -332,6 +423,9 @@ def main():
     
     # Output header file
     output_header = project_root / 'src' / 'micropythonExamples.h'
+
+    # Hash history file - accumulates all known firmware hashes per example
+    history_file = script_dir / 'hash_history.json'
     
     print("=" * 70)
     print("Generating micropythonExamples.h")
@@ -345,7 +439,8 @@ def main():
         sys.exit(1)
     
     try:
-        num_files = generate_header_from_directory(examples_dir, output_header)
+        num_files = generate_header_from_directory(examples_dir, output_header,
+                                                    history_path=history_file)
         print()
         print("=" * 70)
         print("SUCCESS!")

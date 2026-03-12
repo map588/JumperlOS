@@ -1,5 +1,5 @@
 """
-Excel GUI Listener Script (V1.0.0)
+Excel GUI Listener Script (V1.0.2)
 """
 
 import jumperless as j
@@ -92,27 +92,29 @@ def apply_connections(connection_list, net_name_list):
         "adc":     [False, False, False, False], ## ADC0–ADC3
         "current": [False, False],               ## [I+ present, I- present] (Used for power too)
     }
-    for net_name, nodes_str in connection_list:
-        node_1, node_2 = nodes_str.split('-', 1)
-        j.connect(node_1, node_2, 0)
-        ## Query to confirm the connection was formed
-        if j.is_connected(node_1,node_2):
-            debug_msg(f"Connected {node_1} — {node_2}", level=2)
-            ## Add the net_name to the list if it's new
-            if net_name not in net_name_list:
-                net_name_list.append(net_name)
-                j.set_net_name(len(net_name_list) - 1, net_name)
-            ## Check both endpoints against sensor node lists
-            for node in (node_1, node_2):
-                if node in ADC_NODES:
-                    sensor_state["adc"][ADC_NODES[node]] = True
-                    debug_msg(f"ADC{ADC_NODES[node]} enabled for sampling", level=2)
-                if node in CURRENT_NODES:
-                    sensor_state["current"][CURRENT_NODES[node]] = True
-                    debug_msg(f"Current node {node} detected", level=2)
-        else:
-            status_message_list.append(f"WARNING: Failed to connect {node_1} — {node_2}")
-            debug_msg(status_message_list[-1])
+    ## Only attempt to form connections if a list of connections was supplied
+    if len(connection_list[0]) > 1:
+        for net_name, nodes_str in connection_list:
+            node_1, node_2 = nodes_str.split('-', 1)
+            j.connect(node_1, node_2, 0)
+            ## Query to confirm the connection was formed
+            if j.is_connected(node_1,node_2):
+                debug_msg(f"Connected {node_1} — {node_2}", level=2)
+                ## Add the net_name to the list if it's new
+                if net_name not in net_name_list:
+                    net_name_list.append(net_name)
+                    j.set_net_name(len(net_name_list) - 1, net_name)
+                ## Check both endpoints against sensor node lists
+                for node in (node_1, node_2):
+                    if node in ADC_NODES:
+                        sensor_state["adc"][ADC_NODES[node]] = True
+                        debug_msg(f"ADC{ADC_NODES[node]} enabled for sampling", level=2)
+                    if node in CURRENT_NODES:
+                        sensor_state["current"][CURRENT_NODES[node]] = True
+                        debug_msg(f"Current node {node} detected", level=2)
+            else:
+                status_message_list.append(f"WARNING: Failed to connect {node_1} — {node_2}")
+                debug_msg(status_message_list[-1])
     return sensor_state
 
 # def build_response(net_name_list, net_colors_list, status_list):
@@ -267,11 +269,13 @@ if is_setting_in_config() and connection_allowed:
                             apply_voltages(parsed["voltages"])
                             sample_interval_ms = parsed["sample_interval"]
                             # state["sample_interval_ms"] = parsed["sample_interval"] ## Use this if state is converted to a dictionary
-                            ## Sensor sampling state — reset and updated during apply_connections                          
+                            ## Sensor sampling state — reset and updated during apply_connections
                             sensor_state = apply_connections(parsed["connections"], net_name_list)
                             debug_msg(f"ADC any: {any(sensor_state["adc"])} Current all: {all(sensor_state["current"])}", 2)
                             if any(sensor_state["adc"]) or all(sensor_state["current"]):
                                 print_measurements_enabled = True
+                            else:
+                                print_measurements_enabled = False
                             measurements = sample_measurements(sensor_state)
                         
                             ## After all commands have been issued, query the resulting colors for each net

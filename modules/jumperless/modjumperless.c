@@ -3967,7 +3967,7 @@ static int get_direction_value( mp_obj_t obj ) {
         } else {
         //  mp_raise_ValueError( MP_ERROR_TEXT( "Object False" ) );
         }
-        return dir->value ? 1 : 0; // Convert to numeric convention: true (OUTPUT) -> 0, false (INPUT) -> 1
+        return dir->value ? 0 : 1; // Convert to numeric convention: true (OUTPUT) -> 0, false (INPUT) -> 1
     } else {
         // Try to convert to int as fallback
         int v = mp_obj_get_int( obj );

@@ -1,6 +1,8 @@
 #ifndef MICROPYTHON_EXAMPLES_H
 #define MICROPYTHON_EXAMPLES_H
 
+#include <stdint.h>
+
 //==============================================================================
 // MicroPython Examples - Compile-time Configuration
 //==============================================================================
@@ -118,6 +120,8 @@ while True:
     time.sleep(0.5)
             
 )";
+const uint32_t ADC_BASICS_PY_HASHES[1] = { 0x5BB58CA2 };
+const int ADC_BASICS_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_ASYNC_READ
@@ -168,6 +172,8 @@ while True:
             
         # print("loop")
 )";
+const uint32_t ASYNC_READ_PY_HASHES[1] = { 0xB0B63184 };
+const int ASYNC_READ_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_DAC_BASICS
@@ -206,11 +212,13 @@ for i, channel in enumerate(channels):
 print("\nDAC Basics complete!")
 
 )";
+const uint32_t DAC_BASICS_PY_HASHES[1] = { 0x0B371883 };
+const int DAC_BASICS_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_EXCEL_LISTENER
 const char* EXCEL_LISTENER_PY = R"===("""
-Excel GUI Listener Script (V1.0.0)
+Excel GUI Listener Script (V1.0.2)
 """
 
 import jumperless as j
@@ -303,27 +311,29 @@ def apply_connections(connection_list, net_name_list):
         "adc":     [False, False, False, False], ## ADC0–ADC3
         "current": [False, False],               ## [I+ present, I- present] (Used for power too)
     }
-    for net_name, nodes_str in connection_list:
-        node_1, node_2 = nodes_str.split('-', 1)
-        j.connect(node_1, node_2, 0)
-        ## Query to confirm the connection was formed
-        if j.is_connected(node_1,node_2):
-            debug_msg(f"Connected {node_1} — {node_2}", level=2)
-            ## Add the net_name to the list if it's new
-            if net_name not in net_name_list:
-                net_name_list.append(net_name)
-                j.set_net_name(len(net_name_list) - 1, net_name)
-            ## Check both endpoints against sensor node lists
-            for node in (node_1, node_2):
-                if node in ADC_NODES:
-                    sensor_state["adc"][ADC_NODES[node]] = True
-                    debug_msg(f"ADC{ADC_NODES[node]} enabled for sampling", level=2)
-                if node in CURRENT_NODES:
-                    sensor_state["current"][CURRENT_NODES[node]] = True
-                    debug_msg(f"Current node {node} detected", level=2)
-        else:
-            status_message_list.append(f"WARNING: Failed to connect {node_1} — {node_2}")
-            debug_msg(status_message_list[-1])
+    ## Only attempt to form connections if a list of connections was supplied
+    if len(connection_list[0]) > 1:
+        for net_name, nodes_str in connection_list:
+            node_1, node_2 = nodes_str.split('-', 1)
+            j.connect(node_1, node_2, 0)
+            ## Query to confirm the connection was formed
+            if j.is_connected(node_1,node_2):
+                debug_msg(f"Connected {node_1} — {node_2}", level=2)
+                ## Add the net_name to the list if it's new
+                if net_name not in net_name_list:
+                    net_name_list.append(net_name)
+                    j.set_net_name(len(net_name_list) - 1, net_name)
+                ## Check both endpoints against sensor node lists
+                for node in (node_1, node_2):
+                    if node in ADC_NODES:
+                        sensor_state["adc"][ADC_NODES[node]] = True
+                        debug_msg(f"ADC{ADC_NODES[node]} enabled for sampling", level=2)
+                    if node in CURRENT_NODES:
+                        sensor_state["current"][CURRENT_NODES[node]] = True
+                        debug_msg(f"Current node {node} detected", level=2)
+            else:
+                status_message_list.append(f"WARNING: Failed to connect {node_1} — {node_2}")
+                debug_msg(status_message_list[-1])
     return sensor_state
 
 # def build_response(net_name_list, net_colors_list, status_list):
@@ -478,11 +488,13 @@ if is_setting_in_config() and connection_allowed:
                             apply_voltages(parsed["voltages"])
                             sample_interval_ms = parsed["sample_interval"]
                             # state["sample_interval_ms"] = parsed["sample_interval"] ## Use this if state is converted to a dictionary
-                            ## Sensor sampling state — reset and updated during apply_connections                          
+                            ## Sensor sampling state — reset and updated during apply_connections
                             sensor_state = apply_connections(parsed["connections"], net_name_list)
                             debug_msg(f"ADC any: {any(sensor_state["adc"])} Current all: {all(sensor_state["current"])}", 2)
                             if any(sensor_state["adc"]) or all(sensor_state["current"]):
                                 print_measurements_enabled = True
+                            else:
+                                print_measurements_enabled = False
                             measurements = sample_measurements(sensor_state)
                         
                             ## After all commands have been issued, query the resulting colors for each net
@@ -525,6 +537,8 @@ else:
     
 ## abort script by reaching the end
 print("script will now exit"))===";
+const uint32_t EXCEL_LISTENER_PY_HASHES[2] = { 0xF832B96C, 0x06CDA6A3 };
+const int EXCEL_LISTENER_PY_HASH_COUNT = 2;
 #endif
 
 #ifdef INCLUDE_GPIO_BASICS
@@ -532,32 +546,42 @@ const char* GPIO_BASICS_PY = R"("""
 Basic GPIO (General Purpose Input/Output) operations.
 This example shows digital I/O, direction control, and pull resistors.
 """
-
-import jumperless as j
+oled_copy_print(True)
 
 print("GPIO Basics Demo")
 
 # Test GPIO pin 1
-pin = 1
-print("Testing GPIO pin " + str(pin))
+outputPin = GPIO_1
+inputPin = GPIO_2
+print("Testing GPIO pin " + str(outputPin))
 
-# # Set as output
-# j.gpio_set_dir(pin, True)  # True = OUTPUT
-# print("Set as output")
+# disconnect(outputPin, -1)
+# disconnect(inputPin, -1)
+nodes_clear()
+connect(outputPin, 3)
 
-# # Blink test
-# print("Blinking 5 times...")
-# for i in range(5):
-#     j.gpio_set(pin, True)   # HIGH
-#     print("  GPIO" + str(pin) + " = HIGH")
-#     time.sleep(0.5)
+# Set as output
+gpio_set_dir(outputPin, True)  # True = OUTPUT
+print("Set as output")
+
+# Blink test
+print("Blinking 2 times...")
+for i in range(2):
+    gpio_set(outputPin, True)   # HIGH
+    print(str(outputPin) + " = HIGH")
+    time.sleep(0.25)
     
-#     j.gpio_set(pin, False)  # LOW
-#     print("  GPIO" + str(pin) + " = LOW")
-#     time.sleep(0.5)
+    gpio_set(outputPin, False)  # LOW
+    print(str(outputPin) + " = LOW")
+    time.sleep(0.25)
 
 # Set as input
-j.gpio_set_dir(pin, j.INPUT)  # False = INPUT
+gpio_set_dir(inputPin, INPUT)  # False = INPUT
+
+
+connect(inputPin, 13)
+time.sleep_ms(100)
+
 print("Set as input")
 
 # Test pull resistors
@@ -565,14 +589,38 @@ pulls = [0, 1, -1]  # None, Up, Down
 pull_names = ["NONE", "PULLUP", "PULLDOWN"]
 
 for i, pull in enumerate(pulls):
-    j.gpio_set_pull(pin, pull)
-    state = j.gpio_get(pin)
+    gpio_set_pull(inputPin, pull)
+    time.sleep_ms(100)
+    state = gpio_get(inputPin)
     print("Pull " + pull_names[i] + ": " + str(state))
-    time.sleep(1)
+    time.sleep(0.5)
+
+
+connect(3,13)
+
+for i in range(5):
+    gpio_set(outputPin, True)   # HIGH
+    time.sleep_ms(100)
+    state = gpio_get(inputPin)
+    
+    print("Output = HIGH \tInput = " + str(state))
+    
+    time.sleep(0.5)
+    
+    gpio_set(outputPin, False)  # LOW
+    time.sleep_ms(100)
+    state = gpio_get(inputPin)
+    
+    print("Output = LOW \tInput = " + str(state))
+    
+    time.sleep(0.5)
+
 
 print("GPIO Basics complete!")
-
+oled_copy_print(False)
 )";
+const uint32_t GPIO_BASICS_PY_HASHES[2] = { 0xADAABAA1, 0x172C4358 };
+const int GPIO_BASICS_PY_HASH_COUNT = 2;
 #endif
 
 #ifdef INCLUDE_INTERACTION_DEMO
@@ -699,6 +747,8 @@ while True:
     time.sleep_us(sleepTime_us)
 
 )";
+const uint32_t INTERACTION_DEMO_PY_HASHES[1] = { 0x85135235 };
+const int INTERACTION_DEMO_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_LED_BRIGHTNESS_CONTROL
@@ -746,6 +796,8 @@ while True:
     time.sleep(0.1)
     
 )";
+const uint32_t LED_BRIGHTNESS_CONTROL_PY_HASHES[1] = { 0xD4DA5B3C };
+const int LED_BRIGHTNESS_CONTROL_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_NODE_CONNECTIONS
@@ -800,6 +852,8 @@ print("Node Connections complete!")
 j.nodes_clear()
 
 )";
+const uint32_t NODE_CONNECTIONS_PY_HASHES[1] = { 0x49A84734 };
+const int NODE_CONNECTIONS_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_OLED_DEMO
@@ -821,6 +875,8 @@ for ch in word:
 
 oled_print(text)
 )";
+const uint32_t OLED_DEMO_PY_HASHES[1] = { 0xB1547810 };
+const int OLED_DEMO_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_OSCILLOSCOPE
@@ -1568,6 +1624,8 @@ def main():
 
 if __name__ == "__main__":
     main())===";
+const uint32_t OSCILLOSCOPE_PY_HASHES[1] = { 0xD2CABB55 };
+const int OSCILLOSCOPE_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_OUTPUT_TEST
@@ -1652,6 +1710,8 @@ print (f"Took {fastConnectTime} us for 50 toggles with fake gpio")
 
 freq = (50 / (fastConnectTime)) * 1000
 print(f"Frequency = {freq} kHz"))";
+const uint32_t OUTPUT_TEST_PY_HASHES[1] = { 0xE0324632 };
+const int OUTPUT_TEST_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_PSRAM_TEST
@@ -1841,6 +1901,8 @@ def memory_stress_test(iterations=5, chunk_size=None):
 if __name__ == "__main__" or True:  # Always run when exec'd
     result = test_psram()
 )===";
+const uint32_t PSRAM_TEST_PY_HASHES[1] = { 0x41730D6D };
+const int PSRAM_TEST_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_STYLOPHONE
@@ -1907,6 +1969,8 @@ while True:
         j.oled_print("Sustain: " + str(sustain))
         time.sleep(0.1)
 )";
+const uint32_t STYLOPHONE_PY_HASHES[1] = { 0xA5108DD7 };
+const int STYLOPHONE_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_TEST_NEOPIXEL
@@ -2089,6 +2153,8 @@ except KeyboardInterrupt:
     print("✓ Demo stopped! Press Ctrl+C again to exit.")
     print("=" * 60)
 )";
+const uint32_t TEST_NEOPIXEL_PY_HASHES[1] = { 0xE91E4AD8 };
+const int TEST_NEOPIXEL_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_TEST_OLED_FEATURES
@@ -2301,6 +2367,8 @@ if __name__ == "__main__":
     run_all_tests()
 
 )===";
+const uint32_t TEST_OLED_FEATURES_PY_HASHES[1] = { 0x5DEB2A46 };
+const int TEST_OLED_FEATURES_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_UART_BASICS
@@ -2329,6 +2397,8 @@ while True:
     uart.write(buffer)
     time.sleep(0.5)
 )";
+const uint32_t UART_BASICS_PY_HASHES[1] = { 0xAE8DFFE1 };
+const int UART_BASICS_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_UART_LOOPBACK
@@ -2358,6 +2428,8 @@ while True:
     time.sleep(0.5)
 
 )";
+const uint32_t UART_LOOPBACK_PY_HASHES[1] = { 0x8E02DF89 };
+const int UART_LOOPBACK_PY_HASH_COUNT = 1;
 #endif
 
 #ifdef INCLUDE_VOLTAGE_MONITOR
@@ -2392,6 +2464,8 @@ while True:
     time.sleep(0.15)
 
 )";
+const uint32_t VOLTAGE_MONITOR_PY_HASHES[1] = { 0x3F2C7F36 };
+const int VOLTAGE_MONITOR_PY_HASH_COUNT = 1;
 #endif
 
 //==============================================================================
@@ -3181,6 +3255,8 @@ __all__ = [
 ]
 
 )";
+const uint32_t JUMPERLESS_MODULE_PY_HASHES[1] = { 0x843D1F2A };
+const int JUMPERLESS_MODULE_PY_HASH_COUNT = 1;
 #endif
 
 //==============================================================================
@@ -4843,6 +4919,8 @@ class JFSModule:
 jfs: JFSModule
 
 )===";
+const uint32_t JUMPERLESS_STUB_PYI_HASHES[1] = { 0x2E64EB37 };
+const int JUMPERLESS_STUB_PYI_HASH_COUNT = 1;
 #endif
 
 //==============================================================================
@@ -4883,77 +4961,80 @@ const char* VIPERIDE_REINIT_PY = R"(if True:
       except:
         print('f|'+p+'/???|'+str(s[6]))
   walk(''))";
+const uint32_t VIPERIDE_REINIT_PY_HASHES[1] = { 0xAF5CFBD0 };
+const int VIPERIDE_REINIT_PY_HASH_COUNT = 1;
 
 //==============================================================================
 // FilesystemStuff.cpp Integration Guide
 //==============================================================================
 // Copy the following entries into the examples[] array in FilesystemStuff.cpp
 // inside the initializeMicroPythonExamples() function.
+// ExampleInfo struct: { path, content, name, knownHashes, hashCount }
 //
 // The array should include these entries (already sorted alphabetically):
 //
 // #ifdef INCLUDE_JUMPERLESS_MODULE
-//     { "/python_scripts/lib/jumperless.py", JUMPERLESS_MODULE_PY, "jumperless.py" },
+//     { "/python_scripts/lib/jumperless.py", JUMPERLESS_MODULE_PY, "jumperless.py", JUMPERLESS_MODULE_PY_HASHES, JUMPERLESS_MODULE_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_JUMPERLESS_STUB
-//     { "/python_scripts/lib/jumperless.pyi", JUMPERLESS_STUB_PYI, "jumperless.pyi" },
+//     { "/python_scripts/lib/jumperless.pyi", JUMPERLESS_STUB_PYI, "jumperless.pyi", JUMPERLESS_STUB_PYI_HASHES, JUMPERLESS_STUB_PYI_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_ADC_BASICS
-//     { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py" },
+//     { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py", ADC_BASICS_PY_HASHES, ADC_BASICS_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_ASYNC_READ
-//     { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py" },
+//     { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py", ASYNC_READ_PY_HASHES, ASYNC_READ_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_DAC_BASICS
-//     { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py" },
+//     { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py", DAC_BASICS_PY_HASHES, DAC_BASICS_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_EXCEL_LISTENER
-//     { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py" },
+//     { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py", EXCEL_LISTENER_PY_HASHES, EXCEL_LISTENER_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_GPIO_BASICS
-//     { "/python_scripts/examples/gpio_basics.py", GPIO_BASICS_PY, "gpio_basics.py" },
+//     { "/python_scripts/examples/gpio_basics.py", GPIO_BASICS_PY, "gpio_basics.py", GPIO_BASICS_PY_HASHES, GPIO_BASICS_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_INTERACTION_DEMO
-//     { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py" },
+//     { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py", INTERACTION_DEMO_PY_HASHES, INTERACTION_DEMO_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_LED_BRIGHTNESS_CONTROL
-//     { "/python_scripts/examples/led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY, "led_brightness_control.py" },
+//     { "/python_scripts/examples/led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY, "led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY_HASHES, LED_BRIGHTNESS_CONTROL_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_NODE_CONNECTIONS
-//     { "/python_scripts/examples/node_connections.py", NODE_CONNECTIONS_PY, "node_connections.py" },
+//     { "/python_scripts/examples/node_connections.py", NODE_CONNECTIONS_PY, "node_connections.py", NODE_CONNECTIONS_PY_HASHES, NODE_CONNECTIONS_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_OLED_DEMO
-//     { "/python_scripts/examples/oled_demo.py", OLED_DEMO_PY, "oled_demo.py" },
+//     { "/python_scripts/examples/oled_demo.py", OLED_DEMO_PY, "oled_demo.py", OLED_DEMO_PY_HASHES, OLED_DEMO_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_OSCILLOSCOPE
-//     { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py" },
+//     { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py", OSCILLOSCOPE_PY_HASHES, OSCILLOSCOPE_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_OUTPUT_TEST
-//     { "/python_scripts/examples/output_test.py", OUTPUT_TEST_PY, "output_test.py" },
+//     { "/python_scripts/examples/output_test.py", OUTPUT_TEST_PY, "output_test.py", OUTPUT_TEST_PY_HASHES, OUTPUT_TEST_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_PSRAM_TEST
-//     { "/python_scripts/examples/psram_test.py", PSRAM_TEST_PY, "psram_test.py" },
+//     { "/python_scripts/examples/psram_test.py", PSRAM_TEST_PY, "psram_test.py", PSRAM_TEST_PY_HASHES, PSRAM_TEST_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_STYLOPHONE
-//     { "/python_scripts/examples/stylophone.py", STYLOPHONE_PY, "stylophone.py" },
+//     { "/python_scripts/examples/stylophone.py", STYLOPHONE_PY, "stylophone.py", STYLOPHONE_PY_HASHES, STYLOPHONE_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_TEST_NEOPIXEL
-//     { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py" },
+//     { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py", TEST_NEOPIXEL_PY_HASHES, TEST_NEOPIXEL_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_TEST_OLED_FEATURES
-//     { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py" },
+//     { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py", TEST_OLED_FEATURES_PY_HASHES, TEST_OLED_FEATURES_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_UART_BASICS
-//     { "/python_scripts/examples/uart_basics.py", UART_BASICS_PY, "uart_basics.py" },
+//     { "/python_scripts/examples/uart_basics.py", UART_BASICS_PY, "uart_basics.py", UART_BASICS_PY_HASHES, UART_BASICS_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_UART_LOOPBACK
-//     { "/python_scripts/examples/uart_loopback.py", UART_LOOPBACK_PY, "uart_loopback.py" },
+//     { "/python_scripts/examples/uart_loopback.py", UART_LOOPBACK_PY, "uart_loopback.py", UART_LOOPBACK_PY_HASHES, UART_LOOPBACK_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_VOLTAGE_MONITOR
-//     { "/python_scripts/examples/voltage_monitor.py", VOLTAGE_MONITOR_PY, "voltage_monitor.py" },
+//     { "/python_scripts/examples/voltage_monitor.py", VOLTAGE_MONITOR_PY, "voltage_monitor.py", VOLTAGE_MONITOR_PY_HASHES, VOLTAGE_MONITOR_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_VIPERIDE_REINIT
-//     { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py" },
+//     { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py", VIPERIDE_REINIT_PY_HASHES, VIPERIDE_REINIT_PY_HASH_COUNT },
 // #endif
 //
 

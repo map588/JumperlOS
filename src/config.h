@@ -100,10 +100,10 @@ struct config {
         // Hysteresis thresholds to prevent oscillation between modes
         // Switch to SELECT mode when current > high threshold
         // Switch to MEASURE mode when current < low threshold
-        float probe_switch_threshold_high = 0.65;  // mA - switch to SELECT
-        float probe_switch_threshold_low = 0.50;   // mA - switch to MEASURE
+        float probe_switch_threshold_high = 1.2;  // mA - switch to SELECT
+        float probe_switch_threshold_low = 0.90;   // mA - switch to MEASURE
         float probe_switch_threshold = 0.40;       // DEPRECATED - kept for backward compatibility
-        float measure_mode_output_voltage = 3.30;
+        float measure_mode_output_voltage = 3.27;
         float probe_current_zero = 2.0;
         int minimum_probe_reading = 85;
     } calibration;
@@ -160,13 +160,13 @@ struct config {
             int height = 32;
             int rotation = 0; // 0 = 0 degrees, 1 = 90 degrees, 2 = 180 degrees, 3 = 270 degrees
 
-            int connection_type = 0; // 0 = GPIO 7/8, 1 = RP6/RP7, 2 = internal I2C0, 3 = custom (use sda_pin and scl_pin to set the pins)
-            int sda_pin = 26;//the actual hardware pin number
-            int scl_pin = 27;//the actual hardware pin number
-            int gpio_sda = RP_GPIO_26; //the define number for the hardware pin
-            int gpio_scl = RP_GPIO_27; //the define number for the hardware pin
-            int sda_row = NANO_D2; //the row number
-            int scl_row = NANO_D3; //the row number
+            int connection_type = 2; // 0 = GPIO 7/8, 1 = RP6/RP7, 2 = internal I2C0, 3 = custom (use sda_pin and scl_pin to set the pins)
+            int sda_pin = 4;//the actual hardware pin number
+            int scl_pin = 5;//the actual hardware pin number
+            int gpio_sda = RP_GPIO_4; //the define number for the hardware pin
+            int gpio_scl = RP_GPIO_5; //the define number for the hardware pin
+            int sda_row = -1; //the row number
+            int scl_row = -1; //the row number
             int connect_on_boot = 1;
             int lock_connection = 0;
             int autoconnect_check_interval = -1;

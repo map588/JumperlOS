@@ -263,6 +263,12 @@ int row = 0;
     // oled.print( "Press clickwheel\n" );
     // oled.print( "when ready" );
     // oled.show( );
+
+    if (jumperlessConfig.top_oled.connection_type == 2 && oled.isConnected() == false) {
+        oled.connect();
+
+    }
+
     oled.showMultiLineSmallText( "Switch to MEASURE\n\r(AWAY from TIP)\n\n\rClick wheel = start", true, true );
 
     Serial.println( "\n\rStep 1: MEASURE mode (switch away from tip)" );
@@ -474,6 +480,11 @@ void probeCalibApp( void ) {
     cycleTerminalColor( );
     Serial.println( "Hold the clickwheel when you're done\n\n\r" );
     cycleTerminalColor( );
+
+    if (jumperlessConfig.top_oled.connection_type == 2 && oled.isConnected() == false) {
+        oled.connect();
+
+    }
 
     oled.showMultiLineSmallText( "Tap pads + rotate wheel to align both switch positions\n\rhold click = save", true, true );
     // oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
@@ -710,54 +721,54 @@ bool firstRead = true;
                 finishCountdownTimer = millis( );
                
                 switch ( finishCountdown ) {
-                case 0:
-                    if (countup == 0) {
-                        //setLogoOverride( GPIO_1, -3);
-                    }
+                // case 0:
+                //     if (countup == 0) {
+                //         //setLogoOverride( GPIO_1, -3);
+                //     }
 
-                 //   setLogoOverride( GPIO_0, 0xa0a0f0 );
+                //  //   setLogoOverride( GPIO_0, 0xa0a0f0 );
 
-                    showLEDsCore2 = 2;
-                    break;
-                case 1:
-                    if (countup == 0) {
-                       // setLogoOverride( DAC_0, -3);
-                    }
-                   // setLogoOverride( GPIO_1, 0xa0a0f0 );
+                //     showLEDsCore2 = 2;
+                //     break;
+                // case 1:
+                //     if (countup == 0) {
+                //        // setLogoOverride( DAC_0, -3);
+                //     }
+                //    // setLogoOverride( GPIO_1, 0xa0a0f0 );
 
-                    showLEDsCore2 = 2;
-                    break;
-                case 2:
-                    if (countup == 0) {
-                       // setLogoOverride( DAC_1, -3);
-                    }
+                //     showLEDsCore2 = 2;
+                //     break;
+                // case 2:
+                //     if (countup == 0) {
+                //        // setLogoOverride( DAC_1, -3);
+                //     }
 
-                   // setLogoOverride( DAC_0, 0xa0a0f0 );
+                //    // setLogoOverride( DAC_0, 0xa0a0f0 );
 
-                    showLEDsCore2 = 2;
-                    break;
-                case 3:
-                    if (countup == 0) {
-                        //setLogoOverride( ADC_0, -3);
-                    }
-                    //setLogoOverride( DAC_1, 0xa0a0f0 );
+                //     showLEDsCore2 = 2;
+                //     break;
+                // case 3:
+                //     if (countup == 0) {
+                //         //setLogoOverride( ADC_0, -3);
+                //     }
+                //     //setLogoOverride( DAC_1, 0xa0a0f0 );
 
-                    showLEDsCore2 = 2;
-                    break;
-                case 4:
-                    if (countup == 0) {
-                        //setLogoOverride( ADC_1, -3);
-                    }
-                    //setLogoOverride( ADC_0, 0xa0a0f0 );
+                //     showLEDsCore2 = 2;
+                //     break;
+                // case 4:
+                //     if (countup == 0) {
+                //         //setLogoOverride( ADC_1, -3);
+                //     }
+                //     //setLogoOverride( ADC_0, 0xa0a0f0 );
 
-                    showLEDsCore2 = 2;
-                    break;
-                case 5:
-                    //setLogoOverride( ADC_1, 0xa0a0f0 );
+                //     showLEDsCore2 = 2;
+                //     break;
+                // case 5:
+                //     //setLogoOverride( ADC_1, 0xa0a0f0 );
 
-                    showLEDsCore2 = 2;
-                    break;
-                case 6:
+                //     showLEDsCore2 = 2;
+                //     break;
+                case 0 ... 6:
                     clearColorOverrides( true, true, true );
                     done = true;
                     break;
@@ -1404,7 +1415,10 @@ void calibrateDacs( ) {
     // sendAllPathsCore2 = 1;
     INA0.setBusADC( 0x0e );
     INA1.setBusADC( 0x0e );
+    if (jumperlessConfig.top_oled.connection_type == 2 && oled.isConnected() == false) {
+        oled.init();
 
+    }
     int failedToConverge = 0;
     // for (int i = 0; i < 4; i++) {
 

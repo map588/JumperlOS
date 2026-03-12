@@ -16,6 +16,7 @@
 #include "oled.h"
 #include <cstring>
 #include <time.h>
+#include <stdint.h>
 
 // External references
 extern class oled oled;
@@ -48,6 +49,81 @@ static FilesystemMessage fsMessages[ MAX_FS_MESSAGES ];
 static int fsMessageCount = 0;
 static unsigned long lastMessageDisplayTime = 0;
 
+//==============================================================================
+// MicroPython example defaults - hashing and metadata
+//==============================================================================
+
+
+// Compute FNV-1a hash of a file on the FatFS filesystem (uses safe file access)
+static bool fnv1a32_file( const char* path, uint32_t& outHash ) {
+    File f = safeFileOpen( path, "r", 2000 );
+    if ( !f ) {
+        return false;
+    }
+
+    const size_t bufSize = 256;
+    uint8_t buffer[ bufSize ];
+    const uint32_t fnv_offset_basis = 0x811C9DC5u;
+    const uint32_t fnv_prime = 0x01000193u;
+
+    uint32_t h = fnv_offset_basis;
+    bool ok = true;
+
+    while ( true ) {
+        int bytesRead = f.read( buffer, bufSize );
+        if ( bytesRead < 0 ) {
+            ok = false;
+            break;
+        }
+        if ( bytesRead == 0 ) {
+            break;
+        }
+        for ( int i = 0; i < bytesRead; ++i ) {
+            h ^= buffer[ i ];
+            h *= fnv_prime;
+        }
+    }
+
+    safeFileClose( f, false );
+    if ( !ok ) return false;
+    outHash = h;
+    return true;
+}
+
+
+// Build path for an \"original\" variant of a given example.
+// variantIndex == 0 -> \"_original\", 1 -> \"_original1\", etc.
+static String buildOriginalVariantPath( const char* canonicalPath, int variantIndex ) {
+    String fullPath = String( canonicalPath );
+    int lastSlash = fullPath.lastIndexOf( '/' );
+    if ( lastSlash < 0 ) {
+        lastSlash = -1;
+    }
+
+    String dir = fullPath.substring( 0, lastSlash + 1 );
+    String filename = fullPath.substring( lastSlash + 1 );
+
+    int dotIndex = filename.lastIndexOf( '.' );
+    String namePart;
+    String extPart;
+
+    if ( dotIndex >= 0 ) {
+        namePart = filename.substring( 0, dotIndex );
+        extPart = filename.substring( dotIndex ); // includes '.'
+    } else {
+        namePart = filename;
+        extPart = "";
+    }
+
+    String suffix;
+    if ( variantIndex == 0 ) {
+        suffix = "_original";
+    } else {
+        suffix = "_original" + String( variantIndex );
+    }
+
+    return dir + namePart + suffix + extPart;
+}
 
 
 void clearFilesystemMessages( ) {
@@ -3085,81 +3161,83 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 
     // Build arrays dynamically based on enabled examples
     struct ExampleInfo {
-        const char* path;
-        const char* content;
-        const char* name;
+        const char*     path;
+        const char*     content;
+        const char*     name;
+        const uint32_t* knownHashes; // [0] = current firmware hash, [1..] = older versions
+        int             hashCount;
     };
 
     // Create array of enabled examples
     ExampleInfo examples[] = {
 #ifdef INCLUDE_JUMPERLESS_MODULE
-        { "/python_scripts/lib/jumperless.py", JUMPERLESS_MODULE_PY, "jumperless.py" },
+        { "/python_scripts/lib/jumperless.py", JUMPERLESS_MODULE_PY, "jumperless.py", JUMPERLESS_MODULE_PY_HASHES, JUMPERLESS_MODULE_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_JUMPERLESS_STUB
-        { "/python_scripts/lib/jumperless.pyi", JUMPERLESS_STUB_PYI, "jumperless.pyi" },
+        { "/python_scripts/lib/jumperless.pyi", JUMPERLESS_STUB_PYI, "jumperless.pyi", JUMPERLESS_STUB_PYI_HASHES, JUMPERLESS_STUB_PYI_HASH_COUNT },
 #endif
 #ifdef INCLUDE_VIPER_INIT
-        { "/python_scripts/lib/viper_init.py", VIPER_INIT_PY, "viper_init.py" },
+        { "/python_scripts/lib/viper_init.py", VIPER_INIT_PY, "viper_init.py", VIPER_INIT_PY_HASHES, VIPER_INIT_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_DAC_BASICS
-        { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py" },
+        { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py", DAC_BASICS_PY_HASHES, DAC_BASICS_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_ADC_BASICS
-        { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py" },
+        { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py", ADC_BASICS_PY_HASHES, ADC_BASICS_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_ASYNC_READ
-        { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py" },
+        { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py", ASYNC_READ_PY_HASHES, ASYNC_READ_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_GPIO_BASICS
-        { "/python_scripts/examples/gpio_basics.py", GPIO_BASICS_PY, "gpio_basics.py" },
+        { "/python_scripts/examples/gpio_basics.py", GPIO_BASICS_PY, "gpio_basics.py", GPIO_BASICS_PY_HASHES, GPIO_BASICS_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_NODE_CONNECTIONS
-        { "/python_scripts/examples/node_connections.py", NODE_CONNECTIONS_PY, "node_connections.py" },
+        { "/python_scripts/examples/node_connections.py", NODE_CONNECTIONS_PY, "node_connections.py", NODE_CONNECTIONS_PY_HASHES, NODE_CONNECTIONS_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_README
-        { "/python_scripts/examples/README.md", README_MD, "README.md" },
+        { "/python_scripts/examples/README.md", README_MD, "README.md", README_MD_HASHES, README_MD_HASH_COUNT },
 #endif
 #ifdef INCLUDE_TEST_RUNNER
-        { "/python_scripts/examples/test_examples.py", TEST_RUNNER_PY, "test_examples.py" },
+        { "/python_scripts/examples/test_examples.py", TEST_RUNNER_PY, "test_examples.py", TEST_RUNNER_PY_HASHES, TEST_RUNNER_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_LED_BRIGHTNESS_CONTROL
-        { "/python_scripts/examples/led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY, "led_brightness_control.py" },
+        { "/python_scripts/examples/led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY, "led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY_HASHES, LED_BRIGHTNESS_CONTROL_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_VOLTAGE_MONITOR
-        { "/python_scripts/examples/voltage_monitor.py", VOLTAGE_MONITOR_PY, "voltage_monitor.py" },
+        { "/python_scripts/examples/voltage_monitor.py", VOLTAGE_MONITOR_PY, "voltage_monitor.py", VOLTAGE_MONITOR_PY_HASHES, VOLTAGE_MONITOR_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_STYLOPHONE
-        { "/python_scripts/examples/stylophone.py", STYLOPHONE_PY, "stylophone.py" },
+        { "/python_scripts/examples/stylophone.py", STYLOPHONE_PY, "stylophone.py", STYLOPHONE_PY_HASHES, STYLOPHONE_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_UART_BASICS
-        { "/python_scripts/examples/uart_basics.py", UART_BASICS_PY, "uart_basics.py" },
+        { "/python_scripts/examples/uart_basics.py", UART_BASICS_PY, "uart_basics.py", UART_BASICS_PY_HASHES, UART_BASICS_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_UART_LOOPBACK
-        { "/python_scripts/examples/uart_loopback.py", UART_LOOPBACK_PY, "uart_loopback.py" },
+        { "/python_scripts/examples/uart_loopback.py", UART_LOOPBACK_PY, "uart_loopback.py", UART_LOOPBACK_PY_HASHES, UART_LOOPBACK_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_INTERACTION_DEMO
-        { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py" },
+        { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py", INTERACTION_DEMO_PY_HASHES, INTERACTION_DEMO_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_TEST_NEOPIXEL
-        { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py" },
+        { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py", TEST_NEOPIXEL_PY_HASHES, TEST_NEOPIXEL_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_FAKE_GPIO
-        { "/python_scripts/examples/fake_gpio.py", FAKE_GPIO_PY, "fake_gpio.py" },
+        { "/python_scripts/examples/fake_gpio.py", FAKE_GPIO_PY, "fake_gpio.py", FAKE_GPIO_PY_HASHES, FAKE_GPIO_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_SIMPLE_FAKE_GPIO_TEST
-        { "/python_scripts/examples/simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY, "simple_fake_gpio_test.py" },
+        { "/python_scripts/examples/simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY, "simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY_HASHES, SIMPLE_FAKE_GPIO_TEST_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_VIPERIDE_REINIT
-        { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py" },
+        { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py", VIPERIDE_REINIT_PY_HASHES, VIPERIDE_REINIT_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_OSCILLOSCOPE
-        { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py" },
+        { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py", OSCILLOSCOPE_PY_HASHES, OSCILLOSCOPE_PY_HASH_COUNT },
 #endif
 #ifdef INCLUDE_TEST_OLED_FEATURES
-        { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py" },
+        { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py", TEST_OLED_FEATURES_PY_HASHES, TEST_OLED_FEATURES_PY_HASH_COUNT },
 
         #ifdef INCLUDE_EXCEL_LISTENER
-            { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py" },
+            { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py", EXCEL_LISTENER_PY_HASHES, EXCEL_LISTENER_PY_HASH_COUNT },
             #endif
 #endif
     };
@@ -3303,7 +3381,7 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         }
     }
 
-    // Check available memory before creating files
+    // Check available memory before creating or updating files
     size_t freeHeap = rp2040.getFreeHeap( );
     if ( freeHeap < 20000 ) { // Require at least 20KB free heap
         String errorMsg = "ERROR: Low memory (" + String( freeHeap ) + " bytes), skipping file creation";
@@ -3315,41 +3393,20 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         return;
     }
 
-    int filesToCreate = 0;
-    int filesCreated = 0;
-    int filesSkipped = 0;
-
     if ( useOutputArea ) {
         globalFileManager->outputToArea( "[FILES] Checking example files...", 155 );
     } else {
         addFilesystemMessage( "[FILES] Checking example files...", 155 );
     }
 
-    // First pass - count files that need to be created
-    for ( int i = 0; i < totalExamples; i++ ) {
-        if ( !safeFileExists( examples[ i ].path ) || forceInitialization ) {
-            filesToCreate++;
-        } else {
-            filesSkipped++;
-        }
-    }
+    int filesCreated = 0;
+    int filesSkipped = 0;
 
-    if ( filesToCreate > 0 ) {
-        String action = forceInitialization ? "Overwriting" : "Creating";
-        String startMsg = action + " " + String( filesToCreate ) + " example files...";
-        if ( useOutputArea ) {
-            globalFileManager->outputToArea( startMsg, 155 );
-        } else {
-            addFilesystemMessage( startMsg, 155 );
-        }
-    }
-
-    // Safety timeout - don't spend more than 30 seconds creating files
+    // Safety timeout - don't spend more than 30 seconds creating/updating files
     unsigned long startTime = millis( );
-    const unsigned long maxTime = 30000; // 30 seconds
+    const unsigned long maxTime = 30000;
 
     for ( int i = 0; i < totalExamples; i++ ) {
-        // Check timeout to prevent system lockup
         if ( millis( ) - startTime > maxTime ) {
             String timeoutMsg = "TIMEOUT: File creation aborted after 30s";
             if ( useOutputArea ) {
@@ -3360,76 +3417,140 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
             break;
         }
 
-        if ( !safeFileExists( examples[ i ].path ) || forceInitialization ) {
-            // Show progress for each file
-            String action = forceInitialization ? "Overwriting" : "Creating";
-            String progressMsg = action + " " + String( examples[ i ].name ) + " (" + String( filesCreated + 1 ) + "/" + String( filesToCreate ) + ")";
+        const char*     canonicalPath = examples[ i ].path;
+        const char*     logicalName   = examples[ i ].name;
+        const uint32_t* knownHashes   = examples[ i ].knownHashes;
+        int             hashCount     = examples[ i ].hashCount;
+        uint32_t        currentHash   = ( hashCount > 0 ) ? knownHashes[ 0 ] : 0;
+
+        bool canonicalExists = safeFileExists( canonicalPath );
+
+        if ( !canonicalExists ) {
+            // File is missing - create it regardless of forced/non-forced
+            String progressMsg = "Creating " + String( logicalName );
             if ( useOutputArea ) {
                 globalFileManager->outputToArea( progressMsg, 155 );
             } else {
                 addFilesystemMessage( progressMsg, 155 );
             }
-
-            bool success = writeStringToFile( examples[ i ].path, examples[ i ].content );
-
-            if ( success ) {
+            if ( writeStringToFile( canonicalPath, examples[ i ].content ) ) {
                 filesCreated++;
-                String successMsg = forceInitialization ? "✓ Overwrote " : "✓ Created ";
-                successMsg += String( examples[ i ].name );
-                if ( useOutputArea ) {
-                    globalFileManager->outputToArea( successMsg, 155 );
-                } else {
-                    addFilesystemMessage( successMsg, 155 );
-                }
             } else {
-                String action = forceInitialization ? "overwrite" : "create";
-                String errorMsg = "✗ Failed to " + action + " " + String( examples[ i ].name );
+                String errorMsg = "✗ Failed to create " + String( logicalName );
                 if ( useOutputArea ) {
                     globalFileManager->outputToArea( errorMsg, 196 );
                 } else {
                     addFilesystemMessage( errorMsg, 196 );
                 }
-                // Continue with other files even if one fails
             }
-
-            // Add delay between file writes to prevent system overload
             delay( 10 );
+            continue;
+        }
 
-            // Process any pending serial data to keep connection alive
-            if ( Serial.available( ) ) {
-                while ( Serial.available( ) ) {
-                    Serial.read( );
+        if ( !forceInitialization ) {
+            // Non-forced boot: file exists, nothing to do
+            filesSkipped++;
+            continue;
+        }
+
+        // Forced (firmware update): 3-way hash check
+        //   currentHash   == knownHashes[0]: this build's default
+        //   knownHashes[1..]: hashes from previous firmware versions
+        uint32_t fileHash = 0;
+        bool     hasFileHash = fnv1a32_file( canonicalPath, fileHash );
+
+        if ( hasFileHash && fileHash == currentHash ) {
+            // Canonical already matches this firmware's default - nothing to do
+            filesSkipped++;
+            continue;
+        }
+
+        // Check whether the canonical file is an old (unmodified) firmware version
+        bool isOldFirmwareVersion = false;
+        if ( hasFileHash ) {
+            for ( int h = 1; h < hashCount && !isOldFirmwareVersion; ++h ) {
+                if ( fileHash == knownHashes[ h ] ) {
+                    isOldFirmwareVersion = true;
                 }
             }
+        }
+
+        if ( isOldFirmwareVersion ) {
+            // File is an older firmware default that the user never touched - overwrite in place
+            String progressMsg = "Updating " + String( logicalName );
+            if ( useOutputArea ) {
+                globalFileManager->outputToArea( progressMsg, 155 );
+            } else {
+                addFilesystemMessage( progressMsg, 155 );
+            }
+            writeStringToFile( canonicalPath, examples[ i ].content );
+            filesCreated++;
+            delay( 10 );
+            continue;
+        }
+
+        // Canonical has a hash that doesn't match any known firmware version - user edited it.
+        // Check if any _original* variant already stores the current default before writing another.
+        bool alreadyHaveDefault = false;
+        const int maxVariants = 5;
+        for ( int v = 0; v < maxVariants && !alreadyHaveDefault; ++v ) {
+            String vPath = buildOriginalVariantPath( canonicalPath, v );
+            uint32_t vHash = 0;
+            if ( safeFileExists( vPath.c_str( ) ) &&
+                 fnv1a32_file( vPath.c_str( ), vHash ) &&
+                 vHash == currentHash ) {
+                alreadyHaveDefault = true;
+            }
+        }
+
+        if ( alreadyHaveDefault ) {
+            filesSkipped++;
+            continue;
+        }
+
+        // Write the current firmware default to the next free _original* slot
+        String targetPath = buildOriginalVariantPath( canonicalPath, 0 );
+        int variantIndex = 0;
+        while ( safeFileExists( targetPath.c_str( ) ) && variantIndex < maxVariants ) {
+            variantIndex++;
+            targetPath = buildOriginalVariantPath( canonicalPath, variantIndex );
+        }
+
+        String progressMsg = "Creating original " + String( logicalName );
+        if ( useOutputArea ) {
+            globalFileManager->outputToArea( progressMsg, 155 );
+        } else {
+            addFilesystemMessage( progressMsg, 155 );
+        }
+
+        if ( writeStringToFile( targetPath.c_str( ), examples[ i ].content ) ) {
+            filesCreated++;
+        } else {
+            String errorMsg = "✗ Failed to create original " + String( logicalName );
+            if ( useOutputArea ) {
+                globalFileManager->outputToArea( errorMsg, 196 );
+            } else {
+                addFilesystemMessage( errorMsg, 196 );
+            }
+        }
+
+        delay( 10 );
+
+        if ( Serial.available( ) ) {
+            while ( Serial.available( ) ) { Serial.read( ); }
         }
     }
 
     // Summary message
     String summary;
-    if ( filesToCreate > 0 ) {
-        if ( forceInitialization ) {
-            if ( filesCreated == filesToCreate ) {
-                summary = "✓ All " + String( filesCreated ) + " examples updated successfully";
-            } else if ( filesCreated > 0 ) {
-                summary = "⚠ Updated " + String( filesCreated ) + "/" + String( filesToCreate ) + " examples";
-            } else {
-                summary = "✗ Failed to update example files";
-            }
-        } else {
-            if ( filesCreated == filesToCreate ) {
-                summary = "✓ Created " + String( filesCreated ) + " example files";
-            } else if ( filesCreated > 0 ) {
-                summary = "⚠ Created " + String( filesCreated ) + "/" + String( filesToCreate ) + " examples";
-            } else {
-                summary = "✗ Failed to create example files";
-            }
-        }
+    if ( filesCreated > 0 ) {
+        summary = "✓ Created " + String( filesCreated ) + " MicroPython example(s), " + String( filesSkipped ) + " unchanged";
     } else {
-        summary = "✓ " + String( filesSkipped ) + " examples already exist";
+        summary = "✓ " + String( filesSkipped ) + " examples unchanged";
     }
 
     // Always use addFilesystemMessage for consistency (it routes to persistent messages when file manager is active)
-    addFilesystemMessage( summary, filesCreated > 0 || filesToCreate == 0 ? 155 : 196 );
+    addFilesystemMessage( summary, 155 );
 
     // Clear older messages to prevent memory buildup
     if ( fsMessageCount > 5 ) {
@@ -3438,63 +3559,137 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 }
 
 bool verifyMicroPythonExamples( ) {
-    // Check if all expected files exist
-    const char* expectedFiles[] = {
-        "/python_scripts/lib/jumperless.py",
-        "/python_scripts/lib/jumperless.pyi",
-        "/python_scripts/lib/viper_init.py",
-        "/python_scripts/examples/01_dac_basics.py",
-        "/python_scripts/examples/02_adc_basics.py",
-        "/python_scripts/examples/03_gpio_basics.py",
-        "/python_scripts/examples/04_node_connections.py",
-        "/python_scripts/examples/README.md",
-        "/python_scripts/examples/test_examples.py",
-        "/python_scripts/examples/led_brightness_control.py",
-        "/python_scripts/examples/voltage_monitor.py",
-        "/python_scripts/examples/stylophone.py" };
+    // Reuse the same example list as initializeMicroPythonExamples
+    struct ExampleInfo {
+        const char*     path;
+        const char*     content;
+        const char*     name;
+        const uint32_t* knownHashes;
+        int             hashCount;
+    };
 
-    bool allFilesExist = true;
-    int fileCount = sizeof( expectedFiles ) / sizeof( expectedFiles[ 0 ] );
+    ExampleInfo examples[] = {
+#ifdef INCLUDE_JUMPERLESS_MODULE
+        { "/python_scripts/lib/jumperless.py", JUMPERLESS_MODULE_PY, "jumperless.py", JUMPERLESS_MODULE_PY_HASHES, JUMPERLESS_MODULE_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_JUMPERLESS_STUB
+        { "/python_scripts/lib/jumperless.pyi", JUMPERLESS_STUB_PYI, "jumperless.pyi", JUMPERLESS_STUB_PYI_HASHES, JUMPERLESS_STUB_PYI_HASH_COUNT },
+#endif
+#ifdef INCLUDE_DAC_BASICS
+        { "/python_scripts/examples/dac_basics.py", DAC_BASICS_PY, "dac_basics.py", DAC_BASICS_PY_HASHES, DAC_BASICS_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_ADC_BASICS
+        { "/python_scripts/examples/adc_basics.py", ADC_BASICS_PY, "adc_basics.py", ADC_BASICS_PY_HASHES, ADC_BASICS_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_ASYNC_READ
+        { "/python_scripts/examples/async_read.py", ASYNC_READ_PY, "async_read.py", ASYNC_READ_PY_HASHES, ASYNC_READ_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_GPIO_BASICS
+        { "/python_scripts/examples/gpio_basics.py", GPIO_BASICS_PY, "gpio_basics.py", GPIO_BASICS_PY_HASHES, GPIO_BASICS_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_NODE_CONNECTIONS
+        { "/python_scripts/examples/node_connections.py", NODE_CONNECTIONS_PY, "node_connections.py", NODE_CONNECTIONS_PY_HASHES, NODE_CONNECTIONS_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_LED_BRIGHTNESS_CONTROL
+        { "/python_scripts/examples/led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY, "led_brightness_control.py", LED_BRIGHTNESS_CONTROL_PY_HASHES, LED_BRIGHTNESS_CONTROL_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_VOLTAGE_MONITOR
+        { "/python_scripts/examples/voltage_monitor.py", VOLTAGE_MONITOR_PY, "voltage_monitor.py", VOLTAGE_MONITOR_PY_HASHES, VOLTAGE_MONITOR_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_STYLOPHONE
+        { "/python_scripts/examples/stylophone.py", STYLOPHONE_PY, "stylophone.py", STYLOPHONE_PY_HASHES, STYLOPHONE_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_UART_BASICS
+        { "/python_scripts/examples/uart_basics.py", UART_BASICS_PY, "uart_basics.py", UART_BASICS_PY_HASHES, UART_BASICS_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_UART_LOOPBACK
+        { "/python_scripts/examples/uart_loopback.py", UART_LOOPBACK_PY, "uart_loopback.py", UART_LOOPBACK_PY_HASHES, UART_LOOPBACK_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_INTERACTION_DEMO
+        { "/python_scripts/examples/interaction_demo.py", INTERACTION_DEMO_PY, "interaction_demo.py", INTERACTION_DEMO_PY_HASHES, INTERACTION_DEMO_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_TEST_NEOPIXEL
+        { "/python_scripts/examples/test_neopixel.py", TEST_NEOPIXEL_PY, "test_neopixel.py", TEST_NEOPIXEL_PY_HASHES, TEST_NEOPIXEL_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_OSCILLOSCOPE
+        { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py", OSCILLOSCOPE_PY_HASHES, OSCILLOSCOPE_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_TEST_OLED_FEATURES
+        { "/python_scripts/examples/test_oled_features.py", TEST_OLED_FEATURES_PY, "test_oled_features.py", TEST_OLED_FEATURES_PY_HASHES, TEST_OLED_FEATURES_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_EXCEL_LISTENER
+        { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py", EXCEL_LISTENER_PY_HASHES, EXCEL_LISTENER_PY_HASH_COUNT },
+#endif
+    };
 
-    Serial.println( "Verifying MicroPython examples..." );
+    int totalExamples = sizeof( examples ) / sizeof( examples[ 0 ] );
 
-    for ( int i = 0; i < fileCount; i++ ) {
-        if ( !safeFileExists( expectedFiles[ i ] ) ) {
-            Serial.print( "  MISSING: " );
-            Serial.println( expectedFiles[ i ] );
-            allFilesExist = false;
-        } else {
-            // Check file size to ensure it's not empty
-            File checkFile = safeFileOpen( expectedFiles[ i ], "r" );
-            if ( checkFile ) {
-                size_t fileSize = checkFile.size( );
-                safeFileClose( checkFile, false );
-                if ( fileSize > 0 ) {
-                    Serial.print( "  OK: " );
-                    Serial.print( expectedFiles[ i ] );
-                    Serial.print( " (" );
-                    Serial.print( fileSize );
-                    Serial.println( " bytes)" );
-                } else {
-                    Serial.print( "  EMPTY: " );
-                    Serial.println( expectedFiles[ i ] );
-                    allFilesExist = false;
-                }
-            } else {
-                Serial.print( "  UNREADABLE: " );
-                Serial.println( expectedFiles[ i ] );
-                allFilesExist = false;
+    bool allOk = true;
+
+    Serial.println( "Verifying MicroPython examples (hash-based)..." );
+
+    for ( int i = 0; i < totalExamples; i++ ) {
+        const char*     canonicalPath = examples[ i ].path;
+        const char*     logicalName   = examples[ i ].name;
+        const uint32_t* knownHashes   = examples[ i ].knownHashes;
+        int             hashCount     = examples[ i ].hashCount;
+        uint32_t        currentHash   = ( hashCount > 0 ) ? knownHashes[ 0 ] : 0;
+
+        bool foundAnyCopy    = false;
+        bool foundKnownCopy  = false; // matches any firmware version (current or old)
+        bool foundCurrentCopy = false; // matches current firmware default
+        uint32_t fileHash    = 0;
+
+        auto matchesAnyKnown = [ & ]( uint32_t h ) -> bool {
+            for ( int k = 0; k < hashCount; ++k ) {
+                if ( h == knownHashes[ k ] ) { return true; }
             }
+            return false;
+        };
+
+        // Check canonical file
+        if ( safeFileExists( canonicalPath ) && fnv1a32_file( canonicalPath, fileHash ) ) {
+            foundAnyCopy = true;
+            if ( fileHash == currentHash ) { foundCurrentCopy = true; }
+            if ( matchesAnyKnown( fileHash ) ) { foundKnownCopy = true; }
+        }
+
+        // Check _original* variants
+        const int maxVariants = 5;
+        for ( int variantIndex = 0; variantIndex < maxVariants && !foundCurrentCopy; ++variantIndex ) {
+            String variantPath = buildOriginalVariantPath( canonicalPath, variantIndex );
+            if ( safeFileExists( variantPath.c_str( ) ) && fnv1a32_file( variantPath.c_str( ), fileHash ) ) {
+                foundAnyCopy = true;
+                if ( fileHash == currentHash ) { foundCurrentCopy = true; break; }
+                if ( matchesAnyKnown( fileHash ) ) { foundKnownCopy = true; }
+            }
+        }
+
+        if ( !foundAnyCopy ) {
+            Serial.print( "  MISSING: " );
+            Serial.println( canonicalPath );
+            allOk = false;
+        } else if ( !foundCurrentCopy && !foundKnownCopy ) {
+            // Only user-modified copies exist
+            Serial.print( "  USER-MODIFIED: " );
+            Serial.println( logicalName );
+        } else if ( !foundCurrentCopy && foundKnownCopy ) {
+            // File is an older (unmodified) firmware version
+            Serial.print( "  OLD DEFAULT: " );
+            Serial.println( logicalName );
+        } else {
+            Serial.print( "  OK: " );
+            Serial.println( logicalName );
         }
     }
 
-    if ( allFilesExist ) {
-        Serial.println( "All MicroPython example files verified successfully!" );
+    if ( allOk ) {
+        Serial.println( "All MicroPython example defaults verified successfully!" );
     } else {
-        Serial.println( "Some MicroPython example files are missing or corrupted!" );
+        Serial.println( "Some MicroPython examples are missing defaults or only modified copies exist!" );
     }
 
-    return allFilesExist;
+    return allOk;
 }
 
 // =============================================================================
