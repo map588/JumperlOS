@@ -714,25 +714,67 @@ int oled::cycleFont( void ) {
 }
 
 FontFamily oled::getFontFamily( String fontName ) {
+    auto normalizeFontName = []( String name ) -> String {
+        name.trim( );
+        String normalized = "";
+        normalized.reserve( name.length( ) );
+        for ( size_t i = 0; i < name.length( ); i++ ) {
+            char c = name[ i ];
+
+            // Treat these as separators so "comic_sans", "comic-sans", and "Comic Sans" all match.
+            if ( c == ' ' || c == '_' || c == '-' ) {
+                continue;
+            }
+
+            if ( c >= 'A' && c <= 'Z' ) {
+                c = (char)( c + ( 'a' - 'A' ) );
+            }
+            normalized += c;
+        }
+        return normalized;
+    };
+
+    String normalizedInput = normalizeFontName( fontName );
     for ( int i = 0; i < numFonts; i++ ) {
-        if ( fontList[ i ].longName == fontName ) {
+        if ( normalizedInput == normalizeFontName( String( fontList[ i ].longName ) ) ) {
             return fontList[ i ].family;
         }
-        if ( fontList[ i ].shortName == fontName ) {
+        if ( normalizedInput == normalizeFontName( String( fontList[ i ].shortName ) ) ) {
             return fontList[ i ].family;
         }
     }
     return FONT_EUROSTILE;
 }
 int oled::setFont( String fontName, int justGetIndex ) {
+    auto normalizeFontName = []( String name ) -> String {
+        name.trim( );
+        String normalized = "";
+        normalized.reserve( name.length( ) );
+        for ( size_t i = 0; i < name.length( ); i++ ) {
+            char c = name[ i ];
+
+            // Treat these as separators so "comic_sans", "comic-sans", and "Comic Sans" all match.
+            if ( c == ' ' || c == '_' || c == '-' ) {
+                continue;
+            }
+
+            if ( c >= 'A' && c <= 'Z' ) {
+                c = (char)( c + ( 'a' - 'A' ) );
+            }
+            normalized += c;
+        }
+        return normalized;
+    };
+
+    String normalizedInput = normalizeFontName( fontName );
     for ( int i = 0; i < numFonts; i++ ) {
-        if ( fontList[ i ].longName == fontName ) {
+        if ( normalizedInput == normalizeFontName( String( fontList[ i ].longName ) ) ) {
             if ( justGetIndex == 0 ) {
                 setFont( i );
             }
             return i;
         }
-        if ( fontList[ i ].shortName == fontName ) {
+        if ( normalizedInput == normalizeFontName( String( fontList[ i ].shortName ) ) ) {
             if ( justGetIndex == 0 ) {
                 setFont( i );
             }
@@ -762,12 +804,12 @@ void oled::setFont( FontFamily fontFamily ) {
     getDisplay().setFont( currentFont );
 }
 void oled::setFont( int fontIndex ) {
-    if ( fontIndex < 0 || fontIndex >= numFonts ) {
-        currentFont = fontList[ 0 ].font;
-    } else {
-        currentFont = fontList[ fontIndex ].font;
+    int safeIndex = fontIndex;
+    if ( safeIndex < 0 || safeIndex >= numFonts ) {
+        safeIndex = 0;
     }
-    currentFontFamily = fontList[ fontIndex ].family;
+    currentFont = fontList[ safeIndex ].font;
+    currentFontFamily = fontList[ safeIndex ].family;
 
     getDisplay().setFont( currentFont );
 }
@@ -881,10 +923,19 @@ TextBounds oled::getTextBounds( const char* str ) {
         return bounds;
     }
 
+    // Normalize digits for bounds calculations so labels like "channel 0"
+    // and "channel 1" resolve to a consistent measured width.
+    String measureText = String( str );
+    for ( size_t i = 0; i < measureText.length( ); i++ ) {
+        if ( measureText[ i ] >= '0' && measureText[ i ] <= '9' ) {
+            measureText.setCharAt( i, '0' );
+        }
+    }
+
     // Use Adafruit GFX's built-in function for accuracy
     int16_t x1, y1;
     uint16_t w, h;
-    getDisplay().getTextBounds( str, 0, 0, &x1, &y1, &w, &h );
+    getDisplay().getTextBounds( measureText.c_str( ), 0, 0, &x1, &y1, &w, &h );
 
     bounds.width = w;
     bounds.height = h;
@@ -924,13 +975,12 @@ void oled::getCenteredPosition( const char* str, int16_t* x, int16_t* y, Positio
     if ( !str || !x || !y )
         return;
 
-    // Use Adafruit GFX's built-in getTextBounds for accurate centering
-    int16_t x1, y1;
-    uint16_t w, h;
-    getDisplay().getTextBounds( str, 0, 0, &x1, &y1, &w, &h );
+    // Use unified bounds path so centering follows the same normalization
+    // rules as fitting logic (including digit normalization).
+    TextBounds bounds = getTextBounds( str );
 
     // Center horizontally
-    *x = ( displayWidth - w ) / 2;
+    *x = ( displayWidth - bounds.width ) / 2;
     // Serial.print("w: ");
     // Serial.println(w);
     // Serial.print("h: ");
@@ -940,9 +990,6 @@ void oled::getCenteredPosition( const char* str, int16_t* x, int16_t* y, Positio
     // Serial.print("y: ");
     // Serial.println(*y);
     // Serial.println("--------------------------------");
-
-    // Get text bounds to use ascent for proper centering
-    TextBounds bounds = getTextBounds( str );
 
     // Vertical positioning - return the Y coordinate that setCursor should use
     if ( mode == POS_TIGHT || ( mode == POS_AUTO && currentTextSize > 1 ) ) {
@@ -1127,6 +1174,10 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
     // Auto-detect and switch framebuffer mode based on text size
     autoDetectMode( textSize );
 
+    // Fit calculations must be done with wrapping disabled; otherwise width
+    // can be underestimated and later render calls may spill off-screen.
+    getDisplay().setTextWrap( false );
+
     // Handle \31 character replacement FIRST - keep String alive for function scope
     String processedText;
     if ( strchr( text, '\31' ) != nullptr ) {
@@ -1154,6 +1205,54 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
             desiredPointSize = 12; // Full size for single-line
     }
     uint8_t currentPt = desiredPointSize;
+
+    // Leave a little headroom so near-edge strings don't oscillate in size
+    // (e.g. "channel 0" vs "channel 1") and don't unexpectedly wrap.
+    int16_t safeWidth = displayWidth;
+    if ( displayWidth > 32 ) {
+        safeWidth -= 4;
+    } else if ( displayWidth > 16 ) {
+        safeWidth -= 2;
+    }
+
+    // For explicit multi-line text at small sizes, preflight each line at minimum
+    // point size. If any line still won't fit, use compact scrolling text mode.
+    if ( isMultiLine && textSize <= 1 ) {
+        setFontPointSize( currentFontFamily, 5 );
+        setTextSize( 1 );
+        this->currentTextSize = 1;
+
+        const char* lineStart = text;
+        const char* p = text;
+        bool fallbackToSmallText = false;
+        while ( true ) {
+            if ( *p == '\n' || *p == '\0' ) {
+                size_t len = (size_t)( p - lineStart );
+                if ( len > 0 ) {
+                    char lineBuf[ 96 ];
+                    size_t copyLen = ( len < sizeof( lineBuf ) - 1 ) ? len : ( sizeof( lineBuf ) - 1 );
+                    strncpy( lineBuf, lineStart, copyLen );
+                    lineBuf[ copyLen ] = '\0';
+                    TextBounds b = getTextBounds( lineBuf );
+                    if ( b.width > safeWidth ) {
+                        fallbackToSmallText = true;
+                        break;
+                    }
+                }
+                if ( *p == '\0' ) {
+                    break;
+                }
+                lineStart = p + 1;
+            }
+            p++;
+        }
+
+        if ( fallbackToSmallText ) {
+            showMultiLineSmallText( text, clear, showOled );
+            getDisplay().setTextWrap( true );
+            return;
+        }
+    }
 
     // Try to find largest font that fits (checking BOTH width and height)
     setFontPointSize( currentFontFamily, currentPt );
@@ -1210,11 +1309,12 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
 
             // Check if it fits with clipping tolerance
             // Allow some pixels to clip (for descenders like 'p', 'g', 'q')
-            textFitsDisplay = ( maxLineWidth <= ( displayWidth + chars.horizontalClipTolerance ) &&
+            textFitsDisplay = ( maxLineWidth <= ( safeWidth + chars.horizontalClipTolerance ) &&
                                 totalHeight <= ( displayHeight + chars.verticalClipTolerance ) );
         } else {
-            // Single line: check width only
-            textFitsDisplay = textFits( text );
+            // Single line: require a little width headroom for consistent sizing.
+            TextBounds bounds = getTextBounds( text );
+            textFitsDisplay = ( bounds.width <= safeWidth && bounds.height <= displayHeight );
         }
 
         if ( !textFitsDisplay ) {
@@ -1227,6 +1327,13 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
     }
     // Serial.print("Final point size: ");
     // Serial.println(currentPt);
+
+    // If single-line text still can't fit at minimum size, switch to compact small-text layout.
+    if ( !isMultiLine && !textFitsDisplay ) {
+        showMultiLineSmallText( text, clear, showOled );
+        getDisplay().setTextWrap( true );
+        return;
+    }
 
     // Handle multi-line text
     if ( isMultiLine ) {
@@ -1254,6 +1361,8 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
         charPos += strlen( text );
     }
 
+    getDisplay().setTextWrap( true );
+
     if ( showOled ) {
         show( waitToFinish );
         // getDisplay().display();
@@ -1278,23 +1387,82 @@ void oled::clearPrintShow( const char* text, int textSize, FontFamily family, bo
     // Use smart font selection with specified family
     setFontForSize( family, textSize );
 
+    // Keep wrapping disabled during fit checks and rendering for consistent
+    // single-line behavior.
+    getDisplay().setTextWrap( false );
+
     // Always use text size 1 since we're using native font sizes
     setTextSize( 1 );
     this->currentTextSize = 1; // Track that we're using native fonts
 
-    int wrap = 0;
-    // Check if text fits, fallback to smaller font if needed
-    while ( !textFits( text ) && textSize > 1 ) {
-        textSize--;
-        setFontForSize( family, textSize );
-        if ( textSize == 1 ) {
-            wrap = 1;
-            break;
+    // Keep a small width margin to avoid inconsistent near-threshold scaling.
+    int16_t safeWidth = displayWidth;
+    if ( displayWidth > 32 ) {
+        safeWidth -= 4;
+    } else if ( displayWidth > 16 ) {
+        safeWidth -= 2;
+    }
+
+    // For explicit multi-line text at small sizes, preflight each line at minimum
+    // point size. If any line still won't fit, use compact scrolling text mode.
+    bool isMultiLine = ( strchr( text, '\n' ) != nullptr );
+    if ( isMultiLine && textSize <= 1 ) {
+        setFontPointSize( family, 5 );
+        setTextSize( 1 );
+        this->currentTextSize = 1;
+
+        const char* lineStart = text;
+        const char* p = text;
+        bool fallbackToSmallText = false;
+        while ( true ) {
+            if ( *p == '\n' || *p == '\0' ) {
+                size_t len = (size_t)( p - lineStart );
+                if ( len > 0 ) {
+                    char lineBuf[ 96 ];
+                    size_t copyLen = ( len < sizeof( lineBuf ) - 1 ) ? len : ( sizeof( lineBuf ) - 1 );
+                    strncpy( lineBuf, lineStart, copyLen );
+                    lineBuf[ copyLen ] = '\0';
+                    TextBounds b = getTextBounds( lineBuf );
+                    if ( b.width > safeWidth ) {
+                        fallbackToSmallText = true;
+                        break;
+                    }
+                }
+                if ( *p == '\0' ) {
+                    break;
+                }
+                lineStart = p + 1;
+            }
+            p++;
+        }
+
+        if ( fallbackToSmallText ) {
+            showMultiLineSmallText( text, clear, showOled );
+            getDisplay().setTextWrap( true );
+            return;
         }
     }
 
+    auto fitsAtCurrentFont = [&]( const char* candidate ) {
+        TextBounds bounds = getTextBounds( candidate );
+        return ( bounds.width <= safeWidth && bounds.height <= displayHeight );
+    };
+
+    bool textFitsDisplay = fitsAtCurrentFont( text );
+    while ( !textFitsDisplay && textSize > 1 ) {
+        textSize--;
+        setFontForSize( family, textSize );
+        textFitsDisplay = fitsAtCurrentFont( text );
+    }
+
+    if ( !isMultiLine && !textFitsDisplay ) {
+        showMultiLineSmallText( text, clear, showOled );
+        getDisplay().setTextWrap( true );
+        return;
+    }
+
     // Handle multi-line text
-    if ( strchr( text, '\n' ) != nullptr ) {
+    if ( isMultiLine ) {
         displayMultiLineText( text, center );
     } else {
         // Single line text
@@ -1311,6 +1479,8 @@ void oled::clearPrintShow( const char* text, int textSize, FontFamily family, bo
         getDisplay().print( text );
         charPos += strlen( text );
     }
+
+    getDisplay().setTextWrap( true );
 
     if ( showOled ) {
         show( waitToFinish );
@@ -1554,6 +1724,9 @@ void oled::displayMultiLineText( const char* text, bool center ) {
             // Get horizontal centering only
             int16_t tempY;
             getCenteredPosition( lines[ i ].c_str( ), &lineX, &tempY );
+            if ( lineX < 0 ) {
+                lineX = 0;
+            }
             // Keep our calculated Y position for proper line spacing
         }
 

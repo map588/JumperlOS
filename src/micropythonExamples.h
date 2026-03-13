@@ -181,39 +181,48 @@ const char* DAC_BASICS_PY = R"("""
 Basic DAC (Digital-to-Analog Converter) operations.
 This example shows how to set DAC voltages.
 
-Hardware Setup:
-1. Connect voltmeter or LED to DAC output pins
-2. DAC channels: 0=DAC_A, 1=DAC_B, 2=TOP_RAIL, 3=BOTTOM_RAIL
+DAC channels: 0=DAC_0, 1=DAC_1, 2=TOP_RAIL, 3=BOTTOM_RAIL
 """
 
-import jumperless as j
 import time
 
 print("DAC Basics Demo")
 
-# Test all DAC channels
-channels = [0, 1, 2, 3]
-channel_names = ["DAC_A", "DAC_B", "TOP_RAIL", "BOTTOM_RAIL"]
+# Test DAC channels, we're skipping DAC_0 because it's generally reserved for the probe
+channels = [1, 2, 3]
+channel_names = ["DAC_1", "TOP_RAIL", "BOTTOM_RAIL"]
+
+oled_set_text_size(0) # Set to 0 for scrolling text
 
 for i, channel in enumerate(channels):
+    
+    oled_print("\nTesting " + channel_names[i] + " (channel " + str(channel) + "):")
     print("\nTesting " + channel_names[i] + " (channel " + str(channel) + "):")
     
+    time.sleep(1)
+    
     # Set different voltages
-    voltages = [0.0, 1.65, 3.3]
+    voltages = [0.0, 1.5, 3.3]
+    
     for voltage in voltages:
-        j.dac_set(channel, voltage)
-        actual = j.dac_get(channel)
-        print("  Set: " + str(voltage) + "V, Read: " + str(round(actual, 3)) + "V")
+        
+        dac_set(channel, voltage)
+        
+        actual = dac_get(channel) # confirm the setting
+        
+        oled_print("\nSet " + str(actual) + "V")
+        print("   Set " + str(actual) + "V")
+        
         time.sleep(1)
     
     # Reset to 0V
-    j.dac_set(channel, 0.0)
+    dac_set(channel, 0.0)
 
 print("\nDAC Basics complete!")
 
 )";
-const uint32_t DAC_BASICS_PY_HASHES[1] = { 0x0B371883 };
-const int DAC_BASICS_PY_HASH_COUNT = 1;
+const uint32_t DAC_BASICS_PY_HASHES[2] = { 0x199EC9F3, 0x0B371883 };
+const int DAC_BASICS_PY_HASH_COUNT = 2;
 #endif
 
 #ifdef INCLUDE_EXCEL_LISTENER
@@ -2378,14 +2387,14 @@ This example shows how to use UART.
 """
 
 import jumperless as j
-
 from machine import UART
-    
+import time
+
 uart = UART(0, 115200)
 uart.init(115200, 8, None, 1)
 
-j.connect(UART_TX, D0)
-j.connect(UART_RX, D1)
+j.connect(j.UART_TX, j.D0, 0)
+j.connect(j.UART_RX, j.D1, 0)
 
 print("UART Basics Demo")
 print("This example will send a message to the Arduino Nano over UART")
@@ -2395,10 +2404,9 @@ time.sleep(1)
 buffer = "Sup Arduino"
 while True:
     uart.write(buffer)
-    time.sleep(0.5)
-)";
-const uint32_t UART_BASICS_PY_HASHES[1] = { 0xAE8DFFE1 };
-const int UART_BASICS_PY_HASH_COUNT = 1;
+    time.sleep(1.5))";
+const uint32_t UART_BASICS_PY_HASHES[2] = { 0x21E769C0, 0xAE8DFFE1 };
+const int UART_BASICS_PY_HASH_COUNT = 2;
 #endif
 
 #ifdef INCLUDE_UART_LOOPBACK

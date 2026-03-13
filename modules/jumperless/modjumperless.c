@@ -3057,110 +3057,74 @@ MP_DEFINE_CONST_OBJ_TYPE(
     );
 
 // OLED Functions
-static mp_obj_t jl_oled_print_func( size_t n_args, const mp_obj_t* args ) {
-    const char* text;
-    char buffer[ 64 ]; // Buffer for converting non-string types
+// Supports print()-style usage:
+//   oled_print(*values, sep=' ', end='', size=-1)
+// Backwards compatibility:
+//   oled_print(text, size)
+static mp_obj_t jl_oled_print_func( size_t n_args, const mp_obj_t* pos_args, mp_map_t* kw_args ) {
+    enum {
+        ARG_sep,
+        ARG_end,
+        ARG_size
+    };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_sep, MP_ARG_KW_ONLY | MP_ARG_OBJ, { .u_rom_obj = MP_ROM_NONE } },
+        { MP_QSTR_end, MP_ARG_KW_ONLY | MP_ARG_OBJ, { .u_rom_obj = MP_ROM_NONE } },
+        { MP_QSTR_size, MP_ARG_KW_ONLY | MP_ARG_INT, { .u_int = -1 } },
+    };
 
-    // Handle different input types
-    if ( mp_obj_is_str( args[ 0 ] ) ) {
-        // String - use directly
-        text = mp_obj_str_get_str( args[ 0 ] );
-    } else if ( mp_obj_is_int( args[ 0 ] ) ) {
-        // Integer - convert to string
-        int value = mp_obj_get_int( args[ 0 ] );
-        snprintf( buffer, sizeof( buffer ), "%d", value );
-        text = buffer;
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &node_type ) {
-        // Node type - get its string representation
-        node_obj_t* node = MP_OBJ_TO_PTR( args[ 0 ] );
-        const char* name = jl_get_node_name( node->value );
-        if ( name && strlen( name ) > 0 ) {
-            strncpy( buffer, name, sizeof( buffer ) - 1 );
-            buffer[ sizeof( buffer ) - 1 ] = '\0';
-        } else {
-            snprintf( buffer, sizeof( buffer ), "%d", node->value );
+    mp_arg_val_t args[ MP_ARRAY_SIZE( allowed_args ) ];
+    // Parse keyword-only args from kwargs map only; positional args are print values.
+    mp_arg_parse_all( 0, NULL, kw_args, MP_ARRAY_SIZE( allowed_args ), allowed_args, args );
+
+    const char* sep = " ";
+    if ( args[ ARG_sep ].u_obj != mp_const_none ) {
+        if ( !mp_obj_is_str( args[ ARG_sep ].u_obj ) ) {
+            mp_raise_TypeError( MP_ERROR_TEXT( "sep must be str or None" ) );
         }
-        text = buffer;
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &gpio_state_type ) {
-        // GPIO State - HIGH/LOW/FLOATING
-        gpio_state_obj_t* state = MP_OBJ_TO_PTR( args[ 0 ] );
-        switch ( state->value ) {
-        case GPIO_STATE_HIGH:
-            text = "HIGH";
-            break;
-        case GPIO_STATE_LOW:
-            text = "LOW";
-            break;
-        case GPIO_STATE_FLOATING:
-            text = "FLOATING";
-            break;
-        default:
-            text = "UNKNOWN";
-            break;
-        }
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &gpio_direction_type ) {
-        // GPIO Direction - INPUT/OUTPUT
-        gpio_direction_obj_t* dir = MP_OBJ_TO_PTR( args[ 0 ] );
-        text = dir->value ? "OUTPUT" : "INPUT";
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &gpio_pull_type ) {
-        // GPIO Pull - PULLUP/PULLDOWN/NO_PULL/BUS_KEEPER
-        gpio_pull_obj_t* pull = MP_OBJ_TO_PTR( args[ 0 ] );
-        if ( pull->value == 1 ) {
-            text = "PULLUP";
-        } else if ( pull->value == -1 ) {
-            text = "PULLDOWN";
-        } else if ( pull->value == 2 ) {
-            text = "BUS_KEEPER";
-        } else {
-            text = "NO_PULL";
-        }
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &connection_state_type ) {
-        // Connection State - CONNECTED/DISCONNECTED
-        connection_state_obj_t* conn = MP_OBJ_TO_PTR( args[ 0 ] );
-        text = conn->value ? "CONNECTED" : "DISCONNECTED";
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &probe_button_type ) {
-        // Probe Button - CONNECT/REMOVE/NONE
-        probe_button_obj_t* button = MP_OBJ_TO_PTR( args[ 0 ] );
-        if ( button->value == 1 ) {
-            text = "CONNECT";
-        } else if ( button->value == 2 ) {
-            text = "REMOVE";
-        } else {
-            text = "NONE";
-        }
-    } else if ( mp_obj_get_type( args[ 0 ] ) == &probe_pad_type ) {
-        // Probe Pad - get its string representation
-        probe_pad_obj_t* pad = MP_OBJ_TO_PTR( args[ 0 ] );
-        const char* name = jl_get_pad_name( pad->value );
-        if ( name != NULL ) {
-            strncpy( buffer, name, sizeof( buffer ) - 1 );
-            buffer[ sizeof( buffer ) - 1 ] = '\0';
-            text = buffer;
-        } else {
-            strncpy( buffer, "???", sizeof( buffer ) - 1 );
-            text = buffer;
-        }
-    } else if ( mp_obj_is_float( args[ 0 ] ) ) {
-        // Float - convert to string with 3 decimal places
-        float value = mp_obj_get_float( args[ 0 ] );
-        snprintf( buffer, sizeof( buffer ), "%.3f", value );
-        text = buffer;
-    } else if ( mp_obj_is_bool( args[ 0 ] ) ) {
-        // Boolean - True/False
-        text = mp_obj_is_true( args[ 0 ] ) ? "True" : "False";
-    } else {
-        // Fallback - try to convert to string representation
-        mp_obj_print_helper( &mp_plat_print, args[ 0 ], PRINT_STR );
-        text = "???"; // This is a fallback if we can't convert
+        sep = mp_obj_str_get_str( args[ ARG_sep ].u_obj );
     }
 
-    // If size argument provided, use it; otherwise use -1 to signal "use default"
-    int size = ( n_args > 1 ) ? mp_obj_get_int( args[ 1 ] ) : -1;
+    // Keep historical oled_print behavior (no implicit newline) unless user requests one.
+    const char* end = "";
+    if ( args[ ARG_end ].u_obj != mp_const_none ) {
+        if ( !mp_obj_is_str( args[ ARG_end ].u_obj ) ) {
+            mp_raise_TypeError( MP_ERROR_TEXT( "end must be str or None" ) );
+        }
+        end = mp_obj_str_get_str( args[ ARG_end ].u_obj );
+    }
 
-    jl_oled_print( text, size );
+    int size = args[ ARG_size ].u_int;
+    size_t value_count = n_args;
+
+    // Backwards compatibility with oled_print(text, size)
+    if ( kw_args->used == 0 && n_args == 2 && mp_obj_is_int( pos_args[ 1 ] ) ) {
+        size = mp_obj_get_int( pos_args[ 1 ] );
+        value_count = 1;
+    }
+
+    vstr_t output;
+    vstr_init( &output, 64 );
+
+    for ( size_t i = 0; i < value_count; i++ ) {
+        mp_print_t print;
+        vstr_t item;
+        vstr_init_print( &item, 16, &print );
+        mp_obj_print_helper( &print, pos_args[ i ], PRINT_STR );
+        vstr_add_strn( &output, item.buf, item.len );
+        vstr_clear( &item );
+
+        if ( i + 1 < value_count ) {
+            vstr_add_str( &output, sep );
+        }
+    }
+
+    vstr_add_str( &output, end );
+    jl_oled_print( output.buf, size );
+    vstr_clear( &output );
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_print_obj, 1, 2, jl_oled_print_func );
+static MP_DEFINE_CONST_FUN_OBJ_KW( jl_oled_print_obj, 0, jl_oled_print_func );
 
 static mp_obj_t jl_oled_clear_func( size_t n_args, const mp_obj_t* args ) {
     // Default show=True if not provided
@@ -3248,7 +3212,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_get_fonts_obj, jl_oled_get_fonts_func 
 static mp_obj_t jl_oled_set_font_func( mp_obj_t font_obj ) {
     const char* font_name = mp_obj_str_get_str( font_obj );
     int result = jl_oled_set_font( font_name );
-    return mp_obj_new_bool( result );
+    return mp_obj_new_bool( result > 0 );
 }
 static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_set_font_obj, jl_oled_set_font_func );
 

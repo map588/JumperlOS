@@ -2,33 +2,42 @@
 Basic DAC (Digital-to-Analog Converter) operations.
 This example shows how to set DAC voltages.
 
-Hardware Setup:
-1. Connect voltmeter or LED to DAC output pins
-2. DAC channels: 0=DAC_A, 1=DAC_B, 2=TOP_RAIL, 3=BOTTOM_RAIL
+DAC channels: 0=DAC_0, 1=DAC_1, 2=TOP_RAIL, 3=BOTTOM_RAIL
 """
 
-import jumperless as j
 import time
 
 print("DAC Basics Demo")
 
-# Test all DAC channels
-channels = [0, 1, 2, 3]
-channel_names = ["DAC_A", "DAC_B", "TOP_RAIL", "BOTTOM_RAIL"]
+# Test DAC channels, we're skipping DAC_0 because it's generally reserved for the probe
+channels = [1, 2, 3]
+channel_names = ["DAC_1", "TOP_RAIL", "BOTTOM_RAIL"]
+
+oled_set_text_size(0) # Set to 0 for scrolling text
 
 for i, channel in enumerate(channels):
+    
+    oled_print("\nTesting " + channel_names[i] + " (channel " + str(channel) + "):")
     print("\nTesting " + channel_names[i] + " (channel " + str(channel) + "):")
     
+    time.sleep(1)
+    
     # Set different voltages
-    voltages = [0.0, 1.65, 3.3]
+    voltages = [0.0, 1.5, 3.3]
+    
     for voltage in voltages:
-        j.dac_set(channel, voltage)
-        actual = j.dac_get(channel)
-        print("  Set: " + str(voltage) + "V, Read: " + str(round(actual, 3)) + "V")
+        
+        dac_set(channel, voltage)
+        
+        actual = dac_get(channel) # confirm the setting
+        
+        oled_print("\nSet " + str(actual) + "V")
+        print("   Set " + str(actual) + "V")
+        
         time.sleep(1)
     
     # Reset to 0V
-    j.dac_set(channel, 0.0)
+    dac_set(channel, 0.0)
 
 print("\nDAC Basics complete!")
 

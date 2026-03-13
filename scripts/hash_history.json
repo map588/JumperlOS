@@ -6,6 +6,7 @@
     "0xB0B63184"
   ],
   "dac_basics.py": [
+    "0x199EC9F3",
     "0x0B371883"
   ],
   "excel_listener.py": [
@@ -53,6 +54,7 @@
     "0x5DEB2A46"
   ],
   "uart_basics.py": [
+    "0x21E769C0",
     "0xAE8DFFE1"
   ],
   "uart_loopback.py": [

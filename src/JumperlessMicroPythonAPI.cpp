@@ -1669,8 +1669,14 @@ const char* jl_oled_get_fonts( int* count ) {
 }
 
 int jl_oled_set_font( const char* fontName ) {
-    if ( !oled.isConnected( ) ) return -1;
-    int fontIndex = oled.setFont( String( fontName ), 0 );
+    // if ( !oled.isConnected( ) ) return 0;
+    if ( fontName == NULL ) return 0;
+
+    String requestedFont( fontName );
+    requestedFont.trim( );
+    if ( requestedFont.length( ) == 0 ) return 0;
+
+    int fontIndex = oled.setFont( requestedFont, 0 );
     // Return 1 for success (fontIndex >= 0), 0 for failure (fontIndex == -1)
     return ( fontIndex >= 0 ) ? 1 : 0;
 }

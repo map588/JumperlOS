@@ -16,7 +16,6 @@
 #include "py/builtin.h"
 #include "py/mphal.h"
 #include "shared/runtime/gchelper.h"
-// Include Jumperless headers AFTER MicroPython headers
 
 #include "micropython_embed.h"
 
