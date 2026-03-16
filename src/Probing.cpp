@@ -1522,9 +1522,9 @@ restartProbing:
 restartProbingNoPrint:
 
     if ( setOrClear == 1 && firstConnection == -1 ) {
-        oled.clearPrintShow( "connect nodes", 1, true, true, true );
+        oled.clearPrintShow( "connect", 2, true, true, true );
     } else if ( setOrClear == 0 && firstConnection == -1 ) {
-        oled.clearPrintShow( "clear nodes", 1, true, true, true );
+        oled.clearPrintShow( "clear", 2, true, true, true );
     }
 
     clearColorOverrides( 1, 1, 0 );

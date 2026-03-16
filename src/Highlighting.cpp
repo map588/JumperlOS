@@ -1030,6 +1030,15 @@ int Highlighting::highlightNets( int probeReading, int encoderNetHighlighted, in
 
                 size_t txLen = AsyncPassthrough::getLastUsbToUartSnapshot(txSnapshot, sizeof(txSnapshot));
                 size_t rxLen = AsyncPassthrough::getLastUartRxSnapshot(rxSnapshot, sizeof(rxSnapshot));
+                // Serial.print("txLen = ");
+                // Serial.println(txLen);
+                // Serial.print("rxLen = ");
+                // Serial.println(rxLen);
+                // Serial.print("txSnapshot = ");
+                // Serial.println(txSnapshot);
+                // Serial.print("rxSnapshot = ");
+                // Serial.println(rxSnapshot);
+                // Serial.flush();
 
                 // If there's no data at all, fall back to the previous behavior (show UART config)
                 bool haveLiveData = (txLen > 0) || (rxLen > 0);
@@ -1611,6 +1620,15 @@ int Highlighting::checkForReadingChanges( void ) {
             char rxSnapshot[64];
             size_t txLen = AsyncPassthrough::getLastUsbToUartSnapshot(txSnapshot, sizeof(txSnapshot));
             size_t rxLen = AsyncPassthrough::getLastUartRxSnapshot(rxSnapshot, sizeof(rxSnapshot));
+            // Serial.print("txLen = ");
+            // Serial.println(txLen);
+            // Serial.print("rxLen = ");
+            // Serial.println(rxLen);
+            // Serial.print("txSnapshot = ");
+            // Serial.println(txSnapshot);
+            // Serial.print("rxSnapshot = ");
+            // Serial.println(rxSnapshot);
+            // Serial.flush();
 
             if ( txLen > 0 ) {
                 OLEDOut.print("Tx: ");

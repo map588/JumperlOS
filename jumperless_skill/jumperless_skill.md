@@ -30,8 +30,7 @@ board's state.
 
 - **Connections**:  Virtual jumpers are created with `connect(node1, node2)` and
   removed with `disconnect(node1, node2)` (or `disconnect(node1, -1)` to clear
-  all).  `is_connected()` returns a truthy `ConnectionState` value.  There are
-  fast variants `fast_connect`/`fast_disconnect` that skip LED updates.
+  all).  `is_connected()` returns a truthy `ConnectionState` value. 
 
 - **Context**:  The board has two connection modes – *global* (persisting after
   the Python session ends) and *python* (reverted when the interpreter exits).

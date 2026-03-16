@@ -193,6 +193,11 @@ extern "C" {
 int32_t FatFSUSBClass::handleSCSICommand(uint8_t lun, uint8_t const scsi_cmd[16], void* buffer, uint16_t bufsize) {
     const int SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL = 0x1E;
     const int SCSI_CMD_START_STOP_UNIT              = 0x1B;
+    const int SCSI_CMD_MODE_SENSE_6                 = 0x1A;
+    const int SCSI_CMD_MODE_SENSE_10                = 0x5A;
+    const int SCSI_CMD_SEND_DIAGNOSTIC             = 0x1D;
+    const int SCSI_CMD_READ_FORMAT_CAPACITIES      = 0x23;
+    const int SCSI_CMD_SYNCHRONIZE_CACHE           = 0x35;
     const int SCSI_SENSE_ILLEGAL_REQUEST = 0x05;
 
     void const* response = NULL;
@@ -200,7 +205,7 @@ int32_t FatFSUSBClass::handleSCSICommand(uint8_t lun, uint8_t const scsi_cmd[16]
 
     // most scsi handled is input
     bool in_xfer = true;
-    
+
     switch (scsi_cmd[0]) {
     case SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL:
         // Host is about to read/write etc ... acknowledge without triggering callbacks
@@ -215,6 +220,75 @@ int32_t FatFSUSBClass::handleSCSICommand(uint8_t lun, uint8_t const scsi_cmd[16]
         resplen = 0;
         break;
         }
+    case SCSI_CMD_MODE_SENSE_6:
+        // MODE SENSE(6) - Linux (and others) use this to check write-protect and other params.
+        // Returning ILLEGAL_REQUEST for unknown SCSI commands can cause Linux to mount as read-only.
+        // Return minimal header with WP (write protect) bit = 0 so host treats device as writable.
+        // Header: [0] mode data length (bytes following), [1] medium type, [2] dev-specific (bit7=WP), [3] block desc length
+        {
+        static const uint8_t mode_sense6_header[] = {
+            3,    // mode data length (3 bytes follow)
+            0,    // medium type
+            0,    // device-specific parameter: bit 7 = 0 = not write protected
+            0     // block descriptor length
+        };
+        response = mode_sense6_header;
+        resplen = (int32_t)sizeof(mode_sense6_header);
+        break;
+        }
+    case SCSI_CMD_MODE_SENSE_10:
+        // MODE SENSE(10) - 8-byte header; mode data length in bytes 0-1 (big-endian)
+        {
+        static const uint8_t mode_sense10_header[] = {
+            0, 6,  // mode data length (MSB, LSB) - 6 bytes follow
+            0,     // medium type
+            0,     // device-specific parameter: bit 7 = 0 = not write protected
+            0,     // reserved
+            0, 0   // block descriptor length
+        };
+        response = mode_sense10_header;
+        resplen = (int32_t)sizeof(mode_sense10_header);
+        break;
+        }
+    case SCSI_CMD_SYNCHRONIZE_CACHE:
+        // Host requests flush before eject/safe removal. Acknowledge and sync to flash.
+        if (_started) {
+            if (_sectNum >= 0) {
+                fatfs::disk_write(0, _sectBuff, _sectNum, 1);
+                _sectNum = -1;
+            }
+            fatfs::disk_ioctl(0, CTRL_SYNC, nullptr);
+        }
+        resplen = 0;
+        break;
+    case SCSI_CMD_SEND_DIAGNOSTIC:
+        // Self-test / diagnostic request. Acknowledge success.
+        resplen = 0;
+        break;
+    case SCSI_CMD_READ_FORMAT_CAPACITIES:
+        // Some hosts request format capacities during mount. Return one descriptor with current capacity.
+        // Response: [0-1] list length (8), [2-3] reserved, [4-7] block count BE, [8] type (0x02 = capacity in blocks)
+        {
+        fatfs::LBA_t block_count = 0;
+        fatfs::disk_ioctl(0, GET_SECTOR_COUNT, &block_count);
+        static uint8_t fmt_cap_buf[12];
+        fmt_cap_buf[0] = 0;
+        fmt_cap_buf[1] = 8;   // one 8-byte descriptor
+        fmt_cap_buf[2] = 0;
+        fmt_cap_buf[3] = 0;
+        uint32_t bc = (uint32_t)block_count;
+        fmt_cap_buf[4] = (uint8_t)(bc >> 24);
+        fmt_cap_buf[5] = (uint8_t)(bc >> 16);
+        fmt_cap_buf[6] = (uint8_t)(bc >> 8);
+        fmt_cap_buf[7] = (uint8_t)bc;
+        fmt_cap_buf[8] = 0x02;  // type: unformatted, capacity in blocks
+        fmt_cap_buf[9] = 0;
+        fmt_cap_buf[10] = 0;
+        fmt_cap_buf[11] = 0;
+        response = fmt_cap_buf;
+        resplen = 12;
+        break;
+        }
     default:
         // Set Sense = Invalid Command Operation
         tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);
@@ -224,13 +298,13 @@ int32_t FatFSUSBClass::handleSCSICommand(uint8_t lun, uint8_t const scsi_cmd[16]
     }
 
     // return resplen must not larger than bufsize
-    if (resplen > bufsize) {
-        resplen = bufsize;
+    if (resplen > (int32_t)bufsize) {
+        resplen = (int32_t)bufsize;
     }
 
     if (response && (resplen > 0)) {
         if (in_xfer) {
-            memcpy(buffer, response, resplen);
+            memcpy(buffer, response, (size_t)resplen);
         } else {
             // SCSI output
         }

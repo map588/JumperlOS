@@ -2160,7 +2160,11 @@ int assignedAnimations[MAX_NETS] = {-1};
 
 void __not_in_flash_func(assignRowAnimations)(void) {
 
-  for (int i = 0; i < numberOfNets + 3; i++) {
+  int clearLimit = numberOfNets + 3;
+  if (clearLimit > MAX_NETS) {
+    clearLimit = MAX_NETS;
+  }
+  for (int i = 0; i < clearLimit; i++) {
     assignedAnimations[i] = -1;
     // if (i < 26) {
     //   rowAnimations[i].net = -1;
@@ -2199,6 +2203,7 @@ void __not_in_flash_func(assignRowAnimations)(void) {
         // Revert: always clear out-of-range nets; they will be reassigned on refresh
         gpioNet[i] = -1;
         assignedAnimations[gpioNet[i]] = -1;
+
         continue;
       }
       if (gpioNet[i] > 0) {
@@ -2276,9 +2281,16 @@ void __not_in_flash_func(assignRowAnimations)(void) {
 }
 
 void __not_in_flash_func(showRowAnimation)(int net) {
+  if (net < 0 || net >= MAX_NETS) {
+    return;
+  }
 
   if (assignedAnimations[net] == -1) {
    // Serial.println("assignedAnimations[net] == -1");
+    return;
+  }
+
+  if (assignedAnimations[net] < 0 || assignedAnimations[net] >= 50) {
     return;
   }
 
@@ -2306,6 +2318,15 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   if (rowAnimations[index].net < 0) {
   //  Serial.println("rowAnimations[index].net < 0");
   //  Serial.flush();
+    // #region agent log
+    // Serial.print("[DBG showRowAnimation RET_H1 net<0] idx=");
+    // Serial.print(index);
+    // Serial.print(" netArg=");
+    // Serial.print(net);
+    // Serial.print(" rowNet=");
+    // Serial.println(rowAnimations[index].net);
+    // Serial.flush();
+    // #endregion
     return;
   }
   // if (rowAnimations[index].type == 3) {
@@ -2320,6 +2341,15 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   if (actualNet <= 0) {
     // Serial.println("actualNet <= 0");
     // Serial.flush();
+    // #region agent log
+    // Serial.print("[DBG showRowAnimation RET_H2 actualNet<=0] idx=");
+    // Serial.print(index);
+    // Serial.print(" netArg=");
+    // Serial.print(net);
+    // Serial.print(" actualNet=");
+    // Serial.println(actualNet);
+    // Serial.flush();
+    // // #endregion
     return;
   }
 
@@ -2345,6 +2375,8 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
     for (int fakeIdx = 18; fakeIdx < 50; fakeIdx++) {  // 18-49 = fake GPIO inputs
       if (gpioNet[fakeIdx] == actualNet && gpioNet[fakeIdx] > 0) {
         isAdcNet = false;  // Let the fake GPIO color override handle it instead
+        // Serial.println("isAdcNet = false");
+        // Serial.flush();
         break;
       }
     }
@@ -2526,11 +2558,24 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
  int gpioIndex = index - 3;
   
  
- if (gpio_get_function(gpioDef[gpioIndex][0]) == GPIO_FUNC_UART) { // Confirm it's in input mode
-       
+ if (rowAnimations[index].type == 2 && gpioIndex >= 0 && gpioIndex < 10 &&
+     gpio_get_function(gpioDef[gpioIndex][0]) == GPIO_FUNC_UART) { // Confirm it's in input mode
+      // #region agent log
+      // Serial.print("[DBG showRowAnimation RET_H3 gpio=UART] idx=");
+      // Serial.print(index);
+      // Serial.print(" netArg=");
+      // Serial.print(net);
+      // Serial.print(" actualNet=");
+      // Serial.print(actualNet);
+      // Serial.print(" gpioIndex=");
+      // Serial.print(gpioIndex);
+      // Serial.print(" gpioPin=");
+      // Serial.println(gpioDef[gpioIndex][0]);
+      // Serial.flush();
+      // #endregion
       return; // Don't show animation for UART mode since it's not a real GPIO state
 
-  } else if (rowAnimations[index].type == 2) {
+  } else if (rowAnimations[index].type == 2 && gpioIndex >= 0 && gpioIndex < 10) {
    
     if (gpioNet[gpioIndex] == actualNet && gpioNet[gpioIndex] != -1) {
 
@@ -2600,7 +2645,8 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
   // Jerial.print("   actualNet = ");
   // Jerial.print(actualNet);
   // Jerial.print("   direction = ");
-  // Jerial.println(rowAnimations[net].direction);
+  // Serial.println(rowAnimations[net].direction);
+  // Serial.flush();
 
   if (jumperlessConfig.display.lines_wires == 0 ||
       numberOfShownNets > MAX_NETS_FOR_WIRES) {
@@ -2640,11 +2686,11 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
           if (i == probeHighlight) {
 
           } else if (brightenedNode > 0 && i == brightenedNode) {
-            leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j], 0);
+            leds.setPixelColor(((i - 1) * 5) + j, brightenedNodeColors[j]);
             // Jerial.print("brightenedNode: ");
             // Jerial.println(brightenedNode);
           } else {
-            leds.setPixelColor(((i - 1) * 5) + j, frameColors[j], 0);
+            leds.setPixelColor(((i - 1) * 5) + j, frameColors[j]);
           }
         }
       }
@@ -2664,7 +2710,7 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
-                               scaleBrightness(frameColors[2], brightness), 0);
+                               scaleBrightness(frameColors[2], brightness));
           }
         }
       }
@@ -2675,7 +2721,7 @@ void __not_in_flash_func(showRowAnimation)(int index, int net) {
                                  ? brightenedNodeAmount
                                  : brightenedNetAmount;
             leds.setPixelColor(bbPixelToNodesMapV5[j][1],
-                               scaleBrightness(frameColors[2], brightness), 0);
+                               scaleBrightness(frameColors[2], brightness));
           }
         }
       }

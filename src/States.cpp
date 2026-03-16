@@ -110,11 +110,7 @@ void ConnectionState::clear() {
     pathsCacheValid = false;
     chipStatesCacheValid = false;
     clearAllNTCC();
-    
-    // Restore locked connections after clearing
-    extern int handleLockedConnections();
-    handleLockedConnections();
-    return;
+
     // Clear nets
     for (int i = 0; i < MAX_NETS; i++) {
         memset(&nets[i], 0, sizeof(netStruct));
@@ -128,6 +124,10 @@ void ConnectionState::clear() {
         memset(&chipStates[i], 0, sizeof(chipStatus));
         memset(&chipXY[i], 0, sizeof(struct justXY));
     }
+
+    // Restore locked connections after all state has been reset.
+    extern int handleLockedConnections();
+    handleLockedConnections();
 }
 
 void ConnectionState::invalidateCache(bool autoRefresh) {
@@ -2289,6 +2289,7 @@ String nodeValueToString(int nodeValue) {
  * Returns uint32_t color value
  */
 uint32_t parseColorValue(const String& colorStr, bool& success) {
+    
     String normalized = colorStr;
     normalized.trim();
     normalized.toLowerCase();
@@ -3471,6 +3472,7 @@ ServiceStatus SlotManager::service() {
     //return ServiceStatus::IDLE;
     lastStatus = ServiceStatus::IDLE;
     unsigned long serviceStart = micros();
+    
     
     extern bool usbMountedByHost;
     extern bool usbFilesystemBusy;

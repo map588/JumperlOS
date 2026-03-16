@@ -1739,6 +1739,10 @@ void bridgesToPaths(
       assignPathType(i);
     }
 
+    // Duplicates are generated after the initial resolve pass, so resolve chip
+    // candidates for the duplicate section before committing routes.
+    resolveChipCandidates(duplicateStartIndex);
+
     // printPathsCompact(2);
     // printChipStatus();
     commitPaths(0, -1, 1);
@@ -1857,9 +1861,30 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
   // for that specific bridge, while other bridges in the same net can have different counts.
   
   int duplindex = 0;
+  // Keep these off stack to avoid intermittent stack-overflow crashes while
+  // routing (fillUnusedPaths can be called deep in the routing pipeline).
+  static int bridgeDuplicateBudget[MAX_BRIDGES];
+  static int bridgeNode1[MAX_BRIDGES];
+  static int bridgeNode2[MAX_BRIDGES];
+  static int bridgeNet[MAX_BRIDGES];
+  int maxDuplicateRounds = 0;
+  int bridgesToProcess = globalState.connections.numBridges;
+  if (bridgesToProcess > MAX_BRIDGES) {
+    bridgesToProcess = MAX_BRIDGES;
+    if (debugNTCC) {
+      Serial.println("Warning: numBridges exceeds MAX_BRIDGES, truncating duplicate generation");
+    }
+  }
+
+  for (int i = 0; i < bridgesToProcess; i++) {
+    bridgeDuplicateBudget[i] = 0;
+    bridgeNode1[i] = 0;
+    bridgeNode2[i] = 0;
+    bridgeNet[i] = 0;
+  }
   
   // Process each bridge and create duplicate paths based on its individual duplicate count
-  for (int bridgeIdx = 0; bridgeIdx < globalState.connections.numBridges; bridgeIdx++) {
+  for (int bridgeIdx = 0; bridgeIdx < bridgesToProcess; bridgeIdx++) {
     int node1 = globalState.connections.bridges[bridgeIdx][0];
     int node2 = globalState.connections.bridges[bridgeIdx][1];
     int bridgeDuplicates = globalState.connections.bridges[bridgeIdx][2];
@@ -2145,17 +2170,41 @@ void fillUnusedPaths(int duplicatePathsOverride, int duplicatePathsPower,
       bridgeDuplicates = 0;
     }
     
-    // Create the duplicate paths for this specific bridge
-    for (int dupIdx = 0; dupIdx < bridgeDuplicates; dupIdx++) {
+    if (bridgeDuplicates < 0) {
+      bridgeDuplicates = 0;
+    }
+
+    // Stash per-bridge duplicate budgets. We apply them in round-robin order
+    // below so early bridges do not starve later power rails.
+    bridgeDuplicateBudget[bridgeIdx] = bridgeDuplicates;
+    bridgeNode1[bridgeIdx] = node1;
+    bridgeNode2[bridgeIdx] = node2;
+    bridgeNet[bridgeIdx] = netNum;
+
+    if (bridgeDuplicates > maxDuplicateRounds) {
+      maxDuplicateRounds = bridgeDuplicates;
+    }
+  }
+
+  // Round-robin duplicate creation:
+  // pass 0 adds first duplicate for each eligible bridge,
+  // pass 1 adds second duplicate, etc.
+  // This keeps GND/TOP/BOT and regular duplicates interleaved.
+  for (int round = 0; round < maxDuplicateRounds; round++) {
+    for (int bridgeIdx = 0; bridgeIdx < bridgesToProcess; bridgeIdx++) {
+      if (bridgeDuplicateBudget[bridgeIdx] <= round) {
+        continue;
+      }
+
       if (numberOfPaths >= MAX_BRIDGES) {
         Serial.println("Warning: MAX_BRIDGES reached during duplicate path generation");
         return;  // Can't add more paths
       }
-      
+
       // Create a duplicate path with the same nodes and net
-      globalState.connections.paths[numberOfPaths].net = netNum;
-      globalState.connections.paths[numberOfPaths].node1 = node1;
-      globalState.connections.paths[numberOfPaths].node2 = node2;
+      globalState.connections.paths[numberOfPaths].net = bridgeNet[bridgeIdx];
+      globalState.connections.paths[numberOfPaths].node1 = bridgeNode1[bridgeIdx];
+      globalState.connections.paths[numberOfPaths].node2 = bridgeNode2[bridgeIdx];
       globalState.connections.paths[numberOfPaths].altPathNeeded = false;
       globalState.connections.paths[numberOfPaths].sameChip = false;
       globalState.connections.paths[numberOfPaths].skip = false;

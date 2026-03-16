@@ -1922,128 +1922,57 @@ void assignNetColors(int preview) {
 //   Serial.print("\n\rNet\t\tR\tG\tB\t\tH\tS\tV");
 //  delay(1);
 //  }
-
-  for (int i = 1; i < 6; i++) {
-    if (globalState.connections.nets[i].machine == true) {
-      rgbColor specialNetRgb = unpackRgb(rawSpecialNetColors[i]);
-
-      globalState.connections.nets[i].color = specialNetRgb;
-      specialNetColors[i] = specialNetRgb;
-
-      netColors[i] = specialNetRgb;
-      // continue;
-      } else {
-
-      hsvColor netHsv = RgbToHsv(specialNetColors[i]);
-
-      if (i >= 1 && i <= 3) {
-        netHsv.v = LEDbrightnessRail;
-        } else if (i >= 4 && i <= 5) {
-          netHsv.v = LEDbrightnessSpecial;
-          }
-
-        uint32_t railColor;
-
-        switch (i) {
-          case 1:
-            railColor = 0x000f05;
-            // if (brightenedRail == 1 || brightenedRail == 3) {
-            //   rgbColor railRgb = unpackRgb(railColor);
-            //   hsvColor railHsv = RgbToHsv(railRgb);
-            //   railHsv.v += brightenedAmount;
-            //   railRgb = HsvToRgb(railHsv);
-            //   railColor = packRgb(railRgb.r, railRgb.g, railRgb.b);
-            //   }
-
-            // netColors[i] = unpackRgb(railColor);
-            // globalState.connections.nets[i].color = netColors[i];
-            netColors[i] = unpackRgb(railNetColors[0]);
-            globalState.connections.nets[i].color = netColors[i];
-            specialNetColors[i] = netColors[i];
-            break;
-          case 2:
-            // railColor = logoColors8vSelect[map((long)(railVoltage[0] * 10), -80, 80,
-            //                                    0, 59)];
-            // netColors[i] = unpackRgb(railColor);
-            // globalState.connections.nets[i].color = netColors[i];
-            netColors[i] = unpackRgb(railNetColors[1]);
-            globalState.connections.nets[i].color = netColors[i];
-            specialNetColors[i] = netColors[i];
-            // Serial.print("topRail: ");
-            // Serial.println(globalState.power.topRail);
-            // Serial.print("map: ");
-            // Serial.println(map((int)(globalState.power.topRail*10), -80, 80, 0, 59));
-            // Serial.print("hue: ");
-            // Serial.println(netHsv.h);
-            break;
-          case 3:
-            // railColor = logoColors8vSelect[map((long)(globalState.power.bottomRail * 10), -80, 80, 0, 59)];
-            // netColors[i] = unpackRgb(railColor);
-            // globalState.connections.nets[i].color = netColors[i];
-            netColors[i] = unpackRgb(railNetColors[2]);
-            globalState.connections.nets[i].color = netColors[i];
-            specialNetColors[i] = netColors[i];
-            break;
-          case 4:
-            railColor =
-              logoColors8vSelect[map((long)(globalState.power.dac0 * 10), -80, 80, 0, 59)];
-            netColors[i] = unpackRgb(railColor);
-            globalState.connections.nets[i].color = netColors[i];
-            specialNetColors[i] = netColors[i];
-            break;
-          case 5:
-            railColor =
-              logoColors8vSelect[map((long)(globalState.power.dac1 * 10), -80, 80, 0, 59)];
-            netColors[i] = unpackRgb(railColor);
-            globalState.connections.nets[i].color = netColors[i];
-            specialNetColors[i] = netColors[i];
-            break;
-          case 6:
-           // netHsv.h = 240;
-            break;
-          case 7:
-            // netHsv.h = 300;
-            break;
-          }
-
-        // rgbColor netRgb = HsvToRgb(netHsv);
-
-        // specialNetColors[i] = netRgb;
-        // Serial.print("\n\r");
-        // Serial.print(i);
-        // Serial.print("\t");
-        // Serial.print(netRgb.r, HEX);
-        // Serial.print("\t");
-        // Serial.print(netRgb.g, HEX);
-        // Serial.print("\t");
-        // Serial.print(netRgb.b, HEX);
-
-        // netColors[i] = specialNetColors[i];
-        // globalState.connections.nets[i].color = netColors[i];
-      }
-
-    // if (debugLEDs) {
-    //   Serial.print("\n\r");
-    //   int netLength = Serial.print(globalState.connections.nets[i].name);
-    //   if (netLength < 8) {
-    //     Serial.print("\t");
-    //   }
-    //   Serial.print("\t");
-    //   Serial.print(globalState.connections.nets[i].color.r, HEX);
-    //   Serial.print("\t");
-    //   Serial.print(globalState.connections.nets[i].color.g, HEX);
-    //   Serial.print("\t");
-    //   Serial.print(globalState.connections.nets[i].color.b, HEX);
-    //   Serial.print("\t\t");
-    //   // Serial.print(netHsv.h);
-    //   Serial.print("\t");
-    //   // Serial.print(netHsv.s);
-    //   Serial.print("\t");
-    //   // Serial.print(netHsv.v);
-    //   delay(10);
-    // }
-    //
+  auto applySpecialColor = [&](int slot, int netIdx) {
+    if (netIdx <= 0 || netIdx >= MAX_NETS) {
+      return;
     }
+
+    if (globalState.connections.nets[netIdx].machine == true) {
+      rgbColor specialNetRgb = unpackRgb(rawSpecialNetColors[slot]);
+      globalState.connections.nets[netIdx].color = specialNetRgb;
+      specialNetColors[slot] = specialNetRgb;
+      netColors[netIdx] = specialNetRgb;
+      return;
+    }
+
+    uint32_t railColor = 0;
+    switch (slot) {
+      case 1:
+        netColors[netIdx] = unpackRgb(railNetColors[0]);
+        globalState.connections.nets[netIdx].color = netColors[netIdx];
+        specialNetColors[slot] = netColors[netIdx];
+        break;
+      case 2:
+        netColors[netIdx] = unpackRgb(railNetColors[1]);
+        globalState.connections.nets[netIdx].color = netColors[netIdx];
+        specialNetColors[slot] = netColors[netIdx];
+        break;
+      case 3:
+        netColors[netIdx] = unpackRgb(railNetColors[2]);
+        globalState.connections.nets[netIdx].color = netColors[netIdx];
+        specialNetColors[slot] = netColors[netIdx];
+        break;
+      case 4:
+        railColor = logoColors8vSelect[map((long)(globalState.power.dac0 * 10), -80, 80, 0, 59)];
+        netColors[netIdx] = unpackRgb(railColor);
+        globalState.connections.nets[netIdx].color = netColors[netIdx];
+        specialNetColors[slot] = netColors[netIdx];
+        break;
+      case 5:
+        railColor = logoColors8vSelect[map((long)(globalState.power.dac1 * 10), -80, 80, 0, 59)];
+        netColors[netIdx] = unpackRgb(railColor);
+        globalState.connections.nets[netIdx].color = netColors[netIdx];
+        specialNetColors[slot] = netColors[netIdx];
+        break;
+      default:
+        return;
+    }
+  };
+
+  // Nets 1-5 are always special nets in this firmware build.
+  for (int i = 1; i < 6; i++) {
+    applySpecialColor(i, i);
+  }
 
   int skipSpecialColors = 0;
   uint8_t hue = 1;
