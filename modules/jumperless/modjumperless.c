@@ -227,6 +227,7 @@ int jl_get_service_index( const char* service_name );
 int jl_get_switch_position( void );
 void jl_set_switch_position( int position );
 int jl_check_switch_position( void );
+int jl_probe_autoconnect( int enable );
 
 // Clickwheel (rotary encoder) functions
 // Clickwheel (rotary encoder) functions
@@ -3713,6 +3714,16 @@ static mp_obj_t jl_check_switch_position_func( void ) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0( jl_check_switch_position_obj, jl_check_switch_position_func );
 
+static mp_obj_t jl_probe_autoconnect_func( size_t n_args, const mp_obj_t* args ) {
+    if ( n_args == 0 ) {
+        return mp_obj_new_bool( jl_probe_autoconnect( -1 ) > 0 );
+    }
+    int enable = mp_obj_is_true( args[0] );
+    int result = jl_probe_autoconnect( enable );
+    return mp_obj_new_bool( result > 0 );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_probe_autoconnect_obj, 0, 1, jl_probe_autoconnect_func );
+
 // Clickwheel (Rotary Encoder) Functions
 static mp_obj_t jl_clickwheel_get_position_func( void ) {
     long position = jl_clickwheel_get_position( );
@@ -6264,6 +6275,7 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_get_switch_position ), MP_ROM_PTR( &jl_get_switch_position_obj ) },
     { MP_ROM_QSTR( MP_QSTR_set_switch_position ), MP_ROM_PTR( &jl_set_switch_position_obj ) },
     { MP_ROM_QSTR( MP_QSTR_check_switch_position ), MP_ROM_PTR( &jl_check_switch_position_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_probe_autoconnect ), MP_ROM_PTR( &jl_probe_autoconnect_obj ) },
 
     // Clickwheel (rotary encoder) functions
     { MP_ROM_QSTR( MP_QSTR_clickwheel_get_position ), MP_ROM_PTR( &jl_clickwheel_get_position_obj ) },

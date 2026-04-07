@@ -76,6 +76,10 @@ extern const struct _mp_obj_module_t mp_module_onewire;
 #undef MODULE_DEF__ONEWIRE
 #define MODULE_DEF__ONEWIRE { MP_ROM_QSTR(MP_QSTR__onewire), MP_ROM_PTR(&mp_module_onewire) },
 
+extern const struct _mp_obj_module_t mp_module_rp2;
+#undef MODULE_DEF__RP2
+#define MODULE_DEF__RP2 { MP_ROM_QSTR(MP_QSTR__rp2), MP_ROM_PTR(&mp_module_rp2) },
+
 extern const struct _mp_obj_module_t mp_module_builtins;
 #undef MODULE_DEF_BUILTINS
 #define MODULE_DEF_BUILTINS { MP_ROM_QSTR(MP_QSTR_builtins), MP_ROM_PTR(&mp_module_builtins) },
@@ -140,6 +144,7 @@ extern const struct _mp_obj_module_t mp_module_uctypes;
     MODULE_DEF_UCTYPES \
     MODULE_DEF__ASYNCIO \
     MODULE_DEF__ONEWIRE \
+    MODULE_DEF__RP2 \
     MODULE_DEF___MAIN__ \
 // MICROPY_REGISTERED_MODULES
 

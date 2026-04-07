@@ -93,6 +93,7 @@ static const char* jumperless_functions[] = {
     "check_button", "button_check",
     // Probe switch
     "get_switch_position", "set_switch_position", "check_switch_position", "probe_tap",
+    "probe_autoconnect",
     // Misc
     "arduino_reset", "run_app", "pause_core2", "send_raw",
     "help", "nodes_help",

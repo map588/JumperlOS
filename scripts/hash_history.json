@@ -44,6 +44,9 @@
   "psram_test.py": [
     "0x41730D6D"
   ],
+  "rp2.py": [
+    "0x94ADEA4E"
+  ],
   "stylophone.py": [
     "0xA5108DD7"
   ],
@@ -61,6 +64,9 @@
     "0x8E02DF89"
   ],
   "viperide_reinit.py": [
+    "0x74FA711A",
+    "0x4FF594A8",
+    "0x338E3F50",
     "0xAF5CFBD0"
   ],
   "voltage_monitor.py": [

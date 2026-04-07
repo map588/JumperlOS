@@ -161,6 +161,9 @@ public:
     void setTextColor(uint32_t color);
     void setTextSize(uint8_t size);
     void invertDisplay(bool inv);
+    void setDisplayClock(uint8_t divideRatio, uint8_t oscillatorFreq = 0x8);
+    void setDisplayClockRaw(uint8_t clockDivOscSetting);
+    void setDisplayClockDivideRatio(int divideRatio);
     
     // Connection management
     bool isConnected() const;

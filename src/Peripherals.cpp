@@ -96,6 +96,8 @@ static void resetCurrentSenseMeasurement() {
     lastCurrentSensePollMs = 0;
 }
 
+unsigned long lastCurrentSenseOffsetPollMs = 0;
+
 static bool pollCurrentSenseMeasurement() {
     if ( !currentSenseState.plusConnected || !currentSenseState.minusConnected ) {
         if ( currentSenseState.active ) {
@@ -108,6 +110,55 @@ static bool pollCurrentSenseMeasurement() {
     if ( now - lastCurrentSensePollMs < CURRENT_SENSE_POLL_INTERVAL_MS ) {
         return false;
     }
+
+    // if (now - lastCurrentSenseOffsetPollMs > 20000 && false) {
+    //     // Temporarily disconnect ISENSE_PLUS from whatever it is connected to,
+    //     // measure the offset, then restore the original connections.
+
+    //     // These are defined in FileParsing.cpp and track which nodes were
+    //     // disconnected by removeBridgeFromState(node, -1, ...)
+    //     extern int lastRemovedNodes[20];
+    //     extern int lastRemovedNodesIndex;
+
+    //     // Local copy so we can safely restore after measurement
+    //     int savedNodes[20];
+    //     int savedCount = 0;
+
+    //     bool hadConnections = removeBridgeFromState(ISENSE_PLUS, -1, true);
+
+    //     if (hadConnections && lastRemovedNodesIndex > 0) {
+    //         for (int i = 0; i < lastRemovedNodesIndex && i < 20; i++) {
+    //             savedNodes[i] = lastRemovedNodes[i];
+    //         }
+    //         savedCount = lastRemovedNodesIndex;
+    //         // waitCore2();
+    //         // delayMicroseconds(10000);
+    //     }
+
+    //     while ( INA0.getConversionFlag() == false ) {
+    //         tight_loop_contents();
+    //     }
+
+    //     lastCurrentSenseOffsetPollMs = now;
+    
+    //     // delay(1000);
+    //     currentReadingOffset0_mA = INA0.getCurrent_mA();
+    //     Serial.println("currentReadingOffset0_mA: " + String(currentReadingOffset0_mA));
+    //     Serial.flush();
+
+    //     // Restore any original connections for ISENSE_PLUS
+    //     if (hadConnections && savedCount > 0) {
+    //         for (int i = 0; i < savedCount; i++) {
+    //             int otherNode = savedNodes[i];
+    //             if (otherNode > 0) {
+    //                 // -1 duplicates parameter = allow duplicates as needed
+    //                 addBridgeToState(ISENSE_PLUS, otherNode, -1, true);
+    //             }
+    //         }
+    //         // waitCore2();
+    //         // delayMicroseconds(10000);
+    //     }
+    // }
 
     // Pause Core 2 during I2C operations to prevent bus conflicts
     extern volatile bool pauseCore2;
@@ -888,63 +939,63 @@ const char* gpio_function_name_for_pin( uint gpio, gpio_function_t function ) {
     return "UNKNOWN";
 }
 
-void printGPIOState( void ) {
+void printGPIOState( Stream* target ) {
 
     
-    Serial.println( );
-    Serial.println(
+    target->println( );
+    target->println(
         "   number:\t\b1\t\b2\t\b3\t\b4\t\b5\t\b6\t\b7\t\b8\t\bTx\t\bRx" );
     
-    Serial.print( "      net:\t" );
+    target->print( "      net:\t" );
     for ( int i = 0; i < 10; i++ ) {
         if ( gpioNet[ i ] == -1 ) {
-            Serial.print( "." );
+            target->print( "." );
         } else {
-            Serial.print( gpioNet[ i ] );
+            target->print( gpioNet[ i ] );
         }
-        Serial.print( "\t" );
+        target->print( "\t" );
     }
 
-    Serial.println( );
+    target->println( );
 
-    Serial.print( " function:\t" );
+    target->print( " function:\t" );
     for ( int i = 0; i < 10; i++ ) {
         gpio_function_map[ i ] = gpio_get_function( gpioDef[ i ][ 0 ] );
 
-        Serial.print( gpio_function_name_for_pin( gpioDef[ i ][ 0 ], gpio_function_map[ i ] ) );
+        target->print( gpio_function_name_for_pin( gpioDef[ i ][ 0 ], gpio_function_map[ i ] ) );
 
     
-        Serial.print( "\t" );
+        target->print( "\t" );
     }
-    Serial.println( );
-    Serial.print( "set direction:\t" );
+    target->println( );
+    target->print( "set direction:\t" );
     for ( int i = 0; i < 8; i++ ) {
         switch ( globalState.config.gpioDirection[ i ] ) {
         case 0:
-            Serial.print( "out" );
+            target->print( "out" );
             break;
         case 1:
-            Serial.print( "in" );
+            target->print( "in" );
             break;
         }
-        Serial.print( "\t" );
+        target->print( "\t" );
     }
-    Serial.println( );
+    target->println( );
 
-    Serial.print( "direction:\t" );
+    target->print( "direction:\t" );
     for ( int i = 0; i < 8; i++ ) {
         switch ( gpio_get_dir( i + 20 ) ) {
         case 1:
-            Serial.print( "out" );
+            target->print( "out" );
             break;
         case 0:
-            Serial.print( "in" );
+            target->print( "in" );
             break;
         }
-        Serial.print( "\t" );
+        target->print( "\t" );
     }
-    Serial.println( );
-    Serial.print( "    pulls:\t" );
+    target->println( );
+    target->print( "    pulls:\t" );
     for ( int i = 0; i < 10; i++ ) {
         uint8_t pin = i + 20;
         if ( i == 8 ) {
@@ -968,40 +1019,40 @@ void printGPIOState( void ) {
 
         switch ( pulls ) {
         case 0:
-            Serial.print( "down" );
+            target->print( "down" );
             break;
         case 1:
-            Serial.print( "up" );
+            target->print( "up" );
             break;
         case 2:
-            Serial.print( "none" );
+            target->print( "none" );
             break;
         case 3:
-            Serial.print( "keeper" );
+            target->print( "keeper" );
             break;
         }
-        Serial.print( "\t" );
+        target->print( "\t" );
     }
-    Serial.println( );
-    Serial.print( "  reading:\t" );
+    target->println( );
+    target->print( "  reading:\t" );
     for ( int i = 0; i < 10; i++ ) {
         switch ( gpioReading[ i ] ) {
         case 0:
-            Serial.print( "low" );
+            target->print( "low" );
             break;
         case 1:
-            Serial.print( "high" );
+            target->print( "high" );
             break;
         case 2:
-            Serial.print( "float" );
+            target->print( "float" );
             break;
         case 3:
-            Serial.print( "?" );
+            target->print( "?" );
             break;
         }
-        Serial.print( "\t" );
+        target->print( "\t" );
     }
-    Serial.println( );
+    target->println( );
 }
 
 uint32_t gpioReadingColors[ 50 ] = { 
@@ -1447,6 +1498,7 @@ void initINA219( void ) {
 
     INA0.setBusVoltageRange( 16 );
     INA1.setBusVoltageRange( 16 );
+
 
     while ( INA0.getConversionFlag() == false ) {
         tight_loop_contents();

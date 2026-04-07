@@ -105,9 +105,15 @@ bool SingleCharCommands::registerCommand( const Command& cmd ) {
 bool SingleCharCommands::registerCommand( char trigger, const char* shortDesc,
                                           const char* helpText, CommandCallback callback,
                                           MenuLevel level, CommandCategory category,
-                                          bool showInMenu ) {
-    Command cmd( trigger, shortDesc, helpText, callback, level, category, showInMenu );
+                                          bool showInMenu, Ser3Access access ) {
+    Command cmd( trigger, shortDesc, helpText, callback, level, category, showInMenu, access );
     return registerCommand( cmd );
+}
+
+Ser3Access SingleCharCommands::getBackchannelAccess( char trigger ) const {
+    const Command* cmd = getCommand( trigger );
+    if ( cmd == nullptr ) return SER3_NOT_A_COMMAND;
+    return cmd->ser3Access;
 }
 
 bool SingleCharCommands::unregisterCommand( char trigger ) {
@@ -442,52 +448,51 @@ void SingleCharCommands::sortCommands( ) {
 // ============================================================================
 
 void SingleCharCommands::initializeCommands( ) {
-    // Connection commands
+    // === Connection commands ===
     registerCommand( 'f', "load node file",
                      "Load connections from a node file. Prompts for file selection.",
-                     cmd_loadNodeFile, MENU_STANDARD, CAT_CONNECTIONS );
+                     cmd_loadNodeFile, MENU_STANDARD, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
     registerCommand( 'x', "clear all connections",
                      "Clears all connections and resets the board.",
-                     cmd_clearConnections, MENU_BASIC, CAT_CONNECTIONS );
+                     cmd_clearConnections, MENU_BASIC, CAT_CONNECTIONS, true, SER3_MODIFIES_STATE );
 
     registerCommand( '+', "add connections",
                      "Add new connections. Format: node1-node2,node3-node4",
-                     cmd_addConnections, MENU_BASIC, CAT_CONNECTIONS );
+                     cmd_addConnections, MENU_BASIC, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
     registerCommand( '-', "remove connections",
                      "Remove existing connections. Format: node1-node2,node3-node4",
-                     cmd_removeConnections, MENU_BASIC, CAT_CONNECTIONS );
+                     cmd_removeConnections, MENU_BASIC, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
     registerCommand( 'y', "refresh connections",
                      "Reload and refresh all connections from current slot.",
-                     cmd_refreshConnections, MENU_ADVANCED, CAT_CONNECTIONS );
+                     cmd_refreshConnections, MENU_ADVANCED, CAT_CONNECTIONS, true, SER3_MODIFIES_STATE );
 
     registerCommand( '<', "cycle slots",
                      "Cycle through saved connection slots.",
-                     cmd_cycleSlots, MENU_ADVANCED, CAT_CONNECTIONS );
+                     cmd_cycleSlots, MENU_ADVANCED, CAT_CONNECTIONS, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'o', "load node file by slot",
                      "Load a specific slot by number.",
-                     cmd_loadSlot, MENU_ADVANCED, CAT_CONNECTIONS );
+                     cmd_loadSlot, MENU_ADVANCED, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
     registerCommand( 'W', "parse Wokwi diagram",
                      "Paste or load Wokwi diagram.json. Usage: W [slot], W [file], W [file] [slot]",
-                     cmd_parseWokwi, MENU_ADVANCED, CAT_CONNECTIONS );
+                     cmd_parseWokwi, MENU_ADVANCED, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
-    // Display commands
+    // === Display commands ===
     registerCommand( 'm', "show this menu",
                      "Display the main menu with all available commands.",
-                     cmd_showMenu, MENU_BASIC, CAT_DISPLAY );
+                     cmd_showMenu, MENU_BASIC, CAT_DISPLAY, true, SER3_IRRELEVANT );
 
     registerCommand( 'e', "show extra options",
                      "Toggle through extra menu levels (0-3) for more commands.",
-                     cmd_toggleExtraMenu, MENU_BASIC, CAT_DISPLAY );
+                     cmd_toggleExtraMenu, MENU_BASIC, CAT_DISPLAY, true, SER3_IRRELEVANT );
 
     registerCommand( 'n', "show net list",
                      "Display current network connections and routing.",
                      cmd_showNetlist, MENU_BASIC, CAT_DISPLAY );
-
 
     registerCommand( 'b', "show bridge array",
                      "Display the internal bridge array and paths.",
@@ -501,18 +506,16 @@ void SingleCharCommands::initializeCommands( ) {
                      "Display crossbar switches - full color view with details.",
                      cmd_showCrossbarFull, MENU_STANDARD, CAT_DISPLAY );
 
-    registerCommand( 's', "show all slot files",
-                     "List all saved connection slots.",
-                     cmd_showSlots, MENU_STANDARD, CAT_DISPLAY );
+
 
     registerCommand( 'Q', "query active slot",
                      "Return the currently active slot number.",
                      cmd_queryActiveSlot, MENU_STANDARD, CAT_DISPLAY );
 
-    // Python commands
+    // === Python commands ===
     registerCommand( 'p', "microPython REPL",
                      "Enter MicroPython REPL interactive mode.",
-                     cmd_pythonREPL, MENU_BASIC, CAT_PYTHON );
+                     cmd_pythonREPL, MENU_BASIC, CAT_PYTHON, true, SER3_INTERACTIVE );
 
     registerCommand( 'P', "PSRAM test (memory integrity + speed)",
                      "Run comprehensive PSRAM tests: size info, integrity check, speed comparison vs SRAM.",
@@ -520,50 +523,46 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( '>', "send Python formatted command",
                      "Execute a single Python command. Usage: > print('hello')",
-                     cmd_pythonCommand, MENU_BASIC, CAT_PYTHON );
+                     cmd_pythonCommand, MENU_BASIC, CAT_PYTHON, true, SER3_INTERACTIVE );
 
-    // File system commands
+    // === File system commands ===
     registerCommand( '/', "show filesystem / run script",
                      "Open file manager, or /filename.py to run a script directly.",
-                     cmd_showFilesystem, MENU_BASIC, CAT_FILE_SYSTEM );
+                     cmd_showFilesystem, MENU_BASIC, CAT_FILE_SYSTEM, true, SER3_INTERACTIVE );
 
     registerCommand( 'U', "enable USB Mass Storage",
                      "Enable USB drive mode for file access from computer.",
-                     cmd_enableUSBStorage, MENU_BASIC, CAT_FILE_SYSTEM );
+                     cmd_enableUSBStorage, MENU_BASIC, CAT_FILE_SYSTEM, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'u', "disable USB Mass Storage",
                      "Disable USB drive mode.",
-                     cmd_disableUSBStorage, MENU_BASIC, CAT_FILE_SYSTEM );
+                     cmd_disableUSBStorage, MENU_BASIC, CAT_FILE_SYSTEM, true, SER3_MODIFIES_STATE );
 
     registerCommand( '%', "list all filesystem contents",
                      "Recursively list all files on the filesystem.",
                      cmd_listFilesystem, MENU_DEBUG, CAT_FILE_SYSTEM );
 
-    // Config commands
+    // === Config commands ===
     registerCommand( '`', "edit config",
                      "Enter config editor to modify configuration.",
-                     cmd_editConfig, MENU_BASIC, CAT_SETTINGS );
+                     cmd_editConfig, MENU_BASIC, CAT_SETTINGS, true, SER3_INTERACTIVE );
 
     registerCommand( '~', "print config",
                      "Display current configuration to serial.",
                      cmd_printConfig, MENU_BASIC, CAT_SETTINGS );
 
-    // registerCommand( 'W', "reload config.txt",
-    //                  "Reload configuration from config.txt file.",
-    //                  cmd_reloadConfig, MENU_ADVANCED, CAT_SETTINGS );
-
-    // Hardware commands
+    // === Hardware commands ===
     registerCommand( 'r', "reset Arduino (rt/rb)",
                      "Reset Arduino. Use 'rt' for top, 'rb' for bottom.",
-                     cmd_resetArduino, MENU_ADVANCED, CAT_HARDWARE );
+                     cmd_resetArduino, MENU_ADVANCED, CAT_HARDWARE, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'a', "disconnect UART from D0/D1",
                      "Disconnect Arduino UART from D0 and D1.",
-                     cmd_disconnectArduino, MENU_STANDARD, CAT_HARDWARE );
+                     cmd_disconnectArduino, MENU_STANDARD, CAT_HARDWARE, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'A', "connect UART to D0/D1",
                      "Connect Arduino UART to D0 and D1.",
-                     cmd_connectArduino, MENU_STANDARD, CAT_HARDWARE );
+                     cmd_connectArduino, MENU_STANDARD, CAT_HARDWARE, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'v', "get ADC reading",
                      "Read voltage from ADC. Usage: v[0-4] or vi for current.",
@@ -571,24 +570,24 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( '^', "set DAC voltage",
                      "Set DAC output voltage. Usage: ^ followed by voltage.",
-                     cmd_setDAC, MENU_DEBUG, CAT_HARDWARE );
+                     cmd_setDAC, MENU_DEBUG, CAT_HARDWARE, true, SER3_INTERACTIVE );
 
     registerCommand( '@', "scan I2C",
                      "Scan for I2C devices. Usage: @[row] or @[sda],[scl]",
-                     cmd_i2cScan, MENU_ADVANCED, CAT_HARDWARE );
+                     cmd_i2cScan, MENU_ADVANCED, CAT_HARDWARE, true, SER3_MODIFIES_STATE );
 
     registerCommand( '$', "calibrate DACs",
                      "Run DAC calibration routine.",
-                     cmd_calibrateDACs, MENU_DEBUG, CAT_HARDWARE );
+                     cmd_calibrateDACs, MENU_DEBUG, CAT_HARDWARE, true, SER3_MODIFIES_STATE );
 
-    // Debug commands
+    // === Debug commands ===
     registerCommand( '?', "show firmware version",
                      "Display current firmware version.",
                      cmd_showVersion, MENU_ADVANCED, CAT_DEBUG );
 
     registerCommand( 'd', "set debug flags",
                      "Open debug flags menu.",
-                     cmd_setDebugFlags, MENU_ADVANCED, CAT_DEBUG );
+                     cmd_setDebugFlags, MENU_ADVANCED, CAT_DEBUG, true, SER3_INTERACTIVE );
 
     registerCommand( 'X', "resource status",
                      "Show system resource allocation and status.",
@@ -600,7 +599,7 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( 'Z', "USB debug menu",
                      "Open USB debugging options menu.",
-                     cmd_usbDebugMenu, MENU_DEBUG, CAT_DEBUG );
+                     cmd_usbDebugMenu, MENU_DEBUG, CAT_DEBUG, true, SER3_INTERACTIVE );
 
     registerCommand( ';', "print wire status",
                      "Print wire status to terminal.",
@@ -608,69 +607,57 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( 'H', "fakeGPIO debug (live)",
                      "Live-updating FakeGPIO status showing TDM voltages and pin states.",
-                     cmd_fakeGpioDebug, MENU_ADVANCED, CAT_DEBUG );
+                     cmd_fakeGpioDebug, MENU_ADVANCED, CAT_DEBUG, true, SER3_INTERACTIVE );
 
     registerCommand( 'D', "status diagnostics menu",
                      "Interactive status & diagnostics menu with arrow key navigation.",
-                     cmd_statusDiagnosticsMenu, MENU_STANDARD, CAT_DEBUG );
+                     cmd_statusDiagnosticsMenu, MENU_STANDARD, CAT_DEBUG, true, SER3_INTERACTIVE );
 
-    // Settings commands
+    // === Settings commands ===
     registerCommand( 'l', "LED brightness / test",
                      "Adjust LED brightness or run LED test.",
-                     cmd_ledBrightness, MENU_ADVANCED, CAT_SETTINGS );
+                     cmd_ledBrightness, MENU_ADVANCED, CAT_SETTINGS, true, SER3_INTERACTIVE );
 
     registerCommand( '.', "connect oled",
                      "Connect/disconnect OLED display.",
-                     cmd_toggleOLED, MENU_STANDARD, CAT_SETTINGS );
+                     cmd_toggleOLED, MENU_STANDARD, CAT_SETTINGS, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'G', "disable terminal colors",
                      "Toggle terminal color output on/off.",
-                     cmd_toggleTerminalColors, MENU_DEBUG, CAT_SETTINGS );
+                     cmd_toggleTerminalColors, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
 
     registerCommand( 'B', "toggle line buffering",
                      "Toggle line buffering on/off. For raw terminals without line buffering.",
-                     cmd_toggleLineBuffering, MENU_DEBUG, CAT_SETTINGS );
+                     cmd_toggleLineBuffering, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
 
     registerCommand( 'E', "don't show this menu",
                      "Toggle automatic menu display.",
-                     cmd_dontShowMenu, MENU_DEBUG, CAT_SETTINGS );
+                     cmd_dontShowMenu, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
 
     registerCommand( 'k', "show oled in terminal",
                      "Toggle OLED mirroring to terminal.",
-                     cmd_oledInTerminal, MENU_ADVANCED, CAT_SETTINGS );
+                     cmd_oledInTerminal, MENU_ADVANCED, CAT_SETTINGS, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'F', "cycle font",
                      "Cycle through available OLED fonts.",
-                     cmd_cycleFont, MENU_DEBUG, CAT_SETTINGS );
+                     cmd_cycleFont, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
 
-    // // App/Special mode commands
-    // registerCommand( 'L', "enable logic analyzer",
-    //                  "Enable logic analyzer mode.",
-    //                  cmd_logicAnalyzer, MENU_STANDARD, CAT_APPS );
+    // === Display (JSON/YAML) ===
     registerCommand( 'J', "show JSON state",
                      "Display state as JSON. J = full; J power|nets|gpio|overlays = that section only.",
                      cmd_showJsonState, MENU_STANDARD, CAT_DISPLAY );
 
     registerCommand( 'L', "load JSON state",
                      "Load state from JSON. L = full (paste all); L overlays|power|... = paste that section only.",
-                     cmd_loadJsonState, MENU_STANDARD, CAT_CONNECTIONS );
+                     cmd_loadJsonState, MENU_STANDARD, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
     registerCommand( 'R', "show board LEDs (R!=toggle R=one-shot)",
                      "Display board LEDs in terminal. R to toggle persistent mode, R! for one-shot dump.",
                      cmd_showBoardLEDs, MENU_ADVANCED, CAT_APPS );
 
-    // registerCommand( 'B', "one-shot board LEDs",
-    //                  "Display board LEDs in terminal once.",
-    //                  cmd_showBoardLEDs, MENU_ADVANCED, CAT_APPS );
-
     registerCommand( '\'', "show startup animation",
                      "Play the startup animation.",
-                     cmd_startupAnimation, MENU_ADVANCED, CAT_APPS );
-
-    // Advanced commands
-    // registerCommand( 'J', "test States system",
-    //                  "Test the new States system. Usage: J 1-2,3-4",
-    //                  cmd_testStates, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_startupAnimation, MENU_ADVANCED, CAT_APPS, true, SER3_IRRELEVANT );
 
     registerCommand( 'Y', "print YAML (Y0=plain Y1=colored hex Y2=colored blocks)",
                      "Display current state in YAML format.",
@@ -678,51 +665,53 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( 'S', "load YAML state",
                      "Paste YAML state (end with empty line). Same format as Y output.",
-                     cmd_loadYAMLState, MENU_STANDARD, CAT_CONNECTIONS );
+                     cmd_loadYAMLState, MENU_STANDARD, CAT_CONNECTIONS, true, SER3_INTERACTIVE );
 
     registerCommand( '*', "raw speed test",
                      "Run raw crossbar switching speed test.",
-                     cmd_rawSpeedTest, MENU_DEBUG, CAT_ADVANCED );
-
-    // registerCommand( 'j', "print color spectrum",
-    //                  "Display color spectrum codes.",
-    //                  cmd_printColorSpectrum, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_rawSpeedTest, MENU_DEBUG, CAT_ADVANCED, true, SER3_IRRELEVANT );
 
     registerCommand( '=', "dump oled frame buffer",
                      "Dump OLED frame buffer contents.",
-                     cmd_dumpOLED, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_dumpOLED, MENU_DEBUG, CAT_ADVANCED, true, SER3_IRRELEVANT );
 
     registerCommand( '_', "print micros per byte",
                      "Display timing information.",
-                     cmd_printMicrosPerByte, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_printMicrosPerByte, MENU_DEBUG, CAT_ADVANCED, true, SER3_IRRELEVANT );
 
     registerCommand( '#', "print text from menu",
                      "Print text from menu system.",
-                     cmd_printTextFromMenu, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_printTextFromMenu, MENU_DEBUG, CAT_ADVANCED, true, SER3_IRRELEVANT );
 
     registerCommand( 'q', "DMX Serial mode",
                      "Enter DMX Serial application mode.",
-                     cmd_dmxSerial, MENU_DEBUG, CAT_APPS );
+                     cmd_dmxSerial, MENU_DEBUG, CAT_APPS, true, SER3_INTERACTIVE );
 
     registerCommand( '|', "eratta clear GPIO",
                      "Clear GPIO eratta workaround.",
-                     cmd_erattaClear, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_erattaClear, MENU_DEBUG, CAT_ADVANCED, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'w', "wavegen",
                      "Wavegen test.",
-                     cmd_wavegen, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_wavegen, MENU_DEBUG, CAT_ADVANCED, true, SER3_MODIFIES_STATE );
 
     registerCommand( 't', "OLED terminal mode",
                      "Interactive OLED terminal - type text to display on OLED. Press ESC to exit, 'c' to clear.",
-                     cmd_printTextFromTerminal, MENU_ADVANCED, CAT_SETTINGS );
+                     cmd_printTextFromTerminal, MENU_ADVANCED, CAT_SETTINGS, true, SER3_INTERACTIVE );
+
     registerCommand( 'T', "show switch position",
                      "Show switch position.",
-                     cmd_showSwitchPosition, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_showSwitchPosition, MENU_DEBUG, CAT_ADVANCED, true, SER3_IRRELEVANT );
 
     registerCommand( 'j', "Test overlay",
                      "Test overlay.",
-                     cmd_testOverlay, MENU_DEBUG, CAT_ADVANCED );
+                     cmd_testOverlay, MENU_DEBUG, CAT_ADVANCED, true, SER3_IRRELEVANT );
 }
+
+
+// ============================================================================
+// Command Handlers
+// ============================================================================
 
 CommandResult cmd_showSwitchPosition( char c, const String& line ) {
 
@@ -859,7 +848,8 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
 
 // Connection commands
 CommandResult cmd_clearConnections( char c, const String& line ) {
-    // RESETPIN is a macro defined in JumperlessDefines.h
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
     pinMode( RESETPIN, OUTPUT );
     digitalWrite( RESETPIN, HIGH );
     delay( 6 );
@@ -868,7 +858,7 @@ CommandResult cmd_clearConnections( char c, const String& line ) {
     clearNodeFile( netSlot, 0 );
     refreshConnections( -1, 1, 1 );
     digitalWrite( RESETPIN, LOW );
-    Jerial.println( "Cleared all connections" );
+    target->println( "Cleared all connections" );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1343,11 +1333,14 @@ static String getCommandArgs( const String& line, unsigned int timeoutMs = 50 ) 
 }
 
 CommandResult cmd_showJsonState( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
     String section = getCommandArgs( line );
     const char* sectionPtr = ( section.length( ) > 0 ) ? section.c_str( ) : nullptr;
-    Jerial.print( "\n\n\r" );
-    Jerial.printNormalized( JsonState::getJumperlessStateJSON( sectionPtr ) );
-    Jerial.print( "\n\r" );
+    String json = JsonState::getJumperlessStateJSON( sectionPtr );
+    target->print( "\n\n\r" );
+    target->print( json );
+    target->print( "\n\r" );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1413,6 +1406,9 @@ CommandResult cmd_loadJsonState( char c, const String& line ) {
 }
 
 CommandResult cmd_showBridgeArray( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+
     int showDupes = 1;
     String arg = getCommandArgs( line, 20 );
     if ( arg.length( ) > 0 ) {
@@ -1423,22 +1419,22 @@ CommandResult cmd_showBridgeArray( char c, const String& line ) {
         }
     }
 
-    Jerial.print( "\n\rpathDuplicates: " );
-    Jerial.println( jumperlessConfig.routing.stack_paths );
-    Jerial.print( "dacDuplicates: " );
-    Jerial.println( jumperlessConfig.routing.stack_dacs );
-    Jerial.print( "railsDuplicates: " );
-    Jerial.println( jumperlessConfig.routing.stack_rails );
-    Jerial.print( "railPriority: " );
-    Jerial.println( jumperlessConfig.routing.rail_priority );
+    target->print( "\n\rpathDuplicates: " );
+    target->println( jumperlessConfig.routing.stack_paths );
+    target->print( "dacDuplicates: " );
+    target->println( jumperlessConfig.routing.stack_dacs );
+    target->print( "railsDuplicates: " );
+    target->println( jumperlessConfig.routing.stack_rails );
+    target->print( "railPriority: " );
+    target->println( jumperlessConfig.routing.rail_priority );
     couldntFindPath( 1 );
-    Jerial.print( "\n\rBridge Array\n\r" );
-    printBridgeArray( );
-    Jerial.print( "\n\n\n\rPaths\n\r" );
-    printPathsCompact( showDupes );
-    Jerial.print( "\n\n\rChip Status\n\r" );
-    printChipStatus( );
-    Jerial.print( "\n\n\r" );
+    target->print( "\n\rBridge Array\n\r" );
+    printBridgeArray( target );
+    target->print( "\n\n\n\rPaths\n\r" );
+    printPathsCompact( showDupes, target );
+    target->print( "\n\n\rChip Status\n\r" );
+    printChipStatus( target );
+    target->print( "\n\n\r" );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -1474,12 +1470,7 @@ CommandResult cmd_showCrossbarFull( char c, const String& line ) {
     return CMD_DONT_SHOW_MENU;
 }
 
-CommandResult cmd_showSlots( char c, const String& line ) {
-    Stream* target = Jerial.getResponseTarget();
-    if (target == nullptr) target = &Jerial;
-    printSlots( -1, target );
-    return CMD_SHOW_MENU;
-}
+
 
 CommandResult cmd_queryActiveSlot( char c, const String& line ) {
     SlotManager& mgr = SlotManager::getInstance( );
@@ -2085,6 +2076,9 @@ CommandResult cmd_disconnectArduino( char c, const String& line ) {
 }
 
 CommandResult cmd_readADC( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+
     String arg = getCommandArgs( line, 20 );
     if ( arg.length( ) > 0 ) {
         char ch = arg[ 0 ];
@@ -2092,69 +2086,68 @@ CommandResult cmd_readADC( char c, const String& line ) {
         if ( isdigit( ch ) ) {
             int adc = ch - '0';
             if ( adc >= 0 && adc <= 4 ) {
-                Jerial.print( " adc" );
-                Jerial.print( adc );
-                Jerial.print( " = " );
+                target->print( " adc" );
+                target->print( adc );
+                target->print( " = " );
                 float adcVoltage = readAdcVoltage( adc, 32 );
                 if ( adcVoltage > 0.00 ) {
-                    Jerial.print( " " );
+                    target->print( " " );
                 }
-                Jerial.println( adcVoltage );
+                target->println( adcVoltage );
             }
         } else if ( ch == 'i' ) {
             if ( arg.length( ) > 1 && arg[ 1 ] == '1' ) {
                 extern INA219 INA1;
                 float iSense = INA1.getCurrent_mA( );
-                Jerial.print( "ina1 = " );
-                Jerial.print( iSense );
-                Jerial.println( "mA" );
+                target->print( "ina1 = " );
+                target->print( iSense );
+                target->println( "mA" );
             } else {
                 extern INA219 INA0;
                 float iSense = INA0.getCurrent_mA( );
-                Jerial.print( "ina0 = " );
-                Jerial.print( iSense );
-                Jerial.print( "mA \t" );
+                target->print( "ina0 = " );
+                target->print( iSense );
+                target->print( "mA \t" );
 
                 iSense = INA0.getBusVoltage( );
-                Jerial.print( iSense );
-                Jerial.print( "V \t" );
+                target->print( iSense );
+                target->print( "V \t" );
 
                 iSense = INA0.getPower_mW( );
-                Jerial.print( iSense );
-                Jerial.println( "mW" );
+                target->print( iSense );
+                target->println( "mW" );
             }
         } else if ( ch == 'l' ) {
-            // showReadings is defined in Peripherals.h as int&
             if ( showReadings == 1 ) {
                 showReadings = 0;
-                Jerial.println( "showReadings = 0" );
+                target->println( "showReadings = 0" );
             } else {
                 showReadings = 1;
-                Jerial.println( "showReadings = 1" );
+                target->println( "showReadings = 1" );
             }
             chooseShownReadings( );
         }
-        Jerial.flush( );
+        target->flush( );
     } else {
-        Jerial.println( );
+        target->println( );
         for ( int i = 0; i < 5; i++ ) {
-            Jerial.print( "adc" );
-            Jerial.print( i );
-            Jerial.print( " = " );
+            target->print( "adc" );
+            target->print( i );
+            target->print( " = " );
             float adcVoltage = readAdcVoltage( i, 32 );
             if ( adcVoltage > 0.00 ) {
-                Jerial.print( " " );
+                target->print( " " );
             }
-            Jerial.println( adcVoltage );
+            target->println( adcVoltage );
         }
-        Jerial.print( "probe = " );
+        target->print( "probe = " );
         float probeVoltage = readAdcVoltage( 7, 32 );
         if ( probeVoltage > 0.00 ) {
-            Jerial.print( " " );
+            target->print( " " );
         }
-        Jerial.println( probeVoltage );
+        target->println( probeVoltage );
     }
-    Jerial.flush( );
+    target->flush( );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -2307,9 +2300,11 @@ CommandResult cmd_calibrateDACs( char c, const String& line ) {
 
 // Debug commands
 CommandResult cmd_showVersion( char c, const String& line ) {
-    Jerial.print( "Jumperless firmware version: " );
-    Jerial.println( firmwareVersion );
-    Jerial.flush( );
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    target->print( "Jumperless firmware version: " );
+    target->println( firmwareVersion );
+    target->flush( );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -2381,24 +2376,22 @@ const char* PSRAM_CS = "PSRAM_CS";
 
 
 CommandResult cmd_resourceStatus( char c, const String& line ) {
-    Jerial.println( "\n\r╭──────────────────────────────────────────────────────────────────────╮" );
-    Jerial.println( "│                      SYSTEM RESOURCE STATUS                          │" );
-    Jerial.println( "╰──────────────────────────────────────────────────────────────────────╯\n\r" );
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MEMORY STATUS (2-column layout)
-    // ═══════════════════════════════════════════════════════════════════════════
-    Jerial.println( "┌──────────────────────────────────┬───────────────────────────────────┐" );
-    Jerial.println( "│         SRAM MEMORY (Heap)       │         PSRAM MEMORY              │" );
-    Jerial.println( "├──────────────────────────────────┼───────────────────────────────────┤" );
+    target->println( "\n\r╭──────────────────────────────────────────────────────────────────────╮" );
+    target->println( "│                      SYSTEM RESOURCE STATUS                          │" );
+    target->println( "╰──────────────────────────────────────────────────────────────────────╯\n\r" );
+
+    target->println( "┌──────────────────────────────────┬───────────────────────────────────┐" );
+    target->println( "│         SRAM MEMORY (Heap)       │         PSRAM MEMORY              │" );
+    target->println( "├──────────────────────────────────┼───────────────────────────────────┤" );
     
-    // Get SRAM info
     size_t sramTotal = rp2040.getTotalHeap( );
     size_t sramFree = rp2040.getFreeHeap( );
     size_t sramUsed = sramTotal - sramFree;
     int sramPercent = ( sramUsed * 100 ) / sramTotal;
     
-    // Get PSRAM info
     size_t psramSize = rp2040.getPSRAMSize( );
     size_t psramTotal = 0, psramFree = 0, psramUsed = 0;
     int psramPercent = 0;
@@ -2411,56 +2404,51 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
         psramPercent = psramTotal > 0 ? ( psramUsed * 100 ) / psramTotal : 0;
     }
     
-    // Memory rows with fixed-width formatting
     if ( hasPSRAM ) {
-        Jerial.printf( "│ Total: %6u KB (%6u bytes)  │ Chip:     %4u MB (%7u bytes) │\n\r",
+        target->printf( "│ Total: %6u KB (%6u bytes)  │ Chip:     %4u MB (%7u bytes) │\n\r",
                        (unsigned)(sramTotal / 1024), (unsigned)sramTotal,
                        (unsigned)(psramSize / 1024 / 1024), (unsigned)psramSize );
-        Jerial.printf( "│ Free:  %6u KB (%6u bytes)  │ Total: %6u KB                  │\n\r",
+        target->printf( "│ Free:  %6u KB (%6u bytes)  │ Total: %6u KB                  │\n\r",
                        (unsigned)(sramFree / 1024), (unsigned)sramFree,
                        (unsigned)(psramTotal / 1024) );
-        Jerial.printf( "│ Used:  %6u KB (%3d%%)          │ Free:  %6u KB (%3d%% used)      │\n\r",
+        target->printf( "│ Used:  %6u KB (%3d%%)          │ Free:  %6u KB (%3d%% used)      │\n\r",
                        (unsigned)(sramUsed / 1024), sramPercent,
                        (unsigned)(psramFree / 1024), psramPercent );
     } else {
-        Jerial.printf( "│ Total: %6u KB (%6u bytes)  │ Not installed                     │\n\r",
+        target->printf( "│ Total: %6u KB (%6u bytes)  │ Not installed                     │\n\r",
                        (unsigned)(sramTotal / 1024), (unsigned)sramTotal );
-        Jerial.printf( "│ Free:  %6u KB (%6u bytes)  │ Config: psram_installed=%d         │\n\r",
+        target->printf( "│ Free:  %6u KB (%6u bytes)  │ Config: psram_installed=%d         │\n\r",
                        (unsigned)(sramFree / 1024), (unsigned)sramFree,
                        jumperlessConfig.hardware.psram_installed );
-        Jerial.printf( "│ Used:  %6u KB (%3d%%)          │                                   │\n\r",
+        target->printf( "│ Used:  %6u KB (%3d%%)          │                                   │\n\r",
                        (unsigned)(sramUsed / 1024), sramPercent );
     }
     
-    Jerial.println( "└──────────────────────────────────┴───────────────────────────────────┘" );
+    target->println( "└──────────────────────────────────┴───────────────────────────────────┘" );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PERIPHERALS STATUS (2-column layout)
-    // ═══════════════════════════════════════════════════════════════════════════
-    Jerial.println( "\n\r┌──────────────────────────────────┬───────────────────────────────────┐" );
-    Jerial.println( "│         OLED DISPLAY             │           PIO STATUS              │" );
-    Jerial.println( "├──────────────────────────────────┼───────────────────────────────────┤" );
+    target->println( "\n\r┌──────────────────────────────────┬───────────────────────────────────┐" );
+    target->println( "│         OLED DISPLAY             │           PIO STATUS              │" );
+    target->println( "├──────────────────────────────────┼───────────────────────────────────┤" );
     
-    // OLED connection type names
     const char* connTypes[] = { "GPIO 7/8 (crossbar)", "RP6/RP7 (hardwired)", "I2C0 (internal)", "Custom" };
     int connType = jumperlessConfig.top_oled.connection_type;
     const char* connName = (connType >= 0 && connType <= 3) ? connTypes[connType] : "Unknown";
     
-    Jerial.printf( "│ Status: %-23s  │ PIO0: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
+    target->printf( "│ Status: %-23s  │ PIO0: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
                    oled.isConnected( ) ? "Connected" : "Not connected",
                    pio_sm_is_claimed( pio0, 0 ) ? "●" : "○",
                    pio_sm_is_claimed( pio0, 1 ) ? "●" : "○",
                    pio_sm_is_claimed( pio0, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio0, 3 ) ? "●" : "○" );
     
-    Jerial.printf( "│ Type: %-25s  │ PIO1: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
+    target->printf( "│ Type: %-25s  │ PIO1: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
                    connName,
                    pio_sm_is_claimed( pio1, 0 ) ? "●" : "○",
                    pio_sm_is_claimed( pio1, 1 ) ? "●" : "○",
                    pio_sm_is_claimed( pio1, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio1, 3 ) ? "●" : "○" );
     
-    Jerial.printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
+    target->printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
                    jumperlessConfig.top_oled.sda_pin,
                    jumperlessConfig.top_oled.scl_pin,
                    pio_sm_is_claimed( pio2, 0 ) ? "●" : "○",
@@ -2468,26 +2456,21 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
                    pio_sm_is_claimed( pio2, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio2, 3 ) ? "●" : "○" );
     
-    // Show rows if using crossbar connection
     if ( jumperlessConfig.top_oled.sda_row >= 0 ) {
-        Jerial.printf( "│ SDA Row: %3s  SCL Row: %3s       │                                   │\n\r",
+        target->printf( "│ SDA Row: %3s  SCL Row: %3s       │                                   │\n\r",
                        definesToChar(jumperlessConfig.top_oled.sda_row, 0),
                        definesToChar(jumperlessConfig.top_oled.scl_row, 0));
     }
     
-    Jerial.println( "└──────────────────────────────────┴───────────────────────────────────┘" );
+    target->println( "└──────────────────────────────────┴───────────────────────────────────┘" );
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // GPIO PIN STATUS (2-column layout with hex values)
-    // ═══════════════════════════════════════════════════════════════════════════
-    Jerial.println( "\n\rgpio  up dn  func      hex  name            gpio  up dn  func      hex  name" );
-    Jerial.println(     "────  ─────  ────────  ───  ────────────    ────  ─────  ────────  ───  ────────────" );
+    target->println( "\n\rgpio  up dn  func      hex  name            gpio  up dn  func      hex  name" );
+    target->println(     "────  ─────  ────────  ───  ────────────    ────  ─────  ────────  ───  ────────────" );
     
     for ( int row = 0; row < 24; row++ ) {
         int gpio1 = row;
         int gpio2 = row + 24;
         
-        // Get actual pull status from hardware registers
         uint32_t pad1 = pads_bank0_hw->io[gpio1];
         uint32_t pad2 = pads_bank0_hw->io[gpio2];
         
@@ -2501,8 +2484,7 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
         const char* funcName1 = gpio_function_name_for_pin( gpio1, func1 );
         const char* funcName2 = gpio_function_name_for_pin( gpio2, func2 );
         
-        // Both columns with fixed-width formatting
-        Jerial.printf( "%4d   %c  %c  %-8s  %-2X   %-14s  %4d   %c  %c  %-8s  %-2X   %-14s\n\r",
+        target->printf( "%4d   %c  %c  %-8s  %-2X   %-14s  %4d   %c  %c  %-8s  %-2X   %-14s\n\r",
                        gpio1,
                        up1 ? '^' : ' ',
                        dn1 ? 'v' : ' ',
@@ -2515,17 +2497,18 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
                        funcName2,
                        (int)func2,
                        pinNames[gpio2] );
-        
-        Jerial.flush( );
     }
     
-    Jerial.println( "\n\r          ^ = pull-up  v = pull-down     ● = claimed, ○ = free\n\r" );
+    target->println( "\n\r          ^ = pull-up  v = pull-down     ● = claimed, ○ = free\n\r" );
+    target->flush( );
     
     return CMD_SHOW_MENU;
 }
 
 CommandResult cmd_gpioState( char c, const String& line ) {
-    printGPIOState( );
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Serial;
+    printGPIOState( target );
     return CMD_SHOW_MENU;
 }
 
@@ -2854,26 +2837,18 @@ CommandResult cmd_testStates( char c, const String& line ) {
 
 CommandResult cmd_printYAML( char c, const String& line ) {
     extern JumperlessState globalState;
-    // Jerial.println( "\n\r╭────────────────────────────────────╮" );
-    // Jerial.println( "│      Current YAML State (RAM)      │" );
-    // Jerial.println( "╰────────────────────────────────────╯\n\r" );
-    Serial.println();
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
 
-    // Jerial.print( "Active Slot: " );
-    // Jerial.println( netSlot );
-    // Jerial.print( "Dirty Flag: " );
-    // Jerial.println( globalState.isDirty( ) ? "YES (will auto-save)" : "NO (saved)" );
+    target->println();
 
     if ( globalState.isDirty( ) ) {
         unsigned long timeSince = millis( ) - globalState.getLastModifiedTime( );
-        Jerial.print( "Time since last change: " );
-        Jerial.print( timeSince / 1000 );
-        Jerial.println( " seconds" );
+        target->print( "Time since last change: " );
+        target->print( timeSince / 1000 );
+        target->println( " seconds" );
     }
 
-    // Jerial.println( "\n\r─── YAML Output ───\n\r" );
-
-    // Parse Y0/Y1/Y2: 0=no color, 1=colored hex (default), 2=colored blocks
     int showANSI = 2;
     String yamlArg = getCommandArgs( line, 20 );
     if ( yamlArg.length( ) > 0 ) {
@@ -2884,20 +2859,13 @@ CommandResult cmd_printYAML( char c, const String& line ) {
 
     String yamlOutput;
     if ( globalState.toYAML( yamlOutput, showANSI ) ) {
-        Jerial.printNormalized( yamlOutput );
-        Jerial.println();
+        target->print( yamlOutput );
+        target->println();
     } else {
-        Jerial.println( "✗ Failed to generate YAML" );
+        target->println( "✗ Failed to generate YAML" );
     }
 
-    // Jerial.println( "\n\r─── Memory Usage ───" );
-    // Jerial.print( "Connections: " );
-    // Jerial.println( globalState.connections.numBridges );
-    // Jerial.print( "State RAM: ~" );
-    // Jerial.print( globalState.estimateRAMUsage( ) );
-    // Jerial.println( " bytes" );
-
-    Jerial.println( "\n\r" );
+    target->println( "\n\r" );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -3098,4 +3066,163 @@ CommandResult cmd_uartStats( char c, const String& line ) {
     Jerial.println( "AsyncPassthrough is not enabled" );
 #endif
     return CMD_DONT_SHOW_MENU;
+}
+
+
+// ============================================================================
+// USBSer3 Backchannel - Machine-Parseable Commands
+// ============================================================================
+
+extern Adafruit_USBD_CDC USBSer3;
+
+static void usbSer3_printNormalized(const String& s) {
+    for (unsigned int i = 0; i < s.length(); i++) {
+        char ch = s[i];
+        if (ch == '\n') {
+            USBSer3.print("\r\n");
+            if (i + 1 < s.length() && s[i + 1] == '\r') i++;
+        } else if (ch == '\r') {
+            USBSer3.print("\r\n");
+            if (i + 1 < s.length() && s[i + 1] == '\n') i++;
+        } else {
+            USBSer3.write(ch);
+        }
+    }
+}
+
+static void usbSer3_sendAllStatus() {
+    extern JumperlessState globalState;
+    extern const char firmwareVersion[];
+
+    SlotManager& mgr = SlotManager::getInstance();
+
+    USBSer3.print("{\"version\":\"");
+    USBSer3.print(firmwareVersion);
+    USBSer3.print("\",\"slot\":");
+    USBSer3.print(mgr.getActiveSlot());
+    USBSer3.print(",\r\n");
+
+    USBSer3.print("\"adc\":{");
+    for (int i = 0; i < 5; i++) {
+        if (i > 0) USBSer3.print(',');
+        USBSer3.printf("\"adc%d\":%.4f", i, readAdcVoltage(i, 8));
+    }
+    USBSer3.print("},\r\n");
+
+    USBSer3.printf("\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":%.3f},\r\n",
+                   INA0.getCurrent_mA(), INA1.getCurrent_mA());
+
+    const char* readingNames[] = {"low", "high", "float", "unknown"};
+    USBSer3.print("\"gpio\":[");
+    for (int i = 0; i < 10; i++) {
+        if (i > 0) USBSer3.print(',');
+        int reading = gpioReading[i];
+        if (reading < 0 || reading > 3) reading = 3;
+        USBSer3.printf("{\"net\":%d,\"reading\":\"%s\"}", gpioNet[i], readingNames[reading]);
+    }
+    USBSer3.print("],\r\n");
+
+    String json = JsonState::getJumperlessStateJSON("nets");
+    if (json.length() > 0) {
+        USBSer3.print(",\"nets\":");
+        usbSer3_printNormalized(json);
+    }
+
+    json = JsonState::getJumperlessStateJSON("power");
+    if (json.length() > 0) {
+        USBSer3.print(",\"power\":");
+        usbSer3_printNormalized(json);
+    }
+
+    USBSer3.print("}\r\n");
+}
+
+static void usbSer3_sendYAML() {
+    extern JumperlessState globalState;
+    String yaml;
+    if (globalState.toYAML(yaml, 0)) {
+        USBSer3.print("---YAML_START---\r\n");
+        usbSer3_printNormalized(yaml);
+        USBSer3.print("---YAML_END---\r\n");
+    } else {
+        USBSer3.print("{\"error\":\"yaml_failed\"}\r\n");
+    }
+}
+
+static void usbSer3_sendADC() {
+    USBSer3.print("{\"adc\":{");
+    for (int i = 0; i < 5; i++) {
+        if (i > 0) USBSer3.print(',');
+        USBSer3.printf("\"adc%d\":%.4f", i, readAdcVoltage(i, 8));
+    }
+    USBSer3.printf("},\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":%.3f}}\r\n",
+                   INA0.getCurrent_mA(), INA1.getCurrent_mA());
+}
+
+static void usbSer3_sendGPIO() {
+    const char* readingNames[] = {"low", "high", "float", "unknown"};
+    USBSer3.print("{\"gpio\":[");
+    for (int i = 0; i < 10; i++) {
+        if (i > 0) USBSer3.print(',');
+        int reading = gpioReading[i];
+        if (reading < 0 || reading > 3) reading = 3;
+        USBSer3.printf("{\"net\":%d,\"reading\":\"%s\"}", gpioNet[i], readingNames[reading]);
+    }
+    USBSer3.print("]}\r\n");
+}
+
+static void usbSer3_sendNets() {
+    String json = JsonState::getJumperlessStateJSON("nets");
+    if (json.length() > 0) {
+        usbSer3_printNormalized(json);
+        USBSer3.print("\r\n");
+    } else {
+        USBSer3.print("{\"nets\":[]}\r\n");
+    }
+}
+
+static bool handleUSBSer3Special(char c) {
+    bool handled = true;
+    switch (c) {
+        case 'A': usbSer3_sendAllStatus(); break;
+        case 'V': usbSer3_sendADC();       break;
+        case 'G': usbSer3_sendGPIO();      break;
+        case 'N': usbSer3_sendNets();      break;
+        case 'K': usbSer3_sendYAML();      break;
+        default:  handled = false;          break;
+    }
+    if (handled) USBSer3.flush();
+    return handled;
+}
+
+void SingleCharCommands::serviceUSBSer3() {
+    while (USBSer3.available() > 0) {
+        char c = (char)USBSer3.read();
+        if (c <= 32 || c >= 127) continue;
+
+        if (handleUSBSer3Special(c)) continue;
+
+        Ser3Access access = getBackchannelAccess(c);
+        if (access != SER3_ALLOWED) {
+            const char* reason;
+            switch (access) {
+                case SER3_INTERACTIVE:    reason = "interactive";    break;
+                case SER3_MODIFIES_STATE: reason = "status_only";   break;
+                case SER3_IRRELEVANT:     reason = "irrelevant";    break;
+                case SER3_NOT_A_COMMAND:  reason = "not_a_command"; break;
+                default:                  reason = "blocked";       break;
+            }
+            USBSer3.printf("{\"error\":\"blocked\",\"cmd\":\"%c\",\"reason\":\"%s\"}\r\n", c, reason);
+            USBSer3.flush();
+            continue;
+        }
+
+        Jerial.setCurrentResponseTarget(&USBSer3);
+
+        char cmdStr[2] = {c, 0};
+        executeCommand(c, String(cmdStr));
+
+        Jerial.clearCurrentResponseTarget();
+        USBSer3.flush();
+    }
 }

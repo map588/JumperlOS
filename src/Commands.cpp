@@ -1035,54 +1035,54 @@ void connectGPIO(int gpioNumber, int node) {
   refreshConnections();
 }
 
-void printSlots(int fileNo, Stream *stream) {
-  if (stream == nullptr) stream = &Jerial;
+// void printSlots(int fileNo, Stream *stream) {
+//   if (stream == nullptr) stream = &Jerial;
 
-  if (fileNo == -1)
+//   if (fileNo == -1)
 
-    if (Serial.available() > 0) {
-      fileNo = Serial.read();
-      // break;
-    }
+//     if (Serial.available() > 0) {
+//       fileNo = Serial.read();
+//       // break;
+//     }
 
-  stream->print("\n\n\r");
-  if (fileNo == -1) {
-    stream->print("\tSlot Files");
-  } else {
-    stream->print("\tSlot File ");
-    stream->print(fileNo - '0');
-  }
-  stream->print("\n\n\r");
-  stream->print(
-      "\n\ryou can paste this text reload this circuit (enter 'o' first)");
-  stream->print("\n\r(or even just a single slot)\n\n\n\r");
-  if (fileNo == -1) {
-    for (int i = 0; i < NUM_SLOTS; i++) {
-      if (getSlotLength(i, 0) > 0) {  // Only print headers and content if slot has content
-        stream->print("\n\rSlot ");
-        stream->print(i);
-        if (i == netSlot) {
-          stream->print("        <--- current slot");
-        }
+//   stream->print("\n\n\r");
+//   if (fileNo == -1) {
+//     stream->print("\tSlot Files");
+//   } else {
+//     stream->print("\tSlot File ");
+//     stream->print(fileNo - '0');
+//   }
+//   stream->print("\n\n\r");
+//   stream->print(
+//       "\n\ryou can paste this text reload this circuit (enter 'o' first)");
+//   stream->print("\n\r(or even just a single slot)\n\n\n\r");
+//   if (fileNo == -1) {
+//     for (int i = 0; i < NUM_SLOTS; i++) {
+//       if (getSlotLength(i, 0) > 0) {  // Only print headers and content if slot has content
+//         stream->print("\n\rSlot ");
+//         stream->print(i);
+//         if (i == netSlot) {
+//           stream->print("        <--- current slot");
+//         }
 
-        stream->print("\n\r/slots/slot");
-        stream->print(i);
-        stream->print(".yaml\n\r");
-        stream->print("\n\rf ");
-        printNodeFile(i, 0, 0, 0, false, stream);
-        stream->print("\n\n\r");
-      }
-    }
-  } else {
+//         stream->print("\n\r/slots/slot");
+//         stream->print(i);
+//         stream->print(".yaml\n\r");
+//         stream->print("\n\rf ");
+//         printNodeFile(i, 0, 0, 0, false, stream);
+//         stream->print("\n\n\r");
+//       }
+//     }
+//   } else {
 
-    stream->print("\n\r/slots/slot");
-    stream->print(fileNo - '0');
-    stream->print(".yaml\n\r");
+//     stream->print("\n\r/slots/slot");
+//     stream->print(fileNo - '0');
+//     stream->print(".yaml\n\r");
 
-    stream->print("\n\rf ");
+//     stream->print("\n\rf ");
 
-    printNodeFile(fileNo - '0', 0, 0, 0, true, stream); // Print empty slots when showing specific slot
-    stream->print("\n\r");
-  }
-}
+//     printNodeFile(fileNo - '0', 0, 0, 0, true, stream); // Print empty slots when showing specific slot
+//     stream->print("\n\r");
+//   }
+// }
 

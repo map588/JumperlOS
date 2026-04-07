@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 #ifndef NETTOCHIPCONNECTIONS_H
 #define NETTOCHIPCONNECTIONS_H
-// #include "JumperlessDefinesRP2040.h"
+
+#include <Arduino.h>
 
 
 
@@ -73,7 +74,7 @@ void mergeOverlappingCandidates (int pathIndex);
 
 void assignPathType (int pathIndex);
 
-int printPathType (int pathIndex);
+int printPathType (int pathIndex, Stream* target = &Serial);
 
 void swapNodes (int);
 
@@ -81,11 +82,11 @@ int ijklPaths(int pathNumber, int allowStacking = 1);
 
 void commitPaths(int allowStacking = 2,int powerOnly = -1, int noOrOnlyDuplicates = 2, int startIndex = 0);
 int checkForOverlappingPaths(void);
-void printPathsCompact(int showCullDupes = 1);
+void printPathsCompact(int showCullDupes = 1, Stream* target = &Serial);
 
 void resolveAltPaths(int allowStacking = 0, int powerOnly = -1, int noOrOnlyDuplicates = 2, int startIndex = 0);
 
-void printChipStatus(void);
+void printChipStatus(Stream* target = &Serial);
 
 
 

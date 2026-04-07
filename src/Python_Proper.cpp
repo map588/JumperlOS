@@ -37,6 +37,9 @@ extern "C" void jl_close_all_jfs_files(void);
 // Mount the Jumperless VFS at "/" for MicroPython
 extern "C" void jl_vfs_mount_root(void);
 
+// Embedded rp2.py content for PIO support (@asm_pio decorator)
+#include "rp2_py_content.h"
+
 // Global state for proper MicroPython integration
 // NOTE: mp_heap is NOT static - it's accessed by jl_soft_reboot() for VM reinit
 unsigned char mp_heap[MICROPY_HEAP_SIZE]; //heap for MicroPython (reduced to free memory for editor)
@@ -701,6 +704,43 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
   // Set up filesystem and module import paths
 
   setupFilesystemAndPaths();
+
+  // Provision rp2.py on the filesystem if it doesn't exist.
+  // This embeds the full PIO assembler (@asm_pio decorator) so that
+  // 'import rp2' works out of the box without uploading any files.
+  // We build a Python script as a C string and pass it through mp_embed_exec_str.
+  {
+    // First check if file exists
+    int exists = mp_embed_exec_str(
+      "import os\n"
+      "os.stat('rp2.py')\n"
+    );
+    if (exists != 0) {
+      // File doesn't exist — write it from embedded content
+      // Build: exec("f=open('rp2.py','w')\nf.write('''...content...''')\nf.close()\n")
+      size_t content_len = strlen(rp2_py_content);
+      // Allocate buffer for the Python script: prefix + escaped content + suffix
+      size_t buf_size = content_len * 2 + 200;  // worst case for escaping
+      char *script = (char *)malloc(buf_size);
+      if (script) {
+        char *p = script;
+        p += sprintf(p, "f=open('rp2.py','w')\nf.write(\"");
+        // Escape the content for a Python double-quoted string
+        for (size_t i = 0; i < content_len; i++) {
+          char c = rp2_py_content[i];
+          if (c == '\\') { *p++ = '\\'; *p++ = '\\'; }
+          else if (c == '"') { *p++ = '\\'; *p++ = '"'; }
+          else if (c == '\n') { *p++ = '\\'; *p++ = 'n'; }
+          else if (c == '\r') { *p++ = '\\'; *p++ = 'r'; }
+          else { *p++ = c; }
+        }
+        p += sprintf(p, "\")\nf.close()\n");
+        mp_embed_exec_str(script);
+        free(script);
+      }
+    }
+  }
+
     
   mp_initialized = true;
   mp_repl_active = false;

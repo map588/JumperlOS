@@ -1326,42 +1326,33 @@ uint32_t colorPicker(uint8_t startHue, uint8_t brightness) {
 //   LOGO_BOTTOM_2,
 // };
 
+static uint32_t getLogoOverrideInternal(logoOverrideNames ledNumber) {
+  switch (ledNumber) {
+    case ADC_0:   return ADCcolorOverride0;
+    case ADC_1:   return ADCcolorOverride1;
+    case DAC_0:   return DACcolorOverride0;
+    case DAC_1:   return DACcolorOverride1;
+    case GPIO_0:  return GPIOcolorOverride0;
+    case GPIO_1:  return GPIOcolorOverride1;
+    case LOGO_TOP:    return logoColorOverrideTop;
+    case LOGO_BOTTOM: return logoColorOverrideBottom;
+    case LOGO:        return logoColorOverride;
+    default:      return (uint32_t)-1;
+  }
+}
+
 uint32_t getLogoOverride(logoOverrideNames ledNumber) {
   if (logoLedAccess == true) {
     return -1;
   }
   logoLedAccess = true;
-  uint32_t color = -1;
-  switch (ledNumber) {
-    case ADC_0:
-      color = ADCcolorOverride0;
-      break;
-    case ADC_1:
-      color = ADCcolorOverride1;
-      break;
-    case DAC_0:
-      color = DACcolorOverride0;
-      break;
-    case DAC_1:
-      color = DACcolorOverride1;
-      break;
-    case GPIO_0:
-      color = GPIOcolorOverride0;
-      break;
-    case GPIO_1:
-      color = GPIOcolorOverride1;
-      break;
-    case LOGO_TOP:
-      color = logoColorOverrideTop;
-      break;
-    case LOGO_BOTTOM:
-      color = logoColorOverrideBottom;
-      break;
-    case LOGO:
-      color = logoColorOverride;
-  }
+  uint32_t color = getLogoOverrideInternal(ledNumber);
   logoLedAccess = false;
   return color;
+}
+
+uint32_t getLogoOverrideUnlocked(logoOverrideNames ledNumber) {
+  return getLogoOverrideInternal(ledNumber);
 }
 
 
@@ -3405,9 +3396,15 @@ unsigned long colorFlash[2] = { 0,0 };
 
 // uint32_t railColors[4] = {0x2000b9, 0x0020f9, 0xa0a000, 0x1C0107};
 
-void lightUpHeader(void) {
+void __not_in_flash_func(lightUpHeader)(void) {
 
-while (logoLedAccess == true) {
+// Bounded wait -- the old infinite spin could hold Core 2 executing from flash
+// indefinitely, causing XIP crashes when Core 0 writes to flash.
+{
+  unsigned long _t = micros();
+  while (logoLedAccess == true) {
+    if (pauseCore2 || (micros() - _t > 5000)) return;
+  }
 }
 logoLedAccess = true;
   if (rstColors[0] != headerColors[0] && colorFlash[0] == 0) {

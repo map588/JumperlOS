@@ -86,8 +86,6 @@ WaveGen wavegen;
 // Jerial global instance is defined in Jerial.cpp
 
 int supplySwitchPosition = 0;
-volatile bool core1busy = false;
-volatile bool core2busy = false;
 
 // void lastNetConfirm(int forceLastNet = 0);
 void rotaryEncoderStuff( void );
@@ -122,8 +120,8 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.5.13"; //! remember to update this
-//5.6.5.9
+const char firmwareVersion[] = "5.6.6.0"; //! remember to update this
+//5.6.5.14
 
 bool newConfigOptions = true; //! set to true with new config options //!
 

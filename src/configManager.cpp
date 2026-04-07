@@ -17,6 +17,7 @@
 #include "externVars.h"  // For fs_mutex filesystem synchronization
 #include "usb_interface_config.h"  // For USB CDC DTR ignore configuration
 #include "AsyncPassthrough.h"
+#include "Probing.h"
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -626,6 +627,7 @@ void updateConfigFromFile(const char* filename) {
             if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
             else if (strcmp(key, "set_rails_on_boot") == 0) jumperlessConfig.dacs.set_rails_on_boot = parseBool(value);
             else if (strcmp(key, "probe_power_dac") == 0) jumperlessConfig.dacs.probe_power_dac = parseInt(value);
+            else if (strcmp(key, "auto_connect_probe") == 0) jumperlessConfig.dacs.auto_connect_probe = parseInt(value);
             else if (strcmp(key, "limit_max") == 0) jumperlessConfig.dacs.limit_max = parseFloat(value);
             else if (strcmp(key, "limit_min") == 0) jumperlessConfig.dacs.limit_min = parseFloat(value);
         } else if (strcmp(section, "debug") == 0) {
@@ -986,6 +988,7 @@ bool saveConfigToFile(const char* filename) {
     file.print("set_dacs_on_boot = "); file.print(jumperlessConfig.dacs.set_dacs_on_boot ? 1:0); file.println(";");
     file.print("set_rails_on_boot = "); file.print(jumperlessConfig.dacs.set_rails_on_boot ? 1:0); file.println(";");
     file.print("probe_power_dac = "); file.print(jumperlessConfig.dacs.probe_power_dac == 0 ? 0 : 1); file.println(";");
+    file.print("auto_connect_probe = "); file.print(jumperlessConfig.dacs.auto_connect_probe == -1 ? -1 : 1); file.println(";");
     file.print("limit_max = "); file.print(jumperlessConfig.dacs.limit_max); file.println(";");
     file.print("limit_min = "); file.print(jumperlessConfig.dacs.limit_min); file.println(";");
     file.println();
@@ -1159,6 +1162,8 @@ bool configHasChanges() {
     if (jumperlessConfig.dacs.set_dacs_on_boot != lastSavedConfig.dacs.set_dacs_on_boot) return true;
     if (jumperlessConfig.dacs.set_rails_on_boot != lastSavedConfig.dacs.set_rails_on_boot) return true;
     if (jumperlessConfig.dacs.probe_power_dac != lastSavedConfig.dacs.probe_power_dac) return true;
+    if (jumperlessConfig.dacs.auto_connect_probe == -1 && lastSavedConfig.dacs.auto_connect_probe != -1) return true;
+    if (jumperlessConfig.dacs.auto_connect_probe != -1 && lastSavedConfig.dacs.auto_connect_probe == -1) return true;
     if (jumperlessConfig.dacs.limit_max != lastSavedConfig.dacs.limit_max) return true;
     if (jumperlessConfig.dacs.limit_min != lastSavedConfig.dacs.limit_min) return true;
     
@@ -1559,6 +1564,9 @@ bool saveConfigIncremental(const char* filename) {
                     updated = true;
                 } else if (strcmp(key, "probe_power_dac") == 0) {
                     snprintf(newLine, sizeof(newLine), "probe_power_dac = %d;", jumperlessConfig.dacs.probe_power_dac == 0 ? 0 : 1);
+                    updated = true;
+                } else if (strcmp(key, "auto_connect_probe") == 0) {
+                    snprintf(newLine, sizeof(newLine), "auto_connect_probe = %d;", jumperlessConfig.dacs.auto_connect_probe == -1 ? -1 : 1);
                     updated = true;
                 } else if (strcmp(key, "limit_max") == 0) {
                     snprintf(newLine, sizeof(newLine), "limit_max = %.2f;", jumperlessConfig.dacs.limit_max);
@@ -2411,6 +2419,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("set_rails_on_boot = "); Serial.print(getStringFromTable(jumperlessConfig.dacs.set_rails_on_boot, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[dacs] ");
         Serial.print("probe_power_dac = "); Serial.print(jumperlessConfig.dacs.probe_power_dac); Serial.println(";");
+        if (pasteable == true) Serial.print("`[dacs] ");
+        Serial.print("auto_connect_probe = "); Serial.print(jumperlessConfig.dacs.auto_connect_probe); Serial.println(";");
         if (pasteable == true) Serial.print("`[dacs] ");
         Serial.print("limit_max = "); Serial.print(jumperlessConfig.dacs.limit_max); Serial.println(";");
         if (pasteable == true) Serial.print("`[dacs] ");
@@ -3418,6 +3428,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         if (strcmp(key, "set_dacs_on_boot") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.set_dacs_on_boot);
         else if (strcmp(key, "set_rails_on_boot") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.set_rails_on_boot);
         else if (strcmp(key, "probe_power_dac") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.probe_power_dac);
+        else if (strcmp(key, "auto_connect_probe") == 0) sprintf(oldValue, "%d", jumperlessConfig.dacs.auto_connect_probe);
         else if (strcmp(key, "limit_max") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.limit_max);
         else if (strcmp(key, "limit_min") == 0) sprintf(oldValue, "%.2f", jumperlessConfig.dacs.limit_min);
     }
@@ -3554,6 +3565,12 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
         else if (strcmp(key, "set_rails_on_boot") == 0) jumperlessConfig.dacs.set_rails_on_boot = parseBool(value);
         else if (strcmp(key, "probe_power_dac") == 0) jumperlessConfig.dacs.probe_power_dac = parseInt(value);
+        else if (strcmp(key, "auto_connect_probe") == 0) {
+            jumperlessConfig.dacs.auto_connect_probe = parseInt(value);
+            if (jumperlessConfig.dacs.auto_connect_probe <= 0) {
+                routableBufferPower(0, 0, 1);
+            }
+        }
         else if (strcmp(key, "limit_max") == 0) jumperlessConfig.dacs.limit_max = parseFloat(value);
         else if (strcmp(key, "limit_min") == 0) jumperlessConfig.dacs.limit_min = parseFloat(value);
     }
@@ -3731,7 +3748,11 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
             }
         }
     }
-    saveConfigToFile("/config.txt");
+    bool skipSave = (strcmp(section, "dacs") == 0 && strcmp(key, "auto_connect_probe") == 0
+                     && jumperlessConfig.dacs.auto_connect_probe == 0);
+    if (!skipSave) {
+        saveConfigToFile("/config.txt");
+    }
     printSettingChange(section, key, oldValue, value);
     
     // If we changed terminal_line_buffering, send command to app to switch interactive mode

@@ -146,7 +146,7 @@ void initArduino( void ) // if the UART is set up, the Arduino won't flash from
     SetArduinoResetLine(LOW, 1);
 
 
-    USBSer3.begin(115200);
+    // USBSer3.begin(115200);
    // pinMode( 19, INPUT );
 }
 

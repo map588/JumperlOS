@@ -114,6 +114,7 @@ typedef enum {
 
 void setLogoOverride(logoOverrideNames ledNumber, uint32_t colorOverride);
 uint32_t getLogoOverride(logoOverrideNames ledNumber);
+uint32_t getLogoOverrideUnlocked(logoOverrideNames ledNumber);
 // extern logoOverrideNames overrideNames;
 
 struct logoColorOverrideMap {

@@ -139,11 +139,20 @@ SRC_EXTMOD_C = \
 	extmod/modrandom.c \
 	extmod/modheapq.c \
 
+# rp2 module (PIO, StateMachine, DMA) — use stub for host-side QSTR scanning
+# The actual sources (rp2_pio_jl.c, rp2_dma_jl.c, modrp2_jl.c) include Pico SDK headers
+# that are not available on the host compiler. The stub provides MP_REGISTER_MODULE
+# and MP_REGISTER_ROOT_POINTER declarations for QSTR/moduledefs/root_pointers generation.
+# QSTRs are provided by jl_qstr_refs() in modmachine_jl.inc.
+SRC_RP2_C = \
+	../../../lib/micropython/port/rp2_qstr_stub.c \
+
 # Define shared source files we want
 SRC_SHARED_C = \
 	shared/readline/readline.c \
 	shared/runtime/pyexec.c \
 	shared/runtime/sys_stdio_mphal.c \
+	shared/runtime/mpirq.c \
 
 # Define driver files for soft I2C/SPI
 SRC_DRIVERS_C = \
@@ -157,6 +166,7 @@ PY_O += $(addprefix $(BUILD)/, $(SRC_DRIVERS_C:.c=.o))
 SRC_QSTR += $(SRC_EXTMOD_C)
 SRC_QSTR += $(SRC_SHARED_C)
 SRC_QSTR += $(SRC_DRIVERS_C)
+SRC_QSTR += $(SRC_RP2_C)
 # Note: Peripheral QSTRs come from jl_qstr_refs() in modmachine_jl.inc
 
 # Set the location of the MicroPython embed port.
@@ -166,7 +176,7 @@ MICROPYTHON_EMBED_PORT = $(MICROPYTHON_TOP)/ports/embed
 MICROPY_ROM_TEXT_COMPRESSION ?= 0
 
 # Set CFLAGS for the MicroPython build.
-CFLAGS += -I. -I$(TOP) -I$(TOP)/extmod -I$(TOP)/drivers -I$(BUILD) -I$(MICROPYTHON_EMBED_PORT) -I$(MICROPYTHON_EMBED_PORT)/port
+CFLAGS += -I. -I$(TOP) -I$(TOP)/extmod -I$(TOP)/drivers -I$(BUILD) -I$(MICROPYTHON_EMBED_PORT) -I$(MICROPYTHON_EMBED_PORT)/port -I../../../lib/micropython/port
 CFLAGS += -Wall -Werror -std=c99
 
 # Define the required generated header files.
@@ -275,6 +285,7 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) $(TOP)/shared/runtime/pyexec.h $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(CP) $(TOP)/shared/runtime/pyexec.c $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(CP) $(TOP)/shared/runtime/mpirq.h $(PACKAGE_DIR)/shared/runtime
+	$(Q)$(CP) $(TOP)/shared/runtime/mpirq.c $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(CP) $(TOP)/shared/runtime/sys_stdio_mphal.c $(PACKAGE_DIR)/shared/runtime
 	$(Q)$(MKDIR) -p $(PACKAGE_DIR)/shared/timeutils || true
 	$(Q)$(CP) $(TOP)/shared/timeutils/*.h $(PACKAGE_DIR)/shared/timeutils || true
@@ -306,6 +317,12 @@ micropython-embed-package: $(GENHDR_OUTPUT)
 	$(Q)$(CP) ../../../lib/micropython/port/mphalport.c $(PACKAGE_DIR)/port/ || true
 	$(Q)$(CP) ../../../lib/micropython/port/micropython_embed.c $(PACKAGE_DIR)/port/ || true
 	$(Q)$(CP) ../../../lib/micropython/port/micropython_embed.h $(PACKAGE_DIR)/port/ || true
+	# rp2 module (PIO, StateMachine, DMA) files
+	$(Q)$(CP) ../../../lib/micropython/port/modrp2_jl.h $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/modrp2_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/rp2_pio_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/rp2_dma_jl.c $(PACKAGE_DIR)/port/ || true
+	$(Q)$(CP) ../../../lib/micropython/port/rp2_qstr_stub.c $(PACKAGE_DIR)/port/ || true
 
 # Include remaining core make rules.
 include $(TOP)/py/mkrules.mk

@@ -4127,6 +4127,11 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
     // Use the global interval if available; otherwise default to 50ms.
     // unsigned long switchPositionCheckInterval = 200;
 
+    if ( jumperlessConfig.dacs.auto_connect_probe <= 0 ) {
+        switchPosition = 1;
+        return switchPosition;
+    }
+
     if ( checkingButton == 1 ) {
         // Serial.println( "checkingButton" );
         return switchPosition;
@@ -4308,9 +4313,21 @@ float Probing::checkProbeCurrentZero( void ) {
 
     //delay(2000);
     delayMicroseconds( 10000 );
-    bool bridgeExists = checkIfBridgeExistsLocal( DAC0, -1 );
-    if ( bridgeExists == true ) {
-        removeBridgeFromState( DAC0, -1, true );
+
+    // Temporarily disconnect DAC0 from whatever it is connected to so
+    // zero-calibration reads the true offset, then restore those exact links.
+    extern int lastRemovedNodes[20];
+    extern int lastRemovedNodesIndex;
+
+    int savedNodes[20];
+    int savedCount = 0;
+
+    bool hadConnections = removeBridgeFromState( DAC0, -1, true );
+    if ( hadConnections && lastRemovedNodesIndex > 0 ) {
+        for ( int i = 0; i < lastRemovedNodesIndex && i < 20; i++ ) {
+            savedNodes[i] = lastRemovedNodes[i];
+        }
+        savedCount = lastRemovedNodesIndex;
         waitCore2();
         delayMicroseconds( 10000 );
     }
@@ -4345,6 +4362,14 @@ float Probing::checkProbeCurrentZero( void ) {
 
     jumperlessConfig.calibration.probe_current_zero = current;
 
+    // Also refresh INA0's current offset here (this runs later than startup
+    // and usually gives a cleaner zero for the live current-sense path).
+    timeout_start = millis( );
+    while ( !INA0.getConversionFlag( ) && ( millis( ) - timeout_start < 20 ) ) {
+        delayMicroseconds( 100 );
+    }
+    currentReadingOffset0_mA = INA0.getCurrent_mA( );
+
     // Serial.print("Zero calibration current = ");
     // Serial.println(current);
 
@@ -4352,8 +4377,13 @@ float Probing::checkProbeCurrentZero( void ) {
 
     //!!!!!!!!!!!!!!!
 
-     if ( bridgeExists == true ) {
-        addBridgeToState( DAC0, ROUTABLE_BUFFER_IN, 0 );
+    if ( hadConnections && savedCount > 0 ) {
+        for ( int i = 0; i < savedCount; i++ ) {
+            int otherNode = savedNodes[i];
+            if ( otherNode > 0 ) {
+                addBridgeToState( DAC0, otherNode, -1, true );
+            }
+        }
     }
 
     showProbeLEDs = 4;
@@ -4361,6 +4391,11 @@ float Probing::checkProbeCurrentZero( void ) {
 }
 
 void Probing::routableBufferPower( int offOn, int flash, int force ) {
+    if ( jumperlessConfig.dacs.auto_connect_probe <= 0 && offOn == 1 ) {
+        bufferPowerConnected = false;
+        return;
+    }
+
     int flashOrLocal;
 
     if ( flash == 1 ) {

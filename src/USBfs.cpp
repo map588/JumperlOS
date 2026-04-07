@@ -456,8 +456,16 @@ void validateAllSlots(bool verbose) {
     }
     
     // Use core synchronization to prevent flash access conflicts
-    while (core2busy == true) {
-        // Wait for core2 to finish
+    {
+        unsigned long _t = micros();
+        while (core2busy) {
+            __dmb();
+            if (micros() - _t > 25000) { core2busy = false; break; }
+            #ifdef USE_TINYUSB
+            extern void tud_task(void);
+            tud_task();
+            #endif
+        }
     }
     core1busy = true;
     
@@ -535,8 +543,16 @@ void manualRefreshFromUSB() {
     
     // 3. Force close any open files to invalidate file handles
     // This ensures we're not reading from cached file handles
-    while (core2busy == true) {
-        // Wait for core2 to finish
+    {
+        unsigned long _t = micros();
+        while (core2busy) {
+            __dmb();
+            if (micros() - _t > 25000) { core2busy = false; break; }
+            #ifdef USE_TINYUSB
+            extern void tud_task(void);
+            tud_task();
+            #endif
+        }
     }
     core1busy = true;
     

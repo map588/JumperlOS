@@ -6,6 +6,11 @@
 #include <stdint.h>
 #include <alloca.h>
 #include <stddef.h>
+#include <limits.h>
+
+#ifndef SSIZE_MAX
+#define SSIZE_MAX 0x7fffffff
+#endif
 
 // Basic type definitions
 typedef intptr_t mp_int_t;
@@ -59,6 +64,9 @@ typedef uint32_t mp_hal_pin_obj_t;
 // Float support - enable single-precision floating point
 #define MICROPY_FLOAT_IMPL          (MICROPY_FLOAT_IMPL_FLOAT)
 #define MICROPY_PY_BUILTINS_FLOAT   (1)
+
+// Enable arbitrary-precision long integers (fixes small int overflow for e.g., 1 << 30 in rp2.py)
+#define MICROPY_LONGINT_IMPL        (MICROPY_LONGINT_IMPL_MPZ)
 
 // Python builtins - minimal set
 #define MICROPY_PY_BUILTINS_COMPILE (1)  

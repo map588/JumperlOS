@@ -130,7 +130,6 @@ bool pauseCore2ForFlash(uint32_t timeout_ms) {
     // Also service USB during wait to prevent disconnect
     uint32_t wait_start = millis();
     while (core2busy && (millis() - wait_start < timeout_ms)) {
-        // Service USB during wait to prevent disconnect
         #ifdef USE_TINYUSB
         tud_task();
         #endif

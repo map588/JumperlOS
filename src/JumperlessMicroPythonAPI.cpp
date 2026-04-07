@@ -2014,6 +2014,22 @@ extern "C" int jl_check_switch_position( void ) {
     return result;
 }
 
+// Probe Autoconnect
+// enable: 1 = on, 0 = off (temporary, until reboot), -1 = query current state
+extern "C" int jl_probe_autoconnect( int enable ) {
+    if ( enable == -1 ) {
+        return jumperlessConfig.dacs.auto_connect_probe;
+    }
+    if ( enable ) {
+        jumperlessConfig.dacs.auto_connect_probe = 1;
+        routableBufferPower( 1, 0, 1 );
+    } else {
+        jumperlessConfig.dacs.auto_connect_probe = 0;
+        routableBufferPower( 0, 0, 1 );
+    }
+    return jumperlessConfig.dacs.auto_connect_probe;
+}
+
 // Clickwheel (Rotary Encoder) Functions
 extern "C" long jl_clickwheel_get_position( void ) {
     return encoderPosition;

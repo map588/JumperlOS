@@ -932,24 +932,8 @@ bool JerialClass::service() {
         Serial.flush();
     }
     #endif
-    // Port 4 (USBSer3) for TUI commands - single char commands with localized response
-    while (USBSer3.available() > 0) {
-        char c = (char)USBSer3.read();
-        
-        // Handle single character commands immediately
-        // (Most TUI commands are single chars: 'c', 'l', 'm', 'i', 'v', 'b', 'f', 'n', 'w')
-        if (c > 32 && c < 127) {
-            char cmdStr[2] = {c, 0};
-            if (term_control) {
-                term_control->injectCompletedLine(cmdStr, &USBSer3);
-            }
-            
-            #if DEBUG_JERIAL == 1
-            Serial.printf("USBSer3 Command Injected: '%c'\n", c);
-            Serial.flush();
-            #endif
-        }
-    }
+    // USBSer3 backchannel - handled by SingleCharCommands
+    singleCharCommands.serviceUSBSer3();
 
     if (term_control_active && term_control && jumperlessConfig.display.terminal_line_buffering == 1) {
         return term_control->service();

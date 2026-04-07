@@ -60,6 +60,17 @@ enum CommandCategory {
 };
 
 /**
+ * @brief Backchannel (USBSer3) access policy for a command
+ */
+enum Ser3Access {
+    SER3_ALLOWED = 0,      // Safe: non-blocking, read-only status query
+    SER3_INTERACTIVE,      // Blocked: enters interactive mode or waits for further input
+    SER3_MODIFIES_STATE,   // Blocked: changes connections, config, or hardware state
+    SER3_IRRELEVANT,       // Blocked: terminal UI only, meaningless on backchannel
+    SER3_NOT_A_COMMAND,    // Unknown: not a registered command
+};
+
+/**
  * @brief Command registration structure
  * 
  * This structure defines everything needed for a single-character command:
@@ -77,16 +88,17 @@ struct Command {
     MenuLevel menuLevel;             // Minimum menu level to display
     CommandCategory category;        // Category for organization
     bool showInMenu;                 // Whether to display in menu
+    Ser3Access ser3Access;           // Whether/why this command is blocked on the backchannel port
     
     Command() : trigger('\0'), shortDesc(nullptr), helpText(nullptr), 
                 callback(nullptr), menuLevel(MENU_BASIC), 
-                category(CAT_CONNECTIONS), showInMenu(true) {}
+                category(CAT_CONNECTIONS), showInMenu(true), ser3Access(SER3_ALLOWED) {}
     
     Command(char t, const char* desc, const char* help, CommandCallback cb, 
             MenuLevel level = MENU_BASIC, CommandCategory cat = CAT_CONNECTIONS, 
-            bool show = true)
+            bool show = true, Ser3Access access = SER3_ALLOWED)
         : trigger(t), shortDesc(desc), helpText(help), callback(cb),
-          menuLevel(level), category(cat), showInMenu(show) {}
+          menuLevel(level), category(cat), showInMenu(show), ser3Access(access) {}
 };
 
 /**
@@ -126,7 +138,14 @@ public:
      */
     bool registerCommand(char trigger, const char* shortDesc, const char* helpText,
                         CommandCallback callback, MenuLevel level = MENU_BASIC,
-                        CommandCategory category = CAT_CONNECTIONS, bool showInMenu = true);
+                        CommandCategory category = CAT_CONNECTIONS, bool showInMenu = true,
+                        Ser3Access access = SER3_ALLOWED);
+    
+    /**
+     * @brief Get the backchannel access policy for a command
+     * @return SER3_ALLOWED if safe, or the reason it's blocked
+     */
+    Ser3Access getBackchannelAccess(char trigger) const;
     
     /**
      * @brief Unregister a command by character
@@ -180,6 +199,14 @@ public:
      * Called automatically in constructor
      */
     void initializeCommands();
+    
+    /**
+     * @brief Service USBSer3 backchannel input
+     * Handles machine-parseable special commands (A, V, G, N, K),
+     * gates out blocking/interactive commands, and dispatches
+     * non-blocking commands with output routed back to USBSer3.
+     */
+    void serviceUSBSer3();
     
 private:
     Command commands[MAX_COMMANDS];

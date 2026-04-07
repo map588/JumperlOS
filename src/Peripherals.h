@@ -172,7 +172,7 @@ int anyAdcConnected(int net = -1); // returns adc number
 void setGPIO(void);
 void readGPIO(void);
 void readFakeGPIO(void);
-void printGPIOState(void);
+void printGPIOState(Stream* target = &Serial);
 
 // gpio = -1 means toggle the brightened net
 // lowHigh = 2 means toggle 

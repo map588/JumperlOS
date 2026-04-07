@@ -3017,10 +3017,9 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
         return false;
     }
 
-    // CRITICAL: Pause Core2 during flash write operations
+    // Pause Core2 for entire flash operation (FTL can trigger flash writes mid-write)
     bool was_paused = pauseCore2ForFlash( 100 );
 
-    // THREAD SAFETY: Acquire filesystem mutex
     fs_mutex_acquire( );
 
     File file = FatFS.open( filename, "w" );
@@ -3031,7 +3030,7 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
     }
 
     size_t totalBytesWritten = 0;
-    const size_t chunkSize = 64; // Write in 512-byte chunks to avoid memory issues
+    const size_t chunkSize = 256; // FatFS FTL uses 512-byte sectors
 
     while ( totalBytesWritten < contentLength ) {
         size_t bytesToWrite = min( chunkSize, contentLength - totalBytesWritten );
@@ -3047,8 +3046,9 @@ bool writeStringToFileSimple( const char* filename, const char* content ) {
         totalBytesWritten += bytesWritten;
     }
 
-    file.flush( );
+    // close() internally calls f_sync() -- no need for explicit flush()
     file.close( );
+
     fs_mutex_release( );
     unpauseCore2ForFlash( was_paused );
     return true;
@@ -3079,13 +3079,11 @@ bool writeStringToFile( const char* filename, const char* content ) {
         return false;
     }
 
-    // CRITICAL: Pause Core2 during flash write operations
+    // Pause Core2 for entire flash operation (FTL can trigger flash writes mid-write)
     bool was_paused = pauseCore2ForFlash( 100 );
 
-    // THREAD SAFETY: Acquire filesystem mutex
     fs_mutex_acquire( );
 
-    // Reduce verbosity - only show messages for errors or final verification
     File file = FatFS.open( filename, "w" );
     if ( !file ) {
         fs_mutex_release( );
@@ -3095,7 +3093,7 @@ bool writeStringToFile( const char* filename, const char* content ) {
     }
 
     size_t totalBytesWritten = 0;
-    const size_t chunkSize = 256; // Reduce chunk size to avoid memory issues
+    const size_t chunkSize = 256; // FatFS FTL uses 512-byte sectors
 
     while ( totalBytesWritten < contentLength ) {
         size_t bytesToWrite = min( chunkSize, contentLength - totalBytesWritten );
@@ -3110,41 +3108,13 @@ bool writeStringToFile( const char* filename, const char* content ) {
         }
 
         totalBytesWritten += bytesWritten;
-
-        // Add small delay every few chunks to prevent system overload
-        if ( ( totalBytesWritten % ( chunkSize * 4 ) ) == 0 ) {
-            delay( 10 );
-
-            // Process any pending serial data to keep connection alive
-            if ( Serial.available( ) ) {
-                while ( Serial.available( ) ) {
-                    Serial.read( );
-                }
-            }
-        }
     }
 
-    file.flush( );
+    // close() internally calls f_sync() -- no need for explicit flush()
     file.close( );
 
-    // Quick verification - don't spend too much time on this
-    File verifyFile = FatFS.open( filename, "r" );
-    if ( verifyFile ) {
-        size_t actualSize = verifyFile.size( );
-        verifyFile.close( );
-        fs_mutex_release( );
-        unpauseCore2ForFlash( was_paused );
-        if ( actualSize != contentLength ) {
-            addFilesystemMessage( "ERROR: Size mismatch " + String( actualSize ) + " vs " + String( contentLength ), 196 );
-            return false;
-        }
-        // Silent verification - only report errors
-    } else {
-        // Don't fail on verification errors - the file might still be usable
-        // Just continue silently
-        fs_mutex_release( );
-        unpauseCore2ForFlash( was_paused );
-    }
+    fs_mutex_release( );
+    unpauseCore2ForFlash( was_paused );
 
     return true;
 }
@@ -3775,21 +3745,20 @@ bool safeFileWriteAll( const char* path, const char* content, size_t content_len
     if ( !path || !content )
         return false;
 
-    if ( content_len == 0 ) {
+    if ( content_len == 0 )
         content_len = strlen( content );
-    }
 
-    // Suspend UART IRQ before flash ops to prevent the priority-1 ISR from
-    // monopolizing the brief inter-flash-operation windows and starving USB.
-    // Without this, async passthrough's UART IRQ fires between each flash
-    // erase/program cycle, leaving no CPU time for the USB stack, causing
-    // the host to disconnect.
     AsyncPassthrough::suspendUARTRxIRQ();
 
-    // Pause Core2 for entire write operation
     bool was_paused = pauseCore2ForFlash( 100 );
 
-    // Acquire filesystem mutex
+    extern volatile bool core2busy;
+    if ( core2busy ) {
+        uint32_t extra = millis();
+        while ( core2busy && (millis() - extra < 200) )
+            delayMicroseconds(100);
+    }
+
     if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         unpauseCore2ForFlash( was_paused );
         AsyncPassthrough::resumeUARTRxIRQ();
@@ -3805,7 +3774,6 @@ bool safeFileWriteAll( const char* path, const char* content, size_t content_len
     }
 
     size_t written = file.write( (const uint8_t*)content, content_len );
-    file.flush( );
     file.close( );
 
     fs_mutex_release( );

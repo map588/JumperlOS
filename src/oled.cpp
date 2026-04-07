@@ -577,6 +577,9 @@ int oled::init( ) {
 
     getDisplay().begin( SSD1306_SWITCHCAPVCC, address, false, false );
 
+    //can give the oled some neat scanning effects that look like a crt
+
+
     // Apply rotation from config (0 = 0°, 1 = 90°, 2 = 180°, 3 = 270°)
     getDisplay().setRotation( jumperlessConfig.top_oled.rotation );
 
@@ -629,6 +632,27 @@ int oled::init( ) {
     Serial.printf("[OLED] init() complete, returning %d, oledConnected=%d\n", success, oledConnected);
     #endif
     return success;
+}
+
+void oled::setDisplayClockDivideRatio(int divideRatio) {
+
+    if (divideRatio < 0) {
+        divideRatio = 0;
+    } else if (divideRatio > 0x0F) {
+        divideRatio = 0x0F;
+    }
+    setDisplayClock((uint8_t)divideRatio, 0x8);
+}
+
+void oled::setDisplayClock(uint8_t divideRatio, uint8_t oscillatorFreq) {
+    setDisplayClockRaw(((oscillatorFreq & 0x0F) << 4) | (divideRatio & 0x0F));
+}
+
+void oled::setDisplayClockRaw(uint8_t clockDivOscSetting) {
+    // SSD1306_SETDISPLAYCLOCKDIV (0xD5) expects one parameter byte:
+    // upper nibble = oscillator frequency, lower nibble = clock divide ratio.
+    getDisplay().ssd1306_command(0xD5);
+    getDisplay().ssd1306_command(clockDivOscSetting);
 }
 
 // Helper to check I2C communication

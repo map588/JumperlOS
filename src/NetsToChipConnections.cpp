@@ -5530,29 +5530,29 @@ int checkForOverlappingPaths() {
   return found;
 }
 
-int printNetOrNumber(int net) {
+int printNetOrNumber(int net, Stream* target) {
   int spaces = 0;
   switch (net) {
   case 0:
-    spaces = Serial.print("E");
+    spaces = target->print("E");
     break;
   case 1:
-    spaces = Serial.print("Gn");
+    spaces = target->print("Gn");
     break;
   case 2:
-    spaces = Serial.print("T");
+    spaces = target->print("T");
     break;
   case 3:
-    spaces = Serial.print("B");
+    spaces = target->print("B");
     break;
   case 4:
-    spaces = Serial.print("d0");
+    spaces = target->print("d0");
     break;
   case 5:
-    spaces = Serial.print("d1");
+    spaces = target->print("d1");
     break;
   default:
-    spaces = Serial.print(net);
+    spaces = target->print(net);
     break;
   }
   return spaces;
@@ -5561,27 +5561,20 @@ int printNetOrNumber(int net) {
 /// @brief print paths in a compact format
 /// @param showCullDupes 0 = show all paths, 1 = show routed duplicates, 2 =
 /// show all duplicates
-void printPathsCompact(int showCullDupes) {
-  // Serial.println(" ");
-  // Serial.println(checkForOverlappingPaths());
+void printPathsCompact(int showCullDupes, Stream* target) {
 
-  Serial.print("numberOfPaths: ");
-  Serial.println(numberOfPaths);
-  Serial.print("numberOfNets: ");
-  Serial.println(numberOfNets);
-  // Serial.println("showCullDupes: ");
-  // Serial.println(showCullDupes);
-  // Serial.println("numberOfBridges: ");
-  // Serial.println(numberOfBridges);
-  // Serial.println("numberOfNodes: ");
+  target->print("numberOfPaths: ");
+  target->println(numberOfPaths);
+  target->print("numberOfNets: ");
+  target->println(numberOfNets);
   assignTermColor();
   int lastDuplicate = 0;
   int duplicateSection = 0;
 
   int skipLine = 0;
-  Serial.println(
+  target->println(
       "\n\rpath\tnet\tnode1\tchip0\tx0\ty0\tnode2\tchip1\tx1\ty1\ta"
-      "ltPath\tsameChp\tdup\tpathType\tchip2\tx2\ty2"); //\tx3\ty3\n\r");
+      "ltPath\tsameChp\tdup\tpathType\tchip2\tx2\ty2");
 
   for (int i = 0; i < numberOfPaths; i++) {
     skipLine = 0;
@@ -5614,133 +5607,118 @@ void printPathsCompact(int showCullDupes) {
 
     if (skipLine == 0) {
       lastDuplicate = globalState.connections.paths[i].duplicate;
-      changeTerminalColor(globalState.connections.nets[globalState.connections.paths[i].net].termColor);
-      Serial.print(i);
-      Serial.print("\t");
+      changeTerminalColor(globalState.connections.nets[globalState.connections.paths[i].net].termColor, false, target);
+      target->print(i);
+      target->print("\t");
 
-      // Serial.print(globalState.connections.paths[i].net);
-
-      printNetOrNumber(globalState.connections.paths[i].net);
-      Serial.print("\t");
-      printNodeOrName(globalState.connections.paths[i].node1, 0, globalState.connections.paths[i].net);
-      // Serial.print("\t");
-      // Serial.print(globalState.connections.paths[i].nodeType[0]);
-      Serial.print("\t");
-      Serial.print(chipNumToChar(globalState.connections.paths[i].chip[0]));
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].x[0]);
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].y[0]);
-      Serial.print("\t");
-      printNodeOrName(globalState.connections.paths[i].node2, 0, globalState.connections.paths[i].net);
-      // Serial.print("\t");
-      // Serial.print(globalState.connections.paths[i].nodeType[1]);
-      Serial.print("\t");
-      Serial.print(chipNumToChar(globalState.connections.paths[i].chip[1]));
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].x[1]);
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].y[1]);
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].altPathNeeded);
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].sameChip);
-      Serial.print("\t");
-      Serial.print(globalState.connections.paths[i].duplicate);
-      Serial.print("\t");
-      printPathType(i);
+      printNetOrNumber(globalState.connections.paths[i].net, target);
+      target->print("\t");
+      printNodeOrName(globalState.connections.paths[i].node1, 0, globalState.connections.paths[i].net, target);
+      target->print("\t");
+      target->print(chipNumToChar(globalState.connections.paths[i].chip[0]));
+      target->print("\t");
+      target->print(globalState.connections.paths[i].x[0]);
+      target->print("\t");
+      target->print(globalState.connections.paths[i].y[0]);
+      target->print("\t");
+      printNodeOrName(globalState.connections.paths[i].node2, 0, globalState.connections.paths[i].net, target);
+      target->print("\t");
+      target->print(chipNumToChar(globalState.connections.paths[i].chip[1]));
+      target->print("\t");
+      target->print(globalState.connections.paths[i].x[1]);
+      target->print("\t");
+      target->print(globalState.connections.paths[i].y[1]);
+      target->print("\t");
+      target->print(globalState.connections.paths[i].altPathNeeded);
+      target->print("\t");
+      target->print(globalState.connections.paths[i].sameChip);
+      target->print("\t");
+      target->print(globalState.connections.paths[i].duplicate);
+      target->print("\t");
+      printPathType(i, target);
 
       if (globalState.connections.paths[i].chip[2] != -1) {
-        Serial.print(" \t");
-        Serial.print(chipNumToChar(globalState.connections.paths[i].chip[2]));
-        Serial.print(" \t");
-        Serial.print(globalState.connections.paths[i].x[2]);
-        Serial.print(" \t");
-        Serial.print(globalState.connections.paths[i].y[2]);
-        Serial.print(" \t");
-        Serial.print(globalState.connections.paths[i].x[3]);
-        Serial.print(" \t");
-        Serial.print(globalState.connections.paths[i].y[3]);
+        target->print(" \t");
+        target->print(chipNumToChar(globalState.connections.paths[i].chip[2]));
+        target->print(" \t");
+        target->print(globalState.connections.paths[i].x[2]);
+        target->print(" \t");
+        target->print(globalState.connections.paths[i].y[2]);
+        target->print(" \t");
+        target->print(globalState.connections.paths[i].x[3]);
+        target->print(" \t");
+        target->print(globalState.connections.paths[i].y[3]);
       }
       if (1) {
         if (globalState.connections.paths[i].chip[3] != -1) {
-          Serial.print(" \t");
-          Serial.print(chipNumToChar(globalState.connections.paths[i].chip[3]));
-          Serial.print(" \t");
+          target->print(" \t");
+          target->print(chipNumToChar(globalState.connections.paths[i].chip[3]));
+          target->print(" \t");
         }
       }
 
-      Serial.println(" ");
-      Serial.flush();
+      target->println(" ");
     }
 
     if (showCullDupes > 0 && duplicateSection == 0 && i >= numberOfPaths - 1) {
-      // if ( jumperlessConfig.routing.stack_paths > 0 ||
-      // jumperlessConfig.routing.stack_rails > 0 ||
-      // jumperlessConfig.routing.stack_dacs > 0) { Serial.print("numberOfPaths
-      // = "); Serial.print(numberOfPaths); Serial.print("\ti = ");
-      // Serial.print(i);
-
       duplicateSection = 1;
-      changeTerminalColor();
-      Serial.println("\n\rduplicates");
+      changeTerminalColor(-1, false, target);
+      target->println("\n\rduplicates");
       i = 0;
     }
-    changeTerminalColor();
+    changeTerminalColor(-1, false, target);
   }
-
-  // Serial.println(
-  //     "\n\rpath\tnet\tnode1\tchip0\tx0\ty0\tnode2\tchip1\tx1\ty1\ta"
-  //     "ltPath\tsameChp\tpathType\tchipL\tchip2\tx2\ty2\n\r");
+  target->flush();
 }
 
-void printChipStatus(void) {
-  Serial.println(
+void printChipStatus(Stream* target) {
+  target->println(
       "\n\rchip\t0    1    2    3    4    5    6    7    8    9    10   "
       "11   "
       "12   13   14   15\t\t0    1    2    3    4    5    6    7");
   for (int i = 0; i < 12; i++) {
     int spaces = 0;
-    Serial.print(chipNumToChar(i));
-    Serial.print("\t");
+    target->print(chipNumToChar(i));
+    target->print("\t");
     for (int j = 0; j < 16; j++) {
       if (globalState.connections.chipStates[i].xStatus[j] == -1) {
-        spaces += Serial.print(".");
+        spaces += target->print(".");
       } else {
-        changeTerminalColor(globalState.connections.nets[globalState.connections.chipStates[i].xStatus[j]].termColor);
-        spaces += printNetOrNumber(globalState.connections.chipStates[i].xStatus[j]);
-        changeTerminalColor();
+        changeTerminalColor(globalState.connections.nets[globalState.connections.chipStates[i].xStatus[j]].termColor, false, target);
+        spaces += printNetOrNumber(globalState.connections.chipStates[i].xStatus[j], target);
+        changeTerminalColor(-1, false, target);
       }
       for (int k = 0; k < 4 - spaces; k++) {
-        Serial.print(" ");
+        target->print(" ");
       }
-      Serial.print(" ");
+      target->print(" ");
       spaces = 0;
     }
-    Serial.print("\t");
+    target->print("\t");
     for (int j = 0; j < 8; j++) {
       if (globalState.connections.chipStates[i].yStatus[j] == -1) {
-        spaces += Serial.print(".");
+        spaces += target->print(".");
       } else {
-        changeTerminalColor(globalState.connections.nets[globalState.connections.chipStates[i].yStatus[j]].termColor);
-        spaces += printNetOrNumber(globalState.connections.chipStates[i].yStatus[j]);
-        changeTerminalColor();
+        changeTerminalColor(globalState.connections.nets[globalState.connections.chipStates[i].yStatus[j]].termColor, false, target);
+        spaces += printNetOrNumber(globalState.connections.chipStates[i].yStatus[j], target);
+        changeTerminalColor(-1, false, target);
       }
 
       for (int k = 0; k < 4 - spaces; k++) {
-        Serial.print(" ");
+        target->print(" ");
       }
-      Serial.print(" ");
+      target->print(" ");
       spaces = 0;
     }
     if (i == 7) {
-      Serial.print("\n\n\rchip\t0    1    2    3    4    5    6    7    "
+      target->print("\n\n\rchip\t0    1    2    3    4    5    6    7    "
                    "8    9    10   "
                    "11   12   13   14   15\t\t0    1    2    3    4    5 "
                    "   6    7");
     }
-    Serial.println(" ");
+    target->println(" ");
   }
+  target->flush();
 }
 
 void findStartAndEndChips(int node1, int node2, int pathIdx) {
@@ -6616,28 +6594,28 @@ void printPathArray(void) // this also prints candidates and x y
   }
 }
 
-int printPathType(int pathIndex) {
+int printPathType(int pathIndex, Stream* target) {
   switch (globalState.connections.paths[pathIndex].pathType) {
   case 0:
-    return Serial.print("BB to BB");
+    return target->print("BB to BB");
     break;
   case 1:
-    return Serial.print("BB to NANO");
+    return target->print("BB to NANO");
     break;
   case 2:
-    return Serial.print("NANO to NANO");
+    return target->print("NANO to NANO");
     break;
   case 3:
-    return Serial.print("BB to SF");
+    return target->print("BB to SF");
     break;
   case 4:
-    return Serial.print("NANO to SF");
+    return target->print("NANO to SF");
     break;
-  case 10:  // VIRTUAL is the 11th enum value (0-10)
-    return Serial.print("VIRTUAL");
+  case 10:
+    return target->print("VIRTUAL");
     break;
   default:
-    return Serial.print("Not Assigned");
+    return target->print("Not Assigned");
     break;
   }
 }

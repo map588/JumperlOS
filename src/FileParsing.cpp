@@ -105,7 +105,16 @@ int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
   fs_mutex_acquire();
 
   core1request = 1;
-  while (core2busy == true) {
+  {
+    unsigned long _t = micros();
+    while (core2busy) {
+      __dmb();
+      if (micros() - _t > 25000) { core2busy = false; break; }
+      #ifdef USE_TINYUSB
+      extern void tud_task(void);
+      tud_task();
+      #endif
+    }
   }
   core1request = 0;
   core1busy = true;
@@ -162,8 +171,16 @@ int openFileThreadSafe(int openTypeEnum, int slot, int flashOrLocal) {
 
 void writeMenuTree(void) {
   fs_mutex_acquire();  // THREAD SAFETY: Lock filesystem
-  while (core2busy == true) {
-    // Jerial.println("waiting for core2 to finish");
+  {
+    unsigned long _t = micros();
+    while (core2busy) {
+      __dmb();
+      if (micros() - _t > 25000) { core2busy = false; break; }
+      #ifdef USE_TINYUSB
+      extern void tud_task(void);
+      tud_task();
+      #endif
+    }
   }
   core1busy = true;
   // FatFS.begin();
@@ -3007,8 +3024,17 @@ int printChangedNetColorFile(int slot, int flashOrLocal) {
     // Print from cache (currentColorSlotColorsString)
     // The cache always refers to the current netSlot, so 'slot' param is
     // implicitly current netSlot
-    core1request = 1; // Lock for reading global variable
-    while (core2busy == true) {
+    core1request = 1;
+    {
+      unsigned long _t = micros();
+      while (core2busy) {
+        __dmb();
+        if (micros() - _t > 25000) { core2busy = false; break; }
+        #ifdef USE_TINYUSB
+        extern void tud_task(void);
+        tud_task();
+        #endif
+      }
     }
     core1request = 0;
     core1busy = true;

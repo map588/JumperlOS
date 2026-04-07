@@ -12,6 +12,7 @@
 #include "Peripherals.h"
 #include "PersistentStuff.h"
 #include "Probing.h"
+#include "externVars.h"
 
 #include <cstdarg>
 
@@ -47,30 +48,22 @@ bool safeFlush(Stream *stream, unsigned long timeoutMs = 50) {
   if (!stream) return false;
   
   unsigned long startTime = millis();
-  size_t initialAvailable = Jerial.availableForWrite();
+  size_t initialAvailable = stream->availableForWrite();
   
-  // If buffer is nearly empty, try a quick flush
-  if (initialAvailable > Jerial.availableForWrite() * 0.8) {
-    Jerial.flush();
-    return true;
-  }
-  
-  // Wait for buffer to drain with timeout
-  while (millis() - startTime < timeoutMs) {
-    size_t currentAvailable = Jerial.availableForWrite();
-    
-    // If buffer has drained significantly, it's safe to flush
-    if (currentAvailable > initialAvailable * 0.5) {
-      Jerial.flush();
-      return true;
+  if (initialAvailable == 0) {
+    // Buffer completely full -- wait a bit then try
+    while (millis() - startTime < timeoutMs) {
+      if (stream->availableForWrite() > 0) {
+        stream->flush();
+        return true;
+      }
+      delayMicroseconds(50);
     }
-    
-    // Small delay to prevent busy waiting
-    delayMicroseconds(50);  // Reduced from 100
+    return false;
   }
-  
-  // Timeout reached - don't flush
-  return false;
+
+  stream->flush();
+  return true;
 }
 
 // Safe print function that checks buffer space
@@ -80,17 +73,16 @@ bool safePrint(Stream *stream, const char *text, unsigned long timeoutMs = 50) {
   size_t textLen = strlen(text);
   unsigned long startTime = millis();
   
-  // Wait for enough buffer space
-  while (Jerial.availableForWrite() < textLen && (millis() - startTime) < timeoutMs) {
+  while ((size_t)stream->availableForWrite() < textLen && (millis() - startTime) < timeoutMs) {
     delayMicroseconds(100);
   }
   
-  if (Jerial.availableForWrite() >= textLen) {
-    Jerial.print(text);
+  if ((size_t)stream->availableForWrite() >= textLen) {
+    stream->print(text);
     return true;
   }
   
-  return false; // Timeout or insufficient buffer
+  return false;
 }
 
 // Safe printf function
@@ -3761,22 +3753,8 @@ int serial2ClearSent = 0;
 
 // #define CSI "\033[
 
-// Global variables for screen buffer management
-static char** screenLinesBuffer = nullptr;
-static bool screenLinesAllocated = false;
-
-// Helper function to free dumpLEDs screen buffer (call when LED dumping is disabled)
 void freeDumpLEDsBuffer() {
-  if (screenLinesAllocated && screenLinesBuffer != nullptr) {
-    for (int i = 0; i < 50; i++) {  // MAX_LINES
-      if (screenLinesBuffer[i] != nullptr) {
-        delete[] screenLinesBuffer[i];
-      }
-    }
-    delete[] screenLinesBuffer;
-    screenLinesBuffer = nullptr;
-    screenLinesAllocated = false;
-  }
+  // No-op: streaming dumpLEDs no longer allocates a screen buffer.
 }
 
 /// @brief Enable/disable LED dump display with scrolling region
@@ -3834,439 +3812,268 @@ void clearNonScrollingRegion(void) {
   Serial.flush();
 }
 
+// ─── dumpLEDs helpers ────────────────────────────────────────────────────────
+//
+// Print a two-tone label block:  ▐XXYY▌
+//   left half has bg = tcL, right half has bg = tcR, text is black
+static void dumpLabel(Stream *s, int tcL, int tcR,
+                      const char *tL, const char *tR,
+                      int &fg, int &bg) {
+  if (tcL != fg) { s->printf("\033[38;5;%dm", tcL); fg = tcL; }
+  s->print("▐");
+  s->printf("\033[38;5;0m\033[48;5;%dm", tcL); fg = 0; bg = tcL;
+  s->print(tL);
+  if (tcR != bg) { s->printf("\033[48;5;%dm", tcR); bg = tcR; }
+  s->print(tR);
+  s->print("\033[0m"); fg = -1; bg = -1;
+  s->printf("\033[38;5;%dm▌\033[0m", tcR); fg = -1;
+}
+
+// Print 15 header-pin names with per-pin background colour
+static void dumpPins(Stream *s, int first, int count,
+                     const int tc[], int &fg, int &bg) {
+  for (int i = first; i < first + count; i++) {
+    int hi = headerMapPrintOrder[i];
+    if (tc[hi] != bg) { s->printf("\033[48;5;%dm", tc[hi]); bg = tc[hi]; }
+    s->printf("%3s", headerMap[hi].name);
+  }
+  s->print("\033[0m"); fg = -1; bg = -1;
+}
+
+// Print one LED-grid row  (rail = ▐█ with gaps, main = █▏ continuous)
+// Re-emit the color escape every few cells so slow terminals don't lose it.
+static const int resendColorAfterCells = 1;
+
+static void dumpGridRow(Stream *s, int row, bool rail, int &fg, int &bg) {
+  s->print("│ ");
+  const char *glyph = rail ? "▐█" : "█▏";
+  int sinceLast = 0;
+  for (int col = 0; col < 30; col++) {
+    if (rail && (col + 1) % 6 == 0) { s->print("  "); sinceLast = 0; continue; }
+    uint32_t c = leds.getPixelColor(screenMap[row * 30 + col]);
+    int tc = c ? colorToVT100(c, 256) : 0;
+    if (tc != fg || sinceLast >= resendColorAfterCells) {
+      s->printf("\033[38;5;%dm", tc); fg = tc; sinceLast = 0;
+    }
+    s->print(glyph);
+    sinceLast++;
+  }
+  s->print("\033[0m│"); fg = -1; bg = -1;
+}
+
+// ─── dumpLEDs ────────────────────────────────────────────────────────────────
+//
+// Streams this exact display, applying colours inline.  No buffer needed.
+//
+//        ▐ADC▌
+//    ▗▄▖         ╭─────────────────────────────────────────────╮
+//   ▐█▔▚▋ ▐DAC▌  │D12D11D10 D9 D8 D7 D6 D5 D4 D3 D2GNDRST D0 D1│
+//   ▐▚▁█▋        │                                             │
+//    ▝▀▘  ▐GPIO▌ │D133V3REF A0 A1 A2 A3 A4 A5 A6 A7 5VRSTGNDVIN│
+//                ╰─────────────────────────────────────────────╯
+//
+//  ╭─────────────────────────────────────────────────────────────╮
+//  │ ▐█▐█▐█▐█▐█  ▐█▐█▐█▐█▐█  ...  ▐█▐█▐█▐█▐█  │   ×2  rail
+//  │ ₁       ₅         ₁₀        ₁₅        ₂₀        ₂₅        ₃₀│
+//  │ █▏█▏█▏█▏█▏█▏█▏█▏█▏█▏ ... █▏█▏█▏█▏█▏█▏█▏█▏█▏█▏│   ×5  main
+//  │        J    U    M    P    E    R    L    E    S    S       │
+//  │ █▏█▏ ... █▏│                                        ×5  main
+//  │ ³¹      ³⁵        ⁴⁰        ⁴⁵        ⁵⁰        ⁵⁵        ⁶⁰│
+//  │ ▐█▐█ ... ▐█  │                                      ×2  rail
+//  ╰─────────────────────────────────────────────────────────────╯
+
 void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
               int logo, Stream *stream) {
 
-  // When both coordinates are negative we enter "inline mode".  In this
-  // special case the function must not move the cursor, clear the screen or
-  // otherwise reposition the terminal – it simply emits the ANSI lines
-  // consecutively at the current cursor position.  This is useful for
-  // callers that want to print an LED snapshot inline in a scrolling log.
   bool inlineMode = (posX < 0 && posY < 0);
-
-  // return;
   bool mainSerial = false;
-  int xOffset = 40;
-  // Rate limiting - prevent excessive calls
-  if (millis() - lastDumpAttemptTime < minDumpInterval) {
-    return;
-  }
+
+  if (millis() - lastDumpAttemptTime < minDumpInterval) return;
   lastDumpAttemptTime = millis();
+  if (dumpingToSerial) return;
+  dumpingToSerial = true;
 
-  if (dumpingToSerial == false) {
-    dumpingToSerial = true;
-  } else {
-    return;
-  }
+  unsigned long t0 = millis();
 
-  unsigned long functionStartTime = millis();
-  const unsigned long FUNCTION_TIMEOUT_MS = 600;
-
+  // ── serial-port selection (unchanged) ──
   if (jumperlessConfig.serial_2.function == 5 ||
       jumperlessConfig.serial_2.function == 6) {
     stream = &USBSer2;
-    bool currentlyConnected =
-        USBSer2.dtr() && (USBSer2.availableForWrite() >= 50);
-
-    if (!currentlyConnected) {
-      serial2Connected = false;
-      serial2ClearSent = 0;
-      dumpingToSerial = false;
-      return;
-    }
-
-    // Record connection time when first connecting
-    if (!serial2Connected && currentlyConnected) {
-      serial2Connected = true;
-      serial2ConnectTime = millis();
-      serial2ClearSent = 0;
-      Jerial.println("Serial 2 DTR connected");
-    }
-
-    // Send clear screen 1 second after connection is established
-    if (serial2Connected && serial2ClearSent < 2 &&
-        (millis() - serial2ConnectTime >= 100)) {
-      if (!inlineMode) {
-        // only clear the screen when we are laying out in a fixed region
-        if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) {
-          dumpingToSerial = false;
-          return;
-        }
-      }
+    bool ok = USBSer2.dtr() && (USBSer2.availableForWrite() >= 50);
+    if (!ok) { serial2Connected = false; serial2ClearSent = 0; dumpingToSerial = false; return; }
+    if (!serial2Connected && ok) { serial2Connected = true; serial2ConnectTime = millis(); serial2ClearSent = 0; }
+    if (serial2Connected && serial2ClearSent < 2 && (millis() - serial2ConnectTime >= 100)) {
+      if (!inlineMode) { if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) { dumpingToSerial = false; return; } }
       serial2ClearSent++;
     }
   } else if (jumperlessConfig.serial_1.function == 5 ||
              jumperlessConfig.serial_1.function == 6) {
     stream = &USBSer1;
-    bool currentlyConnected =
-        USBSer1.dtr() && (USBSer1.availableForWrite() >= 50);
-
-    if (!currentlyConnected) {
-      serial1Connected = false;
-      serial1ClearSent = 0;
-      dumpingToSerial = false;
-      return;
-    }
-
-    // Record connection time when first connecting
-    if (!serial1Connected && currentlyConnected) {
-      serial1Connected = true;
-      serial1ConnectTime = millis();
-      serial1ClearSent = 0;
-      Jerial.println("Serial 1 DTR connected");
-    }
-
-    // Send clear screen 1 second after connection is established
-    if (serial1Connected && serial1ClearSent < 2 &&
-        (millis() - serial1ConnectTime >= 100)) {
-      if (!inlineMode) {
-        if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) {
-          dumpingToSerial = false;
-          return;
-        }
-      }
+    bool ok = USBSer1.dtr() && (USBSer1.availableForWrite() >= 50);
+    if (!ok) { serial1Connected = false; serial1ClearSent = 0; dumpingToSerial = false; return; }
+    if (!serial1Connected && ok) { serial1Connected = true; serial1ConnectTime = millis(); serial1ClearSent = 0; }
+    if (serial1Connected && serial1ClearSent < 2 && (millis() - serial1ConnectTime >= 100)) {
+      if (!inlineMode) { if (!safePrint(stream, "\033[2J\033[?25l\033[0;0H", 10)) { dumpingToSerial = false; return; } }
       serial1ClearSent++;
     }
   } else {
-    // Check if windowing system is active
-
-    // if (!useWindowing) {
-      // Legacy positioning for non-windowing mode
-      if (!inlineMode) {
-        saveCursorPosition(stream);
-      }
-   
-    // Windowing mode: WindowManager handles all positioning
-    // if we're printing inline there is no special area so don't use the
-    // scroll-region path later.
-    if (!inlineMode) {
-      mainSerial = true;
-    }
+    if (!inlineMode) { saveCursorPosition(stream); mainSerial = true; }
   }
 
-  if (logoLedAccess == true) {
-    dumpingToSerial = false;
-    return;
-  }
+  if (logoLedAccess) { dumpingToSerial = false; return; }
   logoLedAccess = true;
 
-// Build screen line by line - much simpler approach
-#define MAX_LINES 50
-#define LINE_WIDTH 700 // Much wider to accommodate ANSI escape sequences
-  
-  // Dynamic allocation for screen buffer (saves 34KB when not dumping LEDs)
-  static char** screenLinesBuffer = nullptr;
-  static bool screenLinesAllocated = false;
-  
-  // Allocate buffer if not already allocated
-  if (!screenLinesAllocated) {
-    screenLinesBuffer = new (std::nothrow) char*[MAX_LINES];
-    if (screenLinesBuffer != nullptr) {
-      bool alloc_success = true;
-      for (int i = 0; i < MAX_LINES; i++) {
-        screenLinesBuffer[i] = new (std::nothrow) char[LINE_WIDTH];
-        if (screenLinesBuffer[i] == nullptr) {
-          // Allocation failed - clean up
-          for (int j = 0; j < i; j++) {
-            delete[] screenLinesBuffer[j];
-          }
-          delete[] screenLinesBuffer;
-          screenLinesBuffer = nullptr;
-          alloc_success = false;
-          break;
-        }
-      }
-      if (alloc_success) {
-        screenLinesAllocated = true;
-      }
-    }
-    
-    if (!screenLinesAllocated) {
-      Serial.println("dumpLEDs: Failed to allocate screen buffer (34KB)");
-      logoLedAccess = false;
-      dumpingToSerial = false;
-      return;
-    }
-  }
-  
-  char** screenLines = screenLinesBuffer;  // Use allocated buffer
-  int currentLine = 0;
+  // ── snapshot colours while holding logoLedAccess ──
+  int lc[7];
+  for (int i = 0; i < 7; i++)
+    lc[i] = colorToVT100(leds.getPixelColor(LOGO_LED_START + i), 256);
 
-  // Clear all lines
-  for (int i = 0; i < MAX_LINES; i++) {
-    memset(screenLines[i], 0, LINE_WIDTH);
+  uint32_t adc0C = leds.getPixelColor(ADC_LED_0) | 0x00000f;
+  uint32_t adc1C = leds.getPixelColor(ADC_LED_1) | 0x0f0000;
+  uint32_t dac0C = leds.getPixelColor(DAC_LED_0) | 0x1f0300; dac0C &= 0xff20ff;
+  uint32_t dac1C = leds.getPixelColor(DAC_LED_1) | 0x050000;
+  uint32_t gp0C  = leds.getPixelColor(GPIO_LED_0) | 0x054f00;
+  uint32_t gp1C  = leds.getPixelColor(GPIO_LED_1) & 0xff40ff;
+
+  if (logoOverriden) {
+    if (getLogoOverrideUnlocked(ADC_0)  != (uint32_t)-1) adc0C = 0xFFbFFF;
+    if (getLogoOverrideUnlocked(ADC_1)  != (uint32_t)-1) adc1C = 0xFFbFFF;
+    if (getLogoOverrideUnlocked(DAC_0)  != (uint32_t)-1) dac0C = 0xFFFFbF;
+    if (getLogoOverrideUnlocked(DAC_1)  != (uint32_t)-1) dac1C = 0xFFFFbF;
+    if (getLogoOverrideUnlocked(GPIO_0) != (uint32_t)-1) gp0C  = 0xBFFFFF;
+    if (getLogoOverrideUnlocked(GPIO_1) != (uint32_t)-1) gp1C  = 0xBFFFFF;
   }
 
-  int logoColor0 = colorToVT100(leds.getPixelColor(LOGO_LED_START), 256);
-  int logoColor1 = colorToVT100(leds.getPixelColor(LOGO_LED_START + 1), 256);
-  int logoColor2 = colorToVT100(leds.getPixelColor(LOGO_LED_START + 2), 256);
-  int logoColor3 = colorToVT100(leds.getPixelColor(LOGO_LED_START + 3), 256);
-  int logoColor4 = colorToVT100(leds.getPixelColor(LOGO_LED_START + 4), 256);
-  int logoColor5 = colorToVT100(leds.getPixelColor(LOGO_LED_START + 5), 256);
-  int logoColor6 = colorToVT100(leds.getPixelColor(LOGO_LED_START + 6), 256);
+  int atc[2] = { adc0C ? colorToVT100(adc0C, 256) : 0,
+                 adc1C ? colorToVT100(adc1C, 256) : 0 };
+  int dtc[2] = { dac0C ? colorToVT100(dac0C, 256) : 0,
+                 dac1C ? colorToVT100(dac1C, 256) : 0 };
+  int gtc[2] = { gp0C  ? colorToVT100(gp0C,  256) : 0,
+                 gp1C  ? colorToVT100(gp1C,  256) : 0 };
 
-  // Get logo colors with override handling for all LED pairs
-  uint32_t adc0Color = leds.getPixelColor(ADC_LED_0) | 0x00000f;
-  uint32_t adc1Color = leds.getPixelColor(ADC_LED_1) | 0x0f0000;
-  uint32_t dac0Color = leds.getPixelColor(DAC_LED_0) | 0x1f0300;
-  dac0Color &= 0xff20ff;
-  uint32_t dac1Color = leds.getPixelColor(DAC_LED_1) | 0x050000;
-  uint32_t gpio0Color = leds.getPixelColor(GPIO_LED_0) | 0x054f00;
-  uint32_t gpio1Color = leds.getPixelColor(GPIO_LED_1) & 0xff40ff;
-
-  // Check for logo overrides
-  if (logoOverriden == true) {
-    logoLedAccess = false;
-    uint32_t adc0Override = getLogoOverride(ADC_0);
-    uint32_t adc1Override = getLogoOverride(ADC_1);
-    uint32_t dac0Override = getLogoOverride(DAC_0);
-    uint32_t dac1Override = getLogoOverride(DAC_1);
-    uint32_t gpio0Override = getLogoOverride(GPIO_0);
-    uint32_t gpio1Override = getLogoOverride(GPIO_1);
-
-    if (adc0Override != -1) {
-      adc0Color = 0xFFbFFF; // Use white for -2 override
-    }
-    if (adc1Override != -1) {
-      adc1Color = 0xFFbFFF;
-    }
-
-    if (dac0Override != -1) {
-      dac0Color = 0xFFFFbF;
-    }
-
-    if (dac1Override != -1) {
-      dac1Color = 0xFFFFbF;
-    }
-
-    if (gpio0Override != -1) {
-      gpio0Color = 0xBFFFFF;
-    }
-
-    if (gpio1Override != -1) {
-      gpio1Color = 0xBFFFFF;
-    }
+  int hdrTC[30];
+  for (int i = 0; i < 30; i++) {
+    uint32_t c = leds.getPixelColor(headerMap[i].pixel);
+    hdrTC[i] = c ? colorToVT100(c, 256) : 0;
   }
-
-  // Convert to terminal colors
-  int adc0TermColor = colorToVT100(adc0Color, 256);
-  int adc1TermColor = colorToVT100(adc1Color, 256);
-  int dac0TermColor = colorToVT100(dac0Color, 256);
-  int dac1TermColor = colorToVT100(dac1Color, 256);
-  int gpio0TermColor = colorToVT100(gpio0Color, 256);
-  int gpio1TermColor = colorToVT100(gpio1Color, 256);
-
-  if (adc0Color == 0x000000)
-    adc0TermColor = 0;
-  if (adc1Color == 0x000000)
-    adc1TermColor = 0;
-  if (dac0Color == 0x000000)
-    dac0TermColor = 0;
-  if (dac1Color == 0x000000)
-    dac1TermColor = 0;
-  if (gpio0Color == 0x000000)
-    gpio0TermColor = 0;
-  if (gpio1Color == 0x000000)
-    gpio1TermColor = 0;
-
-  // Header section with integrated logo
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "       "
-           "\033[38;5;%dm▐\033[38;5;0m\033[48;5;%dmAD\033[38;5;0m\033[48;5;%dmC\033[0m\033[38;5;"
-           "%dm▌\033[0m                                                   ",
-           adc0TermColor, adc0TermColor, adc1TermColor, adc1TermColor);//!ADC
-
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "   \033[38;5;%dm▗▄▖\033[0m         "
-           "╭─────────────────────────────────────────────╮ ",
-           logoColor0);
-
-  // Build DAC line with first header row on same line
-  char dacHeaderLine[LINE_WIDTH];
-  int pos = 0;
-  pos += snprintf(dacHeaderLine + pos, LINE_WIDTH - pos,
-                  "  \033[38;5;%dm▐█\033[38;5;%dm▔\033[38;5;%dm▚▋\033[0m ",
-                  logoColor1, logoColor0, logoColor5);
-  pos += snprintf(dacHeaderLine + pos, LINE_WIDTH - pos,
-                  "\033[38;5;%dm▐\033[38;5;0m\033[48;5;%dmDA\033[38;5;0m\033[48;5;%dmC\033[0m\033[38;5;"
-                  "%dm▌\033[0m  │",
-                  dac0TermColor, dac0TermColor, dac1TermColor, dac1TermColor);//!DAC
-
-  for (int i = 0; i < 15; i++) {
-    int headerIndex = headerMapPrintOrder[i];
-    uint32_t color = leds.getPixelColor(headerMap[headerIndex].pixel);
-    int termColor = colorToVT100(color, 256);
-
-    if (color == 0x000000) {
-      termColor = 0;
-    }
-
-    pos += snprintf(dacHeaderLine + pos, LINE_WIDTH - pos,
-                    "\033[48;5;%dm%3s\033[0m", termColor,
-                    headerMap[headerIndex].name);
-    // if (i < 14) { // Add space between pins except after the last one
-    // pos += snprintf(dacHeaderLine + pos, LINE_WIDTH - pos, " ");
-    //}
-  }
-  pos += snprintf(dacHeaderLine + pos, LINE_WIDTH - pos, "│");
-  snprintf(screenLines[currentLine++], LINE_WIDTH, "%s", dacHeaderLine);
-
-  // Middle spacer with logo part
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "  \033[38;5;%dm▐▚\033[38;5;%dm▁\033[38;5;%dm█▋\033[0m        │     "
-           "                                        │ ",
-           logoColor2, logoColor3, logoColor4);
-
-  // Build GPIO line with second header row on same line
-  char gpioHeaderLine[LINE_WIDTH];
-  pos = 0;
-  pos += snprintf(gpioHeaderLine + pos, LINE_WIDTH - pos,
-                  "   \033[38;5;%dm▝▀▘  "
-                  "\033[38;5;%dm▐\033[38;5;0m\033[48;5;%dmGP\033[38;5;0m\033[48;5;%dmIO\033[0m\033[38;"
-                  "5;%dm▌\033[0m │",
-                  logoColor3, gpio0TermColor, gpio0TermColor, gpio1TermColor,
-                  gpio1TermColor);//!GPIO
-
-  for (int i = 15; i < 30; i++) {
-    int headerIndex = headerMapPrintOrder[i];
-    uint32_t color = leds.getPixelColor(headerMap[headerIndex].pixel);
-    int termColor = colorToVT100(color, 256);
-
-    if (color == 0x000000) {
-      termColor = 0;
-    }
-
-    pos += snprintf(gpioHeaderLine + pos, LINE_WIDTH - pos,
-                    "\033[48;5;%dm%3s\033[0m", termColor,
-                    headerMap[headerIndex].name);
-    // if (i < 29) { // Add space between pins except after the last one
-    //   pos += snprintf(gpioHeaderLine + pos, LINE_WIDTH - pos, " ");
-    // }
-  }
-  pos += snprintf(gpioHeaderLine + pos, LINE_WIDTH - pos, "│               ");
-  snprintf(screenLines[currentLine++], LINE_WIDTH, "%s", gpioHeaderLine);
-
-  // Close header - aligned with the box
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "               ╰─────────────────────────────────────────────╯          ");
-
-  // Empty line
-  snprintf(screenLines[currentLine++], LINE_WIDTH, "                                                                ");
-
-  // Main LED grid
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "╭─────────────────────────────────────────────────────────────╮             ");
-
-  // Process LED grid rows
-  for (int row = 0; row < 14 && currentLine < MAX_LINES - 1; row++) {
-    bool rail = (row == 0 || row == 1 || row == 12 || row == 13);
-
-    char ledLine[LINE_WIDTH];
-    int pos = 0;
-    pos += snprintf(ledLine + pos, LINE_WIDTH - pos, "│ ");
-
-    // Process columns for this row
-    for (int col = 0; col < 30; col++) {
-      if (rail && (col + 1) % 6 == 0) {
-        pos += snprintf(ledLine + pos, LINE_WIDTH - pos, "  ");
-        continue;
-      }
-
-      int mapIndex = row * 30 + col;
-      int ledIndex = screenMap[mapIndex];
-      uint32_t color = leds.getPixelColor(ledIndex);
-      int termColor = colorToVT100(color, 256);
-
-      if (color == 0x000000) {
-        termColor = 0;
-      }
-
-      const char *pattern = rail ? "▐█" : "█▏";
-      pos += snprintf(ledLine + pos, LINE_WIDTH - pos, "\033[38;5;%dm%s\033[0m",
-                      termColor, pattern);
-    }
-
-    pos += snprintf(ledLine + pos, LINE_WIDTH - pos, "│          ");
-    snprintf(screenLines[currentLine++], LINE_WIDTH, "%s", ledLine);
-
-    // Add special spacing rows
-    if (row == 1) {
-      snprintf(
-          screenLines[currentLine++], LINE_WIDTH,
-          "│ ₁       ₅         ₁₀        ₁₅        ₂₀        ₂₅        ₃₀│         ");
-    } else if (row == 6) {
-      snprintf(screenLines[currentLine++], LINE_WIDTH,
-               "\033[0m│ \033[38;5;236m       J    U    M    P    E    R    L  "
-               "  E    S    S       \033[0m│        ");
-    } else if (row == 11) {
-      snprintf(
-          screenLines[currentLine++], LINE_WIDTH,
-          "│ ³¹      ³⁵        ⁴⁰        ⁴⁵        ⁵⁰        ⁵⁵        ⁶⁰│          ");
-    }
-  }
-
-  // Close LED grid
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "╰─────────────────────────────────────────────────────────────╯");
-  
-  // Clear line below to remove any leftover content from previous renders
-  snprintf(screenLines[currentLine++], LINE_WIDTH,
-           "                                                                 ");
 
   logoLedAccess = false;
 
-  // Output handling - use scrolling region approach when ledDumpEnabled
-  if (mainSerial == true && ledDumpEnabled && (stream == &Jerial || stream == &Serial)) {
-    // Scrolling region mode: use DECSC/DECRC (ESC 7 / ESC 8) for save/restore cursor
-    // This draws in the non-scrolling area at top without disturbing scrolling region
-    stream->print("\0337");  // DECSC - save cursor position
-    stream->print("\033[H"); // Move to home (top-left, non-scrolling area)
-    
-    // Send all lines to the fixed area
-    for (int i = 0; i < currentLine; i++) {
-      if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
-        break;
-      }
-      stream->print(screenLines[i]);
-      stream->print("\033[K\r\n");  // Clear to EOL + newline
-    }
-    
-    stream->print("\0338");  // DECRC - restore cursor position
-    stream->flush();
-  } else {
-    // Standard stream output (Port 4, Serial 1, Serial 2, or broadcast)
-    // Position at 0,0 if it's a TUI port.  When printing inline we leave
-    // the cursor where it is.
-    if (!inlineMode && stream != &Jerial && stream != &Serial) {
-        stream->print("\033[0;0H\033[0m");
-    }
-    
-    for (int i = 0; i < currentLine; i++) {
-      if (millis() - functionStartTime > FUNCTION_TIMEOUT_MS) {
-        break;
-      }
+  // ── colour-tracked streaming ──
+  int curFg = -1, curBg = -1;
+  #define FG(c)  do { if ((c) != curFg) { stream->printf("\033[38;5;%dm",(c)); curFg=(c); } } while(0)
+  #define BG(c)  do { if ((c) != curBg) { stream->printf("\033[48;5;%dm",(c)); curBg=(c); } } while(0)
+  #define RST()  do { stream->print("\033[0m"); curFg=-1; curBg=-1; } while(0)
+  #define BAIL() (pauseCore2 || (millis() - t0 > 600))
 
-      int lineLen = strlen(screenLines[i]);
-      if (stream->availableForWrite() < lineLen + 3) {
-        unsigned long waitStart = millis();
-        while (stream->availableForWrite() < lineLen + 3 &&
-               (millis() - waitStart) < 10) {
-          delayMicroseconds(10);
-        }
-      }
+  bool scrl = mainSerial && ledDumpEnabled &&
+              (stream == &Jerial || stream == &Serial);
+  #define EOL() do { if (scrl) stream->print("\033[K"); stream->print("\r\n"); } while(0)
 
-      stream->print(screenLines[i]);
-      stream->print("\r\n");
+  if (scrl)
+    stream->print("\0337\033[H");
+  else if (!inlineMode && stream != &Jerial && stream != &Serial)
+    stream->print("\033[0;0H\033[0m");
+
+  // ──────────────────────── HEADER ────────────────────────
+  //        ▐ADC▌
+  stream->print("       ");
+  dumpLabel(stream, atc[0], atc[1], "AD", "C", curFg, curBg);
+  EOL();
+
+  //    ▗▄▖         ╭─────────────────────────────────────────────╮
+  stream->print("   ");
+  FG(lc[0]); stream->print("▗▄▖"); RST();
+  stream->print("         ╭─────────────────────────────────────────────╮");
+  EOL(); if (BAIL()) goto done;
+
+  //   ▐█▔▚▋ ▐DAC▌  │D12D11D10 D9 D8 D7 D6 D5 D4 D3 D2GNDRST D0 D1│
+  stream->print("  ");
+  FG(lc[1]); stream->print("▐█");
+  FG(lc[0]); stream->print("▔");
+  FG(lc[5]); stream->print("▚▋"); RST();
+  stream->print(" ");
+  dumpLabel(stream, dtc[0], dtc[1], "DA", "C", curFg, curBg);
+  stream->print("  │");
+  dumpPins(stream, 0, 15, hdrTC, curFg, curBg);
+  stream->print("│");
+  EOL(); if (BAIL()) goto done;
+
+  //   ▐▚▁█▋        │                                             │
+  stream->print("  ");
+  FG(lc[2]); stream->print("▐▚");
+  FG(lc[3]); stream->print("▁");
+  FG(lc[4]); stream->print("█▋"); RST();
+  stream->print("        │                                             │");
+  EOL();
+
+  //    ▝▀▘  ▐GPIO▌ │D133V3REF A0 A1 A2 A3 A4 A5 A6 A7 5VRSTGNDVIN│
+  stream->print("   ");
+  FG(lc[3]); stream->print("▝▀▘"); RST();
+  stream->print("  ");
+  dumpLabel(stream, gtc[0], gtc[1], "GP", "IO", curFg, curBg);
+  stream->print(" │");
+  dumpPins(stream, 15, 15, hdrTC, curFg, curBg);
+  stream->print("│");
+  EOL(); if (BAIL()) goto done;
+
+  //                ╰─────────────────────────────────────────────╯
+  stream->print("               ╰─────────────────────────────────────────────╯");
+  EOL();
+  safeFlush(stream, 10);
+
+  // ──────────────────────── GRID ─────────────────────────
+  EOL();
+  // ╭─────────────────────────────────────────────────────────────╮
+  stream->print("╭─────────────────────────────────────────────────────────────╮");
+  EOL();
+
+  for (int row = 0; row < 14; row++) {
+    if (BAIL()) break;
+    bool rail = (row == 0 || row == 1 || row == 12 || row == 13);
+
+    // │ ▐█▐█...▐█  │  or  │ █▏█▏...█▏│
+    dumpGridRow(stream, row, rail, curFg, curBg);
+    EOL();
+
+    // ── spacing labels between row groups ──
+    if (row == 1) {
+      // │ ₁       ₅         ₁₀        ₁₅        ₂₀        ₂₅        ₃₀│
+      stream->print("│ ₁       ₅         ₁₀        ₁₅        ₂₀        ₂₅        ₃₀│");
+      EOL();
+      safeFlush(stream, 10);
+    } else if (row == 6) {
+      // │        J    U    M    P    E    R    L    E    S    S       │
+      stream->print("│ ");
+      FG(236); stream->print("       J    U    M    P    E    R    L    E    S    S       ");
+      RST(); stream->print("│");
+      EOL();
+      safeFlush(stream, 10);
+    } else if (row == 11) {
+      // │ ³¹      ³⁵        ⁴⁰        ⁴⁵        ⁵⁰        ⁵⁵        ⁶⁰│
+      stream->print("│ ³¹      ³⁵        ⁴⁰        ⁴⁵        ⁵⁰        ⁵⁵        ⁶⁰│");
+      EOL();
+      safeFlush(stream, 10);
     }
   }
 
+  // ╰─────────────────────────────────────────────────────────────╯
+  stream->print("╰─────────────────────────────────────────────────────────────╯");
+  EOL(); EOL();
 
-
-
-
-  // Final flush
+done:
+  if (scrl) {
+    stream->print("\0338");
+    if (!pauseCore2) stream->flush();
+  }
   safeFlush(stream, 10);
   dumpingToSerial = false;
+
+  #undef FG
+  #undef BG
+  #undef RST
+  #undef EOL
+  #undef BAIL
 }
 
 
@@ -5008,6 +4815,7 @@ void drawImage(int imageIndex) {
       1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0,
   };
   int lineIndex = 0;
+  const uint32_t *frame = jl_get_startup_frame(imageIndex);
 
   for (int i = 1; i < 21; i++) {
 
@@ -5018,7 +4826,7 @@ void drawImage(int imageIndex) {
 
       leds.setPixelColor(
           screenMap[lineIndex * 30 + j],
-          scaleBrightness(startupFrameArray[imageIndex][i * 32 + j + 1], -93));
+          scaleBrightness(frame[i * 32 + j + 1], -93));
     }
     if (skipLines[i] == 0) {
       lineIndex++;
@@ -5117,7 +4925,7 @@ void printRLEimageData(int imageIndex) {
   Jerial.print(imageIndex);
   Jerial.println("[] PROGMEM = {");
 
-  const uint32_t *frameData = startupFrameArray[imageIndex];
+  const uint32_t *frameData = jl_get_startup_frame(imageIndex);
   // Assuming each frame has a fixed size, e.g. 32*22, which is 704.
   // You might need to adjust this or pass the size as a parameter.
   int frameSize =

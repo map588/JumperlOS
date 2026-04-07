@@ -43,6 +43,7 @@ struct config {
         int probe_power_dac = 0;
         float limit_max = 8.00;
         float limit_min = -8.00;
+        int auto_connect_probe = 1; //-1 = off (persistent), 0 = off (until reboot), 1 = on
     } dacs;
 
     struct debug {

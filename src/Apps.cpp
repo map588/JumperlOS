@@ -2292,7 +2292,7 @@ void jdiMIPdisplay( void ) {
 
     for ( int outer = 0; outer < 100; outer++ ) {
         for ( int fi = 0; fi < startupFrameLEN; fi++ ) {
-            const uint32_t* src = startupFrameArray[ fi ];
+            const uint32_t* src = jl_get_startup_frame( fi );
             for ( int dy = 0; dy < DISPLAY_HEIGHT; dy++ ) {
                 int uy = ( dy * rotH ) / DISPLAY_HEIGHT;
                 for ( int dx = 0; dx < DISPLAY_WIDTH; dx++ ) {
@@ -2310,7 +2310,7 @@ void jdiMIPdisplay( void ) {
             jdi_display->refresh( );
         }
         for ( int fi = startupFrameLEN - 1; fi >= 0; fi-- ) {
-            const uint32_t* src = startupFrameArray[ fi ];
+            const uint32_t* src = jl_get_startup_frame( fi );
             for ( int dy = 0; dy < DISPLAY_HEIGHT; dy++ ) {
                 int uy = ( dy * rotH ) / DISPLAY_HEIGHT;
                 for ( int dx = 0; dx < DISPLAY_WIDTH; dx++ ) {
