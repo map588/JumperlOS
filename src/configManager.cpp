@@ -18,6 +18,7 @@
 #include "usb_interface_config.h"  // For USB CDC DTR ignore configuration
 #include "AsyncPassthrough.h"
 #include "Probing.h"
+#include "Python_Proper.h"
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -3556,8 +3557,8 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "psram_installed") == 0) {
             int newValue = parseBool(value);
             jumperlessConfig.hardware.psram_installed = newValue;
-            // Apply GPIO 19 mode change immediately
             applyPsramModeChange(newValue);
+            reinitMicroPythonForPsramChange();
         }
     }
     else if (strcmp(section, "dacs") == 0) {

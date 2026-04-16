@@ -1,0 +1,127 @@
+[config]
+firmware_version = 5.6.6.0;
+
+[firmware]
+last_version = 5.6.6.0;
+files_provisioned = 1;
+
+[hardware]
+generation = 5;
+revision = 7;
+probe_revision = 5;
+psram_installed = 0;
+
+[dacs]
+set_dacs_on_boot = 0;
+set_rails_on_boot = 1;
+probe_power_dac = 0;
+auto_connect_probe = -1;
+limit_max = 8.00;
+limit_min = -8.00;
+
+[debug]
+file_parsing = 0;
+net_manager = 0;
+nets_to_chips = 0;
+nets_to_chips_alt = 0;
+leds = 0;
+probing = 0;
+oled = 0;
+logo_pads = 0;
+logic_analyzer = 1;
+arduino = 0;
+usb_mass_storage = 0;
+
+[routing]
+stack_paths = 2;
+stack_rails = 3;
+stack_dacs = 0;
+rail_priority = 1;
+
+[calibration]
+top_rail_zero = 1655;
+top_rail_spread = 18.80;
+bottom_rail_zero = 1655;
+bottom_rail_spread = 19.27;
+dac_0_zero = 1655;
+dac_0_spread = 19.53;
+dac_1_zero = 1650;
+dac_1_spread = 19.44;
+adc_0_zero = 8.95;
+adc_0_spread = 17.89;
+adc_1_zero = 8.91;
+adc_1_spread = 17.81;
+adc_2_zero = 8.97;
+adc_2_spread = 17.90;
+adc_3_zero = 8.89;
+adc_3_spread = 17.79;
+adc_4_zero = 0.00;
+adc_4_spread = 4.86;
+adc_7_zero = 9.24;
+adc_7_spread = 18.34;
+probe_max = 4055;
+probe_min = 25;
+probe_switch_threshold_high = 1.30;
+probe_switch_threshold_low = 1.14;
+probe_switch_threshold = 0.40;
+measure_mode_output_voltage = 3.27;
+probe_current_zero = 2.41;
+minimum_probe_reading = 85;
+
+[logo_pads]
+top_guy = 0;
+bottom_guy = 1;
+building_pad_top = 25;
+building_pad_bottom = 26;
+repeat_ms = 100;
+
+[display]
+lines_wires = 1;
+menu_brightness = -10;
+led_brightness = 10;
+rail_brightness = 55;
+special_net_brightness = 20;
+net_color_mode = 0;
+dump_leds = -1;
+dump_format = 0;
+terminal_line_buffering = 0;
+
+[serial_1]
+function = 1;
+baud_rate = 115200;
+print_passthrough = 0;
+connect_on_boot = 0;
+lock_connection = 0;
+autoconnect_flashing = 1;
+async_passthrough = 1;
+tag_parsing = 1;
+flash_reset_type = avr;
+
+[serial_2]
+function = 3;
+baud_rate = 115200;
+print_passthrough = 0;
+connect_on_boot = 0;
+lock_connection = 0;
+autoconnect_flashing = 0;
+
+[top_oled]
+enabled = 0;
+i2c_address = 60;
+width = 128;
+height = 32;
+connection_type = gpio_7_8;
+sda_pin = 26;
+scl_pin = 27;
+gpio_sda = 137;
+gpio_scl = 138;
+sda_row = 72;
+scl_row = 73;
+connect_on_boot = 1;
+lock_connection = 0;
+show_in_terminal = 0;
+font = 9;
+startup_message = images/bubbleJumpThin.bin
+
+[usb_cdc]
+ignore_dtr = 0;

@@ -120,7 +120,7 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.6.0"; //! remember to update this
+const char firmwareVersion[] = "5.6.6.1"; //! remember to update this
 //5.6.5.14
 
 bool newConfigOptions = true; //! set to true with new config options //!
@@ -162,6 +162,21 @@ void setup( ) {
     loadHardwareFromEEPROM( );
 
     loadConfig( );
+    delay(2000);
+
+    // Auto-detect PSRAM hardware and fix config if it disagrees
+    {
+        size_t detectedPsram = rp2040.getPSRAMSize( );
+        int shouldBeInstalled = ( detectedPsram > 0 ) ? 1 : 0;
+        if ( jumperlessConfig.hardware.psram_installed != shouldBeInstalled ) {
+            Serial.printf( "[PSRAM] Auto-detected %s — updating psram_installed %d -> %d\n",
+                detectedPsram > 0 ? "8MB PSRAM" : "no PSRAM",
+                jumperlessConfig.hardware.psram_installed, shouldBeInstalled );
+            jumperlessConfig.hardware.psram_installed = shouldBeInstalled;
+            applyPsramModeChange( shouldBeInstalled );
+            saveConfig( );
+        }
+    }
 
     // Check for firmware updates and provision new files if needed
     checkAndHandleFirmwareUpdate( );

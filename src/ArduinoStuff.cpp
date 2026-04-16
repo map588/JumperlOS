@@ -815,22 +815,19 @@ void applyPsramModeChange( int psramEnabled ) {
     // GPIO 19 is shared between NANO_RESET_1 and PSRAM_CS
     
     if ( psramEnabled ) {
-        // PSRAM mode enabled - release GPIO 19 from reset line duty
-        // Set to INPUT (high-Z) to avoid interfering with PSRAM chip select
-        // The PSRAM hardware will take control of this pin
-        //pinMode( ARDUINO_RESET_1_PIN, INPUT );
         gpio_set_function( ARDUINO_RESET_1_PIN, GPIO_FUNC_XIP_CS1 );
         xip_ctrl_hw->ctrl|=XIP_CTRL_WRITABLE_M1_BITS;
         
         Serial.println( "PSRAM mode enabled - GPIO 19 released for PSRAM CS" );
         Serial.println( "Note: Top Arduino slot reset (NANO_RESET_1) is now disabled" );
     } else {
-        // PSRAM mode disabled - reconfigure GPIO 19 as reset line
-        // Set to INPUT initially (high-Z, reset line pulled high by Arduino)
         pinMode( ARDUINO_RESET_1_PIN, INPUT );
         Serial.println( "PSRAM mode disabled - GPIO 19 restored as NANO_RESET_1" );
         Serial.println( "Note: Top Arduino slot reset is now available" );
     }
+
+    applyHeaderColorsForPsram();
+    showLEDsCore2 = 2;
 }
 
 void setBaudRate( int baudRate ) {}

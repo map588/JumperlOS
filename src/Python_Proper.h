@@ -10,9 +10,13 @@ extern Stream *global_mp_stream;
 // This prevents mp_hal_check_interrupt from consuming data when global_mp_stream is USBSer2
 extern Stream *mp_interrupt_check_stream;
 
-// MicroPython heap for VM reinit (used by jl_soft_reboot)
-extern unsigned char mp_heap[];
-extern const size_t mp_heap_size;
+// MicroPython heap — malloc'd so unused SRAM stays free
+// 96KB with PSRAM (split heap adds PSRAM via gc_add), 128KB without
+extern unsigned char *mp_heap;
+extern size_t mp_heap_size;
+
+// Reinitialize MicroPython with heap size matching current PSRAM config
+void reinitMicroPythonForPsramChange(void);
 
 // Python connection context modes
 enum PythonConnectionContext {

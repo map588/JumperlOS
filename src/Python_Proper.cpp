@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <FatFS.h>
 #include "config.h"
+#include "configManager.h"
 #include "FilesystemStuff.h"
 #include "EkiloEditor.h"
 #include "FileParsing.h"
@@ -41,9 +42,10 @@ extern "C" void jl_vfs_mount_root(void);
 #include "rp2_py_content.h"
 
 // Global state for proper MicroPython integration
-// NOTE: mp_heap is NOT static - it's accessed by jl_soft_reboot() for VM reinit
-unsigned char mp_heap[MICROPY_HEAP_SIZE]; //heap for MicroPython (reduced to free memory for editor)
-const size_t mp_heap_size = MICROPY_HEAP_SIZE;
+// Heap is malloc'd so only the needed amount of SRAM is consumed:
+// 96KB when PSRAM installed (split heap adds ~8MB via gc_add), 128KB without.
+unsigned char *mp_heap = nullptr;
+size_t mp_heap_size = 0;
 static bool mp_initialized = false;
 static bool mp_repl_active = false;
 static bool jumperless_globals_loaded = false;
@@ -681,8 +683,20 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
   char stack_dummy;
   char *stack_top = &stack_dummy;
 
+  // Allocate heap if needed (first boot or after PSRAM config change freed it)
+  if (!mp_heap) {
+    mp_heap_size = jumperlessConfig.hardware.psram_installed
+        ? MICROPY_HEAP_SIZE_PSRAM : MICROPY_HEAP_SIZE;
+    mp_heap = (unsigned char *)malloc(mp_heap_size);
+    if (!mp_heap) {
+      global_mp_stream->printf("[MP] FATAL: failed to malloc %d KB heap\n",
+          (int)(mp_heap_size / 1024));
+      return false;
+    }
+  }
+
   changeTerminalColor(replColors[11], true, global_mp_stream);
-  mp_embed_init(mp_heap, sizeof(mp_heap), stack_top);
+  mp_embed_init(mp_heap, mp_heap_size, stack_top);
 
   // Mount Jumperless filesystem into MicroPython's VFS so tools can use standard os/open
   jl_vfs_mount_root();
@@ -787,7 +801,23 @@ void deinitMicroPythonProper(void) {
   }
 }
 
+void reinitMicroPythonForPsramChange(void) {
+  size_t new_size = jumperlessConfig.hardware.psram_installed
+      ? MICROPY_HEAP_SIZE_PSRAM : MICROPY_HEAP_SIZE;
 
+  if (new_size == mp_heap_size && mp_initialized) {
+    return;
+  }
+  changeTerminalColor(replColors[11], true, global_mp_stream);
+
+  Serial.printf("\n[MP] PSRAM config changed (%d KB -> %d KB) — saving config and rebooting...\n",
+      (int)(mp_heap_size / 1024), (int)(new_size / 1024));
+  Serial.flush();
+  saveConfig();
+  Serial.flush();
+  delay(1000);
+  rp2040.reboot();
+}
 
 void startMicroPythonREPL(void) {
   if (!mp_initialized) {
@@ -2748,7 +2778,9 @@ void printMicroPythonStatus(void) {
   global_mp_stream->println("\n=== MicroPython Status ===");
   global_mp_stream->printf("Initialized: %s\n", mp_initialized ? "Yes" : "No");
   global_mp_stream->printf("REPL Active: %s\n", mp_repl_active ? "Yes" : "No");
-  global_mp_stream->printf("Heap Size: %d bytes\n", sizeof(mp_heap));
+  global_mp_stream->printf("Heap Size: %d bytes (max %d, PSRAM %s)\n",
+      (int)mp_heap_size, MICROPY_HEAP_SIZE,
+      jumperlessConfig.hardware.psram_installed ? "yes" : "no");
 
   if (mp_initialized) {
     // Get memory info
@@ -4312,8 +4344,20 @@ bool initMicroPythonQuiet(bool preserve_interrupt_char) {
   char stack_dummy;
   char *stack_top = &stack_dummy;
 
+  // Allocate heap if needed
+  if (!mp_heap) {
+    mp_heap_size = jumperlessConfig.hardware.psram_installed
+        ? MICROPY_HEAP_SIZE_PSRAM : MICROPY_HEAP_SIZE;
+    mp_heap = (unsigned char *)malloc(mp_heap_size);
+    if (!mp_heap) {
+      global_mp_stream = original_stream;
+      global_mp_stream_ptr = (void *)original_stream;
+      return false;
+    }
+  }
+
   // Initialize MicroPython silently
-  mp_embed_init(mp_heap, sizeof(mp_heap), stack_top);
+  mp_embed_init(mp_heap, mp_heap_size, stack_top);
   
   // Configure keyboard interrupt character: always keep default Ctrl+C
   // mp_embed_exec_str("import micropython; micropython.kbd_intr(3)");

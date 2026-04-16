@@ -490,6 +490,7 @@ struct rgbColor shiftHue(struct rgbColor colorToShift, int hueShift = 0,
                          int brightnessShift = 0, int saturationShift = 0,
                          int specialFunction = -1);
 void initLEDs(void);
+void applyHeaderColorsForPsram(void);
 char LEDbrightnessMenu(void);
 
 

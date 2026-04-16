@@ -7,8 +7,9 @@
 
 // #define OG_JUMPERLESS 0
 
-// MicroPython heap size 
-#define MICROPY_HEAP_SIZE (128 * 1024)
+// MicroPython heap sizes
+#define MICROPY_HEAP_SIZE       (128 * 1024)  // SRAM heap when no PSRAM
+#define MICROPY_HEAP_SIZE_PSRAM  (96 * 1024)  // Smaller SRAM heap when PSRAM provides extra GC space
 
 #define TERM_SUPPORTS_RGB 0
 #define TERM_SUPPORTS_ANSI_COLORS 1

@@ -440,7 +440,7 @@ uint32_t rawSpecialNetColors[8] = // dim
   { 0x000000, 0x001C04, 0x1C0702, 0x1C0107,
    0x231111, 0x230913, 0x232323, 0x232323 };
 
-uint32_t rawOtherColors[15] = { // I'm using headerColors[] now
+uint32_t rawOtherColors[15] = { 
     0x010006, // headerglow
     0x6000A8, // logo / status
     0x0055AA, // logoflash / statusflash
@@ -459,6 +459,27 @@ uint32_t rawOtherColors[15] = { // I'm using headerColors[] now
     0x00a045, // GPIO outer
 
   };
+
+
+// Default colors for the non-PSRAM header layout (top = ADC, bottom = GPIO)
+static const uint32_t rawOtherColorsDefault[15] = {
+    0x010006, 0x6000A8, 0x0055AA, 0x301A02, 0x120932, 0x443434, 0x324244, 0x232323,
+    0x380303, 0x166800, 0x0005E5,  // ADC inner, DAC inner, GPIO inner
+    0x400048, 0x453800, 0x00a045,  // ADC outer, DAC outer, GPIO outer
+};
+
+// PSRAM layout swaps ADC ↔ GPIO (top slot lost to PSRAM CS, bottom stays)
+static const uint32_t rawOtherColorsPSRAM[15] = {
+    0x010006, 0x6000A8, 0x0055AA, 0x301A02, 0x120932, 0x443434, 0x324244, 0x232323,
+    0x0005E5, 0x166800, 0x380303,  // ADC inner, DAC inner, GPIO inner (swapped ADC and GPIO)
+    0x00a045, 0x453800, 0x400048,  // ADC outer, DAC outer, GPIO outer (swapped ADC and GPIO)
+};
+
+void applyHeaderColorsForPsram(void) {
+  const uint32_t *src = jumperlessConfig.hardware.psram_installed
+      ? rawOtherColorsPSRAM : rawOtherColorsDefault;
+  memcpy(rawOtherColors, src, sizeof(rawOtherColors));
+}
 
 rgbColor specialNetColors[8] = { {00, 00, 00},       {0x00, 0xFF, 0x30},
                                 {0xFF, 0x41, 0x14}, {0xFF, 0x10, 0x40},
@@ -516,6 +537,7 @@ int headerMapPrintOrder[30] = {
 int pass = 0;
 // #define DATA_PIN 2
 void initLEDs(void) {
+  applyHeaderColorsForPsram();
 
   leds.begin(); // INITIALIZE NeoPixel strip object (REQUIRED)
   // delay(1);
