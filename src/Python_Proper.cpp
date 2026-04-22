@@ -38,8 +38,14 @@ extern "C" void jl_close_all_jfs_files(void);
 // Mount the Jumperless VFS at "/" for MicroPython
 extern "C" void jl_vfs_mount_root(void);
 
-// Embedded rp2.py content for PIO support (@asm_pio decorator)
+// Embedded rp2.py content for PIO support (@asm_pio decorator).
+// Provisioned to /python_scripts/lib/rp2.py at MicroPython init, so
+// `import rp2` resolves through the normal VFS sys.path lookup.
 #include "rp2_py_content.h"
+
+// writeStringToFile() lives in FilesystemStuff.cpp but isn't declared in
+// FilesystemStuff.h yet — forward-declare it here so we can provision rp2.py.
+extern bool writeStringToFile(const char *filename, const char *content);
 
 // Global state for proper MicroPython integration
 // Heap is malloc'd so only the needed amount of SRAM is consumed:
@@ -722,36 +728,18 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
   // Provision rp2.py on the filesystem if it doesn't exist.
   // This embeds the full PIO assembler (@asm_pio decorator) so that
   // 'import rp2' works out of the box without uploading any files.
-  // We build a Python script as a C string and pass it through mp_embed_exec_str.
+  // It lives in /python_scripts/lib/ alongside jumperless.py — that path
+  // is already on sys.path (see setupFilesystemAndPaths above), so the
+  // import resolves cleanly via VFS without any Python eval gymnastics.
+  // Writing on every init means accidental deletion self-heals next boot.
   {
-    // First check if file exists
-    int exists = mp_embed_exec_str(
-      "import os\n"
-      "os.stat('rp2.py')\n"
-    );
-    if (exists != 0) {
-      // File doesn't exist — write it from embedded content
-      // Build: exec("f=open('rp2.py','w')\nf.write('''...content...''')\nf.close()\n")
-      size_t content_len = strlen(rp2_py_content);
-      // Allocate buffer for the Python script: prefix + escaped content + suffix
-      size_t buf_size = content_len * 2 + 200;  // worst case for escaping
-      char *script = (char *)malloc(buf_size);
-      if (script) {
-        char *p = script;
-        p += sprintf(p, "f=open('rp2.py','w')\nf.write(\"");
-        // Escape the content for a Python double-quoted string
-        for (size_t i = 0; i < content_len; i++) {
-          char c = rp2_py_content[i];
-          if (c == '\\') { *p++ = '\\'; *p++ = '\\'; }
-          else if (c == '"') { *p++ = '\\'; *p++ = '"'; }
-          else if (c == '\n') { *p++ = '\\'; *p++ = 'n'; }
-          else if (c == '\r') { *p++ = '\\'; *p++ = 'r'; }
-          else { *p++ = c; }
-        }
-        p += sprintf(p, "\")\nf.close()\n");
-        mp_embed_exec_str(script);
-        free(script);
-      }
+    const char *rp2_path = "/python_scripts/lib/rp2.py";
+    if (!safeFileExists(rp2_path, 500)) {
+      // Make sure the parent directories exist (idempotent — safeMkdir
+      // returns true when the directory is already there).
+      safeMkdir("/python_scripts", 2000);
+      safeMkdir("/python_scripts/lib", 2000);
+      writeStringToFile(rp2_path, rp2_py_content);
     }
   }
 
