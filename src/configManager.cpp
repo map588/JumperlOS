@@ -406,6 +406,10 @@ void updateOledPinsForConnectionType(int connectionType) {
     oledUsingHardwiredPins = (connectionType == 1 || connectionType == 2);
 }
 
+// NOTE: Higher-level helpers (applyOledConnectionType, cycleOledConnectionType,
+// defaultOledConnectionTypeForRevision, getOledConnectionTypeShortName) now
+// live in oled.cpp/oled.h alongside the rest of the OLED bus management.
+
 void printArbitraryFunctionTable(void) {
     for (int i = 0; i < arbitraryFunctionTableSize; i++) {
         Serial.print(arbitraryFunctionTable[i].name);
@@ -520,6 +524,21 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     jumperlessConfig.calibration.probe_current_zero = saved_probe_current_zero;
     jumperlessConfig.calibration.minimum_probe_reading = saved_minimum_probe_reading;
     } 
+
+    // Pick a sensible OLED connection_type default based on the (preserved or
+    // freshly-loaded) hardware revision. Without this, every reset on V5 rev 7
+    // hardware would silently put the OLED back on GPIO 7/8 and the user would
+    // have to re-pick "Internal I2C0" from the menu after every restore.
+    int defaultConnType = defaultOledConnectionTypeForRevision(
+        jumperlessConfig.hardware.revision);
+    jumperlessConfig.top_oled.connection_type = defaultConnType;
+    // Sync pin/row/hardwired-flag fields to match the chosen connection_type.
+    // We don't reinit the display here because the OLED stack may not exist
+    // yet at this point (resetConfigToDefaults runs before oled.init() on a
+    // fresh boot, and the live menu reset path will reinit explicitly).
+    updateOledPinsForConnectionType(defaultConnType);
+    // defaultOledConnectionTypeForRevision is declared in oled.h, which
+    // configManager.cpp already includes via #include "oled.h" near the top.
 
     // NOTE: Don't call saveConfig() here - callers are responsible for saving
     // after they've had a chance to restore user settings they want to preserve
@@ -3681,15 +3700,8 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "rotation") == 0) jumperlessConfig.top_oled.rotation = parseInt(value);
         else if (strcmp(key, "connection_type") == 0) {
             int connType = parseConnectionType(value);
-            // Disconnect current OLED before changing connection type
-            oled.disconnect();
-            // Update pins and oledUsingHardwiredPins flag
-            updateOledPinsForConnectionType(connType);
-            // Save config immediately so it persists after reset
-            saveConfig();
-            // Reinitialize OLED with new connection type
-            delay(100);  // Brief delay to let I2C settle
-            oled.init();
+            // Single helper handles disconnect, pin update, save, and reinit.
+            applyOledConnectionType(connType, /*reinitDisplay=*/true, /*persist=*/true);
         }
         else if (strcmp(key, "sda_pin") == 0) {
             oled.disconnect();

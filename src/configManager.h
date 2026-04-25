@@ -92,6 +92,8 @@ int parseDumpFormat(const char* str);
 int parseConnectionType(const char* str);
 const char* getConnectionTypeString(int connectionType);
 void updateOledPinsForConnectionType(int connectionType);
+// Higher-level OLED connection-type helpers (apply / cycle / defaults / names)
+// live in oled.h, since they own the I2C bus tear-down and reinit dance.
 
 // External variables from main.cpp
 extern const char firmwareVersion[];

@@ -334,20 +334,20 @@ struct StatusMenuItem {
 };
 
 // Forward declarations for menu actions
-static void action_resourceStatus();
-static void action_psramTest();
-static void action_gpioState();
-static void action_netlist();
-static void action_bridgeArray();
-static void action_crossbar();
-static void action_pioStatus();
-static void action_memoryUsage();
-static void action_i2cScan();
-static void action_speedTest();
-static void action_colorSpectrum();
+void action_resourceStatus();
+void action_psramTest();
+void action_gpioState();
+void action_netlist();
+void action_bridgeArray();
+void action_crossbar();
+void action_pioStatus();
+void action_memoryUsage();
+void action_i2cScan();
+void action_speedTest();
+void action_colorSpectrum();
 
 // Menu items array
-static const StatusMenuItem statusMenuItems[] = {
+const StatusMenuItem statusMenuItems[] = {
     { "Resource Status",    "Show memory, PIO, GPIO overview",        action_resourceStatus },
     { "PSRAM Test",         "Run PSRAM integrity & speed tests",      action_psramTest },
     { "GPIO State",         "Show GPIO pin nets and states",          action_gpioState },
@@ -360,10 +360,10 @@ static const StatusMenuItem statusMenuItems[] = {
     { "Speed Test",         "Raw crossbar switch speed test",         action_speedTest },
     { "Color Spectrum",     "Display terminal color palette",         action_colorSpectrum },
 };
-static const int STATUS_MENU_COUNT = sizeof(statusMenuItems) / sizeof(statusMenuItems[0]);
+const int STATUS_MENU_COUNT = sizeof(statusMenuItems) / sizeof(statusMenuItems[0]);
 
 // Draw the menu with current selection highlighted
-static void drawStatusMenu(int selected, int topVisible, int visibleCount) {
+void drawStatusMenu(int selected, int topVisible, int visibleCount) {
     // Clear and redraw
     Serial.print("\033[2J\033[H");  // Clear screen, cursor home
     Serial.flush();
@@ -676,7 +676,7 @@ bool statusDiagnosticsMenu() {
 extern void sendXYraw(int, int, int, int);
 extern volatile bool pauseCore2;
 
-static void action_resourceStatus() {
+void action_resourceStatus() {
   cmd_resourceStatus( 'j', "" );
     // Serial.println("\n\r╭────────────────────────────────────────────────────────────────────────────╮");
     // Serial.println("│                         SYSTEM RESOURCE STATUS                             │");
@@ -712,7 +712,7 @@ static void action_resourceStatus() {
     // Serial.flush();
 }
 
-static void action_psramTest() {
+void action_psramTest() {
   Serial.println( "\n=== PSRAM Test Suite ===" );
   Serial.flush();
   Serial.println( "Config psram_installed: " + String( jumperlessConfig.hardware.psram_installed ) );
@@ -720,8 +720,8 @@ static void action_psramTest() {
   
   // Show regular SRAM info first (this is always safe)
   Serial.println( "\n--- SRAM Info ---" );
-  Serial.println( "SRAM Total: " + String( rp2040.getTotalHeap() / 1024 ) + " KB" );
-  Serial.println( "SRAM Free: " + String( rp2040.getFreeHeap() / 1024 ) + " KB" );
+  Serial.println( "SRAM Total Heap: " + String( rp2040.getTotalHeap() / 1024 ) + " KB" );
+  Serial.println( "SRAM Free Heap: " + String( rp2040.getFreeHeap() / 1024 ) + " KB" );
   Serial.flush();
   
   // Try to get PSRAM size - this may crash if no PSRAM is present
@@ -882,7 +882,7 @@ static void action_psramTest() {
   Serial.println( "\n--- Speed Comparison Test ---" );
   Serial.flush();
   
-  const size_t speedTestSize = 32 * 1024; // 32KB for speed test
+  const size_t speedTestSize = 16 * 1024; // 32KB for speed test
   size_t speedWords = speedTestSize / sizeof(uint32_t);
   
   // Allocate SRAM block for comparison
@@ -954,18 +954,18 @@ static void action_psramTest() {
   
 }
 
-static void action_gpioState() {
+void action_gpioState() {
     printGPIOState();
 }
 
-static void action_netlist() {
+void action_netlist() {
     couldntFindPath(1);
     Serial.println("\n\rnetlist");
     listNets(anythingInteractiveConnected(-1));
     Serial.flush();
 }
 
-static void action_bridgeArray() {
+void action_bridgeArray() {
     couldntFindPath(1);
     Serial.println("\n\rBridge Array");
     printBridgeArray();
@@ -976,15 +976,15 @@ static void action_bridgeArray() {
     Serial.flush();
 }
 
-static void action_crossbar() {
+void action_crossbar() {
     printChipStateArrayColor();
 }
 
-static void action_pioStatus() {
+void action_pioStatus() {
     printPIOStateMachines();
 }
 
-static void action_memoryUsage() {
+void action_memoryUsage() {
     Serial.println("\n\r╭────────────────────────────────────╮");
     Serial.println("│        DETAILED MEMORY USAGE       │");
     Serial.println("╰────────────────────────────────────╯\n\r");
@@ -1008,7 +1008,7 @@ static void action_memoryUsage() {
     Serial.flush();
 }
 
-static void action_i2cScan() {
+    void action_i2cScan() {
     Serial.println("\n\rScanning I2C bus...\n\r");
     
     int deviceCount = 0;
@@ -1039,7 +1039,7 @@ static void action_i2cScan() {
     Serial.flush();
 }
 
-static void action_speedTest() {
+void action_speedTest() {
     Serial.println("\n\rRaw Crossbar Speed Test...\n\r");
     
     pauseCore2 = true;
@@ -1072,7 +1072,7 @@ static void action_speedTest() {
     Serial.flush();
 }
 
-static void action_colorSpectrum() {
+void action_colorSpectrum() {
   cmd_printColorSpectrum( 'j', "" );
   
     // Serial.println("\n\rTerminal Color Spectrum:\n\r");

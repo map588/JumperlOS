@@ -4381,30 +4381,21 @@ int doMenuAction( int menuPosition, int selection ) {
             int newConnectionType = currentAction.from[ 0 ];
 
             // Print feedback BEFORE disconnecting (while OLED still works)
-            if ( newConnectionType == 0 ) {
+            switch ( newConnectionType ) {
+            case 0:
                 Serial.println( "\n\rOLED pins set to GPIO 7/8 (crossbar, pins 26/27)" );
-            } else if ( newConnectionType == 1 ) {
+                break;
+            case 1:
                 Serial.println( "\n\rOLED pins set to RP6/RP7 (hardwired, pins 6/7)" );
-            } else if ( newConnectionType == 2 ) {
+                break;
+            case 2:
                 Serial.println( "\n\rOLED pins set to Internal I2C0 (hardwired, pins 4/5)" );
+                break;
             }
 
-            // Disconnect current OLED before changing pins
-            oled.disconnect( );
-
-            // Update all pins for the new connection type (also sets oledUsingHardwiredPins)
-            updateOledPinsForConnectionType( newConnectionType );
+            // Disconnect, update pins, save, and reinit in one shot.
+            applyOledConnectionType( newConnectionType, /*reinitDisplay=*/true, /*persist=*/true );
             configChanged = true;
-
-            // Save config immediately so it persists after reset
-
-            // Small delay to let I2C settle before reconnecting
-            delay( 100 );
-
-            // Reconnect with new pins - init() will set up correct I2C and display
-            oled.init( );
-
-            saveConfig( );
         }
 
     } else if ( currentCategory == NOCATEGORY ) {

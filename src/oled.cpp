@@ -41,18 +41,36 @@ bool oledUsingHardwiredPins = false; // Global flag: true if using RP6/RP7 (GPIO
 #define OLED_SCALE_LINES_INDEPENDENTLY 1
 
 // Dynamic Wire selection - pointer allows switching between Wire (I2C0) and Wire1 (I2C1) at runtime
-// Initialize with Wire1 immediately to prevent nullptr crashes when OLED is disabled
+// Initialize with Wire1 immediately to prevent nullptr crashes when OLED is disabled.
+// NOTE: This static instance uses the Adafruit_SSD1306 default clkAfter=100kHz,
+// which drops the bus to 100kHz between transfers and makes everything sluggish.
+// initDisplayForConnectionType() replaces this with a dynamic instance that pins
+// clkAfter to 400kHz on the very first OLED init, so the static is only used as
+// a nullptr-safety placeholder.
 static Adafruit_SSD1306 _defaultDisplay(128, 32, &Wire1, -1);
 static Adafruit_SSD1306* _displayPtr = &_defaultDisplay;
 static int _currentDisplayWire = 1;  // Track which Wire is currently active (0 = Wire, 1 = Wire1)
 static bool _displayIsDynamic = false;  // Track if _displayPtr was dynamically allocated
+
+// Target I2C clock for OLED transfers. We pin BOTH clkDuring and clkAfter to
+// the same value so the SSD1306 driver doesn't toggle the bus speed every
+// transaction (its default is 400kHz during, 100kHz after). The 100kHz "after"
+// speed makes subsequent transfers visibly sluggish because every call has to
+// reconfigure the I2C peripheral back up to 400kHz before sending.
+static constexpr uint32_t kOledI2CClockHz = 400000;
 
 // Function to get display reference - avoids macro conflicts with display() method name
 // Declared in oled.h for use by other files
 Adafruit_SSD1306& getDisplay() { return *_displayPtr; }
 
 // Initialize or reinitialize display with the correct Wire based on connection_type
-// Returns true if display was (re)created, false if already using correct Wire
+// Returns true if display was (re)created, false if already using correct Wire.
+//
+// The new dynamic instance is constructed with explicit clkDuring/clkAfter so
+// the bus stays at 400kHz between transactions instead of dropping to the
+// Adafruit-default 100kHz. We also force a recreate on first call (when the
+// static placeholder is still in use) so the slow-default static never runs
+// real OLED traffic.
 bool initDisplayForConnectionType(int connectionType) {
     // Determine which Wire to use based on connection_type
     // Type 0 = GPIO 26/27 -> I2C1 (Wire1)
@@ -65,31 +83,27 @@ bool initDisplayForConnectionType(int connectionType) {
     } else {
         needWire = 1;  // I2C1 (Wire1) for types 0, 1, 3
     }
-    
-    // If already using correct Wire, no need to reinitialize
-    if (_displayPtr != nullptr && _currentDisplayWire == needWire) {
+
+    // Already using the correctly-clocked dynamic instance on the right Wire.
+    if (_displayIsDynamic && _displayPtr != nullptr && _currentDisplayWire == needWire) {
         return false;
     }
-    
-    // Delete old display ONLY if it was dynamically allocated (not the static default)
-    if (_displayPtr != nullptr && _displayIsDynamic) {
+
+    // Delete old display ONLY if it was dynamically allocated (not the static default).
+    if (_displayIsDynamic && _displayPtr != nullptr) {
         delete _displayPtr;
         _displayPtr = nullptr;
     }
-    
-    // Create new display with correct Wire
+
     int width = jumperlessConfig.top_oled.width;
     int height = jumperlessConfig.top_oled.height;
-    
-    if (needWire == 0) {
-        _displayPtr = new Adafruit_SSD1306(width, height, &Wire, OLED_RESET);
-      //  Serial.println("OLED display initialized with Wire (I2C0)");
-    } else {
-        _displayPtr = new Adafruit_SSD1306(width, height, &Wire1, OLED_RESET);
-      //  Serial.println("OLED display initialized with Wire1 (I2C1)");
-    }
-    
-    _displayIsDynamic = true;  // Now it's dynamically allocated
+
+    TwoWire* wirePtr = (needWire == 0) ? &Wire : &Wire1;
+    _displayPtr = new Adafruit_SSD1306(width, height, wirePtr, OLED_RESET,
+                                       /*clkDuring=*/kOledI2CClockHz,
+                                       /*clkAfter=*/kOledI2CClockHz);
+
+    _displayIsDynamic = true;
     _currentDisplayWire = needWire;
     return true;
 }
@@ -3499,6 +3513,101 @@ int oled::connect( void ) {
         oledConnected = true;
         return found;
     }
+}
+
+// =====================================================================
+// OLED connection-type helpers (declared in oled.h)
+// =====================================================================
+
+const char* getOledConnectionTypeShortName(int connectionType) {
+    switch (connectionType) {
+        case 0: return "GPIO 7/8";
+        case 1: return "RP6/RP7";
+        case 2: return "I2C0";
+        case 3: return "Custom";
+        default: return "Unknown";
+    }
+}
+
+// V5 hardware (revision 5) routes the OLED through the crossbar on GPIO 7/8.
+// V5 rev 7+ exposes a dedicated internal I2C0 bus on GPIO 4/5, which is
+// preferred because it doesn't tie up two crossbar nodes. Rev 6 is treated as
+// "between" but defaults to the rev 5 behavior, since the I2C0 bus wasn't
+// broken out until rev 7.
+int defaultOledConnectionTypeForRevision(int revision) {
+    if (revision >= 7) {
+        return 2; // internal I2C0 (hardwired GPIO 4/5)
+    }
+    return 0; // GPIO 7/8 via crossbar
+}
+
+// Tear down the OLD I2C peripheral if (and ONLY if) it was Wire1.
+//
+// Wire1 is OLED-exclusive on V5, so ending it is safe and is required to
+// avoid the same-bus pin-swap hang -- Earle Philhower's setSDA/setSCL/begin
+// path PANICs when called on a running Wire1 with new pins, which on real
+// hardware shows up as a silent USB disconnect on the second cycle press.
+//
+// Wire (I2C0) is *shared* with the MCP4728 DAC (0x60) and both INA219 current
+// sensors (0x40, 0x41) on hardwired GPIO 4/5. Calling Wire.end() kills those
+// peripherals and leaves the system retrying dead I2C transactions, which
+// surfaces as "sluggish" OLED writes elsewhere because the system is bogged
+// down on failed I2C0 traffic. So we leave Wire alone -- the OLED is just
+// one of multiple devices on it, and initI2C() reconfigures pins/clock as
+// needed for the new connection_type.
+static void teardownOldOledBus(int oldConnectionType) {
+    bool wasOnWire1 = (oldConnectionType != 2);
+    if (wasOnWire1) {
+        Wire1.end();
+        delay(50);
+    }
+}
+
+bool applyOledConnectionType(int newConnectionType, bool reinitDisplay, bool persist) {
+    // Clamp out-of-range values to GPIO 7/8 so we never persist garbage to
+    // flash that would re-create a bad state on the next boot.
+    if (newConnectionType < 0 || newConnectionType > 3) {
+        newConnectionType = 0;
+    }
+
+    // Capture the OLD bus assignment before we touch the config fields.
+    int oldConnType = jumperlessConfig.top_oled.connection_type;
+
+    // Release crossbar bridges (if any) and mark the OLED disconnected.
+    oled.disconnect();
+
+    // End Wire1 if appropriate (Wire stays alive for DAC + INA219 sensors).
+    teardownOldOledBus(oldConnType);
+
+    // Single source of truth for pins/rows/hardwired-flag/connection_type.
+    updateOledPinsForConnectionType(newConnectionType);
+    configChanged = true;
+
+    if (persist) {
+        // Async save: the LOW-priority ConfigSaveService will pick this up.
+        // Avoid blocking saveConfig() here because rapid menu presses would
+        // stack 100-500ms flash writes inside this hot path.
+        requestConfigSave();
+    }
+
+    if (!reinitDisplay) {
+        return true;
+    }
+
+    // Brief settle so the I2C peripheral on the new bus is fully reset before
+    // we hammer it with the SSD1306 init sequence.
+    delay(100);
+    oled.init();
+    return oled.oledConnected;
+}
+
+int cycleOledConnectionType(bool reinitDisplay, bool persist) {
+    // Skip connection_type 3 (custom) when cycling: it requires the user to
+    // pick sda_pin / scl_pin manually, so cycling onto it would silently break
+    // the display.
+    int next = (jumperlessConfig.top_oled.connection_type + 1) % OLED_CYCLEABLE_CONNECTION_TYPES;
+    applyOledConnectionType(next, reinitDisplay, persist);
+    return next;
 }
 
 void oled::disconnect( void ) {

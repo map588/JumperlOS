@@ -40,7 +40,7 @@
 #include "hardware/gpio.h"
 #include "oled.h"
 #include "JsonState.h"
-
+#include "Debugs.h"
 #include <algorithm>
 
 // Global instance
@@ -283,6 +283,8 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tg = print gpio state\n\r" );
         // Jerial.print("\t\b\b\b\b[0-9] = run app by index\n\r");
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\t. = connect oled\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 1, "\tO = cycle OLED pins (%s)\n\r",
+                                         getOledConnectionTypeShortName( jumperlessConfig.top_oled.connection_type ) );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tr = reset Arduino (rt/rb)\n\r" );
 
         shownMenuItems += printMenuLine( showExtraMenu, 1, "\t\b\ba/A = dis/connect UART to D0/D1\n\r" );
@@ -621,6 +623,11 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( '.', "connect oled",
                      "Connect/disconnect OLED display.",
                      cmd_toggleOLED, MENU_STANDARD, CAT_SETTINGS, true, SER3_MODIFIES_STATE );
+
+    registerCommand( 'O', "cycle OLED pins",
+                     "Cycle OLED connection type (GPIO 7/8 -> RP6/RP7 -> internal I2C0). "
+                     "Pass an argument to jump to a specific type: O0/O1/O2 or e.g. 'O i2c0', 'O gpio_7_8'.",
+                     cmd_cycleOledConnectionType, MENU_STANDARD, CAT_SETTINGS, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'G', "disable terminal colors",
                      "Toggle terminal color output on/off.",
@@ -1531,6 +1538,9 @@ CommandResult cmd_pythonREPL( char c, const String& line ) {
 }
 
 CommandResult cmd_psramTest( char c, const String& line ) {
+
+    action_psramTest();
+    return CMD_DONT_SHOW_MENU;
     Serial.println( "\n=== PSRAM Test Suite ===" );
     Serial.flush();
     Serial.println( "Config psram_installed: " + String( jumperlessConfig.hardware.psram_installed ) );
@@ -2638,6 +2648,46 @@ CommandResult cmd_oledInTerminal( char c, const String& line ) {
 CommandResult cmd_cycleFont( char c, const String& line ) {
     oled.cycleFont( );
     return CMD_SHOW_MENU;
+}
+
+CommandResult cmd_cycleOledConnectionType( char c, const String& line ) {
+    String arg = getCommandArgs( line, 50 );
+
+    int newType;
+    if ( arg.length( ) > 0 ) {
+        // Single digit (O0/O1/O2/O3) selects directly. We allow '3' (custom)
+        // through the explicit-selection path even though the cycle skips it,
+        // so power users can still drive it from the terminal if they've
+        // pre-configured sda_pin / scl_pin.
+        if ( arg.length( ) == 1 && arg[ 0 ] >= '0' && arg[ 0 ] <= '3' ) {
+            newType = arg[ 0 ] - '0';
+        } else {
+            // Fall back to the symbolic-name table so 'O i2c0', 'O gpio_7_8',
+            // etc. all work. parseConnectionType returns -1 on miss; default
+            // to GPIO 7/8 in that case rather than silently doing something
+            // surprising.
+            int parsed = parseConnectionType( arg.c_str( ) );
+            newType = ( parsed >= 0 && parsed <= 3 ) ? parsed : 0;
+        }
+        applyOledConnectionType( newType, /*reinitDisplay=*/true, /*persist=*/true );
+    } else {
+        newType = cycleOledConnectionType( /*reinitDisplay=*/true, /*persist=*/true );
+    }
+
+    const char* shortName = getOledConnectionTypeShortName( newType );
+
+    Jerial.print( "OLED connection type -> " );
+    Jerial.println( shortName );
+    Jerial.flush( );
+
+    // Show a quick on-OLED confirmation if we managed to reconnect, so the
+    // user can visually confirm the bus actually came up. If init() failed,
+    // skip the print to avoid noisy "is it broken?" follow-ups.
+    if ( oled.isConnected( ) ) {
+        oled.clearPrintShow( shortName, 2, true, true, true );
+    }
+
+    return CMD_DONT_SHOW_MENU;
 }
 
 // App/Special mode commands

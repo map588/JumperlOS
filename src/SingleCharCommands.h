@@ -304,6 +304,7 @@ CommandResult cmd_toggleLineBuffering(char c, const String& line);
 CommandResult cmd_dontShowMenu(char c, const String& line);
 CommandResult cmd_oledInTerminal(char c, const String& line);
 CommandResult cmd_cycleFont(char c, const String& line);
+CommandResult cmd_cycleOledConnectionType(char c, const String& line);
 
 // App/Special mode commands
 CommandResult cmd_logicAnalyzer(char c, const String& line);

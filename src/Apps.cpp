@@ -431,7 +431,7 @@ void testSwitchThresholds( void ) {
 
 
 
-while (true) {
+// while (true) {
 
 
 
@@ -443,7 +443,7 @@ while (true) {
 
 
 
-}
+// }
 
 
 
@@ -481,10 +481,13 @@ void probeCalibApp( void ) {
     Serial.println( "Hold the clickwheel when you're done\n\n\r" );
     cycleTerminalColor( );
 
-    if (jumperlessConfig.top_oled.connection_type == 2 && oled.isConnected() == false) {
+    refreshConnections( -1, 0 );
+    routableBufferPower( 1, 1, 1 );
+
+    // if (jumperlessConfig.top_oled.connection_type == 2 && oled.isConnected() == false) {
         oled.connect();
 
-    }
+    // }
 
     oled.showMultiLineSmallText( "Tap pads + rotate wheel to align both switch positions\n\rhold click = save", true, true );
     // oled.showMultiLineSmallText("be sure to check nano header rows too\n\r", false, true);
@@ -502,8 +505,7 @@ void probeCalibApp( void ) {
     
     SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
 
-    refreshConnections( -1, 0 );
-    routableBufferPower( 1, 1, 1 );
+
     resetEncoderPosition = true;
     int lastEncoderPosition = encoderPosition;
     int reading = -1;
@@ -549,7 +551,8 @@ void probeCalibApp( void ) {
     bool touched = false;
 
     int probeRead = -1;
-bool firstRead = true;
+    bool firstRead = true;
+    Probing::getInstance( ).smoothProbeReading( -1, true );
     // while (probeRead == -1) {
     //     probeRead = readProbeRaw( 0, true );
 
@@ -559,7 +562,7 @@ bool firstRead = true;
         probeRead = readProbeRaw( 0, true );
 
         if ( probeRead != -1 ) {
-            lastValidProbeRead = probeRead;
+            lastValidProbeRead = Probing::getInstance( ).smoothProbeReading( probeRead );
             if ( !touched ) {
                 touched = true;
                 finishCountdown = 0;
@@ -599,7 +602,7 @@ bool firstRead = true;
         if ( encoderPosition != lastEncoderPosition || reading != lastReading ) {
             lastEncoderPosition = encoderPosition;
             if ( measureOrSelect == 0 ) {
-                jumperlessConfig.calibration.measure_mode_output_voltage = measureModeOutputVoltage - ( (float)encoderPosition / 2000.0 );
+                jumperlessConfig.calibration.measure_mode_output_voltage = measureModeOutputVoltage + ( (float)encoderPosition / 2000.0 );
                 if ( jumperlessConfig.calibration.measure_mode_output_voltage < 2.8 ) {
                     jumperlessConfig.calibration.measure_mode_output_voltage = 2.8;
                 } else if ( jumperlessConfig.calibration.measure_mode_output_voltage > 4.5 ) {
@@ -788,11 +791,15 @@ bool firstRead = true;
         
 
         if ( done ) {
+            oled.showMultiLineSmallText( "Probe calibration\n\rsaved!\n\rReturning to menu", true, true );
+            delay( 1200 );
 
             Serial.println( "\n\n\r" );
             Serial.println( "Saving config..." );
 
             saveConfig( );
+            oled.showJogo32h();
+
             leaveApp( );
         }
     }

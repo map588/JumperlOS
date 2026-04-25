@@ -341,6 +341,42 @@ int oledTest(int sdaRow = NANO_D2, int sclRow = NANO_D3, int sdaPin = 26, int sc
 void testOLEDSmallFonts(void);
 FontFamily mapConfigValueToFontFamily(int configValue);
 
+// =====================================================================
+// OLED connection-type helpers
+// =====================================================================
+// These wrap the disconnect -> pin update -> bus tear-down -> reinit
+// sequence in one place. They live alongside the OLED driver because the
+// dance is inherently I2C/display-state aware (which Wire to release,
+// which to leave alone, when to refresh the framebuffer).
+
+// Number of "cycleable" connection types (skips type 3 = custom, which the
+// user must configure manually via sda_pin / scl_pin).
+#define OLED_CYCLEABLE_CONNECTION_TYPES 3
+
+// Short, human-friendly name for the connection type (e.g. "GPIO 7/8").
+const char* getOledConnectionTypeShortName(int connectionType);
+
+// Default OLED connection type for a given hardware revision.
+// Rev <= 6 uses GPIO 7/8 (via crossbar); rev >= 7 uses internal I2C0 (GPIO 4/5).
+int defaultOledConnectionTypeForRevision(int revision);
+
+// Switch the OLED to a new connection type in one shot.
+// - Disconnects the current OLED (releases crossbar bridges if any).
+// - Tears down the OLD I2C peripheral *only when it's safe* (Wire1 is
+//   OLED-exclusive on V5 and must be ended before pin swaps; Wire is
+//   shared with the MCP4728 DAC and INA219 sensors so we never end it).
+// - Updates pins, rows, hardwired flag, and connection_type via
+//   updateOledPinsForConnectionType().
+// - Marks configChanged so the dirty-tracker will eventually persist.
+// - If reinitDisplay is true, calls oled.init() so the change takes effect now.
+// - If persist is true, requests an async config save (non-blocking).
+// Returns true if the OLED reconnected (or reinit was skipped).
+bool applyOledConnectionType(int newConnectionType, bool reinitDisplay = true, bool persist = false);
+
+// Cycle to the next cycleable connection type (skips type 3 = custom).
+// Returns the new connection type.
+int cycleOledConnectionType(bool reinitDisplay = true, bool persist = false);
+
 // Bitmap buffer access - exposed for MicroPython
 extern uint8_t customBitmapBuffer[1024];
 extern int customBitmapWidth;

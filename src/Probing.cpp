@@ -4977,6 +4977,36 @@ int lastRowProbed = -1;
 unsigned long lastDuplicateTime = millis( );
 int lastDuplicateRead = 0;
 
+int Probing::smoothProbeReading( int probeRead, bool reset ) {
+    if ( reset ) {
+        smoothedProbeRead = -1;
+    }
+
+    if ( probeRead <= 0 ) {
+        return probeRead;
+    }
+
+    int probeRange = abs( jumperlessConfig.calibration.probe_max - jumperlessConfig.calibration.probe_min );
+    int rowStep = probeRange / 101;
+    if ( rowStep < 1 ) {
+        rowStep = 1;
+    }
+
+    // Damp ADC jitter without blending across intentional pad moves.
+    int resetThreshold = rowStep / 2;
+    if ( resetThreshold < 8 ) {
+        resetThreshold = 8;
+    }
+
+    if ( smoothedProbeRead < 0 || abs( probeRead - smoothedProbeRead ) > resetThreshold ) {
+        smoothedProbeRead = probeRead;
+    } else {
+        smoothedProbeRead = ( ( smoothedProbeRead * 3 ) + probeRead + 2 ) / 4;
+    }
+
+    return smoothedProbeRead;
+}
+
 int Probing::justReadProbe( bool allowDuplicates, int rawPad ) {
 
     // Check if probing is blocked and if the block timer has expired
@@ -4998,7 +5028,8 @@ int Probing::justReadProbe( bool allowDuplicates, int rawPad ) {
     // Serial.println(probeRead);
 
     // int rowProbed = map(probeRead, mapFrom, 4045, 101, 0);
-    int rowProbed = map( probeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 );
+    int stableProbeRead = smoothProbeReading( probeRead );
+    int rowProbed = map( stableProbeRead, jumperlessConfig.calibration.probe_min, jumperlessConfig.calibration.probe_max, 101, 0 );
     // Serial.print("rowProbed: ");
     // Serial.println(rowProbed);
 

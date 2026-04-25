@@ -279,6 +279,7 @@ int switchPosition = -1; // -1 = unknown, 0 = measure, 1 = select
     int readProbe(void);
     
     int readProbeRaw(int readNothingTouched = 0, bool allowDuplicates = false); 
+    int smoothProbeReading(int probeRead, bool reset = false);
     int calibrateProbe(void);
     void calibrateDac0(float target = 3.3);
     
@@ -291,6 +292,7 @@ private:
     
     static Probing* instance;
     int lastProbeReading = 0;
+    int smoothedProbeRead = -1;
     unsigned long lastButtonCheckTime = 0;
     unsigned long waitTimer = 0;
     
