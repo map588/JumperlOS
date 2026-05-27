@@ -3336,13 +3336,27 @@ logoLedAccess = true;
     return;
   }
 
+  unsigned long now = millis();
+
+  // ========================================================================
+  // UNDO/HISTORY ACTIVITY INDICATOR - Yellow when undo fires, while the
+  // disconnect button is held long enough to arm the scroll-history
+  // gesture, or while the History scrub menu is open.
+  // Takes precedence over the filesystem indicator so the user sees the
+  // undo signal even when the persist worker just kicked a flash write.
+  // ========================================================================
+  if (undoActivityUntil > 0 && now < undoActivityUntil) {
+    setLogoFromPaletteIndex(undoIndicatorPalette, start, spread);
+    logoLedAccess = false;
+    return;
+  }
+
   // ========================================================================
   // FILESYSTEM ACTIVITY INDICATOR - Shows during flash operations
   // Uses configurable palette (filesystemIndicatorPalette in externVars.cpp)
   // ========================================================================
-  unsigned long now = millis();
   bool showFilesystemIndicator = filesystemActive || (filesystemActiveUntil > 0 && now < filesystemActiveUntil);
-  
+
   if (showFilesystemIndicator) {
     setLogoFromPaletteIndex(filesystemIndicatorPalette, start, spread);
     logoLedAccess = false;

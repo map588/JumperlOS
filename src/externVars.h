@@ -23,6 +23,39 @@ extern int filesystemIndicatorPalette;
 // Used by LEDs.cpp to show pink logo during voltage measurement
 extern volatile bool measureModeActive;
 extern int measureModeIndicatorPalette;
+
+// Undo/history activity indicator - logo turns yellow when:
+//   * an undo or redo fires (brief flash)
+//   * the disconnect probe button has been held long enough that the
+//     hold-scroll gesture is armed (continuous while held)
+//   * the History scrub menu is active (continuous while open)
+// The "until" timestamp lets us light the logo for a minimum window
+// after a single event so the user reliably sees the flash.
+extern volatile unsigned long undoActivityUntil;
+extern int undoIndicatorPalette;
+
+// =============================================================================
+// USER INPUT TIMESTAMP + IDLE GATE
+// =============================================================================
+// `lastUserInputMs` is bumped on every user-originated event (probe button,
+// rotary encoder turn, Serial/Jerial byte received, OLED button). The
+// FileCache flush service uses this plus several other signals to decide
+// whether the system is genuinely idle and a flash write is safe to do
+// without the user noticing the LED stutter.
+//
+// All writes go through `noteUserInput()` which is intentionally trivial
+// so it's safe to call from ISR context.
+extern volatile uint32_t lastUserInputMs;
+void noteUserInput(void);
+
+// Returns true iff the system is genuinely idle enough that hitting flash
+// won't stall any interactive work. Checks:
+//   - Current UI context is NONE or MAIN_MENU (i.e. not in probe / menu /
+//     editor / REPL / file browser / help / debug / app)
+//   - No refresh, file load, or core-coordination request in progress
+//   - USB MSC host has not mounted the drive
+//   - At least `quietMs` since the last user input
+bool systemIdleForFlush(uint32_t quietMs = 750);
 // extern TuiGlue tuiGlue;
 
 // =============================================================================

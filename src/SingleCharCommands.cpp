@@ -41,6 +41,7 @@
 #include "oled.h"
 #include "JsonState.h"
 #include "Debugs.h"
+#include "Undo.h"
 #include <algorithm>
 
 // Global instance
@@ -67,6 +68,11 @@ extern const int highSaturationBrightColors[];
 // Forward declarations for command handlers
 CommandResult cmd_showCrossbarFull( char c, const String& line );
 CommandResult cmd_fakeGpioDebug( char c, const String& line );
+
+// Forward declaration for the shared arg-reader (defined below).
+// Needed so handlers earlier in the file (e.g. cmd_cycleSlots) can read
+// trailing characters from Jerial in char-by-char mode.
+static String getCommandArgs( const String& line, unsigned int timeoutMs );
 
 // ============================================================================
 // SingleCharCommands Class Implementation
@@ -245,7 +251,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
 
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\ty = refresh connections\n\r" );
         // shownMenuItems++;
-        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t< = cycle slots\n\r" );
+        shownMenuItems += printMenuLine( showExtraMenu, 2, "\t< = cycle slots (<N selects slot)\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tG = reload config.txt\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\to = load node file by slot\n\r" );
         shownMenuItems += printMenuLine( showExtraMenu, 2, "\tP = PSRAM test\n\r" );
@@ -471,8 +477,8 @@ void SingleCharCommands::initializeCommands( ) {
                      "Reload and refresh all connections from current slot.",
                      cmd_refreshConnections, MENU_ADVANCED, CAT_CONNECTIONS, true, SER3_MODIFIES_STATE );
 
-    registerCommand( '<', "cycle slots",
-                     "Cycle through saved connection slots.",
+    registerCommand( '<', "cycle slots / select slot",
+                     "Cycle slots, or jump directly with <N (e.g. <5).",
                      cmd_cycleSlots, MENU_ADVANCED, CAT_CONNECTIONS, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'o', "load node file by slot",
@@ -540,9 +546,9 @@ void SingleCharCommands::initializeCommands( ) {
                      "Disable USB drive mode.",
                      cmd_disableUSBStorage, MENU_BASIC, CAT_FILE_SYSTEM, true, SER3_MODIFIES_STATE );
 
-    registerCommand( '%', "list all filesystem contents",
-                     "Recursively list all files on the filesystem.",
-                     cmd_listFilesystem, MENU_DEBUG, CAT_FILE_SYSTEM );
+    // registerCommand( '%', "list all filesystem contents",
+    //                  "Recursively list all files on the filesystem.",
+    //                  cmd_listFilesystem, MENU_DEBUG, CAT_FILE_SYSTEM );
 
     // === Config commands ===
     registerCommand( '`', "edit config",
@@ -594,6 +600,31 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( 'X', "resource status",
                      "Show system resource allocation and status.",
                      cmd_resourceStatus, MENU_DEBUG, CAT_DEBUG );
+
+    // Phase 5 PSRAM / undo / cache telemetry
+    registerCommand( '^', "undo last change",
+                     "Revert the last connection or DAC change.",
+                     cmd_undo, MENU_STANDARD, CAT_DEBUG );
+
+    registerCommand( '&', "redo last undone change",
+                     "Reapply the last change that was undone.",
+                     cmd_redo, MENU_STANDARD, CAT_DEBUG );
+
+    registerCommand( '_', "history status",
+                     "Print the undo log status (size, position, recent labels).",
+                     cmd_historyStatus, MENU_DEBUG, CAT_DEBUG );
+
+    registerCommand( '(', "print full undo history",
+                     "List every transaction in the undo log with a cursor marker.",
+                     cmd_historyList, MENU_DEBUG, CAT_DEBUG );
+
+    registerCommand( ')', "PSRAM / file cache status",
+                     "Show PSRAM arena, file cache, and undo log status.",
+                     cmd_psramStatus, MENU_DEBUG, CAT_DEBUG );
+
+    registerCommand( '%', "toggle PSRAM debug trace",
+                     "Toggle verbose trace prints for PSRAM/FileCache/Undo.",
+                     cmd_psramDebugToggle, MENU_DEBUG, CAT_DEBUG );
 
     registerCommand( 'g', "print gpio state",
                      "Display state of all GPIO pins.",
@@ -920,6 +951,14 @@ CommandResult cmd_loadNodeFile( char c, const String& line ) {
     input = ' ';
     probeActive = 0;
 
+    // The user explicitly loaded a node file, which mutated state.
+    // Flush now so it's on flash before they move on.
+    // (Unlike the probe-mode exit in Probing.cpp, we don't gate this on
+    // a connections-this-session counter - a load that didn't actually
+    // parse anything is a parse error and shouldn't reach here anyway.)
+    extern void fileCacheFlushNowAll(const char* reason);
+    fileCacheFlushNowAll("load_node_file");
+
     if ( connectFromArduino != '\0' ) {
         connectFromArduino = '\0';
         readInNodesArduino = 0;
@@ -937,11 +976,41 @@ CommandResult cmd_refreshConnections( char c, const String& line ) {
 
 CommandResult cmd_cycleSlots( char c, const String& line ) {
     extern volatile int slotPreview;
-    if ( netSlot == 7 ) {
+
+    // Support direct slot selection: "<5" or "< 5".
+    // In char-by-char mode the trigger arrives alone, so we have to read
+    // the digit(s) from Jerial just like @, J, Y, etc. all do.
+    // If no argument arrives within the short window, preserve cycle behavior.
+    String slotArg = getCommandArgs( line, 30 );
+
+    if ( slotArg.length( ) > 0 ) {
+        bool isNumeric = true;
+        for ( unsigned int i = 0; i < slotArg.length( ); i++ ) {
+            if ( !isDigit( slotArg[ i ] ) ) {
+                isNumeric = false;
+                break;
+            }
+        }
+
+        if ( !isNumeric ) {
+            Jerial.print( "Invalid slot argument: " );
+            Jerial.println( slotArg );
+            return CMD_DONT_SHOW_MENU;
+        }
+
+        int requestedSlot = slotArg.toInt( );
+        if ( requestedSlot < 0 || requestedSlot > 7 ) {
+            Jerial.print( "Invalid slot: " );
+            Jerial.println( requestedSlot );
+            return CMD_DONT_SHOW_MENU;
+        }
+        netSlot = requestedSlot;
+    } else if ( netSlot == 7 ) {
         netSlot = 0;
     } else {
         netSlot++;
     }
+
     Jerial.print( "Slot " );
     Jerial.println( netSlot );
 
@@ -952,6 +1021,14 @@ CommandResult cmd_cycleSlots( char c, const String& line ) {
 
     slotPreview = netSlot;
     slotChanged = 1;
+
+    // Tell the undo subsystem to swap to this slot's history. Per-slot
+    // rings are lazy-allocated, so the new slot's undo/redo state is
+    // independent from the slot we just left. (The auto-detect would
+    // catch it on the next undo API call too, but doing it eagerly keeps
+    // any record* call that lands between here and the next user gesture
+    // on the right slot.)
+    undoOnSlotSwitch( netSlot );
     return CMD_LOAD_FILE;
 }
 
@@ -2384,6 +2461,143 @@ const char* PSRAM_CS = "PSRAM_CS";
 
 
 
+
+// ============================================================================
+// Phase 5 - PSRAM / undo / file-cache diagnostic commands
+// ============================================================================
+// (Undo.h moved up to the main include block - it's used by cmd_cycleSlots
+// for slot-aware undo history. Keeping these here for the diagnostic
+// commands below.)
+#include "PsramArena.h"
+#include "FileCache.h"
+
+CommandResult cmd_undo( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    // Capture label BEFORE the step so OLED + serial show the same thing.
+    char lblBuf[ 32 ];
+    lblBuf[ 0 ] = '\0';
+    if ( undoCanUndo( ) ) {
+        strncpy( lblBuf, undoPeekUndoLabel( ), sizeof( lblBuf ) - 1 );
+        lblBuf[ sizeof( lblBuf ) - 1 ] = '\0';
+    }
+    if ( undoUndo( ) ) {
+        target->printf( "\r[Undo] reverted: %s  (position %d / %d)\n",
+                        lblBuf[ 0 ] ? lblBuf : "(unlabeled)",
+                        undoPosition( ), undoTotalTxns( ) );
+        undoToast( false, lblBuf );
+    } else {
+        target->println( "\r[Undo] nothing to undo" );
+    }
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_redo( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    char lblBuf[ 32 ];
+    lblBuf[ 0 ] = '\0';
+    if ( undoCanRedo( ) ) {
+        strncpy( lblBuf, undoPeekRedoLabel( ), sizeof( lblBuf ) - 1 );
+        lblBuf[ sizeof( lblBuf ) - 1 ] = '\0';
+    }
+    if ( undoRedo( ) ) {
+        target->printf( "\r[Redo] reapplied: %s  (position %d / %d)\n",
+                        lblBuf[ 0 ] ? lblBuf : "(unlabeled)",
+                        undoPosition( ), undoTotalTxns( ) );
+        undoToast( true, lblBuf );
+    } else {
+        target->println( "\r[Redo] nothing to redo" );
+    }
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_historyStatus( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    target->println( "\n\r=== Undo Log Status ===" );
+    undoDumpStatus( );
+    int total = undoTotalTxns( );
+    int pos = undoPosition( );
+    target->printf( "  position %d (head=0)  total %d  canUndo=%d canRedo=%d\n",
+                    pos, total, (int)undoCanUndo( ), (int)undoCanRedo( ) );
+    int show = ( total < 8 ) ? total : 8;
+    target->println( "  recent transactions:" );
+    for ( int i = 0; i < show; i++ ) {
+        const char* lbl = undoLabelAt( -i );
+        target->printf( "    [%d] %s\n", -i, lbl );
+    }
+    return CMD_DONT_SHOW_MENU;
+}
+
+// Print the FULL history ring (every transaction in the undo log), with a
+// ">" marker on the current cursor position. Older txns at the top, newest
+// at the bottom; the marker shows where new mutations would be appended.
+//
+// undoLabelAt uses cursor-relative offsets where 0 = txn just behind the
+// cursor (the next undo target). To walk the entire ring we need offsets
+// from the future side too: positive = txns ahead of cursor (redo land),
+// negative = txns behind cursor (undo land).
+CommandResult cmd_historyList( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+
+    int total = undoTotalTxns( );
+    int pos = undoPosition( );  // 0 = at head; negative = undone
+
+    target->printf( "\r\n=== Undo History (%d txns, cursor at %d) ===\n",
+                    total, pos );
+    if ( total == 0 ) {
+        target->println( "  (empty)" );
+        return CMD_DONT_SHOW_MENU;
+    }
+
+    // Walk from oldest to newest: undoLabelAt(-back) where back counts
+    // from cursor-1 (most recent past). The full range is:
+    //   back = (total - 1 + pos) ... 0      <- past (undoable)
+    //   back = -1 ... pos                   <- future (redoable)
+    //
+    // Easier to express: for txnIdx from 0 (oldest) to total-1 (newest),
+    // relative offset = txnIdx - (total - 1 + pos).
+    //
+    // The cursor "lives between" txn (total-1+pos) and (total+pos) when
+    // viewed in the global txnIdx scale.
+    int cursorTxnIdx = total - 1 + pos;  // index of the last past txn
+
+    for ( int i = 0; i < total; i++ ) {
+        int rel = i - cursorTxnIdx;  // 0 = next undo target; +1 = next redo
+        const char* lbl = undoLabelAt( rel );
+        if ( !lbl || !lbl[ 0 ] ) lbl = "(unlabeled)";
+        char marker = ' ';
+        if ( i == cursorTxnIdx ) marker = '>';
+        // Position label in user terms (negative = into past, 0 = head):
+        //   txn at cursorTxnIdx = position 0 - (total - 1 - cursorTxnIdx)
+        // Simpler: pos value for THIS txn = (i - (total-1)).
+        int displayPos = i - ( total - 1 );
+        target->printf( " %c [%4d] %s\n", marker, displayPos, lbl );
+    }
+    target->printf( "       (cursor; redo land below, undo land above)\n" );
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_psramStatus( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    target->println( "\n\r=== PSRAM / FileCache / Undo Status ===" );
+    psram_arena_dump_status( );
+    fileCacheDumpStatus( );
+    undoDumpStatus( );
+    target->printf( "psram_debug = %d  (toggle with %% command)\n", psram_debug );
+    return CMD_DONT_SHOW_MENU;
+}
+
+CommandResult cmd_psramDebugToggle( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    psram_debug = !psram_debug;
+    target->printf( "\rpsram_debug = %d\n", psram_debug );
+    return CMD_DONT_SHOW_MENU;
+}
 
 CommandResult cmd_resourceStatus( char c, const String& line ) {
     Stream* target = Jerial.getResponseTarget( );

@@ -15,6 +15,7 @@
 #include "PersistentStuff.h"
 #include "RotaryEncoder.h"
 #include "hardware/gpio_coproc.h"
+#include "hardware/pio.h"
 #include "hardware/pwm.h"
 #include "pico.h"
 #include "pico/stdlib.h"
@@ -27,6 +28,7 @@
 #include "Highlighting.h"
 #include "PersistentStuff.h"
 #include "Python_Proper.h"
+#include "Undo.h"
 #include "config.h"
 #include "externVars.h"
 #include "oled.h"
@@ -39,6 +41,11 @@
 // ProbeButton Implementation (class declared in Probing.h)
 // High-frequency button checking service for instant response
 // ============================================================================
+
+// Set by ProbeButton::service when a double-tap fires undo/redo. Read +
+// cleared at the top of probeMode and inside its toggle branch to
+// short-circuit before any "connect"/"clear" repaint clobbers the toast.
+volatile bool g_probeDoubleTapBail = false;
 
 // Static member initialization
 ProbeButton* ProbeButton::instance = nullptr;
@@ -67,64 +74,172 @@ ProbeButton::ProbeButton( ) {
  * 5. Holding button registers once (block prevents re-trigger)
  * 6. Tracks continuous hold time and sets CONNECT_HELD/REMOVE_HELD flags
  */
+// Enum declared up front so service() can name PIOProbeState::READY.
+// The actual state variable definitions live with the rest of the PIO
+// probe-button code lower in the file.
+enum class PIOProbeState : uint8_t {
+    UNTRIED     = 0,  // never tried to init
+    READY       = 1,  // init succeeded, can use PIO path
+    UNAVAILABLE = 2,  // init failed (no PIO mem / probeLEDs not ready), never retry
+};
+extern volatile PIOProbeState g_pioProbeState;
+extern volatile bool          g_pendingUndo;
+extern volatile bool          g_pendingRedo;
+extern volatile const char*   g_pendingUndoLabel;
+extern volatile const char*   g_pendingRedoLabel;
+
 ServiceStatus ProbeButton::service( ) {
     lastStatus = ServiceStatus::IDLE;
+    extern struct config jumperlessConfig;
 
-    // Rate limiting - only check hardware at specified interval
+    // -------------------------------------------------------------------
+    // 0. Handle a runtime PIO/CPU mode toggle from the debug menu.
+    //    The continuous-polling SM is always-on once we init - if the
+    //    user flips use_pio_probe_button to false, we need to PAUSE
+    //    polling (and disable the IRQ) so the CPU bit-bang in
+    //    checkProbeButtonHardware() doesn't fight the PIO for the line.
+    //    Flipping it back resumes polling.
+    // -------------------------------------------------------------------
+    static bool s_lastPIOFlag = false;
+    bool currentFlag = jumperlessConfig.hardware.use_pio_probe_button;
+    if ( currentFlag != s_lastPIOFlag ) {
+        if ( g_pioProbeState == PIOProbeState::READY ) {
+            extern void probeButtonPausePolling( void );
+            extern void probeButtonResumePolling( void );
+            if ( currentFlag ) probeButtonResumePolling( );
+            else               probeButtonPausePolling( );
+        }
+        s_lastPIOFlag = currentFlag;
+    }
+
+    // -------------------------------------------------------------------
+    // 1. Drain deferred undo/redo work posted by the PIO IRQ handler.
+    //    The handler can't safely run these itself - they touch global
+    //    state, hardware, and may print to Serial - so it stashes the
+    //    intent here and we execute it in main-loop context.
+    // -------------------------------------------------------------------
+    if ( g_pendingUndo ) {
+        g_pendingUndo = false;
+        const char* lbl = (const char*)g_pendingUndoLabel;
+        g_pendingUndoLabel = nullptr;
+        if ( undoCanUndo( ) && undoUndo( ) ) {
+            undoToast( false, lbl );
+            // Signal probeMode (if it just started) to fast-return so
+            // we don't paint "clear nodes" / "connect nodes" on top of
+            // the undo toast. probeMode's bail-check is gated on its
+            // own entry timestamp so this only triggers a return when
+            // the double-tap landed inside the entry window. Past that
+            // window, probeMode clears the flag and keeps running.
+            g_probeDoubleTapBail = true;
+        }
+        lastStatus = ServiceStatus::BUSY;
+    }
+    if ( g_pendingRedo ) {
+        g_pendingRedo = false;
+        const char* lbl = (const char*)g_pendingRedoLabel;
+        g_pendingRedoLabel = nullptr;
+        if ( undoCanRedo( ) && undoRedo( ) ) {
+            undoToast( true, lbl );
+            g_probeDoubleTapBail = true;
+        }
+        lastStatus = ServiceStatus::BUSY;
+    }
+
+    // -------------------------------------------------------------------
+    // 2. If PIO continuous polling is active, the IRQ handler has been
+    //    calling processSample() for every PIO sample at ~1 ms cadence.
+    //    All press/release/double-tap state is already up to date.
+    //    Nothing for us to do here except the deferred drain above.
+    // -------------------------------------------------------------------
+    if ( jumperlessConfig.hardware.use_pio_probe_button &&
+         g_pioProbeState == PIOProbeState::READY ) {
+        return lastStatus;
+    }
+
+    // -------------------------------------------------------------------
+    // 3. CPU fallback path (or PIO init still pending). Rate-limited
+    //    hardware read, then run the shared state machine on the
+    //    resulting sample.
+    // -------------------------------------------------------------------
     unsigned long now = millis( );
     if ( now - lastCheckTime < ( switchPosition == 0 ? checkIntervalMsMeasure : checkIntervalMsSelect ) ) {
-        return lastStatus; // Not time to check yet
+        return lastStatus;
     }
     lastCheckTime = now;
 
-    // ALWAYS read hardware state
     int newState = checkProbeButtonHardware( );
+    processSample( (uint8_t)newState );
+    return lastStatus;
+}
 
-    // Serial.print(newState);
-    // Serial.print(" ");
-    // Serial.println(currentButtonState);
-    // Serial.flush();
+// =====================================================================
+// processSample - shared state-machine body used by both service()
+// (CPU path) and the PIO IRQ handler. Marked __not_in_flash_func so
+// invocation from IRQ context can't trigger a flash cache miss.
+//
+// IRQ-SAFE: only updates ProbeButton fields and the pending-undo/redo
+// flags. Does NOT call undoUndo/undoRedo/undoToast/Serial.printf.
+// =====================================================================
+void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
+    int newState = (int)newStateRaw;
+    unsigned long now = millis( );
 
     // ========================================================================
     // BUTTON RELEASED - Clear state with debounce protection
     // ========================================================================
     if ( newState == 0 ) {
-        // Button released!
-       // if ( currentButtonState != 0 ) {
-            blockProbeButton = 0;
-            blockProbeButtonTimer = 0;
-            lastButtonState = currentButtonState;
-            currentButtonState = 0;
-            buttonChanged = true;
-            lastStatus = ServiceStatus::BUSY;
-        //}
+        // Track the *first* release sample so the bounce filter measures
+        // sustained-released time, not time-since-press. The old code
+        // gated block-clear on (now - blockStartTime), where blockStartTime
+        // was set when the press was registered. That meant a fast click
+        // (press shorter than minimumBlockMs) couldn't ever clear the
+        // block - the second tap of a quick double-tap then landed while
+        // isBlocked was still true and the rising edge was silently
+        // dropped, which is exactly the "missed double-click" failure mode.
+        bool justReleased = ( currentButtonState != 0 );
+        if ( justReleased ) {
+            releaseStartTime = now;
+        }
 
-        // Clear hold state immediately
+        blockProbeButton = 0;
+        blockProbeButtonTimer = 0;
+        lastButtonState = currentButtonState;
+        currentButtonState = 0;
+        buttonChanged = true;
+        lastStatus = ServiceStatus::BUSY;
+
+        if ( justReleased && probe_button_trace ) {
+            Serial.printf( "[%lu] PROBE  %d -> 0  sample #%lu  raw=%u\n",
+                           (unsigned long)now, (int)lastButtonState,
+                           (unsigned long)probeButtonPIOReadCount,
+                           (unsigned int)probeButtonPIOLastResult );
+        }
+
+        // Drop any latched hold state on release - hold counters always
+        // measure the current continuous press, not aggregate time.
         connectHeld = false;
         removeHeld = false;
         connectHoldTime = 0;
         removeHoldTime = 0;
         pressStartTime = 0;
 
-        // CRITICAL: Only clear block if minimum block time has elapsed
-        // This prevents button bounce from causing rapid re-triggering
-        if ( isBlocked && blockStartTime > 0 ) {
-            unsigned long blockElapsed = now - blockStartTime;
-            if ( blockElapsed >= minimumBlockMs ) {
-                // Minimum block time elapsed, safe to clear for next press
-                isBlocked = false;
-                blockStartTime = 0;
-                blockProbeButton = 0;
-                blockProbeButtonTimer = 0;
-            }
-            // else: Keep block active to prevent bounce re-trigger
-        } else {
-            // Not blocked, clear everything
-            blockProbeButton = 0;
-            blockProbeButtonTimer = 0;
+        // Bounce filter: require the release to be sustained for
+        // minimumBlockMs before clearing the press-block. Anything
+        // shorter than that we treat as a contact bounce inside an
+        // ongoing press.
+        if ( isBlocked && releaseStartTime > 0 &&
+             ( now - releaseStartTime ) >= minimumBlockMs ) {
+            isBlocked = false;
+            blockStartTime = 0;
+            releaseStartTime = 0;
         }
 
-        return lastStatus;
+        return;
+    } else {
+        // We saw a pressed sample - any prior release was transient,
+        // so reset the release timer. This makes minimumBlockMs an
+        // honest "released for N ms continuously" gate.
+        releaseStartTime = 0;
     }
 
     // ========================================================================
@@ -145,6 +260,19 @@ ServiceStatus ProbeButton::service( ) {
         currentButtonState = newState;
         buttonChanged = true;
         lastStatus = ServiceStatus::BUSY;
+        noteUserInput( );  // any button transition counts as user activity
+
+        // Trace state transitions only (NOT every sample) - keeps the
+        // print rate bounded even when processSample is called from the
+        // PIO IRQ at ~1 kHz. Real human button activity is well under
+        // 10 Hz so this is comfortable for Serial.
+        if ( probe_button_trace ) {
+            Serial.printf( "[%lu] PROBE  %d -> %d  sample #%lu  raw=%u\n",
+                           (unsigned long)now,
+                           (int)lastButtonState, newState,
+                           (unsigned long)probeButtonPIOReadCount,
+                           (unsigned int)probeButtonPIOLastResult );
+        }
     } else {
         buttonChanged = false;
     }
@@ -159,7 +287,63 @@ ServiceStatus ProbeButton::service( ) {
         if ( stateChanged && newState > 0 &&
              ( lastButtonState == 0 || ( lastButtonState > 0 && lastButtonState != newState ) ) ) {
 
-            buttonPress = newState;
+            // -- Fast double-click undo/redo detection --------------------
+            // Per-button rolling 2-press timestamp ring. Double fires when
+            // the previous press is within DOUBLE_WINDOW_MS of this one.
+            //
+            // The actual undoUndo/undoRedo invocation runs in service()
+            // main-loop context (not from IRQ) - we just stash the intent
+            // in the pending-* flags + labels. service() drains them and
+            // (the important bit) sets g_probeDoubleTapBail so probeMode
+            // can detect "an undo just fired" and choose between:
+            //   - fast-return if probeMode was JUST entered (entry window)
+            //   - stay-alive if the user is already deep in probeMode and
+            //     the double-tap is a real undo gesture
+            // See probeMode's bail handling for the cutoff.
+            //
+            // Click 2's buttonPress is suppressed here so the second tap
+            // doesn't trigger any in-probe action (mode switch, clear
+            // nodesToConnect) - it's exclusively a double-tap gesture.
+            static uint32_t connectClicks[ 2 ] = { 0, 0 };
+            static uint32_t disconnectClicks[ 2 ] = { 0, 0 };
+            constexpr uint32_t DOUBLE_WINDOW_MS = ProbingDoubleTap::kWindowMs;
+            uint32_t* hist      = ( newState == 2 ) ? connectClicks    : disconnectClicks;
+            uint32_t* otherHist = ( newState == 2 ) ? disconnectClicks : connectClicks;
+            otherHist[ 0 ] = otherHist[ 1 ] = 0;
+            hist[ 0 ] = hist[ 1 ];
+            hist[ 1 ] = now;
+            bool dbl = ( hist[ 0 ] != 0 ) && ( ( hist[ 1 ] - hist[ 0 ] ) <= DOUBLE_WINDOW_MS );
+
+            if ( dbl ) {
+                // Defer the heavy work (undoUndo/undoRedo + undoToast)
+                // to main-loop context via the pending-* flags. Capture
+                // the label NOW so it reflects the state at click time.
+                if ( newState == 2 ) {
+                    if ( undoCanRedo( ) ) {
+                        g_pendingRedoLabel = undoPeekRedoLabel( );
+                        g_pendingRedo = true;
+                    }
+                } else if ( newState == 1 ) {
+                    if ( undoCanUndo( ) ) {
+                        g_pendingUndoLabel = undoPeekUndoLabel( );
+                        g_pendingUndo = true;
+                    }
+                }
+                // Swallow click 2: don't propagate as a press event. The
+                // first click already entered/triggered probeMode; we
+                // don't want the second tap to also count as a press.
+                buttonPress = 0;
+                // Reset history to prevent a third click within the
+                // window from triggering a stale match.
+                hist[ 0 ] = hist[ 1 ] = 0;
+            } else {
+                // Single press (so far) - propagate to consumers. The
+                // press will sit in buttonPress until either click 2
+                // arrives (dbl branch above clears it) or some consumer
+                // (handleProbeButtonActions / readProbe::checkProbeButton)
+                // picks it up.
+                buttonPress = newState;
+            }
 
             // Start block period
             isBlocked = true;
@@ -175,33 +359,26 @@ ServiceStatus ProbeButton::service( ) {
     }
 
     // ========================================================================
-    // HOLD TRACKING - Update continuous hold time and flags
+    // HOLD TRACKING - update continuous hold duration + latched threshold
+    // flag. No code currently consumes these but the bookkeeping is cheap
+    // and keeps the API surface ready for future gestures.
     // ========================================================================
     if ( currentButtonState > 0 && pressStartTime > 0 ) {
         unsigned long holdDuration = now - pressStartTime;
-
         if ( currentButtonState == 2 ) {
-            // Connect button (2)
             connectHoldTime = holdDuration;
-
-            // Set hold flag if threshold reached
             if ( !connectHeld && holdDuration >= connectHoldThresholdMs ) {
                 connectHeld = true;
                 lastStatus = ServiceStatus::BUSY;
             }
         } else if ( currentButtonState == 1 ) {
-            // Remove button (1)
             removeHoldTime = holdDuration;
-
-            // Set hold flag if threshold reached
             if ( !removeHeld && holdDuration >= removeHoldThresholdMs ) {
                 removeHeld = true;
                 lastStatus = ServiceStatus::BUSY;
             }
         }
     }
-
-    return lastStatus;
 }
 
 /**
@@ -221,6 +398,276 @@ int ProbeButton::getButtonPress( bool consume ) {
     return press;
 }
 
+// ============================================================================
+// PIO-based probe button reader (shares state machine with probe LED's WS2812)
+//
+// Hardware context: PROBE_LED_PIN (GPIO 2) is the WS2812 data line for the
+// probe LED. The TRRS probe cable shorts GPIO 2 to BUTTON_PIN (GPIO 9) so
+// they act as a single net; either pin reads/drives the shared wire. (A
+// TRRRS cable would separate them - see .agents/memory.instruction.md.)
+// The two probe buttons differ in which rail (+3V3 via PROBE_PIN, or GND)
+// they pull the line toward through low-impedance switches.
+//
+// To discriminate connect / disconnect / no-button, we briefly drive the
+// line to a known rail, release to HiZ, then sample: a closed switch snaps
+// the line back to its tied rail in nanoseconds; a floating (no-press)
+// line stays where parasitic capacitance left it. Repeat with the opposite
+// drive direction to disambiguate, and the two samples decode as:
+//   B1 B2 → meaning
+//   1  1  → snapped HIGH both phases → connect-button (rev <4) / remove (rev >=4)
+//   0  0  → snapped LOW  both phases → the other button
+//   0  1  → no snap, line held by C  → floating, no press
+//
+// MODE OF OPERATION (this revision):
+// The SM runs the button polling program continuously in the background
+// at ~1 ms cadence. Each sample pushes to the RX FIFO and raises PIO
+// IRQ flag 0. A CPU IRQ handler drains the FIFO, decodes, and runs the
+// press/release/double-tap state machine directly - so button events
+// are processed at the PIO's polling rate, NOT at the (variable, often
+// 20-200 ms) main-loop service() rate that was missing fast clicks.
+// When an LED show wants the line, probeButtonPausePolling() jumps the
+// SM to the WS2812 program; probeButtonResumePolling() switches it back.
+// The previous "trigger from CPU + wait for FIFO" mode is gone - this
+// program produces a strict superset of its behaviour.
+// ============================================================================
+
+// Hand-encoded PIO instructions (pio_encode_* helpers are static inline,
+// not constexpr, so they can't be used in a const array initializer).
+// .side_set 1 means bit 12 is the side-set value (controls pin LATCH, not
+// OE - we toggle OE via SET PINDIRS). Bits 11:8 are delay 0..15.
+//
+// Program structure:
+//   offset 0..8 : sample sequence (drive low / release / IN / drive high /
+//                 release / IN / push / IRQ)
+//   offset 9..13: ~1 ms delay loop using X and Y as nested counters
+//   offset 14   : jump back to offset 0
+static const uint16_t probe_button_pio_instructions[] = {
+    0xe381u, // 0:  set    pindirs, 1  side 0 [3] ; OE=1, drive line LOW ~500ns
+    0xe180u, // 1:  set    pindirs, 0  side 0 [1] ; OE=0 (HiZ), settle ~250ns
+    0x4001u, // 2:  in     pins, 1     side 0     ; sample 1 (post drive-low)
+    0xf381u, // 3:  set    pindirs, 1  side 1 [3] ; OE=1, drive line HIGH ~500ns
+    0xf180u, // 4:  set    pindirs, 0  side 1 [1] ; OE=0 (HiZ), settle
+    0x5001u, // 5:  in     pins, 1     side 1     ; sample 2 (post drive-high)
+    0xe081u, // 6:  set    pindirs, 1  side 0     ; restore OE=1, latch pin LOW
+    0x8000u, // 7:  push   noblock     side 0     ; push 2-bit result, clears ISR
+    0xc000u, // 8:  irq    set 0       side 0     ; signal CPU
+    0xe02fu, // 9:  set    x, 15       side 0     ; outer delay counter (16 iters)
+    0xe05fu, // 10: set    y, 31       side 0     ; inner delay counter (32 iters)
+    0xaf42u, // 11: nop                side 0 [15]; ~16 cycles per inner iter
+    0x008bu, // 12: jmp    y--, 11     side 0     ; loop inner
+    0x004au, // 13: jmp    x--, 10     side 0     ; loop outer (reload Y)
+    0x0000u, // 14: jmp    0           side 0     ; restart sample sequence
+};
+
+static const pio_program_t probe_button_pio_program = {
+    .instructions = probe_button_pio_instructions,
+    .length       = sizeof( probe_button_pio_instructions ) / sizeof( probe_button_pio_instructions[ 0 ] ),
+    .origin       = -1,
+};
+
+// Cached lazy-init state for the PIO probe button reader. We can't init
+// at static-init time because probeLEDs.begin() runs later in setup() and
+// has to claim its PIO/SM first. Instead we init on the first call that
+// finds use_pio_probe_button enabled and probeLEDs ready.
+//
+// PIOProbeState is declared up at the top of the file so service() can
+// see PIOProbeState::READY directly.
+volatile PIOProbeState g_pioProbeState   = PIOProbeState::UNTRIED;
+PIO                    g_pioProbePIO     = nullptr;
+uint                   g_pioProbeSM      = 0;
+uint                   g_pioProbeBtnPC   = 0;  // start of button polling program
+uint                   g_pioProbeLedPC   = 0;  // start of WS2812 program
+int                    g_pioProbeIrqNum  = -1; // NVIC IRQ number for the PIO IRQ line
+
+// Latest decoded state pushed by the PIO IRQ handler. Read by legacy
+// callers (checkProbeButtonHardware()) and the debug menu. Volatile +
+// uint8_t = atomic single-byte reads/writes on the M33, no lock needed.
+volatile uint8_t  probeBtnLatestState = 0;
+
+// Counters / diagnostics for the debug menu and trace output. Updated
+// from the IRQ handler so they're approximately monotonic.
+volatile uint32_t probeButtonPIOReadCount    = 0; // total samples processed by IRQ
+volatile uint32_t probeButtonCPUReadCount    = 0; // CPU bit-bang reads
+volatile uint32_t probeButtonPIOTimeoutCount = 0; // unused in IRQ mode (kept for menu compat)
+volatile uint32_t probeButtonPIOLastResult   = 0; // last raw 2-bit value from PIO
+volatile uint32_t probeButtonPIOLastUs       = 0; // microseconds since boot of last IRQ
+volatile uint32_t probeButtonCPULastUs       = 0; // wall-time of last CPU read, microseconds
+
+// Verbose tracing toggled from the debug menu.
+volatile int probe_button_trace = 0;
+
+// Deferred-action flags: the IRQ handler can't safely run undoUndo/Redo
+// (those touch a lot of state, may print to Serial, may refresh hardware
+// connections), so it just records what to do and the main-loop service()
+// drains these. File-scope (not static) so the forward declarations at
+// the top can reference them.
+volatile bool        g_pendingUndo       = false;
+volatile bool        g_pendingRedo       = false;
+volatile const char* g_pendingUndoLabel  = nullptr;
+volatile const char* g_pendingRedoLabel  = nullptr;
+
+// =====================================================================
+// PIO IRQ handler: drains the RX FIFO, decodes each 2-bit sample into
+// a button state, then runs the ProbeButton state machine directly.
+// Marked __not_in_flash_func so it lives in RAM - the handler can fire
+// at ~1 kHz and we don't want flash cache misses adding jitter.
+// =====================================================================
+static void __not_in_flash_func( probe_button_pio_irq_handler )( void ) {
+    PIO pio = g_pioProbePIO;
+    uint sm = g_pioProbeSM;
+
+    if ( pio == nullptr ) {
+        return; // race during teardown
+    }
+
+    extern struct config jumperlessConfig;
+    int probeRev = jumperlessConfig.hardware.probe_revision;
+    ProbeButton& self = ProbeButton::getInstance( );
+
+    while ( !pio_sm_is_rx_fifo_empty( pio, sm ) ) {
+        uint32_t raw = pio_sm_get( pio, sm );
+        int s1 = (int)( ( raw >> 30 ) & 1u );
+        int s2 = (int)( ( raw >> 31 ) & 1u );
+
+        uint8_t newState;
+        if ( s1 == 1 && s2 == 1 )      newState = ( probeRev >= 4 ) ? 2 : 1;
+        else if ( s1 == 0 && s2 == 0 ) newState = ( probeRev >= 4 ) ? 1 : 2;
+        else                            newState = 0;
+
+        // Update raw-state cache + diagnostics for legacy readers.
+        probeBtnLatestState        = newState;
+        probeButtonPIOReadCount++;
+        probeButtonPIOLastResult   = ( (uint32_t)s2 << 1 ) | (uint32_t)s1;
+
+        // Run the press/release/double-tap state machine on this sample.
+        self.processSample( newState );
+    }
+
+    probeButtonPIOLastUs = time_us_32( );
+
+    // Acknowledge the PIO IRQ flag so it can re-fire.
+    pio_interrupt_clear( pio, 0 );
+}
+
+// Switch the SM to WS2812 mode for an LED show. Called by
+// probeLEDhandler before showBlocking(). Idempotent if PIO mode
+// isn't active.
+void probeButtonPausePolling( void ) {
+    if ( g_pioProbeState != PIOProbeState::READY ) return;
+    PIO  pio = g_pioProbePIO;
+    uint sm  = g_pioProbeSM;
+
+    // Disable the NVIC IRQ first so we don't take an IRQ in the
+    // middle of the SM-mode swap.
+    if ( g_pioProbeIrqNum >= 0 ) {
+        irq_set_enabled( (uint)g_pioProbeIrqNum, false );
+    }
+
+    pio_sm_set_enabled( pio, sm, false );
+
+    // Drain any pending RX samples the IRQ handler hasn't processed
+    // (so we don't decode stale data after the LED show).
+    while ( !pio_sm_is_rx_fifo_empty( pio, sm ) ) {
+        (void)pio_sm_get( pio, sm );
+    }
+    pio_sm_clear_fifos( pio, sm );
+    pio_sm_restart( pio, sm );
+
+    // Jump to WS2812 wrap_target. SM will stall on autopull (TX FIFO
+    // empty) until showBlocking() starts loading data.
+    pio_sm_exec( pio, sm, pio_encode_jmp( g_pioProbeLedPC ) );
+    pio_sm_set_enabled( pio, sm, true );
+}
+
+// Switch the SM back to continuous button polling after an LED show.
+void probeButtonResumePolling( void ) {
+    if ( g_pioProbeState != PIOProbeState::READY ) return;
+    PIO  pio = g_pioProbePIO;
+    uint sm  = g_pioProbeSM;
+
+    pio_sm_set_enabled( pio, sm, false );
+    pio_sm_clear_fifos( pio, sm );
+    pio_sm_restart( pio, sm );
+    pio_sm_exec( pio, sm, pio_encode_jmp( g_pioProbeBtnPC ) );
+    pio_sm_set_enabled( pio, sm, true );
+
+    pio_interrupt_clear( pio, 0 );
+    if ( g_pioProbeIrqNum >= 0 ) {
+        irq_set_enabled( (uint)g_pioProbeIrqNum, true );
+    }
+}
+
+// Lazily set up the shared-SM button program + IRQ. Returns true if the
+// PIO path is usable. Safe to call repeatedly; only does work the first
+// successful time.
+static bool initProbeButtonPIO( void ) {
+    if ( g_pioProbeState == PIOProbeState::READY )       return true;
+    if ( g_pioProbeState == PIOProbeState::UNAVAILABLE ) return false;
+
+    PIO pio = probeLEDs.getPIO( );
+    int sm  = probeLEDs.getStateMachine( );
+    if ( pio == nullptr || sm < 0 ) {
+        // probeLEDs.begin() hasn't claimed yet - try again next call.
+        return false;
+    }
+
+    if ( !pio_can_add_program( pio, &probe_button_pio_program ) ) {
+        Serial.println( "\n\rprobe button PIO: no instruction memory, falling back to CPU path\n\r" );
+        Serial.flush( );
+        g_pioProbeState = PIOProbeState::UNAVAILABLE;
+        return false;
+    }
+
+    g_pioProbePIO   = pio;
+    g_pioProbeSM    = (uint)sm;
+    g_pioProbeLedPC = probeLEDs.getProgramOffset( );
+    g_pioProbeBtnPC = pio_add_program( pio, &probe_button_pio_program );
+
+    // The probe LED SM was init'd with FIFO_JOIN_TX (giving it an 8-deep
+    // TX FIFO with no RX FIFO). The button program needs to PUSH to the
+    // RX FIFO, so we have to unjoin. The probe LED only has 1 pixel
+    // (3 bytes), so a 4-deep TX FIFO is plenty.
+    int pin = probeLEDs.getPin( );
+
+    pio_sm_set_enabled( pio, (uint)sm, false );
+    while ( !pio_sm_is_tx_fifo_empty( pio, (uint)sm ) ) {
+        tight_loop_contents( );
+    }
+    pio_sm_clear_fifos( pio, (uint)sm );
+
+    // SHIFTCTRL: clear FJOIN_TX / FJOIN_RX bits (unjoin to standard 4+4).
+    hw_clear_bits( &pio->sm[ sm ].shiftctrl,
+                   PIO_SM0_SHIFTCTRL_FJOIN_TX_BITS | PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS );
+
+    // PINCTRL: add SET_BASE=pin/SET_COUNT=1 and IN_BASE=pin. Preserve
+    // existing SIDESET/OUT config that WS2812 init set up.
+    uint32_t pinctrl = pio->sm[ sm ].pinctrl;
+    pinctrl &= ~( PIO_SM0_PINCTRL_SET_BASE_BITS
+                | PIO_SM0_PINCTRL_SET_COUNT_BITS
+                | PIO_SM0_PINCTRL_IN_BASE_BITS );
+    pinctrl |= ( (uint32_t)pin << PIO_SM0_PINCTRL_SET_BASE_LSB )
+             | ( (uint32_t)1   << PIO_SM0_PINCTRL_SET_COUNT_LSB )
+             | ( (uint32_t)pin << PIO_SM0_PINCTRL_IN_BASE_LSB );
+    pio->sm[ sm ].pinctrl = pinctrl;
+
+    pio_sm_set_consecutive_pindirs( pio, (uint)sm, (uint)pin, 1, true );
+
+    // Install the PIO IRQ handler and wire PIO IRQ flag 0 → NVIC line 0.
+    g_pioProbeIrqNum = pio_get_irq_num( pio, 0 );
+    irq_set_exclusive_handler( (uint)g_pioProbeIrqNum, probe_button_pio_irq_handler );
+    pio_set_irq0_source_enabled( pio, pis_interrupt0, true );
+    pio_interrupt_clear( pio, 0 );           // clear any stale flag
+    irq_set_enabled( (uint)g_pioProbeIrqNum, true );
+
+    // Start the SM in polling mode - PC at the start of the polling program.
+    pio_sm_restart( pio, (uint)sm );
+    pio_sm_exec( pio, (uint)sm, pio_encode_jmp( g_pioProbeBtnPC ) );
+    pio_sm_set_enabled( pio, (uint)sm, true );
+
+    g_pioProbeState = PIOProbeState::READY;
+    return true;
+}
+
 /**
  * @brief Direct hardware button check - fast and non-blocking
  *
@@ -231,22 +678,50 @@ int ProbeButton::getButtonPress( bool consume ) {
 int ProbeButton::checkProbeButtonHardware( void ) {
     extern struct config jumperlessConfig;
 
-    // Wait if LEDs are being updated (software flag)
-    // if ( showingProbeLEDs != 0 ) {
-    //     return 0;
-    // }
+    // ============================================================
+    // Multiplex coordination (PROBE_LED_PIN is the WS2812 data
+    // line; BUTTON_PIN sits on the same external net). We MUST NOT
+    // steal the pin function from PIO while:
+    //   (a) probeLEDhandler is mid showBlocking() - the writer
+    //       guards this with showingProbeLEDs != 0.
+    //   (b) The WS2812 latch period (300us idle) is still in
+    //       progress after a show - canShow() reports this.
+    //
+    // Old behaviour was to bail with return-0 the instant either
+    // condition tripped. That dropped a whole ~11ms sample, and a
+    // dropped release sample turns a fast double-click into one
+    // sustained "held" event (rising edge is never re-seen). Now
+    // we spin briefly so the read still happens in this tick.
+    // 600us cap > worst-case latch (300us) + a healthy slop for
+    // setPixelColor() + the new PIO-drain wait in showBlocking().
+    // If anything actually pegs us for that long, the caller is
+    // misbehaving and skipping the tick is the right thing.
+    // ============================================================
+    const uint32_t multiplexWaitDeadline = time_us_32( ) + 600;
+    while ( showingProbeLEDs != 0 || !probeLEDs.canShow( ) ) {
+        if ( (int32_t)( time_us_32( ) - multiplexWaitDeadline ) >= 0 ) {
+            return 0; // give up - try next service tick
+        }
+        tight_loop_contents( );
+    }
 
-    int lastShowProbeLEDs = showProbeLEDs;
-
-    // CRITICAL: MUST check if async DMA transfer is still in progress!
-    // The async LED system returns immediately from show(), but DMA
-    // is still transferring data to the probe LED pin. If we manipulate
-    // the GPIO while DMA is active, we get glitches/flashes/shifting.
-    // This is likely the root cause of random LED shifting!
-    // extern Adafruit_NeoPixel probeLEDs;
-    // if ( probeLEDs.isDMABusy( ) ) {
-    //     return 0; // Try again next time - DMA still busy
-    // }
+    // ============================================================
+    // FAST PATH: PIO continuous polling.
+    //
+    // When the PIO IRQ handler is running, it has already decoded the
+    // most recent sample into probeBtnLatestState AND already pushed
+    // it through processSample() to update the press/release/double-
+    // tap state machine. Callers of this function get the same cached
+    // state that the IRQ saw - no extra hardware traffic, no SM mode
+    // switch, no GPIO function flipping.
+    //
+    // Lazy init runs on the first call - by then probeLEDs.begin()
+    // has already claimed its SM. If init fails (no PIO instruction
+    // memory etc.) we permanently fall through to the CPU path.
+    // ============================================================
+    if ( jumperlessConfig.hardware.use_pio_probe_button && initProbeButtonPIO( ) ) {
+        return (int)probeBtnLatestState;
+    }
 
     // if ( switchPosition == 0 ) {
     //     showProbeLEDs = 3;
@@ -257,6 +732,7 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     // core1busy = true;
     checkingButton = 1;
 
+    uint32_t cpu_start_us = time_us_32( );
     int buttonState = 0;
     int buttonState2 = 0;
     int buttonState3 = 0;
@@ -320,11 +796,17 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     } else if ( buttonState == 0 && buttonState2 == 0 && buttonState3 == 0 ) {
         returnState = ( jumperlessConfig.hardware.probe_revision >= 4 ) ? 1 : 2;
     }
-    // Serial.println("\n\n\n\\n\n\nn\nn\n\n lastProbeLEDs: ");
-    // Serial.println(Probing::getInstance( ).lastProbeLEDs);
-    // Serial.println("\n\n\n\\n\n\nn\nn\n\n ");
-    // Serial.flush();
-    // showProbeLEDs = Probing::getInstance( ).lastProbeLEDs;
+
+    probeButtonCPUReadCount++;
+    probeButtonCPULastUs = time_us_32( ) - cpu_start_us;
+    if ( probe_button_trace ) {
+        Serial.printf( "[%lu] PROBE-CPU  raw=%d/%d/%d -> %d  (%luus)\n",
+                       (unsigned long)millis( ),
+                       buttonState, buttonState2, buttonState3,
+                       returnState,
+                       (unsigned long)probeButtonCPULastUs );
+        Serial.flush( );
+    }
     return returnState;
 }
 
@@ -376,6 +858,18 @@ Probing::Probing( ) {
  *
  * This is called from service() and handles all the probe button
  * interactions, toggle logic, and probe mode triggering.
+ *
+ * Entry is IMMEDIATE on click 1 - feedback (LED, mode setup) happens
+ * right away with no latency. If a second click arrives inside
+ * ProbingDoubleTap::kWindowMs, probeMode's inner loop catches the
+ * resulting undo/redo via g_probeDoubleTapBail and returns fast through
+ * its normal exit path. The terminal banner is deferred inside probeMode
+ * until the window has elapsed without a bail, so a fast-return never
+ * leaves stale "connect nodes" / "clear nodes" lines on the screen.
+ *
+ * Past the entry window, a double-tap inside probeMode just fires
+ * undo/redo on top of the running session - the session stays alive.
+ * See the bail-handling inside probeMode() for the cutoff logic.
  */
 void Probing::handleProbeButtonActions( ) {
     extern unsigned long startupTimers[];
@@ -457,7 +951,6 @@ void Probing::handleProbeButtonActions( ) {
             brightenedNet = 0;
             blockProbeButtonTimer = millis( );
             blockProbeButton = 1000;
-        
 
             // Run probe mode directly (it handles button blocking/clearing internally)
             probeMode( 1, firstConnection );
@@ -472,7 +965,6 @@ void Probing::handleProbeButtonActions( ) {
             brightenedNet = 0;
             blockProbeButtonTimer = millis( );
             blockProbeButton = 1000;
-            
 
             // Run probe mode directly (it handles button blocking/clearing internally)
             probeMode( 0, firstConnection );
@@ -1432,12 +1924,16 @@ void Probing::handleEncoderCursorNavigation(
         row[ 0 ] = -1; // No encoder selection this iteration - allow probe to work
     }
 
-    // Check for encoder button HELD to exit probe mode
+    // Check for encoder button HELD to exit probe mode. We do the
+    // visual cleanup here (LED, highlighting, etc.) but DELIBERATELY
+    // leave encoderButtonState == HELD so the caller's break check
+    // (immediately after this function returns) actually sees it. The
+    // caller is responsible for clearing the state after breaking.
+    //
+    // (Previously this branch cleared encoderButtonState = IDLE before
+    // returning, which silently broke the caller's HELD detection and
+    // made "hold encoder to exit probeMode" a no-op.)
     if ( encoderButtonState == HELD ) {
-        // User held encoder button - exit probe mode
-        encoderButtonState = IDLE;
-        lastButtonEncoderState = IDLE;
-
         // Clear cursor LED before exiting based on zone
         if ( cursorZone == ZONE_BREADBOARD && encoderCursorNode >= 0 ) {
             b.printRawRow( 0b00000100, encoderCursorNode, 0x000000, 0x000000 );
@@ -1460,13 +1956,20 @@ void Probing::handleEncoderCursorNavigation(
         inPadMenu = 0;
 
         showLEDsCore2 = -2; // Update LEDs to show cleared state
-        // Note: Caller should detect the HELD state and break from main loop
     }
 
     // ======= END ENCODER SELECTION =======
 }
 
 int Probing::probeMode( int setOrClear, int firstConnection ) {
+
+    // Clear any stale double-tap bail flag from a previous session.
+    // The flag is set inside the loop by service() when undo/redo fires
+    // and cleared by our own bail check; this guards against the rare
+    // case where it was set just as the previous probeMode session
+    // exited through some other path (encoder hold, serial input,
+    // timeout, etc.).
+    g_probeDoubleTapBail = false;
 
     // clearColorOverrides(1, 1, 0);
 
@@ -1491,6 +1994,71 @@ int Probing::probeMode( int setOrClear, int firstConnection ) {
 
     routableBufferPower( 1, 1 );
 
+    // Banner deferral: on first entry of probeMode we don't yet know
+    // whether this press is the first tap of a double-tap that will fire
+    // undo/redo and bail out. Printing "connect nodes" / "clear nodes"
+    // immediately would leave a stale entry in the terminal once the
+    // bail kicks in. Defer the emit until the double-tap window has
+    // passed without a bail (or until any user activity proves we're
+    // staying). Toggle gotos (goto restartProbing inside the loop)
+    // emit immediately - by then the user has committed to the session.
+    bool bannerEmitted = false;
+    bool firstEntry = true;
+    // Outer-session entry timestamp. Set ONCE here (before the
+    // restartProbing labels) so a goto-restart from a mode switch
+    // inside the loop doesn't reset it. Used by the bail check below
+    // to distinguish "user just opened probeMode and the second tap
+    // means they didn't mean to" from "user has been in probeMode for
+    // a while and the double-tap is a real undo gesture."
+    //
+    // (probeModeStartTime, declared near the loop start, DOES reset
+    // on goto-restart - that's the right behaviour for the encoder
+    // cursor logic that uses it, but NOT for the bail check.)
+    const unsigned long outerProbeEntryTime = millis( );
+
+    // In-probe deferred-press state. When readProbe() returns a button
+    // code (-16 / -18), we DON'T process it immediately - we stash the
+    // press here and wait kWindowMs for a possible second tap. If a
+    // double-tap fires during the wait, service() drains the deferred
+    // undo/redo and our bail handler (top of loop) clears
+    // pendingInProbeButton - so click 1's mode switch / clear-in-
+    // -progress effect never commits. If no second tap arrives, we
+    // inject the press back into row[0] at the top of the loop and
+    // the existing button handler processes it normally.
+    //
+    // Declared up here (before the restartProbing labels) so a goto-
+    // restart from a mode switch can't reset it.
+    int           pendingInProbeButton     = 0;     // 0, -16, or -18
+    unsigned long pendingInProbeButtonTime = 0;
+    // Tracks the oled hold state across loop iterations so we can detect
+    // the held -> not-held transition (the moment an undo toast just
+    // finished) and force the probeMode banner back onto the panel. Must
+    // also sit above the restartProbing labels: a goto-restart in the
+    // middle of a toast must NOT reset our tracker, otherwise we'd
+    // re-arm and double-paint after the same toast. Initial value
+    // captures whatever state we entered probeMode in - if a toast was
+    // already in flight from the calling context, this avoids spuriously
+    // detecting a false->true edge on the first iteration. Polling lives
+    // inside probeMode because OLEDService is a low-priority service
+    // that probeMode's tight loop doesn't run, so oledPeriodic() can't
+    // do this work for us during a probeMode session.
+    bool wasHeld = oled.oledIsHeld( );
+    auto emitBanner = [&]() {
+        if ( bannerEmitted ) return;
+        bannerEmitted = true;
+        if ( setOrClear == 1 ) {
+            changeTerminalColor( 45 );
+            Serial.println( "\n\r\t connect nodes\n\r" );
+            Serial.flush( );
+            changeTerminalColor( -1 );
+        } else {
+            changeTerminalColor( 202 );
+            Serial.println( "\n\r\t clear nodes\n\r" );
+            Serial.flush( );
+            changeTerminalColor( -1 );
+        }
+    };
+
 restartProbing:
 
     probeActive = 1;
@@ -1502,21 +2070,14 @@ restartProbing:
        // Serial.flush( );
     }
 
-    if ( setOrClear == 1 ) {
+    // LED color hint is non-terminal state so it's safe to set immediately.
+    rawOtherColors[ 1 ] = ( setOrClear == 1 ) ? 0x4500e8 : 0x6644A8;
 
-        changeTerminalColor( 45 );
-        Serial.println( "\n\r\t connect nodes\n\r" );
-        Serial.flush( );
-        changeTerminalColor( -1 );
-        rawOtherColors[ 1 ] = 0x4500e8;
-
-    } else {
-
-        changeTerminalColor( 202 );
-        Serial.println( "\n\r\t clear nodes\n\r" );
-        Serial.flush( );
-        changeTerminalColor( -1 );
-        rawOtherColors[ 1 ] = 0x6644A8;
+    // First-entry banner is deferred until the main loop confirms the
+    // double-tap window passed without bailing. Toggle gotos (which set
+    // firstEntry=false before goto) emit immediately.
+    if ( !firstEntry ) {
+        emitBanner( );
     }
 
 restartProbingNoPrint:
@@ -1606,8 +2167,6 @@ restartProbingNoPrint:
     unsigned long probeModeStartTime = millis( );
     unsigned long lastLoopTime = millis( );
 
-
-
     //! this is the main loop for probing
     while ( Serial.available( ) == 0 && ( millis( ) - probeTimeout ) < 80000 ) {
 
@@ -1619,7 +2178,90 @@ restartProbingNoPrint:
 
         // Keep critical services (like ProbeButton) running during blocking probeMode
         jOS.serviceCritical( );
-        
+
+        // Hold-end polling. serviceCritical above may have just kicked
+        // off (or extended) an undo-toast hold via the double-tap drain.
+        // We rely on the loop continuing to spin; on the iteration after
+        // the hold's natural expiry, oledIsHeld() flips false and we
+        // repaint the canonical probeMode banner. We don't paint in the
+        // held->held or not-held->not-held cases - only the transition
+        // edge - so this is at most one clearPrintShow per toast and
+        // doesn't fight with normal probeMode rendering. firstConnection
+        // gating mirrors the entry-banner block above for consistency.
+        bool isHeld = oled.oledIsHeld( );
+        if ( wasHeld && !isHeld && firstConnection == -1 ) {
+            if ( setOrClear == 1 ) {
+                oled.clearPrintShow( "connect", 2, true, true, true );
+            } else {
+                oled.clearPrintShow( "clear", 2, true, true, true );
+            }
+        }
+        wasHeld = isHeld;
+
+        // ============================================================
+        // Double-tap fast-return / stay-alive cutoff.
+        //
+        // service() (called from serviceCritical above) sets
+        // g_probeDoubleTapBail when it actually fires an undo/redo from
+        // a double-tap. We branch on how far into the OUTER probeMode
+        // session we are (outerProbeEntryTime, set once before the
+        // restartProbing labels):
+        //
+        //   - Inside the entry window (< kWindowMs since outer entry):
+        //     the user's gesture was a probe-button-DOUBLE-tap, not a
+        //     deliberate probe-mode entry. Click 1 launched us here but
+        //     click 2 cancelled the intent. Break out fast - since the
+        //     banner is still deferred (see below), nothing gets
+        //     printed and the only visible effect is a ~200 ms LED
+        //     flash + the undo toast.
+        //
+        //   - Past the entry window: the user is deliberately in probe
+        //     mode and the double-tap is a real undo gesture (e.g.
+        //     "undo that connection I just made"). Just clear the flag
+        //     and keep running - the undo fired via service()'s drain
+        //     one line up.
+        //
+        // CRITICAL: uses outerProbeEntryTime, NOT probeModeStartTime.
+        // probeModeStartTime gets reset on goto restartProbing (mode
+        // switch inside probeMode), which would make the bail fire on
+        // every "mode switch + undo" sequence and incorrectly exit
+        // probeMode even when the user has been in it for ages.
+        // ============================================================
+        if ( g_probeDoubleTapBail ) {
+            g_probeDoubleTapBail = false;
+            // Cancel any in-flight pending press - the double-tap means
+            // click 1 was the first half of an undo gesture, not a real
+            // probe-mode action. Without this, a sequence like "in
+            // connect mode, double-tap disconnect to undo" would defer
+            // click 1's switch-to-clear, then commit it AFTER the bail
+            // returned us to the loop top - leaving the user in clear
+            // mode despite their double-tap.
+            pendingInProbeButton = 0;
+            if ( ( millis( ) - outerProbeEntryTime ) < ProbingDoubleTap::kWindowMs ) {
+                blockProbeButton = ProbingDoubleTap::kWindowMs;
+                blockProbeButtonTimer = millis( );
+                break;
+            }
+            // else: past the entry window - stay in probeMode, undo
+            // already fired via service()'s drain, just continue.
+        }
+
+        // pendingCommitting is set further down (after readProbe) when
+        // the deferred-press window elapses and we inject the press
+        // back into row[0]. Declared here so its scope covers the rest
+        // of this iteration including the press handler.
+        bool pendingCommitting = false;
+
+        // First-entry banner: emit once the double-tap entry window has
+        // passed without a fast-return. After that point we know this
+        // is a real probe-mode session, not the first half of a
+        // double-tap. Toggle-gotos (which set firstEntry=false before
+        // jumping) emit immediately at the goto target.
+        if ( firstEntry && !bannerEmitted &&
+             ( millis( ) - outerProbeEntryTime ) >= ProbingDoubleTap::kWindowMs ) {
+            emitBanner( );
+        }
+
         // Service live crossbar display during probe mode for real-time updates
         liveCrossbarService.service( );
         
@@ -1653,8 +2295,13 @@ restartProbingNoPrint:
             encoderAccel,
             encoderHideTimeout );
 
-        // Check for encoder button HELD to exit probe mode (handled by function, check result here)
+        // Check for encoder button HELD to exit probe mode. The function
+        // above already did the visual cleanup (it leaves HELD set on
+        // purpose so we can see it). We clear the encoder state HERE so
+        // the next probeMode invocation (or other consumer) starts fresh.
         if ( encoderButtonState == HELD ) {
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
             break;
         }
         // ======= END ENCODER SELECTION =======
@@ -1683,6 +2330,22 @@ restartProbingNoPrint:
             // Reset row[0] and continue loop
             row[ 0 ] = -1;
             continue;
+        }
+
+        // Resolve a deferred in-probe button press whose double-tap
+        // window has elapsed without a cancel. Done here (AFTER
+        // handleEncoderCursorNavigation + readProbe) because the
+        // encoder function unconditionally writes row[0] = -1 when no
+        // selection is active - earlier injection got clobbered. We
+        // only inject when no fresher input (encoder selection,
+        // probe-needle touch, or new button press from readProbe)
+        // already claimed row[0] this iteration.
+        if ( row[ 0 ] == -1 &&
+             pendingInProbeButton != 0 &&
+             ( millis( ) - pendingInProbeButtonTime ) >= ProbingDoubleTap::kWindowMs ) {
+            row[ 0 ] = pendingInProbeButton;
+            pendingInProbeButton = 0;
+            pendingCommitting = true;
         }
 
         if ( row[ 0 ] == -1 ) {
@@ -1787,6 +2450,51 @@ restartProbingNoPrint:
         if ( ( row[ 0 ] == -18 || row[ 0 ] == -16 ) ) { // ! Button press detected
                                                         // (millis() - probingTimer > 500)) { //&&
 
+            // Defer fresh in-probe presses by kWindowMs so a double-tap
+            // can cancel them BEFORE they take effect. Without this, a
+            // sequence like "in connect mode, double-tap disconnect to
+            // undo" processes click 1 immediately (switches to clear),
+            // then click 2 fires undo - leaving the user in clear mode
+            // despite their double-tap intent. With deferral, click 1
+            // sits in pendingInProbeButton; if click 2 arrives within
+            // the window, service() fires undo, the bail handler at
+            // the top of the loop clears the pending press, and the
+            // mode switch never commits.
+            //
+            // pendingCommitting is true only when the top-of-loop
+            // resolver injected this press after the window elapsed -
+            // that's our signal to actually process it.
+            //
+            // Cross-button case: if a DIFFERENT press arrives while
+            // one is already pending (e.g. user presses disconnect
+            // then connect within 300ms - not a double-tap because
+            // the IRQ clears the opposite hist ring on button switch),
+            // we don't want to silently drop click 1. Commit the old
+            // pending immediately and defer the new press so both
+            // mode switches happen sequentially.
+            if ( !pendingCommitting ) {
+                if ( pendingInProbeButton != 0 && pendingInProbeButton != row[ 0 ] ) {
+                    int newPress = row[ 0 ];
+                    row[ 0 ] = pendingInProbeButton;       // process old pending in this iter
+                    pendingInProbeButton     = newPress;   // defer the new press
+                    pendingInProbeButtonTime = millis( );
+                    pendingCommitting = true;              // (informational - already past the early-out)
+                    // fall through to handler with row[0] = old pending
+                } else {
+                    pendingInProbeButton     = row[ 0 ];
+                    pendingInProbeButtonTime = millis( );
+                    row[ 0 ] = -1;
+                    continue;
+                }
+            }
+
+            // NB: the old "exit on g_probeDoubleTapBail" branch is gone.
+            // Click 2 of a double-tap doesn't set buttonPress anymore
+            // (see ProbeButton::processSample dbl branch), so we never
+            // see -16/-18 for the second click - readProbe just returns
+            // -1. The undo/redo fires via the deferred flags drained
+            // from serviceCritical() and probeMode stays alive.
+
             // Serial.println("row[0] = " + String(row[0]));
             // Serial.println("setOrClear = " + String(setOrClear));
             // Serial.println("node1or2 = " + String(node1or2));
@@ -1840,13 +2548,19 @@ restartProbingNoPrint:
                     node1or2 = 0;
 
                     // Serial.println("-18 connectionsThisSession = " + String(connectionsThisSession) + "\n\n\n\n\n\r");
-                    if ( connectionsThisSession == 0 ) {
-                        Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
+                    if ( connectionsThisSession == 0 && bannerEmitted ) {
+                        // Only rewind if the banner was actually printed -
+                        // \x1b[3A jumps the cursor up 3 rows to overwrite
+                        // the deferred banner, which would otherwise eat
+                        // 3 lines of unrelated output above us.
+                        Serial.print( "\x1b[3A\x1b[0J" );
                         Serial.flush( );
                         connectionsThisSession = 0;
                     }
 
                     // showProbeLEDs = 1;
+                    firstEntry = false;
+                    bannerEmitted = false;  // re-print banner for the new mode
                     goto restartProbing;
                 }
                 // break;
@@ -1917,8 +2631,8 @@ restartProbingNoPrint:
                         //  Serial.println(map(i, 0,deleteMissesIndex, 0, 19));
                     }
                     // showLEDsCore2 = 1;
-                    if ( connectionsThisSession == 0 ) {
-                        Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
+                    if ( connectionsThisSession == 0 && bannerEmitted ) {
+                        Serial.print( "\x1b[3A\x1b[0J" ); // rewind 3 banner lines
                         Serial.flush( );
 
                     } else {
@@ -1929,6 +2643,8 @@ restartProbingNoPrint:
 
                     // Serial.println("setOrClear == 1");
 
+                    firstEntry = false;
+                    bannerEmitted = false;  // re-print banner for the new mode
                     goto restartProbing;
                 }
                 // break;
@@ -2347,6 +3063,14 @@ restartProbingNoPrint:
     probeHighlight = -1;
     //showProbeLEDs = 4;
     brightenNet( -1 );
+
+    // (Previously: immediate fileCacheFlushNowAll("probe_exit") here.
+    // Removed - flush during probe-exit was visibly stopping the UI
+    // for ~700ms even though the user often wasn't done. Now we just
+    // mark dirty and let the FileCacheFlushService idle gate catch it
+    // ~750ms after the user actually stops touching things. The PSRAM
+    // cache is the durability layer until then; the only loss window
+    // is a cold-yank in that ~750ms post-input quiet period.)
     // showLEDsCore2 = 1;
     //  Serial.print("millis() - timer[0] = ");
     //  Serial.println(millis() - timer[0]);
@@ -2357,8 +3081,12 @@ restartProbingNoPrint:
     //  Serial.print("millis() - timer[3] = ");
     //  Serial.println(millis() - timer[3]);
 
-    if ( connectionsThisSession == 0 ) {
-        Serial.print( "\x1b[3A\x1b[0J" ); // Clear the line and return cursor to start
+    if ( connectionsThisSession == 0 && bannerEmitted ) {
+        // Only rewind 3 lines if the banner was actually printed - if we
+        // bailed out on a double-tap before the banner fired, those
+        // lines belong to whatever was on screen before probeMode and
+        // must NOT be erased.
+        Serial.print( "\x1b[3A\x1b[0J" );
         Serial.flush( );
         connectionsThisSession = 0;
     }
@@ -3682,10 +4410,25 @@ int Probing::chooseGPIO( int skipInputOutput ) {
     int outIn = 2;
     // Loop until GPIO selected or button pressed to exit
     // Use state-based check - doesn't consume events
+    //
+    // Idle-timeout backstop: if neither a button nor a valid in-range pad
+    // press lands within MENU_IDLE_TIMEOUT_MS, bail out as if the user
+    // had pressed the clear button. Without this, the menu could spin
+    // forever if every probe tap landed in a GAP between switch cases
+    // (e.g. row 9 is in neither 3..8 nor 10..15), or if probe ADC was
+    // delivering noise without crossing a valid range. Symptom of that
+    // bug was "GPIO menu unresponsive to probing but clear button still
+    // exits" - exactly what the user reported.
+    constexpr uint32_t MENU_IDLE_TIMEOUT_MS = 15000;
+    uint32_t menuStartMs = millis();
+    uint32_t lastReadingMs = menuStartMs;
+    int lastReadingValue = -1;
     while ( selected == -1 && checkProbeButtonState( ) == 0 ) {
         jOS.serviceCritical( );
         int reading = justReadProbe( );
         if ( reading != -1 ) {
+            lastReadingMs = millis();
+            lastReadingValue = reading;
             switch ( reading ) {
             case 3 ... 8: {
 
@@ -3786,6 +4529,26 @@ int Probing::chooseGPIO( int skipInputOutput ) {
                 break;
             }
             }
+        }
+
+        // Idle-timeout backstop. If the user hasn't picked anything in
+        // MENU_IDLE_TIMEOUT_MS, give up so we don't trap them in an
+        // unresponsive menu. We treat ANY valid in-range tap as activity
+        // (via lastReadingMs above), so this only fires for genuine
+        // inactivity OR for continuous bad-range taps that never select.
+        if ( (uint32_t)(millis() - lastReadingMs) > MENU_IDLE_TIMEOUT_MS ) {
+            Serial.print("chooseGPIO idle timeout - last reading was ");
+            Serial.println(lastReadingValue);
+            Serial.flush();
+            break;
+        }
+        // Total-runtime cap as a second backstop in case lastReadingMs
+        // somehow keeps getting bumped (e.g. ADC noise consistently lands
+        // in a valid range but the value picks no case).
+        if ( (uint32_t)(millis() - menuStartMs) > (MENU_IDLE_TIMEOUT_MS * 2) ) {
+            Serial.println("chooseGPIO total-runtime cap reached");
+            Serial.flush();
+            break;
         }
     }
 
@@ -5133,10 +5896,22 @@ int Probing::readProbe( ) {
             return -10;
         }
 
-        // buttonCheck = millis();
+
+        // CRITICAL: actually service the button here. checkProbeButton()
+        // only reads the cached buttonPress that ProbeButton::service
+        // posts - it doesn't itself sample the hardware. probeMode's
+        // outer loop only calls jOS.serviceCritical() once per iteration,
+        // and the iteration time inflates to 20-50ms whenever an OLED
+        // write or LED batch fires. Without this call, this inner loop
+        // (up to 8 ms of ADC reads) is a sampling blackout window: any
+        // press/release transitioning entirely inside it is lost, which
+        // is the root cause of the "double-tap less reliable in probe
+        // mode" symptom. service() has its own 4 ms rate limit so this
+        // is cheap to call every iteration.
+        probeButton.service( );
+
         // Check button state (blocking is handled by ProbeButton service)
         int buttonState = checkProbeButton( );
-
         // int buttonState = ProbeButton::getInstance().getButtonPress( true );
         if ( buttonState == 1 ) {
             return -18;
@@ -5181,6 +5956,14 @@ int Probing::readProbe( ) {
                 probeReading += probeReadings[ i ];
                 numberOfGoodReadings++;
             }
+        }
+        // CRITICAL: don't divide by zero. All 4 reads can come back <= 0
+        // if the probe is floating between pads or hit a transient noise
+        // window. On Cortex-M33 with default CCR.DIV_0_TRP=0 the result
+        // is silently 0 (which maps to an out-of-range row and returns
+        // -1 below), but it's clearer + safer to bail explicitly.
+        if ( numberOfGoodReadings == 0 ) {
+            return -1;
         }
         probeRead = probeReading / numberOfGoodReadings;
         // padRead = 1;
@@ -5262,18 +6045,16 @@ void Probing::probeLEDhandler( void ) {
     //     delayMicroseconds(1000);
     // }
 
-    showingProbeLEDs = 1;
-    // if (lastProbeLEDs != showProbeLEDs) {
-    // Serial.print("showProbeLEDs = ");
-    // Serial.println(showProbeLEDs);
-    // Serial.print("lastProbeLEDs = ");
-    // Serial.println(lastProbeLEDs);
-    // Serial.flush();
-    // // }
+    // NOTE: showingProbeLEDs is no longer asserted across the switch
+    // body. setPixelColor() is a pure RAM write and doesn't touch
+    // PROBE_LED_PIN; the only thing the ProbeButton service has to
+    // synchronize against is the actual PIO/DMA transfer (showBlocking
+    // below). Holding the flag across setPixelColor + any incidental
+    // logic above used to add tens of microseconds of "lock held but
+    // doing nothing" per call, which compounded into missed button
+    // edges. We lock only around the show.
 
-    // if ( showProbeLEDs != 0 ) {
-        lastProbeLEDs = showProbeLEDs;
-    // }
+    lastProbeLEDs = showProbeLEDs;
 
     switch ( showProbeLEDs ) {
         case 11:
@@ -5326,11 +6107,10 @@ void Probing::probeLEDhandler( void ) {
     case 4:
 
         probeLEDs.setPixelColor( 0, 0x170c17 ); // select idle
-        // probeLEDs[0].setColorCode(0x110011);
-        delay(20);
-        // probeLEDs.showBlocking();
-        //  Serial.println("\n\n\rselect idle\n\n\r");
-        //  Serial.flush();
+        // NOTE: removed delay(20) here - it was being held while
+        // showingProbeLEDs=1, which forced the ProbeButton service
+        // to drop ~20ms worth of samples and miss the release edge
+        // between two halves of a fast double-tap.
         break;
     case 5:
         probeLEDs.setPixelColor( 0, 0x111111 ); // all
@@ -5359,17 +6139,15 @@ void Probing::probeLEDhandler( void ) {
         break;
     }
     case 8:
+        // Was a spin-loop waiting for showProbeLEDs to be externally
+        // changed away from 9 - but nothing in the tree ever set 9 or
+        // observed the 8 -> 9 transition, so the loop would have
+        // deadlocked core 2 forever AND held showingProbeLEDs=1 the
+        // whole time (starving every button read). Reduced to a normal
+        // single-shot case like everything else; the bottom of this
+        // function shows it via showBlocking().
         probeLEDs.setPixelColor( 0, 0xffffff ); // max
-        showProbeLEDs = 9;
-        while ( showProbeLEDs == 9 ) {
-            probeLEDs.showBlocking( ); // Use blocking for immediate display
-            delayMicroseconds( 100 );
-            // Serial.println("max");
-            // Serial.flush();
-        }
         showProbeLEDs = 0;
-        // Serial.println("max");
-        // Serial.flush();
         break;
 
     case 10:
@@ -5389,16 +6167,27 @@ void Probing::probeLEDhandler( void ) {
 
     // CRITICAL: Probe LEDs always use blocking PIO transfers
     // This eliminates any DMA-related interference with INA219 current readings
-    // and ensures immediate display for switch position detection
+    // and ensures immediate display for switch position detection.
+    //
+    // showingProbeLEDs is asserted only across the actual PIO transfer.
+    // While it's set:
+    //   - The continuous-polling SM (if active) gets switched to WS2812
+    //     mode by probeButtonPausePolling() so showBlocking() can drive
+    //     the line. We restore polling immediately after.
+    //   - Any leftover CPU-path readers see the flag and back off.
+    extern void probeButtonPausePolling( void );
+    extern void probeButtonResumePolling( void );
+    showingProbeLEDs = 1;
+    probeButtonPausePolling( );
     probeLEDs.showBlocking( );
+    probeButtonResumePolling( );
+    showingProbeLEDs = 0;
 
     // Track when LED MODE was changed so we can wait for current to stabilize
     // Don't update for every fade step - that would block current reading continuously
     if ( modeChanged && showProbeLEDs != 2 ) { // Don't count fade updates (case 2)
         lastProbeLEDUpdateTime = millis( );
     }
-
-    showingProbeLEDs = 0;
 }
 
 //! legacy functions from OG probing

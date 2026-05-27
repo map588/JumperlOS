@@ -2378,6 +2378,55 @@ static mp_obj_t jl_nodes_save_func( size_t n_args, const mp_obj_t* args ) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_nodes_save_obj, 0, 1, jl_nodes_save_func );
 
+// ============================================================================
+// Undo / Redo / History
+// ============================================================================
+extern bool undoUndo( void );
+extern bool undoRedo( void );
+extern bool undoCanUndo( void );
+extern bool undoCanRedo( void );
+extern int  undoPosition( void );
+extern int  undoTotalTxns( void );
+extern const char* undoLabelAt( int relativeOffset );
+extern bool undoScrubTo( int targetPosition );
+extern bool undoForceSnapshot( const char* reason );
+extern int  undoSnapshotCount( void );
+
+static mp_obj_t jl_undo_func( void ) { return mp_obj_new_bool( undoUndo( ) ); }
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_undo_obj, jl_undo_func );
+
+static mp_obj_t jl_redo_func( void ) { return mp_obj_new_bool( undoRedo( ) ); }
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_redo_obj, jl_redo_func );
+
+static mp_obj_t jl_history_position_func( void ) { return mp_obj_new_int( undoPosition( ) ); }
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_history_position_obj, jl_history_position_func );
+
+static mp_obj_t jl_history_size_func( void ) { return mp_obj_new_int( undoTotalTxns( ) ); }
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_history_size_obj, jl_history_size_func );
+
+static mp_obj_t jl_history_label_func( size_t n_args, const mp_obj_t* args ) {
+    int offs = ( n_args > 0 ) ? mp_obj_get_int( args[ 0 ] ) : 0;
+    const char* s = undoLabelAt( offs );
+    return mp_obj_new_str( s ? s : "", s ? strlen( s ) : 0 );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_history_label_obj, 0, 1, jl_history_label_func );
+
+static mp_obj_t jl_history_jump_func( mp_obj_t target ) {
+    int t = mp_obj_get_int( target );
+    return mp_obj_new_bool( undoScrubTo( t ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_history_jump_obj, jl_history_jump_func );
+
+static mp_obj_t jl_history_snapshot_func( void ) {
+    return mp_obj_new_bool( undoForceSnapshot( "python" ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_history_snapshot_obj, jl_history_snapshot_func );
+
+static mp_obj_t jl_history_snapshot_count_func( void ) {
+    return mp_obj_new_int( undoSnapshotCount( ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_history_snapshot_count_obj, jl_history_snapshot_count_func );
+
 // Raw Hardware Functions
 static mp_obj_t jl_send_raw_func( size_t n_args, const mp_obj_t* args ) {
     int x = mp_obj_get_int( args[ 1 ] );
@@ -6141,6 +6190,16 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_nodes_clear ), MP_ROM_PTR( &jl_nodes_clear_obj ) },
     { MP_ROM_QSTR( MP_QSTR_is_connected ), MP_ROM_PTR( &jl_nodes_is_connected_obj ) },
     { MP_ROM_QSTR( MP_QSTR_nodes_save ), MP_ROM_PTR( &jl_nodes_save_obj ) },
+
+    // Undo / Redo / History
+    { MP_ROM_QSTR( MP_QSTR_undo ), MP_ROM_PTR( &jl_undo_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_redo ), MP_ROM_PTR( &jl_redo_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_history_position ), MP_ROM_PTR( &jl_history_position_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_history_size ), MP_ROM_PTR( &jl_history_size_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_history_label ), MP_ROM_PTR( &jl_history_label_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_history_jump ), MP_ROM_PTR( &jl_history_jump_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_history_snapshot ), MP_ROM_PTR( &jl_history_snapshot_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_history_snapshot_count ), MP_ROM_PTR( &jl_history_snapshot_count_obj ) },
 
     // Net Information API - Get/set net names, colors, and info
     { MP_ROM_QSTR( MP_QSTR_get_net_name ), MP_ROM_PTR( &jl_get_net_name_obj ) },

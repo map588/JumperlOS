@@ -10,6 +10,50 @@
 // Forward declarations
 class EncoderAccelerator;
 
+// Window for the connect+disconnect double-tap that fires undo/redo.
+// Shared by ProbeButton::service (which detects the gesture) and
+// Probing::probeMode (which bails out so the second tap doesn't repaint
+// the OLED with "connect"/"clear" on top of the undo toast).
+namespace ProbingDoubleTap {
+    constexpr uint32_t kWindowMs = 350;
+}
+
+// Set by ProbeButton::service the moment a double-tap fires undoUndo /
+// undoRedo. probeMode checks (and clears) it on entry to short-circuit
+// before any banner prints, then again inside the toggle branch as a
+// safety net for cases where the second tap arrives slightly after
+// probeMode has already started.
+extern volatile bool g_probeDoubleTapBail;
+
+// ----------------------------------------------------------------------------
+// Probe button hardware-read diagnostics (driven from the debug menu).
+// All defined in Probing.cpp.
+//
+// probe_button_trace: when nonzero, every checkProbeButtonHardware() call
+//                     prints a one-line trace (path used, raw samples,
+//                     decoded state, elapsed microseconds) to Serial.
+// probeButtonPIOReadCount / probeButtonCPUReadCount:
+//                     monotonic counters of which path served each read.
+//                     Read these to verify the runtime use_pio_probe_button
+//                     toggle is actually taking effect.
+// probeButtonPIOTimeoutCount:
+//                     PIO timeouts (would-be reads that fell back to 0).
+//                     Nonzero indicates something is starving the PIO SM.
+// probeButtonPIOLastResult:
+//                     Last raw 2-bit sample from the PIO program. Bit 0 =
+//                     drive-low/release sample, bit 1 = drive-high/release.
+// probeButtonPIOLastUs / probeButtonCPULastUs:
+//                     elapsed microseconds for the most recent read on each
+//                     path. Useful for confirming PIO is the fast one.
+// ----------------------------------------------------------------------------
+extern volatile int      probe_button_trace;
+extern volatile uint32_t probeButtonPIOReadCount;
+extern volatile uint32_t probeButtonCPUReadCount;
+extern volatile uint32_t probeButtonPIOTimeoutCount;
+extern volatile uint32_t probeButtonPIOLastResult;
+extern volatile uint32_t probeButtonPIOLastUs;
+extern volatile uint32_t probeButtonCPULastUs;
+
 /**
  * @brief High-frequency probe button service (implemented in Probing.cpp)
  * 
@@ -42,19 +86,29 @@ public:
     //@brief Check the probe button hardware
     //@return 0 = neither pressed, 1 = remove button, 2 = connect button
     int checkProbeButtonHardware(void);
-    
-    // Check if either button is held continuously
-    bool isConnectHeld() const { return connectHeld; }
-    bool isRemoveHeld() const { return removeHeld; }
-    
-    // Get continuous hold duration in milliseconds
-    unsigned long getConnectHoldDuration() const { return connectHoldTime; }
-    unsigned long getRemoveHoldDuration() const { return removeHoldTime; }
+
+    // Run the press/release/double-tap state machine against a freshly
+    // decoded sample. Factored out of service() so the PIO IRQ handler
+    // can drive it directly from the polling state machine, decoupling
+    // event detection from the main loop's variable cadence.
+    //
+    // IRQ-safe: only updates ProbeButton fields and posts pending-undo/
+    // pending-redo flags (consumed by service() in main context). Does
+    // NOT call undoUndo/undoRedo/undoToast/Serial.printf directly.
+    void processSample(uint8_t newState);
     
     // Clear the current button state (e.g., when entering probeMode)
     // NOTE: Does NOT clear isBlocked - the block must remain active to prevent re-triggering!
-    void clearButtonState() { 
-        currentButtonState = 0; 
+    // Hold tracking accessors. No consumer wires these up at the moment;
+    // kept available so future gestures (history scrub, modifier-on-hold,
+    // etc.) don't have to re-add the bookkeeping.
+    bool isConnectHeld() const { return connectHeld; }
+    bool isRemoveHeld() const { return removeHeld; }
+    unsigned long getConnectHoldDuration() const { return connectHoldTime; }
+    unsigned long getRemoveHoldDuration() const { return removeHoldTime; }
+
+    void clearButtonState() {
+        currentButtonState = 0;
         buttonPress = 0;
         buttonChanged = false;
         connectHeld = false;
@@ -64,26 +118,36 @@ public:
         pressStartTime = 0;
         // isBlocked and blockStartTime are NOT cleared - block must stay active!
     }
-    
+
     // Adjustable timing parameters (milliseconds)
-    unsigned long checkIntervalMsSelect = 82;          // Rate limiting between hardware checks
-    unsigned long checkIntervalMsMeasure = 82;          // Rate limiting between hardware checks
-    unsigned long blockDurationMs = 800;        // Block duration after press detected
-    unsigned long minimumBlockMs = 50;          // Minimum block time before release can clear (debounce)
-    unsigned long connectHoldThresholdMs = 800;  // Threshold to set CONNECT_HELD flag
-    unsigned long removeHoldThresholdMs = 500;   // Threshold to set REMOVE_HELD flag
-    
+    //
+    // Why 4ms (was 11ms)?  The probe button line is multiplexed with the
+    // WS2812 data line, so each sample takes the line away from the PIO
+    // for ~75us. With the old 11ms cadence and a 300ms double-tap window
+    // we only got ~27 samples to catch one press, one release, and the
+    // next press. If any of those three samples got eaten by a concurrent
+    // LED show, the rising edge for the second click was missed and the
+    // double-tap never fired. 4ms gives ~75 samples per window and still
+    // keeps the average bus time below 2% of CPU.
+    unsigned long checkIntervalMsSelect = 4;           // Rate limiting between hardware checks
+    unsigned long checkIntervalMsMeasure = 4;          // Rate limiting between hardware checks
+    unsigned long blockDurationMs = 200;        // Block duration after press detected
+    unsigned long minimumBlockMs = 30;          // Minimum block time before release can clear (debounce)
+    unsigned long connectHoldThresholdMs = 800;        // Threshold to set connectHeld
+    unsigned long removeHoldThresholdMs = 1000;        // Threshold to set removeHeld
+
     // Public state (for inline access)
     int currentButtonState = 0;   // 0=released, 1=remove, 2=connect
     int lastButtonState = 0;
     bool buttonChanged = false;
     int buttonPress = 0;          // Consumed by getButtonPress()
-    
-    // Hold state flags
-    bool connectHeld = false;     // True when connect button held past threshold
-    bool removeHeld = false;      // True when remove button held past threshold
-    unsigned long connectHoldTime = 0;  // Continuous hold duration in ms
-    unsigned long removeHoldTime = 0;   // Continuous hold duration in ms
+
+    // Hold state (latched flags + continuous duration counters). Updated
+    // by ProbeButton::service every tick; cleared on release.
+    bool connectHeld = false;
+    bool removeHeld = false;
+    unsigned long connectHoldTime = 0;
+    unsigned long removeHoldTime = 0;
     
 private:
     ProbeButton();
@@ -94,6 +158,10 @@ private:
     bool isBlocked = false;
     unsigned long blockStartTime = 0;
     unsigned long pressStartTime = 0;
+    // First time we saw newState==0 after a press transition. Used by
+    // the release-bounce filter so it gates on sustained-released time
+    // instead of time-since-press (which would block fast double-taps).
+    unsigned long releaseStartTime = 0;
 };
 
 enum probePressType {

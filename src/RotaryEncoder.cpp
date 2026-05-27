@@ -1,4 +1,5 @@
 #include "RotaryEncoder.h"
+#include "externVars.h"  // noteUserInput()
 #include "CH446Q.h"
 #include "FileParsing.h"
 #include "JumperlessDefines.h"
@@ -719,6 +720,7 @@ void rotaryEncoderStuff( void ) {
             encoderDirectionConsumed = false; // Mark as unconsumed
             // numberOfSteps = abs(lastPositionEncoder - encoderRaw);
             numberOfSteps = abs( lastPositionEncoder - encoderRaw );
+            noteUserInput( );  // gate background flash writes - user is turning
 
             lastPositionEncoder = encoderRaw;
 
@@ -728,6 +730,7 @@ void rotaryEncoderStuff( void ) {
             encoderDirectionState = DOWN;
             encoderDirectionConsumed = false; // Mark as unconsumed
             numberOfSteps = lastPositionEncoder - encoderRaw;
+            noteUserInput( );
             lastPositionEncoder = encoderRaw;
 
         } else if ( encoderDirectionConsumed ) {

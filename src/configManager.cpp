@@ -441,6 +441,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     int saved_revision = jumperlessConfig.hardware.revision;
     int saved_probe_revision = jumperlessConfig.hardware.probe_revision;
     int saved_psram_installed = jumperlessConfig.hardware.psram_installed;
+    int saved_psram_app_size_kb = jumperlessConfig.hardware.psram_app_size_kb;
 
     //save calibration values
     int saved_top_rail_zero = jumperlessConfig.calibration.top_rail_zero;
@@ -484,6 +485,7 @@ void resetConfigToDefaults(int clearCalibration, int clearHardware) {
     jumperlessConfig.hardware.revision = saved_revision;
     jumperlessConfig.hardware.probe_revision = saved_probe_revision;
     jumperlessConfig.hardware.psram_installed = saved_psram_installed;
+    jumperlessConfig.hardware.psram_app_size_kb = saved_psram_app_size_kb;
     }
     // Restore calibration values
 
@@ -642,6 +644,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "revision") == 0) jumperlessConfig.hardware.revision = parseInt(value);
             else if (strcmp(key, "probe_revision") == 0) jumperlessConfig.hardware.probe_revision = parseInt(value);
             else if (strcmp(key, "psram_installed") == 0) jumperlessConfig.hardware.psram_installed = parseBool(value);
+            else if (strcmp(key, "psram_app_size_kb") == 0) jumperlessConfig.hardware.psram_app_size_kb = parseInt(value);
         } else if (strcmp(section, "dacs") == 0) {
             // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
             if (strcmp(key, "set_dacs_on_boot") == 0) jumperlessConfig.dacs.set_dacs_on_boot = parseBool(value);
@@ -1001,6 +1004,7 @@ bool saveConfigToFile(const char* filename) {
     file.print("revision = "); file.print(jumperlessConfig.hardware.revision); file.println(";");
     file.print("probe_revision = "); file.print(jumperlessConfig.hardware.probe_revision); file.println(";");
     file.print("psram_installed = "); file.print(jumperlessConfig.hardware.psram_installed); file.println(";");
+    file.print("psram_app_size_kb = "); file.print(jumperlessConfig.hardware.psram_app_size_kb); file.println(";");
     file.println();
 
     // Write DAC settings section (voltage state moved to globalState.power in YAML files)
@@ -1177,6 +1181,7 @@ bool configHasChanges() {
     if (jumperlessConfig.hardware.revision != lastSavedConfig.hardware.revision) return true;
     if (jumperlessConfig.hardware.probe_revision != lastSavedConfig.hardware.probe_revision) return true;
     if (jumperlessConfig.hardware.psram_installed != lastSavedConfig.hardware.psram_installed) return true;
+    if (jumperlessConfig.hardware.psram_app_size_kb != lastSavedConfig.hardware.psram_app_size_kb) return true;
     
     // DACs section
     if (jumperlessConfig.dacs.set_dacs_on_boot != lastSavedConfig.dacs.set_dacs_on_boot) return true;
@@ -1571,6 +1576,9 @@ bool saveConfigIncremental(const char* filename) {
                     updated = true;
                 } else if (strcmp(key, "psram_installed") == 0) {
                     snprintf(newLine, sizeof(newLine), "psram_installed = %d;", jumperlessConfig.hardware.psram_installed);
+                    updated = true;
+                } else if (strcmp(key, "psram_app_size_kb") == 0) {
+                    snprintf(newLine, sizeof(newLine), "psram_app_size_kb = %d;", jumperlessConfig.hardware.psram_app_size_kb);
                     updated = true;
                 }
             }
@@ -2427,6 +2435,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("probe_revision = "); Serial.print(jumperlessConfig.hardware.probe_revision); Serial.println(";");
         if (pasteable == true) Serial.print("`[hardware] ");
         Serial.print("psram_installed = "); Serial.print(jumperlessConfig.hardware.psram_installed); Serial.println(";");
+        if (pasteable == true) Serial.print("`[hardware] ");
+        Serial.print("psram_app_size_kb = "); Serial.print(jumperlessConfig.hardware.psram_app_size_kb); Serial.println(";");
     }
     cycleTerminalColor();
     // Print DAC settings section
@@ -3442,6 +3452,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.revision);
         else if (strcmp(key, "probe_revision") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.probe_revision);
         else if (strcmp(key, "psram_installed") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.psram_installed);
+        else if (strcmp(key, "psram_app_size_kb") == 0) sprintf(oldValue, "%d", jumperlessConfig.hardware.psram_app_size_kb);
     }
     else if (strcmp(section, "dacs") == 0) {
         // Voltage state (top_rail, bottom_rail, dac_0, dac_1) moved to globalState.power
@@ -3578,6 +3589,11 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
             jumperlessConfig.hardware.psram_installed = newValue;
             applyPsramModeChange(newValue);
             reinitMicroPythonForPsramChange();
+        }
+        else if (strcmp(key, "psram_app_size_kb") == 0) {
+            // Changing the app/MP partition only takes effect on next boot
+            // since MicroPython has already mapped its heap.
+            jumperlessConfig.hardware.psram_app_size_kb = parseInt(value);
         }
     }
     else if (strcmp(section, "dacs") == 0) {

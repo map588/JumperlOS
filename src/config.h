@@ -34,11 +34,23 @@ struct config {
         int revision = 5;
         int probe_revision = 5;
         int psram_installed = 0;
+        // KiB of PSRAM reserved for the app arena (file cache, undo log,
+        // SharedBuffer, scratch). Remainder goes to the MicroPython GC heap.
+        // Default 2048 (2MB app / 6MB MicroPython).
+        int psram_app_size_kb = 2048;
+        // Use a PIO state machine (shared with the probe LED's WS2812 SM)
+        // to do the active-drive/release/sample sequence for probe button
+        // reads, instead of the CPU bit-banging the IO pads. PIO path is
+        // ~75x faster, keeps PROBE_LED_PIN in PIO mode the whole time
+        // (no SIO/PIO function switching), and eliminates the line-cut
+        // race that caused WS2812 shifting artifacts. Falls back to the
+        // CPU path automatically if PIO program memory can't be claimed.
+        bool use_pio_probe_button = true;
     } hardware;
 
     struct dacs {
         // Voltage values moved to activeState.power (topRail, bottomRail, dac0, dac1)
-        bool set_dacs_on_boot = false;
+        bool set_dacs_on_boot = true;
         bool set_rails_on_boot = true;
         int probe_power_dac = 0;
         float limit_max = 8.00;

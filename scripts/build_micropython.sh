@@ -64,17 +64,23 @@ echo -e "${YELLOW}Initializing required submodules...${NC}"
 git submodule update --init --recursive lib/uzlib lib/libm lib/libm_dbl
 popd
 
+# Newer Clang (~19+) treats -Wunterminated-string-initialization as an error,
+# but MicroPython 1.25.0 has several intentional truncated-string initializers
+# (e.g. {10, "r10"} into a char[3]) where only the first N bytes are read by
+# design. Disable that specific warning while keeping -Werror everywhere else.
+MPY_RELAX_CFLAGS='-Wno-error=unterminated-string-initialization -Wno-unterminated-string-initialization'
+
 # Build mpy-cross first
 echo -e "${YELLOW}Building mpy-cross compiler...${NC}"
 cd "$MICROPYTHON_REPO_PATH"
-make -C mpy-cross V=1
+make -C mpy-cross V=1 CFLAGS_EXTRA="$MPY_RELAX_CFLAGS"
 
 # Clean previous build
 echo -e "${YELLOW}Cleaning previous MicroPython embed build...${NC}"
 cd "$MICROPYTHON_REPO_PATH/ports/embed"
 # Set environment variables for the build
 export MICROPYTHON_TOP="$MICROPYTHON_REPO_PATH"
-make -f embed.mk clean-micropython-embed-package V=1
+make -f embed.mk clean-micropython-embed-package V=1 CFLAGS_EXTRA="$MPY_RELAX_CFLAGS"
 
 cd "$MICROPYTHON_LOCAL_PATH"
 if [ -d "micropython_embed" ]; then
@@ -338,7 +344,7 @@ export MICROPYTHON_TOP="$MICROPYTHON_REPO_PATH"
 export USER_C_MODULES="$PROJECT_ROOT/modules"
 
 # Build the embed port using the modified makefile that includes extmod
-make -f embed_with_extmod.mk PACKAGE_DIR="$MICROPYTHON_LOCAL_PATH/micropython_embed" V=1
+make -f embed_with_extmod.mk PACKAGE_DIR="$MICROPYTHON_LOCAL_PATH/micropython_embed" V=1 CFLAGS_EXTRA="$MPY_RELAX_CFLAGS"
 
 # Apply Jumperless-specific patches to stock MicroPython sources
 # These fix bugs that can't be addressed through mpconfigport.h or port-level overrides

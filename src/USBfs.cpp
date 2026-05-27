@@ -652,7 +652,14 @@ void usbPlugCallback(uint32_t cbData) {
     if (nodeFile) {
         nodeFile.close();
     }
-    
+
+    // Big-event: drain the PSRAM/SRAM file cache to flash NOW so the host
+    // sees the device's latest state the moment it mounts. We do this
+    // BEFORE setting usbMountedByHost so the flush helpers still have
+    // permission to touch the FS.
+    extern void fileCacheFlushNowAll(const char* reason);
+    fileCacheFlushNowAll("usb_mount");
+
     // Set flag - this allows READs (for monitoring) but blocks WRITEs
     __sync_synchronize();  // Memory barrier
     usbMountedByHost = true;

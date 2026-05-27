@@ -51,7 +51,7 @@ void debugFlagInit(int forceDefaults) {
     EEPROM.write(POWER_PRIORITY_ADDRESS, 1);
     EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 0);
 
-    saveVoltages(0.0f, 0.0f, 3.33f, 0.0f);
+    // saveVoltages(0.0f, 0.0f, 3.33f, 0.0f);
 
     EEPROM.commit();
     delay(5);

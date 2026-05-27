@@ -87,9 +87,18 @@ enum actionCategories {
   OLEDACTION,
   CONNECTACTION,
   CALIBRATIONACTION,
-  
+  HISTORYACTION,
+
   NOCATEGORY
 };
+
+void runHistoryScrubMenu(void);
+
+// True while the History scrub menu is live. Core 2's LED loop skips
+// showNets() when inClickMenu==1, so we set this flag to override that
+// gate so the user sees real bridge LEDs (matching the hold-disconnect
+// gesture's behavior on the main screen).
+extern volatile bool g_historyScrubActive;
 
 
 enum showOptions {

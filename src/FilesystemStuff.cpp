@@ -1336,10 +1336,11 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
         }
         // Legacy: content was passed directly (backward compatibility)
         else if ( content.length( ) > 0 ) {
-            // Check content size before storing
-            if ( content.length( ) > 8192 ) { // Limit to 8KB
+            // Match the SharedBuffer cap (24KB) - the historical 8KB limit
+            // here was tighter than the underlying buffer for no good reason.
+            if ( content.length( ) > SHARED_BUFFER_SIZE ) {
                 outputToArea( "WARNING: File content too large for REPL mode, truncating", FileColors::ERROR );
-                content = content.substring( 0, 8192 );
+                content = content.substring( 0, SHARED_BUFFER_SIZE );
             }
             lastOpenedFileContent = content;
             shouldExitForREPL = true;
@@ -1350,7 +1351,7 @@ bool FileManager::editFileWithEkilo( const String& filename ) {
             File file = safeFileOpen( filename.c_str( ), "r" );
             if ( file ) {
                 size_t fileSize = file.size( );
-                if ( fileSize > 8192 ) {
+                if ( fileSize > SHARED_BUFFER_SIZE ) {
                     safeFileClose( file, false );
                     outputToArea( "WARNING: File too large for REPL mode (" + String( fileSize / 1024 ) + "KB)", FileColors::ERROR );
                     return false;
@@ -3710,14 +3711,19 @@ void safeFileClose( File& file, bool was_write_mode ) {
     fs_mutex_release( );
 }
 
-bool safeFileReadAll( const char* path, char* buffer, size_t buffer_size,
-                      size_t* bytes_read, uint32_t timeout_ms ) {
+// =============================================================================
+// Raw backing-store implementations (always touch flash directly).
+// FileCache calls these to actually flush; the cache-aware public versions
+// below call into the cache first.
+// =============================================================================
+
+bool safeFileReadAllRaw( const char* path, char* buffer, size_t buffer_size,
+                         size_t* bytes_read, uint32_t timeout_ms ) {
     if ( !path || !buffer || buffer_size == 0 )
         return false;
 
-    *bytes_read = 0;
+    if ( bytes_read ) *bytes_read = 0;
 
-    // Acquire filesystem mutex
     if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
         return false;
     }
@@ -3731,8 +3737,9 @@ bool safeFileReadAll( const char* path, char* buffer, size_t buffer_size,
     size_t file_size = file.size( );
     size_t to_read = ( file_size < buffer_size - 1 ) ? file_size : buffer_size - 1;
 
-    *bytes_read = file.readBytes( buffer, to_read );
-    buffer[ *bytes_read ] = '\0'; // Null terminate
+    size_t read_n = file.readBytes( buffer, to_read );
+    buffer[ read_n ] = '\0';
+    if ( bytes_read ) *bytes_read = read_n;
 
     file.close( );
     fs_mutex_release( );
@@ -3740,47 +3747,104 @@ bool safeFileReadAll( const char* path, char* buffer, size_t buffer_size,
     return true;
 }
 
-bool safeFileWriteAll( const char* path, const char* content, size_t content_len,
-                       uint32_t timeout_ms ) {
+// Trace macros: psram_debug acts as a master, fc_debug is the per-area
+// toggle for filesystem layer traces. Either one enables FSDBG.
+extern "C" volatile int psram_debug;
+extern "C" volatile int fc_debug;
+#include "hardware/structs/sio.h"
+#define FSDBG(fmt, ...) do { if (fc_debug || psram_debug) { Serial.printf("[%lu c%d] FS> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); Serial.flush(); } } while(0)
+
+bool safeFileWriteAllRaw( const char* path, const char* content, size_t content_len,
+                          uint32_t timeout_ms ) {
     if ( !path || !content )
         return false;
 
     if ( content_len == 0 )
         content_len = strlen( content );
 
+    FSDBG("WriteAllRaw ENTER path=%s len=%u", path, (unsigned)content_len);
+
     AsyncPassthrough::suspendUARTRxIRQ();
 
+    FSDBG("WriteAllRaw pauseCore2ForFlash");
     bool was_paused = pauseCore2ForFlash( 100 );
 
     extern volatile bool core2busy;
     if ( core2busy ) {
+        FSDBG("WriteAllRaw waiting for core2busy");
         uint32_t extra = millis();
         while ( core2busy && (millis() - extra < 200) )
             delayMicroseconds(100);
+        FSDBG("WriteAllRaw core2busy cleared in %ums", (unsigned)(millis()-extra));
     }
 
+    FSDBG("WriteAllRaw fs_mutex_acquire");
     if ( !fs_mutex_acquire_timeout_ms( timeout_ms ) ) {
+        FSDBG("WriteAllRaw FAIL fs_mutex timeout");
         unpauseCore2ForFlash( was_paused );
         AsyncPassthrough::resumeUARTRxIRQ();
         return false;
     }
 
+    FSDBG("WriteAllRaw FatFS.open");
     File file = FatFS.open( path, "w" );
     if ( !file ) {
+        FSDBG("WriteAllRaw FAIL open");
         fs_mutex_release( );
         unpauseCore2ForFlash( was_paused );
         AsyncPassthrough::resumeUARTRxIRQ();
         return false;
     }
 
+    FSDBG("WriteAllRaw file.write");
     size_t written = file.write( (const uint8_t*)content, content_len );
+    FSDBG("WriteAllRaw file.close");
     file.close( );
 
     fs_mutex_release( );
     unpauseCore2ForFlash( was_paused );
     AsyncPassthrough::resumeUARTRxIRQ();
 
+    FSDBG("WriteAllRaw EXIT written=%u/%u", (unsigned)written, (unsigned)content_len);
     return ( written == content_len );
+}
+
+// =============================================================================
+// Cache-aware public wrappers
+// =============================================================================
+
+#include "FileCache.h"
+
+bool safeFileReadAll( const char* path, char* buffer, size_t buffer_size,
+                      size_t* bytes_read, uint32_t timeout_ms ) {
+    if ( !path || !buffer || buffer_size == 0 )
+        return false;
+
+    // Cache hit? fileCacheReadInto copies under the cache mutex so a
+    // concurrent fileCacheWrite from another core can't realloc the entry
+    // body out from under us (which would have been a use-after-free if
+    // we used fileCacheRead + memcpy here).
+    size_t copied = 0;
+    if ( fileCacheReadInto( path, (uint8_t*)buffer, buffer_size, &copied ) ) {
+        if ( bytes_read ) *bytes_read = copied;
+        return true;
+    }
+    return safeFileReadAllRaw( path, buffer, buffer_size, bytes_read, timeout_ms );
+}
+
+bool safeFileWriteAll( const char* path, const char* content, size_t content_len,
+                       uint32_t timeout_ms ) {
+    if ( !path || !content )
+        return false;
+    if ( content_len == 0 ) content_len = strlen( content );
+
+    // Try the cache first. On success the data is in PSRAM and will be
+    // flushed in the background.
+    if ( fileCacheWrite( path, (const uint8_t*)content, content_len ) ) {
+        return true;
+    }
+    // No PSRAM (or cache full) - fall back to direct flash write.
+    return safeFileWriteAllRaw( path, content, content_len, timeout_ms );
 }
 
 int safeFileWrite( File& file, const uint8_t* data, size_t len ) {
@@ -3802,6 +3866,34 @@ int safeFileWrite( File& file, const uint8_t* data, size_t len ) {
     return written;
 }
 
+// Held-pause variant - caller already owns pauseCore2 + UART suspension
+// + fs_mutex. Used by FileCache's chunked flusher so the pause/resume
+// happens ONCE around the whole open+write+close+commit, not per chunk.
+int safeFileWriteHeld( File& file, const uint8_t* data, size_t len ) {
+    if ( !file || !data || len == 0 )
+        return -1;
+    return file.write( data, len );
+}
+
+// Held-pause variant of safeFileClose. Closes the file (which fsyncs
+// in write mode) and releases fs_mutex but does NOT pause/unpause
+// Core 1 - the caller already holds the outer pause.
+void safeFileCloseHeld( File& file ) {
+    if ( !file ) return;
+    file.close();
+    fs_mutex_release();
+}
+
+// Same as safeFileCloseHeld but does NOT release fs_mutex. Caller will
+// chain another FS op (unlink/rename) and release the mutex once at the
+// end. Keeping fs_mutex held across the chain prevents the
+// filesystem-activity LED from blinking once per fs_mutex_release - the
+// user sees ONE save indicator, not 3.
+void safeFileCloseHeldNoRelease( File& file ) {
+    if ( !file ) return;
+    file.close();
+}
+
 bool safeFileFlush( File& file ) {
     if ( !file )
         return false;
@@ -3820,7 +3912,7 @@ bool safeFileFlush( File& file ) {
     return true;
 }
 
-bool safeFileExists( const char* path, uint32_t timeout_ms ) {
+bool safeFileExistsRaw( const char* path, uint32_t timeout_ms ) {
     if ( !path )
         return false;
 
@@ -3835,7 +3927,13 @@ bool safeFileExists( const char* path, uint32_t timeout_ms ) {
     return exists;
 }
 
-int32_t safeFileSize( const char* path, uint32_t timeout_ms ) {
+bool safeFileExists( const char* path, uint32_t timeout_ms ) {
+    // A path is "present" if either the cache has it OR flash has it.
+    if ( fileCacheExists( path ) ) return true;
+    return safeFileExistsRaw( path, timeout_ms );
+}
+
+int32_t safeFileSizeRaw( const char* path, uint32_t timeout_ms ) {
     if ( !path )
         return -1;
 
@@ -3855,6 +3953,12 @@ int32_t safeFileSize( const char* path, uint32_t timeout_ms ) {
     fs_mutex_release( );
 
     return size;
+}
+
+int32_t safeFileSize( const char* path, uint32_t timeout_ms ) {
+    int32_t cached = fileCacheSize( path );
+    if ( cached >= 0 ) return cached;
+    return safeFileSizeRaw( path, timeout_ms );
 }
 
 bool safeMkdir( const char* path, uint32_t timeout_ms ) {
@@ -3889,7 +3993,7 @@ bool safeMkdir( const char* path, uint32_t timeout_ms ) {
     return success;
 }
 
-bool safeFileDelete( const char* path, uint32_t timeout_ms ) {
+bool safeFileDeleteRaw( const char* path, uint32_t timeout_ms ) {
     if ( !path )
         return false;
 
@@ -3913,7 +4017,13 @@ bool safeFileDelete( const char* path, uint32_t timeout_ms ) {
     return success;
 }
 
-bool safeFileRename( const char* pathFrom, const char* pathTo, uint32_t timeout_ms ) {
+bool safeFileDelete( const char* path, uint32_t timeout_ms ) {
+    // Drop any cached entry first so subsequent reads don't return stale data.
+    fileCacheDelete( path );
+    return safeFileDeleteRaw( path, timeout_ms );
+}
+
+bool safeFileRenameRaw( const char* pathFrom, const char* pathTo, uint32_t timeout_ms ) {
     if ( !pathFrom || !pathTo )
         return false;
 
@@ -3935,6 +4045,11 @@ bool safeFileRename( const char* pathFrom, const char* pathTo, uint32_t timeout_
     AsyncPassthrough::resumeUARTRxIRQ( );
 
     return success;
+}
+
+bool safeFileRename( const char* pathFrom, const char* pathTo, uint32_t timeout_ms ) {
+    fileCacheRename( pathFrom, pathTo );
+    return safeFileRenameRaw( pathFrom, pathTo, timeout_ms );
 }
 
 //==============================================================================

@@ -68,6 +68,9 @@ KevinC@ppucc.io
 
 #include "MeasureMode.h"
 #include "MpRemoteService.h"    // mpremote/ViperIDE raw REPL service
+#include "PsramArena.h"         // App-side PSRAM allocator (Phase 1)
+#include "FileCache.h"          // Write-back PSRAM file cache (Phase 2)
+#include "Undo.h"               // Delta-based undo log (Phase 4.1)
 #include "SingleCharCommands.h" // Single-character command system
 #include "WaveGen.h"            // New async wavegen
 #include "externVars.h"
@@ -120,8 +123,9 @@ volatile int dumpLED = 0;
 unsigned long dumpLEDTimer = 0;
 unsigned long dumpLEDrate = 250;
 
-const char firmwareVersion[] = "5.6.6.2"; //! remember to update this
-//5.6.5.14
+#include "FirmwareVersion.generated.h"
+
+const char firmwareVersion[] = FIRMWARE_VERSION;
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
@@ -162,11 +166,12 @@ void setup( ) {
     loadHardwareFromEEPROM( );
 
     loadConfig( );
-    delay(2000);
+    //delay(2000);
 
     // Auto-detect PSRAM hardware and fix config if it disagrees
+    size_t detectedPsram = 0;
     {
-        size_t detectedPsram = rp2040.getPSRAMSize( );
+        detectedPsram = rp2040.getPSRAMSize( );
         int shouldBeInstalled = ( detectedPsram > 0 ) ? 1 : 0;
         if ( jumperlessConfig.hardware.psram_installed != shouldBeInstalled ) {
             Serial.printf( "[PSRAM] Auto-detected %s — updating psram_installed %d -> %d\n",
@@ -177,6 +182,26 @@ void setup( ) {
             saveConfig( );
         }
     }
+
+    // Initialize the app-side PSRAM arena BEFORE MicroPython starts so its
+    // gc_add() call only sees the unused tail. Safe to call with no PSRAM.
+    if ( jumperlessConfig.hardware.psram_installed && detectedPsram > 0 ) {
+        bool ok = psram_arena_init( detectedPsram, jumperlessConfig.hardware.psram_app_size_kb );
+        if ( ok ) {
+            Serial.printf( "[PSRAM] App arena ready: %u KB free, MP region %u KB\n",
+                (unsigned)( psram_app_free( ) / 1024 ),
+                (unsigned)( psram_mp_size( ) / 1024 ) );
+        } else {
+            Serial.println( "[PSRAM] App arena init failed - continuing without app cache" );
+        }
+    }
+
+    // Initialize the file cache (relies on the arena - no-op if unavailable).
+    fileCacheInit( );
+
+    // Initialize the undo log. Must come before any state mutation hooks fire,
+    // so nets/probing routines see a valid log from the first edit.
+    undoInit( );
 
     // Check for firmware updates and provision new files if needed
     checkAndHandleFirmwareUpdate( );
@@ -263,6 +288,13 @@ void setup( ) {
     clearAllNTCC( );
     initINA219( );
 
+    // Auto-detect OLED on the internal I2C0 bus and bring the config in
+    // line with what's actually wired up. Must run AFTER initDAC() /
+    // initINA219() (Wire is up) and BEFORE firstLoop==2 (which decides
+    // whether to call oled.init() based on top_oled.connect_on_boot).
+    // Full policy + rationale lives next to the implementation in oled.cpp.
+    autoDetectAndConfigureOled( );
+
     // Serial.println("currentReadingOffset0_mA = " + String(currentReadingOffset0_mA));
     // Serial.println("currentReadingOffset1_mA = " + String(currentReadingOffset1_mA));
     // Serial.flush();
@@ -340,6 +372,7 @@ void setup( ) {
     jOS.registerService( &probeSwitch );         // LOW - switch position (not time-critical)
     jOS.registerService( &probePads );           // LOW - expensive ADC pad reading
     jOS.registerService( &configSaveService );   // LOW - background config save (non-blocking)
+    jOS.registerService( &fileCacheFlushService ); // LOW - write-back PSRAM cache flush
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts
@@ -531,6 +564,15 @@ menu:
             oled.init( );
         }
         checkProbeCurrentZero( );
+
+        // Ensure the probe-sense DAC is at the calibrated measure_mode_output_voltage
+        // and ROUTABLE_BUFFER_IN<->DACn is wired before the first probe tap.
+        // Without this, initDAC()/applyStateToHardware() leave the probe DAC at
+        // whatever the slot's saved power.dac0/1 was (often the 3.33V default),
+        // and pad detection in measure mode misreads until probeMode() runs.
+        // routableBufferPower() internally honors jumperlessConfig.dacs.auto_connect_probe,
+        // so this is a no-op when probe auto-connect is disabled.
+        routableBufferPower( 1, 0 );
 
         printColorJogoSmall( );
 #if TEST_PSRAM == 1
@@ -905,12 +947,14 @@ dontshowmenu:
         } else {
             input = '\n';
         }
+        noteUserInput( );
     } else if ( !useLineBuffering ) {
         // Only read single character if NOT in line buffering mode
         // (line buffering mode already handled by Jerial.service() above)
         // NOTE: Jerial.read() now handles injection buffer with tag filtering automatically
         if ( Jerial.available( ) > 0 ) {
             input = Jerial.read( );
+            noteUserInput( );
 #if debugJerial
             Serial.printf( "Main: Read char '%c' (%d) from Jerial\n", (char)input, input );
             Serial.flush( );
@@ -1015,8 +1059,15 @@ skipinput:
 
 loadfile:
     loadingFile = 1;
-    // Serial.println("loadingFile" + String(millis()));
-    // Serial.flush();
+    // Suppress undo recording for the entire slot-load region. Loading
+    // a slot's YAML into globalState issues addConnection() /
+    // setRailVoltage() / setDacVoltage() calls in bulk - these are
+    // bringing globalState into sync with what's already on disk, NOT
+    // user actions, and must not enter the destination slot's history.
+    // Without this, switching to slot 1 would fill its undo log with
+    // phantom "connect X-Y" entries (and any user undo on slot 1 would
+    // start undoing the file load itself, which is nonsensical).
+    undoBeginIngest();
     startupTimers[ 10 ] = millis( );
     // Just clear preview mode flag - don't restore original slot
     // Let the normal load below handle loading the selected slot
@@ -1084,6 +1135,7 @@ loadfile:
 
     startupTimers[ 14 ] = millis( );
     // refreshConnections( -1, 1, 0 );
+    undoEndIngest();
 }
 
 unsigned long lastSwirlTime = 0;
@@ -1412,9 +1464,12 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             // that was written to buffer by b.print() in menu code
             bool needsLedShow = false;
 
-            // Allow showing nets if not in menu OR if in preview mode
+            // Allow showing nets if not in menu OR if in preview mode OR
+            // if the History scrub menu is live (its job is to show the
+            // reverted bridge state on the breadboard, not menu text).
             if ( rails != 2 && rails != 5 && rails != 3 &&
-                 ( inClickMenu == 0 || SlotManager::getInstance( ).isPreviewMode( ) ) &&
+                 ( inClickMenu == 0 || SlotManager::getInstance( ).isPreviewMode( ) ||
+                   g_historyScrubActive ) &&
                  inPadMenu == 0 && hideNets == 0 ) {
                 needsLedShow = true;
 
@@ -1569,35 +1624,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                 swirled = 1; // only swirl when wavegen not streaming
             }
 
-            // leds.show();
-            // } else if ( inClickMenu == 0 && probeActive == 0 ) {
 
-            //     if ( ( ( countsss > 8 && defconDisplay >= 0 ) || countsss > 10 ) &&
-            //          defconDisplay != -1 ) {
-            //         countsss = 0;
-
-            //         if ( defconDisplay != -1 ) {
-            //             tempDD++;
-
-            //             if ( tempDD > 6 ) {
-            //                 tempDD = 0;
-            //             }
-            //             defconDisplay = tempDD;
-            //         }
-
-            //         if ( defconDisplay > 5 ) {
-            //             defconDisplay = 0;
-            //         }
-            //     }
-
-            //     if ( readcounter > 100 ) {
-            //         readcounter = 0;
-            //         if ( probeCycle > 4 ) {
-            //             probeCycle = 1;
-            //         }
-            //     }
-
-            //     rotaryEncoderStuff( );
 
         } else {
             t[ 20 ] = micros( );

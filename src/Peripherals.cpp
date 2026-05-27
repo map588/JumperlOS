@@ -575,7 +575,11 @@ int initI2C( int sdaPin, int sclPin, int speed ) {
         Wire.setSCL( sclPin );
         Wire.setClock( speed );
         Wire.begin( );
-        
+        // Bound any single I2C0 transaction to 15ms so a hot-unplugged
+        // device (OLED on rev 7, etc.) can't wedge the main loop while
+        // checkConnection() catches up and clears oledConnected.
+        Wire.setTimeout( 15 );
+
         if ( i2c0Pins[ 0 ] == sdaPin && i2c0Pins[ 1 ] == sclPin &&
              i2c0Pins[ 2 ] == speed ) {
             return gpioI2Cmap[ sdaFound ][ 2 ] +
@@ -606,6 +610,11 @@ int initI2C( int sdaPin, int sclPin, int speed ) {
         Wire1.setSCL( sclPin );
         Wire1.setClock( speed );
         Wire1.begin( );
+        // Bound any single I2C1 transaction to 15ms so a hot-unplugged
+        // OLED can't wedge show()/display() for the Earle pico Wire
+        // default (hundreds of ms) before checkConnection() flips
+        // oledConnected to false.
+        Wire1.setTimeout( 15 );
 
         i2cSpeed = speed;
 

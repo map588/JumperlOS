@@ -17,6 +17,8 @@
 #include <hardware/gpio.h>
 #include "externVars.h"  // For fs_mutex filesystem synchronization
 #include "FilesystemStuff.h"  // For safe file operations
+#include "FileCache.h"  // fileCacheFlushNowAll() big-event triggers
+#include "Undo.h"  // Phase 4.1 - undo log mutation hooks
 
 // ============================================================================
 // CRITICAL MEMORY SAFETY NOTES
@@ -199,6 +201,33 @@ void PowerState::setDefaults() {
     bottomRail = 0.0f;
     dac0 = 3.33f;
     dac1 = 0.0f;
+
+    // If probe auto-connect is enabled, the DAC that drives ROUTABLE_BUFFER_IN
+    // must sit at the calibrated measure_mode_output_voltage so the probe
+    // sense voltage divider reads correctly. Otherwise pad detection in
+    // measure mode is wrong until routableBufferPower() runs.
+    //
+    // Honor probePowerDAC so a swapped probe-power DAC (see setDac0voltage /
+    // setDac1voltage in Peripherals.cpp) gets the calibrated value on the
+    // correct channel. Leave the other DAC at its plain default.
+    //
+    // Gating:
+    //   - configLoaded guards against static-init ordering (probePowerDAC is a
+    //     reference initialized in Probing.cpp; reading it before its
+    //     translation unit's dynamic init is UB).
+    //   - auto_connect_probe <= 0 means probe auto-wiring is off, so leave
+    //     both DACs at their non-probe defaults. Mirrors the early return in
+    //     Probing::routableBufferPower().
+    extern volatile bool configLoaded;
+    extern int& probePowerDAC;  // defined in Probing.cpp
+    if (configLoaded && jumperlessConfig.dacs.auto_connect_probe > 0) {
+        const float probeV = jumperlessConfig.calibration.measure_mode_output_voltage;
+        if (probePowerDAC == 0) {
+            dac0 = probeV;
+        } else if (probePowerDAC == 1) {
+            dac1 = probeV;
+        }
+    }
 }
 
 bool PowerState::validate(String& errorMsg) const {
@@ -622,6 +651,13 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
     // Invalidate caches - paths need to be recalculated
     connections.invalidateCache(config.autoRefreshOnChange);
     markDirty();
+
+    // Phase 4.1: undo log hook. Skip while we're applying a delta -
+    // we don't want to record our own undo/redo as new history.
+    if (!g_undoApplying) {
+        uint32_t color = connections.bridgeColors[idx];
+        undoRecordConnect(node1, node2, color);
+    }
     
     return true;
 }
@@ -641,7 +677,10 @@ bool JumperlessState::removeConnection(int node1, int node2, String& errorMsg) {
         errorMsg = "Connection " + String(node1) + "-" + String(node2) + " not found";
         return false;
     }
-    
+
+    // Phase 4.1: capture color before we drop it for undo.
+    uint32_t removedColor = connections.bridgeColors[foundIdx];
+
     // Remove by shifting remaining entries
     for (int i = foundIdx; i < connections.numBridges - 1; i++) {
         connections.bridges[i][0] = connections.bridges[i + 1][0];
@@ -659,6 +698,10 @@ bool JumperlessState::removeConnection(int node1, int node2, String& errorMsg) {
     // Invalidate caches
     connections.invalidateCache(config.autoRefreshOnChange);
     markDirty();
+
+    if (!g_undoApplying) {
+        undoRecordDisconnect(node1, node2, removedColor);
+    }
     
     return true;
 }
@@ -674,6 +717,10 @@ bool JumperlessState::hasConnection(int node1, int node2) const {
 }
 
 void JumperlessState::clearAllConnections() {
+    if (!g_undoApplying) {
+        undoRecordClearAll();
+    }
+
     connections.clear();
     
     // Clear all fake GPIO state so they won't be serialized to YAML
@@ -684,6 +731,11 @@ void JumperlessState::clearAllConnections() {
     // Restore locked connections after clearing
     extern int handleLockedConnections();
     handleLockedConnections();
+
+    // Big-event flush: clear-all is destructive and the user already
+    // expects a brief moment of "saving" - we may as well commit now so
+    // a power loss can't lose the clear itself.
+    fileCacheFlushNowAll("clear_all");
 }
 
 int JumperlessState::getConnectionDuplicates(int node1, int node2) const {
@@ -931,12 +983,17 @@ int JumperlessState::getEphemeralConnectionCount() const {
 
 // Power management
 void JumperlessState::setDacVoltage(int dacNum, float voltage) {
+    float prev = (dacNum == 0) ? power.dac0 : power.dac1;
     if (dacNum == 0) {
         power.dac0 = voltage;
     } else if (dacNum == 1) {
         power.dac1 = voltage;
     }
     markDirty();
+
+    if (!g_undoApplying && prev != voltage) {
+        undoRecordDacSet(dacNum, prev, voltage);
+    }
 }
 
 float JumperlessState::getDacVoltage(int dacNum) const {
@@ -944,12 +1001,20 @@ float JumperlessState::getDacVoltage(int dacNum) const {
 }
 
 void JumperlessState::setRailVoltage(bool isTopRail, float voltage) {
+    float prev = isTopRail ? power.topRail : power.bottomRail;
     if (isTopRail) {
         power.topRail = voltage;
     } else {
         power.bottomRail = voltage;
     }
     markDirty();
+
+    // Rails reuse the DAC undo op with extended channel encoding:
+    //   2 = top rail, 3 = bottom rail. The apply/revert path in Undo.cpp
+    //   dispatches channels >= 2 back to setRailVoltage.
+    if (!g_undoApplying && prev != voltage) {
+        undoRecordDacSet(isTopRail ? 2 : 3, prev, voltage);
+    }
 }
 
 float JumperlessState::getRailVoltage(bool isTopRail) const {
@@ -1189,6 +1254,18 @@ bool JumperlessState::toYAML(String& output, int showANSI) const {
 }
 
 bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
+    // YAML restore is a wholesale state replacement, not a sequence of
+    // individually-undoable user actions. Suppress the undo-record hooks
+    // for the duration of the parse using the same flag the apply/revert
+    // path uses; otherwise boot-time slot loads would resurrect the
+    // previous session's bridges as fresh undo entries even though we
+    // don't persist history to flash anymore.
+    struct UndoSuppressGuard {
+        bool prev;
+        UndoSuppressGuard() : prev(g_undoApplying) { g_undoApplying = true; }
+        ~UndoSuppressGuard() { g_undoApplying = prev; }
+    } undoGuard;
+
     // Simple YAML parser for our specific format
     // Parse line by line
     int lineStart = 0;
@@ -2671,7 +2748,15 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
         errorMsg = "Invalid slot number: " + String(slotNum);
         return false;
     }
-    
+
+    // Big-event: if we're switching to a different slot, flush any pending
+    // changes for the currently-active one to flash NOW. Otherwise the
+    // user's work since their last commit would be lost when we replace
+    // activeState below. No-op if nothing is dirty.
+    if (slotNum != activeSlotNumber) {
+        fileCacheFlushNowAll("slot_switch");
+    }
+
     String content;
     String filename = getSlotFilename(slotNum);
 
@@ -2693,10 +2778,47 @@ bool SlotManager::loadSlot(int slotNum, String& errorMsg) {
         // Serial.flush();
         
         if (!activeState.fromYAML(content, errorMsg)) {
-            errorMsg = "Failed to parse YAML slot " + String(slotNum) + ": " + errorMsg;
-            Serial.println("  Parse failed: " + errorMsg);
+            // Canonical parse failed - this can happen after a power-loss
+            // mid-save left the canonical file partially written. The ABA
+            // flusher mirrors every save to /.bak/<path>, so try that
+            // copy before giving up.
+            String bakPath = "/.bak" + filename;
+            Serial.print("  Canonical parse failed, trying mirror at ");
+            Serial.println(bakPath);
             Serial.flush();
-            return false;
+            String bakContent;
+            // Slot YAMLs cap at the same size used elsewhere in this file.
+            constexpr size_t MAX_SLOT_YAML = 65536;
+            char* bakBuf = (char*)malloc(MAX_SLOT_YAML);
+            size_t bakRead = 0;
+            extern bool safeFileReadAllRaw(const char* path, char* buffer, size_t buffer_size,
+                                           size_t* bytes_read, uint32_t timeout_ms);
+            bool recovered = false;
+            if (bakBuf && safeFileExists(bakPath.c_str()) &&
+                safeFileReadAllRaw(bakPath.c_str(), bakBuf, MAX_SLOT_YAML, &bakRead, 2000) &&
+                bakRead > 0) {
+                bakContent = bakBuf;
+                String bakErr;
+                if (activeState.fromYAML(bakContent, bakErr)) {
+                    Serial.println("  ✓ Recovered slot from mirror - canonical will be rewritten on next save");
+                    Serial.flush();
+                    // Mark dirty so the next idle flush rewrites the
+                    // canonical from the mirror's content.
+                    activeState.markDirty();
+                    content = bakContent;
+                    recovered = true;
+                } else {
+                    errorMsg = "Failed to parse YAML slot " + String(slotNum) + " (mirror also failed): " + bakErr;
+                }
+            } else {
+                errorMsg = "Failed to parse YAML slot " + String(slotNum) + " (no usable mirror): " + errorMsg;
+            }
+            if (bakBuf) free(bakBuf);
+            if (!recovered) {
+                Serial.println("  Parse failed: " + errorMsg);
+                Serial.flush();
+                return false;
+            }
         }
         
         // Serial.println("  ✓ Loaded " + String(activeState.connections.numBridges) + " connections");
@@ -3952,15 +4074,27 @@ ServiceStatus SlotManager::service() {
     // Both refreshLocalConnections() and saveSlot() need core synchronization
     extern volatile bool refreshLocalInProgress;
     extern volatile bool core1busy;
-    
-    if (hasDirtyState && !usbMountedByHost && !refreshLocalInProgress && !core1busy) {
-        unsigned long timeSinceModified = millis() - activeState.getLastModifiedTime();
-        if (timeSinceModified > 2000) {  // 5 second delay for rapid command bursts (Arduino uploads, etc)
+
+    // GATING NEW MODEL:
+    //   - Drop the old "2000ms since last mutation" debounce. The user's
+    //     window of unsaved work is now bounded by the cache flush gate
+    //     (systemIdleForFlush + 60s emergency backstop) instead of a
+    //     fixed timer.
+    //   - Defer toYAML + cache write to genuine idle. toYAML is ~ms of
+    //     CPU work on Core 0; running it on every dirty tick during a
+    //     probe burst is wasted effort because we'd just re-serialize
+    //     and re-overwrite the cache entry on the next mutation.
+    //   - Big events (clear-all, slot switch, USB mount, probe-exit,
+    //     shutdown) already call fileCacheFlushNowAll() which invokes
+    //     saveSlot synchronously through this same path - those bypass
+    //     the gate.
+    if (hasDirtyState && systemIdleForFlush() && !refreshLocalInProgress && !core1busy) {
             slowReason = "auto-save";
             unsigned long saveStart = micros();
-            
+
             if (debugWaitLoopTiming) {
-                Serial.printf("DEBUG: Auto-save triggered (dirty for %lu ms)\n", timeSinceModified);
+                Serial.printf("DEBUG: Auto-save triggered (system idle, dirty for %lu ms)\n",
+                              (unsigned long)(millis() - activeState.getLastModifiedTime()));
             }
             
             String errorMsg;
@@ -3997,7 +4131,6 @@ ServiceStatus SlotManager::service() {
                 Serial.println(errorMsg);
                 lastStatus = ServiceStatus::ERROR;
             }
-        }
     } else if (hasDirtyState && usbMountedByHost) {
         // Dirty state exists but can't save while USB is mounted
         // This is normal - we'll save when USB is unmounted
