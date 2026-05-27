@@ -2,11 +2,12 @@
 /**
  * @file SharedBuffer.h
  * @brief Pre-allocated shared buffer for zero-copy data transfer between contexts
- * 
- * This provides an 8KB static buffer that can be shared between different contexts
- * (Ekilo editor, Python REPL, File Manager, etc.) without dynamic allocation or
- * flash writes. This is much faster than saving/loading files and avoids heap
- * fragmentation on embedded systems.
+ *
+ * This provides a 24KB transfer buffer that can be shared between different
+ * contexts (Ekilo editor, Python REPL, File Manager, etc.) without flash
+ * writes. When PSRAM is installed, the body lives in PSRAM (frees 24KB SRAM);
+ * otherwise it's allocated from SRAM heap on first access. Either way, only
+ * a small descriptor object lives in BSS.
  * 
  * Usage:
  *   // Producer (e.g., Ekilo editor)
@@ -128,7 +129,7 @@ public:
      * 
      * @return Pointer to buffer data (always valid, may be empty)
      */
-    const char* data() const { return buffer; }
+    const char* data() const { return buffer ? buffer : ""; }
     
     /**
      * @brief Get raw writable pointer to buffer for direct file reads
@@ -150,6 +151,7 @@ public:
      * @param len New content length (must be < SHARED_BUFFER_SIZE)
      */
     void setLength(size_t len) {
+        if (!buffer) return;
         if (len >= SHARED_BUFFER_SIZE) len = SHARED_BUFFER_SIZE - 1;
         contentLen = len;
         buffer[contentLen] = '\0';
@@ -248,9 +250,10 @@ private:
     SharedBuffer& operator=(const SharedBuffer&) = delete;
     
     static SharedBuffer* instance;
-    
-    // The shared buffer - 8KB pre-allocated in BSS
-    char buffer[SHARED_BUFFER_SIZE];
+
+    // The shared buffer - 24KB allocated lazily from PSRAM if available,
+    // SRAM heap otherwise. Was BSS before the PSRAM cache layer existed.
+    char* buffer;
     size_t contentLen;
     
     // Metadata

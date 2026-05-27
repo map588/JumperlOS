@@ -27,6 +27,7 @@
 #include "configManager.h"
 #include "menuTree.h"
 #include "oled.h"
+#include "Undo.h"
 
 // External declarations
 extern Adafruit_SSD1306 display;
@@ -2542,6 +2543,44 @@ float getActionFloat( int menuPosition, int rail ) {
         break;
     }
 
+    // Snapshot the rails BEFORE the slider mutates them. The slider runs
+    // a tight encoder/probe loop, applies new voltages on every tick,
+    // and bypasses undo recording per-tick (the direct globalState writes
+    // below leave prev==voltage so setRailVoltage's recording guard
+    // skips it). At loop exit we record ONE undo entry capturing the
+    // (initial -> final) jump - so a rail drag becomes a single undo
+    // step. railRecordUndo() is a small lambda below the loop.
+    float undoInitialTopRail = globalState.power.topRail;
+    float undoInitialBotRail = globalState.power.bottomRail;
+    auto railRecordUndo = [&]() {
+        if ( rail < 0 || rail > 2 ) return;  // not a rail context
+        bool changedTop = ( rail == 0 || rail == 1 ) &&
+                          undoInitialTopRail != globalState.power.topRail;
+        bool changedBot = ( rail == 0 || rail == 2 ) &&
+                          undoInitialBotRail != globalState.power.bottomRail;
+        if ( !changedTop && !changedBot ) return;
+        // Bundle both rail changes into a single transaction so the
+        // user gets ONE undo step for "rails to 2.7V" rather than two
+        // (one per rail) when rail==0. Label format matches the DAC
+        // record helper's "%s %.2fV" so [UNDO]/[REDO] toasts read
+        // consistently across all voltage actions.
+        char lbl[23];
+        float voltage = changedTop ? globalState.power.topRail
+                                   : globalState.power.bottomRail;
+        const char* prefix = ( rail == 0 ) ? "rails"
+                           : ( rail == 1 ) ? "top"
+                                           : "bot";
+        snprintf( lbl, sizeof( lbl ), "%s %.2fV", prefix, voltage );
+        undoBeginTxn( lbl, UNDO_SRC_MENU );
+        if ( changedTop ) {
+            undoRecordDacSet( 2, undoInitialTopRail, globalState.power.topRail );
+        }
+        if ( changedBot ) {
+            undoRecordDacSet( 3, undoInitialBotRail, globalState.power.bottomRail );
+        }
+        undoEndTxn();
+    };
+
     if ( currentAction.optionVoltage == 5 ) {
         min = 0.0;
         max = 5.0;
@@ -2564,6 +2603,10 @@ float getActionFloat( int menuPosition, int rail ) {
         if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonState( ) == 1 ) {
             encoderButtonState = IDLE;
             showLEDsCore2 = -1;
+            // Long-press is a "leave the rails wherever the slider was last"
+            // exit. The hardware/state still got mutated during the drag,
+            // so we still need to record one undo step.
+            railRecordUndo();
             return roundedCurrentChoice; // Return current choice without applying
         }
 
@@ -2587,6 +2630,7 @@ float getActionFloat( int menuPosition, int rail ) {
                 selectNodeAction( );
             }
 
+            railRecordUndo();
             return roundedCurrentChoice;
         }
 
@@ -2594,6 +2638,7 @@ float getActionFloat( int menuPosition, int rail ) {
         if ( Serial.available( ) > 0 ) {
             Serial.read( );
             showLEDsCore2 = -1;
+            railRecordUndo();
             return roundedCurrentChoice;
         }
 
@@ -3575,6 +3620,10 @@ actionCategories getActionCategory( void ) {
         return CALIBRATIONACTION;
 
     } else if ( menuLines[ currentAction.previousMenuPositions[ 0 ] ].indexOf(
+                    "History" ) != -1 ) {
+        return HISTORYACTION;
+
+    } else if ( menuLines[ currentAction.previousMenuPositions[ 0 ] ].indexOf(
                     "Files" ) != -1 ) {
         return APPSACTION;  // Files = file manager (python_scripts, run .py / load slot / images)
     } else if ( menuLines[ currentAction.previousMenuPositions[ 0 ] ].indexOf(
@@ -3962,6 +4011,13 @@ int doMenuAction( int menuPosition, int selection ) {
                 configChanged = true;
             }
         }
+
+    } else if ( currentCategory == HISTORYACTION ) { //! History
+
+        inClickMenu = 0;
+        runHistoryScrubMenu( );
+        refreshConnections( -1, 0 );
+        return 10;
 
     } else if ( currentCategory == APPSACTION ) {
 
@@ -5155,3 +5211,120 @@ void showLoss( void ) {
 //             break;
 //     }
 // }
+
+volatile bool g_historyScrubActive = false;
+
+// =============================================================================
+// History scrub menu
+//
+// Live per-transaction scrub over the undo ring driven by the clickwheel.
+// Each detent applies one txn (forward or backward) immediately via
+// undoScrubTo() so the breadboard mirrors the past state in real time
+// (CH446Q crosspoints + LEDs are refreshed inside undoUndo/undoRedo).
+//
+// Controls:
+//   - Encoder turn CW  -> step backward in time (one txn older)
+//   - Encoder turn CCW -> step forward (newer / into redo land)
+//   - Encoder short click OR probe connect -> commit (cursor stays put)
+//   - Encoder long press OR probe disconnect -> cancel (rewind to entry)
+//
+// Per-txn (not waypoint) per user preference. PSRAM bandwidth handles
+// ~10 revert/apply per second easily; OLED label paint dominates.
+// =============================================================================
+void runHistoryScrubMenu( void ) {
+    int entryPos = undoPosition( );
+    int total = undoTotalTxns( );
+    if ( total == 0 ) {
+        oled.clearPrintShow( "history\nempty", 2, true, true, true );
+        uint32_t t0 = millis( );
+        while ( millis( ) - t0 < 700 ) {
+            jOS.serviceCritical( );
+            delay( 5 );
+        }
+        return;
+    }
+
+    // Don't change rotaryDivider here. rotaryDivider only affects
+    // encoderRaw / encoderDirectionState. encoderPosition is the raw,
+    // undivided quadrature count, so we decimate ourselves (one txn
+    // step per TICKS_PER_STEP raw counts ≈ 3 detents on the V5 encoder
+    // which yields ~4 quad counts per detent).
+    constexpr int TICKS_PER_STEP = 12;
+
+    Menus::getInstance( ).inClickMenu = 1;
+    g_historyScrubActive = true;     // tell Core 2 to keep painting nets
+    encoderButtonState = IDLE;
+    lastButtonEncoderState = IDLE;
+
+    long lastTick = encoderPosition / TICKS_PER_STEP;
+    int scrub = entryPos;
+
+    // Repaint OLED ONLY - we deliberately do NOT paint text onto the
+    // breadboard LEDs here, so the user sees the actual reverted
+    // connections (driven by undoScrubTo -> refreshConnections inside
+    // undoUndo/undoRedo) exactly the way the hold-disconnect gesture
+    // shows them on the main screen.
+    //
+    // Same two-tier typography as the undo toast (large position
+    // counter on top, smaller label below) so the scrub UI matches the
+    // single-step toast visually.
+    auto repaint = [ & ]( ) {
+        const char* lbl = undoLabelAt( 0 );
+        if ( !lbl || !lbl[ 0 ] ) lbl = "<start>";
+        char buf[ 80 ];
+        snprintf( buf, sizeof( buf ), "%d/%d\n%s", -scrub, total, lbl );
+        oled.clearPrintShowSmall( buf );
+    };
+    repaint( );
+
+    while ( true ) {
+        delayMicroseconds( 200 );
+        rotaryEncoderStuff( );
+        jOS.serviceCritical( );
+
+        // Keep the yellow undo indicator lit for the duration of the
+        // scrub session - re-extend the window each loop.
+        undoFlashLogo( 250 );
+
+        if ( encoderButtonState == HELD
+             || ProbeButton::getInstance( ).getButtonPress( ) == disconnectPress ) {
+            undoScrubTo( entryPos );
+            break;
+        }
+
+        if ( ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED )
+             || ProbeButton::getInstance( ).getButtonPress( ) == connectPress ) {
+            encoderButtonState = IDLE;
+            break;
+        }
+
+        if ( Serial.available( ) > 0 ) {
+            Serial.read( );
+            undoScrubTo( entryPos );
+            break;
+        }
+
+        long currentTick = encoderPosition / TICKS_PER_STEP;
+        long delta = currentTick - lastTick;
+        if ( delta != 0 ) {
+            lastTick = currentTick;
+            // CW (increasing raw counts) = step OLDER (more negative pos).
+            int step = ( delta > 0 ) ? -1 : +1;
+            int next = scrub + step;
+            if ( next > 0 ) next = 0;
+            if ( next < -total ) next = -total;
+            if ( next != scrub ) {
+                scrub = next;
+                undoScrubTo( scrub );
+                repaint( );
+            }
+        }
+    }
+
+    g_historyScrubActive = false;
+    Menus::getInstance( ).inClickMenu = 0;
+    // Repaint the final reverted/replayed state on the breadboard so the
+    // user sees the connections (not the menu's previous text overlay).
+    // doMenuAction's caller also calls refreshConnections after we return.
+    refreshConnections( -1, 1, 0 );
+}

@@ -9,21 +9,30 @@
 
 #include "SharedBuffer.h"
 #include "externVars.h"  // For core_sync_acquire/release
+#include "PsramArena.h"  // PSRAM-backed allocation when available
 
 // Static instance pointer (set on first call to getInstance)
 SharedBuffer* SharedBuffer::instance = nullptr;
 
 /**
- * @brief Private constructor - initializes all state
+ * @brief Private constructor - lazily allocates the body buffer.
+ *
+ * Tries PSRAM first; falls back to malloc on SRAM. If both fail (boot too
+ * early, OOM), buffer stays null and write/append fail gracefully via the
+ * null-check in setLength().
  */
 SharedBuffer::SharedBuffer()
-    : contentLen(0)
+    : buffer(nullptr)
+    , contentLen(0)
     , contentType(SharedBufferContentType::UNKNOWN)
     , isReadyFlag(false)
     , sourceContext(0)
 {
-    // Initialize the buffer with null terminator
-    buffer[0] = '\0';
+    buffer = (char*)psram_alloc(SHARED_BUFFER_SIZE);
+    if (!buffer) {
+        buffer = (char*)malloc(SHARED_BUFFER_SIZE);
+    }
+    if (buffer) buffer[0] = '\0';
     filename[0] = '\0';
 }
 
@@ -51,7 +60,7 @@ void SharedBuffer::clear() {
     core_sync_acquire();
     
     contentLen = 0;
-    buffer[0] = '\0';
+    if (buffer) buffer[0] = '\0';
     filename[0] = '\0';
     contentType = SharedBufferContentType::UNKNOWN;
     isReadyFlag = false;
@@ -64,7 +73,7 @@ void SharedBuffer::clear() {
  * @brief Write data to the buffer (overwrites existing content)
  */
 bool SharedBuffer::write(const uint8_t* data, size_t len) {
-    if (data == nullptr) {
+    if (data == nullptr || buffer == nullptr) {
         return false;
     }
     
@@ -107,6 +116,7 @@ bool SharedBuffer::append(const uint8_t* data, size_t len) {
     if (data == nullptr || len == 0) {
         return true;  // Nothing to append is not an error
     }
+    if (buffer == nullptr) return false;
     
     // Check if it fits
     if (contentLen + len >= SHARED_BUFFER_SIZE) {
@@ -146,6 +156,7 @@ bool SharedBuffer::append(const char* data, size_t len) {
  * @brief Append a line with newline at end
  */
 bool SharedBuffer::appendLine(const char* line, size_t len) {
+    if (buffer == nullptr) return false;
     // Check if line + newline fits
     if (contentLen + len + 1 >= SHARED_BUFFER_SIZE) {
         Serial.print("SharedBuffer: Line would overflow (");
@@ -185,6 +196,7 @@ bool SharedBuffer::appendLine(const char* line) {
  * @brief Append a single character
  */
 bool SharedBuffer::appendChar(char c) {
+    if (buffer == nullptr) return false;
     if (contentLen + 1 >= SHARED_BUFFER_SIZE) {
         return false;
     }

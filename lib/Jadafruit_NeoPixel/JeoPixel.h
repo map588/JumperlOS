@@ -327,6 +327,18 @@ public:
 #endif
     return false;
   }
+
+#if defined(ARDUINO_ARCH_RP2040)
+  /*!
+    @brief   Accessors so external code can share the WS2812 state machine
+             for other PIO programs on the same pin (e.g. multiplexed
+             button reading on a line that's tied to the LED data line).
+             Returns NULL/-1 if begin() hasn't been called or PIO claim failed.
+  */
+  PIO  getPIO(void)            const { return pio;                 }
+  int  getStateMachine(void)   const { return (pio_sm == (uint)-1) ? -1 : (int)pio_sm; }
+  uint getProgramOffset(void)  const { return pio_program_offset;  }
+#endif
   /*!
     @brief   An 8-bit integer sine wave function, not directly compatible
              with standard trigonometric units like radians or degrees.

@@ -36,6 +36,22 @@ Safe for use: GPIO 0, 1, 6, 7, 9, 10, 20-27
 Use with caution: GPIO 18, 19 (NANO_RESET pins)
 Reserved: Other GPIOs used by crosspoint switches, display, etc.
 
+## Probe Cable / Probe LED / Probe Button Pin Sharing
+- `PROBE_LED_PIN` (GPIO 2) carries the WS2812 data line for the single probe LED.
+- `BUTTON_PIN` (GPIO 9) is the dedicated software button-read pin.
+- On the current TRRS probe cable, GPIO 2 and GPIO 9 are **shorted together** at the
+  jack and behave as a single shared net. Anything reading/driving either pin
+  affects the other. The probe-button reader currently exploits this: it drives
+  the WS2812 line and samples GPIO 9 (or GPIO 2 — they're the same node) to
+  discriminate connect / disconnect / floating.
+- A **TRRRS** probe cable (5 conductors instead of 4) separates these into two
+  independent conductors. In that hardware configuration GPIO 2 is LED-data-only
+  and GPIO 9 is button-only; the multiplex constraint disappears and the button
+  PIO could sample GPIO 9 continuously without any LED-show coordination.
+- Code that touches the probe-LED PIO needs to be tolerant of both topologies.
+  Treat the shared-line case as the conservative default and gate any
+  TRRRS-only optimizations on a runtime/config check.
+
 ## Config Manager - Adding New Config Options
 
 When adding a new config option to JumperlOS, you must update ALL of these sections in `src/configManager.cpp`:

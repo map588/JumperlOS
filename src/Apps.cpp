@@ -628,7 +628,9 @@ void probeCalibApp( void ) {
                            jumperlessConfig.calibration.probe_max );
             }
             if (firstRead == false) {
-        oled.showMultiLineSmallText(debugOutput, true, true);
+                if (oled.isConnected()) {
+                    oled.showMultiLineSmallText(debugOutput, true, true);
+                }
             }
 
 
@@ -791,14 +793,18 @@ void probeCalibApp( void ) {
         
 
         if ( done ) {
-            oled.showMultiLineSmallText( "Probe calibration\n\rsaved!\n\rReturning to menu", true, true );
+            if (oled.isConnected()) {
+                oled.showMultiLineSmallText( "Probe calibration\n\rsaved!\n\rReturning to menu", true, true );
+            }
             delay( 1200 );
 
             Serial.println( "\n\n\r" );
             Serial.println( "Saving config..." );
 
             saveConfig( );
-            oled.showJogo32h();
+            if (oled.isConnected()) {
+                oled.showJogo32h();
+            }
 
             leaveApp( );
         }

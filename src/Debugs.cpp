@@ -23,6 +23,11 @@
 
 #include "SingleCharCommands.h"
 
+// Cache + Undo + PSRAM debug flags (toggled via the new entries in the menu).
+#include "PsramArena.h"   // psram_debug
+#include "FileCache.h"    // fc_debug, fc_atomic_debug
+#include "Undo.h"         // undo_debug
+
 extern bool printPowerSupplySense;
 
 
@@ -56,6 +61,15 @@ debugFlags:
   bool temp_debugFakeGpio = getDebugFakeGpio();
   int temp_printReceivedPython = mpRemoteService.getPrintReceivedPython();
   bool temp_printPowerSupplySense = printPowerSupplySense;
+  // Cache / Undo / PSRAM trace flags (runtime-only, no EEPROM persistence)
+  bool temp_psramDebug = (psram_debug != 0);
+  bool temp_fcDebug = (fc_debug != 0);
+  bool temp_fcAtomicDebug = (fc_atomic_debug != 0);
+  bool temp_undoDebug = (undo_debug != 0);
+  // Probe button reader: persistent hardware path selector + ephemeral
+  // verbose trace. Both toggled from this menu.
+  bool temp_usePIOProbeButton = jumperlessConfig.hardware.use_pio_probe_button;
+  bool temp_probeButtonTrace  = (probe_button_trace != 0);
   // Track originals for diffing on commit
   bool orig_debugFP = debugFP;
   bool orig_debugNM = debugNM;
@@ -71,6 +85,12 @@ debugFlags:
   bool orig_debugFakeGpio = getDebugFakeGpio();
   int orig_printReceivedPython = mpRemoteService.getPrintReceivedPython();
   bool orig_printPowerSupplySense = printPowerSupplySense;
+  bool orig_psramDebug = temp_psramDebug;
+  bool orig_fcDebug = temp_fcDebug;
+  bool orig_fcAtomicDebug = temp_fcAtomicDebug;
+  bool orig_undoDebug = temp_undoDebug;
+  bool orig_usePIOProbeButton = temp_usePIOProbeButton;
+  bool orig_probeButtonTrace  = temp_probeButtonTrace;
   
   int lines = 0;
   int last_bulk_cmd = -1; // 0 for all off, 9 for all on; reset to -1 on individual changes
@@ -118,6 +138,30 @@ debugFlags:
 
     Serial.print("\n\rv. print power supply sense   =    "); Serial.print(temp_printPowerSupplySense ? 1 : 0); lines_printed++; cycleTerminalColor();
 
+    Serial.print("\n\rr. PSRAM arena trace (master) =    "); Serial.print(temp_psramDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rk. file cache trace           =    "); Serial.print(temp_fcDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\ri. atomic write commit trace  =    "); Serial.print(temp_fcAtomicDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\rd. undo system trace          =    "); Serial.print(temp_undoDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
+
+    // Probe button hardware path. Show counters too so the user can
+    // verify whichever path they picked is the one actually firing.
+    Serial.print("\n\rt. probe button PIO path      =    ");
+    Serial.print(temp_usePIOProbeButton ? "PIO" : "CPU");
+    Serial.print("   [PIO ");  Serial.print((unsigned long)probeButtonPIOReadCount);
+    Serial.print(" / CPU ");   Serial.print((unsigned long)probeButtonCPUReadCount);
+    if (probeButtonPIOTimeoutCount) {
+      Serial.print(" / timeout "); Serial.print((unsigned long)probeButtonPIOTimeoutCount);
+    }
+    Serial.print(" / last ");
+    Serial.print((unsigned long)(temp_usePIOProbeButton ? probeButtonPIOLastUs : probeButtonCPULastUs));
+    Serial.print("us]");
+    lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\ry. probe button trace         =    "); Serial.print(temp_probeButtonTrace ? 1 : 0); lines_printed++; cycleTerminalColor();
+
     Serial.print("\n\r\n\r\n\r"); lines_printed += 2;
     Serial.flush();
   };
@@ -137,6 +181,19 @@ debugFlags:
         Serial.printf("\033[%dA", lines);
         Serial.flush();
         debugFlagSet(last_bulk_cmd);
+        // debugFlagSet(0/9) only manages the legacy EEPROM-backed flags.
+        // Apply the runtime-only cache/undo/PSRAM trace flags here so
+        // "all off" / "all on" actually flushes them too.
+        psram_debug = temp_psramDebug ? 1 : 0;
+        fc_debug = temp_fcDebug ? 1 : 0;
+        fc_atomic_debug = temp_fcAtomicDebug ? 1 : 0;
+        undo_debug = temp_undoDebug ? 1 : 0;
+        // Probe button trace tracks the bulk on/off too; the PIO path
+        // selector deliberately doesn't (see note in the bulk-off branch).
+        probe_button_trace = temp_probeButtonTrace ? 1 : 0;
+        if (temp_usePIOProbeButton != orig_usePIOProbeButton) {
+          jumperlessConfig.hardware.use_pio_probe_button = temp_usePIOProbeButton;
+        }
       } else {
         // Commit individual diffs using debugFlagSet only for changed items
         if (temp_debugFP != orig_debugFP) debugFlagSet(1);
@@ -171,6 +228,18 @@ debugFlags:
         }
         if (temp_printPowerSupplySense != orig_printPowerSupplySense) {
           printPowerSupplySense = temp_printPowerSupplySense;
+        }
+        // Cache / Undo / PSRAM trace flags (runtime-only, no persistence).
+        if (temp_psramDebug != orig_psramDebug) psram_debug = temp_psramDebug ? 1 : 0;
+        if (temp_fcDebug != orig_fcDebug) fc_debug = temp_fcDebug ? 1 : 0;
+        if (temp_fcAtomicDebug != orig_fcAtomicDebug) fc_atomic_debug = temp_fcAtomicDebug ? 1 : 0;
+        if (temp_undoDebug != orig_undoDebug) undo_debug = temp_undoDebug ? 1 : 0;
+        // Probe button path (persisted) + trace (runtime-only).
+        if (temp_usePIOProbeButton != orig_usePIOProbeButton) {
+          jumperlessConfig.hardware.use_pio_probe_button = temp_usePIOProbeButton;
+        }
+        if (temp_probeButtonTrace != orig_probeButtonTrace) {
+          probe_button_trace = temp_probeButtonTrace ? 1 : 0;
         }
         // Persist Arduino debug level if changed via menu
         saveConfig();
@@ -246,6 +315,15 @@ debugFlags:
       temp_showProbeCurrent = 0;
       temp_printReceivedPython = 0;
       temp_printPowerSupplySense = false;
+      temp_psramDebug = false;
+      temp_fcDebug = false;
+      temp_fcAtomicDebug = false;
+      temp_undoDebug = false;
+      temp_probeButtonTrace = false;
+      // NB: temp_usePIOProbeButton is NOT touched by "all off" - that's
+      // a hardware-config selector (PIO vs CPU button reader path),
+      // not a debug-print toggle, so we don't want the bulk button to
+      // silently drop people back to the slower path.
       last_bulk_cmd = 0;
     } else if (sel == 'z' || sel == 'Z') {
       temp_debugFP = true;
@@ -278,6 +356,12 @@ debugFlags:
     else if (sel == 'p' || sel == 'P') { temp_asyncPassthrough = !temp_asyncPassthrough; last_bulk_cmd = -1; }
     else if (sel == 's' || sel == 'S') { temp_showProbeCurrent = temp_showProbeCurrent ? 0 : 1; last_bulk_cmd = -1; }
     else if (sel == 'v' || sel == 'V') { temp_printPowerSupplySense = !temp_printPowerSupplySense; last_bulk_cmd = -1; }
+    else if (sel == 'r' || sel == 'R') { temp_psramDebug = !temp_psramDebug; last_bulk_cmd = -1; }
+    else if (sel == 'k' || sel == 'K') { temp_fcDebug = !temp_fcDebug; last_bulk_cmd = -1; }
+    else if (sel == 'i' || sel == 'I') { temp_fcAtomicDebug = !temp_fcAtomicDebug; last_bulk_cmd = -1; }
+    else if (sel == 'd' || sel == 'D') { temp_undoDebug = !temp_undoDebug; last_bulk_cmd = -1; }
+    else if (sel == 't' || sel == 'T') { temp_usePIOProbeButton = !temp_usePIOProbeButton; last_bulk_cmd = -1; }
+    else if (sel == 'y' || sel == 'Y') { temp_probeButtonTrace = !temp_probeButtonTrace; last_bulk_cmd = -1; }
     else {
       // not a recognized toggle key; fall through to next handlers
     }
@@ -288,7 +372,9 @@ debugFlags:
         sel == 'h' || sel == 'H' || sel == 'e' || sel == 'E' || sel == 'l' || sel == 'L' || 
         sel == 'w' || sel == 'W' || sel == 'b' || sel == 'B' || sel == 'g' || sel == 'G' ||
         sel == 'm' || sel == 'M' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S' ||
-        sel == 'v' || sel == 'V') {
+        sel == 'v' || sel == 'V' || sel == 'r' || sel == 'R' || sel == 'k' || sel == 'K' ||
+        sel == 'i' || sel == 'I' || sel == 'd' || sel == 'D' ||
+        sel == 't' || sel == 'T' || sel == 'y' || sel == 'Y') {
       Serial.printf("\033[%dA", lines);
       for (int i = 0; i < lines; i++) { Serial.print("\033[2K\r\n\r"); }
       Serial.printf("\033[%dA", lines);
@@ -740,6 +826,7 @@ void action_psramTest() {
       Serial.println( "  - CS pin (GPIO 19) connection" );
       Serial.println( "  - Power and ground connections" );
       Serial.flush();
+      return;
     
   }
   

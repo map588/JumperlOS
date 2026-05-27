@@ -267,6 +267,14 @@ CommandResult cmd_pythonREPL(char c, const String& line);
 CommandResult cmd_psramTest(char c, const String& line);
 CommandResult cmd_pythonCommand(char c, const String& line);
 
+// Undo / cache telemetry (SingleCharCommands.cpp)
+CommandResult cmd_undo(char c, const String& line);
+CommandResult cmd_redo(char c, const String& line);
+CommandResult cmd_historyStatus(char c, const String& line);
+CommandResult cmd_historyList(char c, const String& line);
+CommandResult cmd_psramStatus(char c, const String& line);
+CommandResult cmd_psramDebugToggle(char c, const String& line);
+
 // File system commands
 CommandResult cmd_showFilesystem(char c, const String& line);
 CommandResult cmd_enableUSBStorage(char c, const String& line);

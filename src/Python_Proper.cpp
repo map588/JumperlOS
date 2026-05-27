@@ -158,6 +158,24 @@ size_t jl_get_psram_size(void) {
     // Returns 0 if no PSRAM is detected
     return rp2040.getPSRAMSize();
 }
+
+// Phase 1: report only the MicroPython sub-region of PSRAM. The app arena
+// (file cache, undo log, scratch buffers) sits at the start; MicroPython
+// gets the remainder. If the arena failed to initialize, fall back to
+// reporting the full chip so MicroPython still gets PSRAM.
+extern uintptr_t psram_mp_base(void);
+extern size_t psram_mp_size(void);
+extern bool psram_available(void);
+
+uintptr_t jl_get_psram_mp_base(void) {
+    if (psram_available() && psram_mp_size() > 0) return psram_mp_base();
+    return 0x11000000;  // PSRAM_BASE - fall back to whole chip
+}
+
+size_t jl_get_psram_mp_size(void) {
+    if (psram_available() && psram_mp_size() > 0) return psram_mp_size();
+    return jl_get_psram_size();
+}
 }
 
 /**

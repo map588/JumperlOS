@@ -137,6 +137,8 @@ String menuLines[] = {
    "-$Save to$",
    "--*0**1**2**3**4**5**6**7*>s",
 
+   "History",
+
 
 
        "Display\31Options",

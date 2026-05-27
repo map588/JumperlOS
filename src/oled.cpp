@@ -633,8 +633,17 @@ int oled::init( ) {
         //getDisplay().display( );
     }
     setCursor( 0, 0 );
-    if ( jumperlessConfig.top_oled.connection_type != 2 ) {
-    Wire1.setTimeout( 15 );
+    // Bound the active OLED bus's transaction timeout. Without this, an
+    // OLED that vanishes between checkConnection() polls makes every
+    // subsequent display() write stall for the platform default (~hundreds
+    // of ms) until oledConnected catches up, which is the UI freeze the
+    // user sees on hot-unplug. 15ms is generous for any normal OLED frame
+    // chunk at 400kHz but still keeps a single failed transfer below one
+    // frame of visible lag.
+    if ( jumperlessConfig.top_oled.connection_type == 2 ) {
+        Wire.setTimeout( 15 );
+    } else {
+        Wire1.setTimeout( 15 );
     }
     charPos = 0;
     refreshConnections( -1 );
@@ -1192,6 +1201,20 @@ void OLEDprintFromTerminal( void ) {
     
 }
 
+// Forward declarations of hold-gate plumbing; definitions live near
+// oledPeriodic. show()/flushFramebuffer() check the gate; if held, they
+// set the dirty flag and skip the I2C transmit so the panel stays frozen.
+//
+// oledHoldStashAfterPriorityFlush() is the mate of oledHoldBegin(): the
+// priority-flush path in clearPrintShowSmall calls it right after the
+// held message has been transmitted to the panel. If oledHoldBegin
+// armed a snapshot, we restore that snapshot back into the live
+// framebuffer here so writes during the hold accumulate against the
+// pre-toast background, not on top of the just-painted toast pixels.
+bool oledHoldActive();
+extern volatile bool oledNeedsFlushAfterHold;
+static void oledHoldStashAfterPriorityFlush();
+
 // SIMPLIFIED DISPLAY FUNCTIONS
 // ============================
 
@@ -1406,6 +1429,146 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
         // getDisplay().display();
         // dumpFrameBufferQuarterSize(1);
     }
+}
+
+#define LEFT_JUSTIFY_TOP 8
+
+// Render `text` using two fixed fonts (one per line) with explicit
+// 2-line vertical centering on the 128x32 panel. Bypasses the auto-fit
+// ladder in the regular clearPrintShow so a fixed UI element doesn't
+// flip sizes when the label width straddles a tier boundary.
+//
+// PRIORITY: also bypasses the OLED hold gate, so a rapid sequence of
+// toasts (e.g. multiple undos in <1.5s) always displays the most recent
+// label immediately instead of being deferred until the prior hold
+// expires. Each call still extends the hold window via the caller's
+// oledHold() so non-priority writes stay frozen out.
+//
+// Each newline-separated line is horizontally centered with its own
+// font. Up to 2 lines are rendered; if the caller passes more, only
+// the first 2 are used. Defaults are tuned for the undo toast (larger
+// verb + smaller detail); pass equal top/bot indices for matched sizes.
+void oled::clearPrintShowSmall( const char* text, bool clear, bool show,
+                                int topFontIndex, int botFontIndex,
+                                int line_gap, bool leftJustifyTop ) {
+    if ( jumperlessConfig.top_oled.enabled == 0 ) return;
+    if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false ) return;
+
+    // Bounds-check font indices against the global table so a bad caller
+    // can't read past the array.
+    const int kFontCount = (int)( sizeof( fontList ) / sizeof( fontList[0] ) );
+    if ( topFontIndex < 0 || topFontIndex >= kFontCount ) topFontIndex = 21;
+    if ( botFontIndex < 0 || botFontIndex >= kFontCount ) botFontIndex = 18;
+
+    if ( clear ) {
+        clearFramebuffer();
+    }
+
+    // Save current font state - other code paths depend on it not changing.
+    const GFXfont* savedFont = currentFont;
+    FontFamily savedFamily = currentFontFamily;
+    uint8_t savedTextSize = currentTextSize;
+
+    const GFXfont* topFont = fontList[ topFontIndex ].font;
+    const GFXfont* botFont = fontList[ botFontIndex ].font;
+    getDisplay().setTextWrap( false );
+    getDisplay().setTextSize( 1 );
+    currentTextSize = 1;
+
+    // Split into up to 2 lines on '\n'.
+    char line0[48] = {0};
+    char line1[48] = {0};
+    int idx = 0;
+    int slot = 0;
+    char* slots[2] = { line0, line1 };
+    while ( text[idx] != '\0' && slot < 2 ) {
+        if ( text[idx] == '\n' ) {
+            slot++;
+            idx++;
+            continue;
+        }
+        size_t curLen = strlen( slots[slot] );
+        if ( curLen < sizeof(line0) - 1 ) {
+            slots[slot][curLen] = text[idx];
+            slots[slot][curLen + 1] = '\0';
+        }
+        idx++;
+    }
+    int lineCount = (line1[0] != '\0') ? 2 : (line0[0] != '\0' ? 1 : 0);
+
+    // Measure each line with its own font so horizontal centering and
+    // vertical block height account for the actual glyph metrics, not
+    // a worst-case approximation.
+    int16_t w0 = 0, h0 = 0, w1 = 0, h1 = 0;
+    if ( lineCount >= 1 ) getTextBoundsWithFont( getDisplay(), topFont, line0, &w0, &h0 );
+    if ( lineCount >= 2 ) getTextBoundsWithFont( getDisplay(), botFont, line1, &w1, &h1 );
+
+    // Vertical centering on 32px panel. Fixed inter-line spacing so the
+    // layout doesn't jitter when one line happens to lack descenders.
+    int blockHeight = h0 + (lineCount == 2 ? line_gap + h1 : 0);
+    int yTop = ( displayHeight - blockHeight ) / 2;
+    if ( yTop < 0 ) yTop = 0;
+
+    if ( lineCount >= 1 ) {
+        getDisplay().setFont( topFont );
+        currentFont = topFont;
+        currentFontFamily = fontList[ topFontIndex ].family;
+        int x = leftJustifyTop ? LEFT_JUSTIFY_TOP : ( displayWidth - w0 ) / 2;
+        if ( x < 0 ) x = 0;
+        // Adafruit GFX uses a baseline cursor for custom fonts; baseline
+        // = top + height (h0 already accounts for descender extent).
+        setCursor( x, yTop + h0, POS_BASELINE );
+        getDisplay().print( line0 );
+    }
+    if ( lineCount >= 2 ) {
+        getDisplay().setFont( botFont );
+        currentFont = botFont;
+        currentFontFamily = fontList[ botFontIndex ].family;
+        int x = ( displayWidth - w1 ) / 2;
+        if ( x < 0 ) x = 0;
+        setCursor( x, yTop + h0 + line_gap + h1, POS_BASELINE );
+        getDisplay().print( line1 );
+    }
+
+    if ( show && oledConnected ) {
+        // PRIORITY FLUSH: bypass the hold gate so back-to-back toasts
+        // (e.g. rapid undo / redo) always display the most recent label
+        // immediately, replacing whatever was painted by an earlier toast
+        // that is still inside its hold window. Clearing the dirty flag
+        // here means oledPeriodic won't double-flush at hold expiry.
+        if ( _displayPtr ) {
+            _displayPtr->display();
+        }
+        oledNeedsFlushAfterHold = false;
+        // If oledHoldBegin armed a snapshot, the panel now shows the
+        // held message but the live framebuffer still contains those
+        // toast pixels. Restore the snapshot so subsequent writes
+        // during the hold accumulate against the pre-toast background;
+        // when the hold expires, the panel transitions cleanly to
+        // background+writes with no toast residue. No-op if not armed.
+        // The stash also copies live -> oledPanelShadow first, so the
+        // dump call below sees the toast via oledGetDumpBuffer.
+        oledHoldStashAfterPriorityFlush();
+        // Mirror what show() does for normal flushes: if terminal
+        // mirroring is enabled, dump the just-shipped frame so the
+        // user sees the toast in the terminal too. Without this, the
+        // toast hits the panel via the priority flush above but never
+        // appears in the terminal stream because clearPrintShowSmall
+        // bypasses show() (and thus its dumpFrameBufferQuarterSize
+        // hook). oledGetDumpBuffer returns the panel shadow during
+        // the now-active hold, so the dump matches the panel.
+        if ( jumperlessConfig.top_oled.show_in_terminal > 0 ) {
+            dumpFrameBufferQuarterSize( 1 );
+            Serial.flush();
+        }
+    }
+
+    // Restore prior font state so callers that rely on it aren't surprised.
+    currentFont = savedFont;
+    currentFontFamily = savedFamily;
+    currentTextSize = savedTextSize;
+    getDisplay().setFont( currentFont );
+    getDisplay().setTextSize( currentTextSize );
 }
 
 // Main display function with font family selection
@@ -1913,8 +2076,78 @@ bool oled::show( int waitToFinish ) {
         // Serial.println( "OLED not connected" );
         return false;
     }
+    // Hold gate: keep the panel frozen on whatever we last pushed. The
+    // framebuffer can still mutate (callers above us may have just done
+    // so); we just skip the I2C transmit. oledPeriodic flushes the final
+    // framebuffer state when the hold expires.
+    if ( oledHoldActive() ) {
+        oledNeedsFlushAfterHold = true;
+        return true;
+    }
+    // Opportunistic liveness check: checkConnection() caches for 1s
+    // internally, so this is a 1-byte I2C ping at most once per second
+    // and a no-op otherwise. The point is to flip oledConnected to false
+    // *before* we ship a 1024-byte display() write down a dead bus and
+    // pay 15ms x N transactions worth of UI lag before oledPeriodic
+    // notices on its own.
+    if ( !checkConnection( false ) ) {
+        return false;
+    }
     if (_displayPtr != nullptr) {
         _displayPtr->display( );
+    }
+
+    // Post-write liveness verification with hysteresis.
+    //
+    // Adafruit_SSD1306::display() unconditionally discards every
+    // wire->endTransmission() return value, so we can't directly observe
+    // whether the ~33 I2C transactions that make up a frame actually
+    // landed. Instead, we do one zero-byte addressed ping right after
+    // display() returns: if the device is still there it ACKs in ~25us;
+    // if it's gone (or wedged), the 15ms Wire timeout we set in
+    // oled::init() bounds the cost.
+    //
+    // Why hysteresis (N=3) instead of mark-dead-immediately:
+    //   * Real-world I2C buses have occasional single-transaction glitches
+    //     (bus crosstalk, ESD, the user touching a node). A single NACK
+    //     should not pull the display offline and pay the full reinit
+    //     dance on the next frame.
+    //   * Three consecutive failures across multiple frames is a strong
+    //     "device is actually gone" signal that's still detected well
+    //     inside the ~750ms periodic-poll latency.
+    //
+    // The counter is reset on any success so transient failures decay
+    // away rather than accumulating across hours of operation.
+    {
+        static int consecutiveWriteFailures = 0;
+        constexpr int kWriteFailureThreshold = 3;
+        TwoWire& wire = ( _currentDisplayWire == 0 ) ? Wire : Wire1;
+        wire.beginTransmission( address );
+        int err = wire.endTransmission( );
+        if ( err != 0 ) {
+            consecutiveWriteFailures++;
+            #if OLED_DEBUG
+            Serial.printf( "[OLED] show(): post-write ping NACK (err=%d) "
+                           "consec=%d/%d\n",
+                err, consecutiveWriteFailures, kWriteFailureThreshold );
+            #endif
+            if ( consecutiveWriteFailures >= kWriteFailureThreshold ) {
+                #if OLED_DEBUG
+                Serial.println( "[OLED] show(): marking disconnected after "
+                                "N consecutive write failures" );
+                #endif
+                oledConnected = false;
+                consecutiveWriteFailures = 0;
+                // Force the next checkConnection() / oledPeriodic() to
+                // re-probe immediately rather than waiting on the 1s
+                // cache; the periodic-task reconnect path handles full
+                // reinit when the device returns.
+                lastConnectionCheck = 0;
+                return false;
+            }
+        } else if ( consecutiveWriteFailures != 0 ) {
+            consecutiveWriteFailures = 0;
+        }
     }
     // int waited = 0;
     // if (waitToFinish > 0) {
@@ -2545,7 +2778,7 @@ void oled::showJogo32h( ) {
             int x = ( displayWidth - customBitmapWidth ) / 2;
             int y = ( displayHeight - customBitmapHeight ) / 2;
             getDisplay().drawBitmap( x, y, customBitmapBuffer, customBitmapWidth, customBitmapHeight, SSD1306_WHITE );
-            getDisplay().display( );
+            show();
             startupDisplayed = 2;
             return;
         }
@@ -2571,8 +2804,221 @@ void oled::showJogo32h( ) {
     //getDisplay().display( );
 }
 
+// =====================================================================
+// OLED display hold. While `holdUntilMs` is in the future, every code
+// path that would push pixels to the panel (show / flushFramebuffer /
+// raw getDisplay().display()) is short-circuited. The framebuffer can
+// still mutate in place - we just don't flush. When the hold expires,
+// oledPeriodic() pushes whatever the framebuffer settled on.
+//
+// Two entry points:
+//
+//   oledHold(durationMs):
+//     Plain hold. Caller has already painted+flushed the held content
+//     (or doesn't care about background-vs-overlay separation). Panel
+//     stays frozen on the last flushed frame; intervening writes
+//     accumulate in the live framebuffer; final flush at expiry is
+//     whatever the framebuffer ended up looking like.
+//
+//   oledHoldBegin(durationMs):
+//     Snapshot-aware hold for the toast pattern. Caller invokes this
+//     BEFORE painting the held message. We snapshot the current live
+//     framebuffer (the "background") into oledHoldShadow and arm
+//     oledHoldArmed. The caller then paints the toast and triggers a
+//     priority flush via clearPrintShowSmall. The priority-flush path
+//     ships the toast to the panel, then calls
+//     oledHoldStashAfterPriorityFlush(), which memcpy's
+//     oledHoldShadow back into the live framebuffer. From that point,
+//     the live framebuffer is the background again - the panel still
+//     shows the toast (already on the wire) but the in-RAM framebuffer
+//     is ready to accept probe-mode/clearHighlights writes that
+//     accumulate against the background. At expiry, oledPeriodic()
+//     flushes the live framebuffer (background + writes, no toast
+//     residue) and the panel transitions cleanly.
+//
+// Calling oledHoldBegin again during an active hold re-snapshots the
+// current live framebuffer (which by then is bg + any intervening
+// writes), so the latest underlying state is preserved across the
+// next toast's paint cycle. The hold timer extends - never shortens.
+// =====================================================================
+static volatile uint32_t holdUntilMs = 0;
+volatile bool oledNeedsFlushAfterHold = false;
+
+// Snapshot buffer for oledHoldBegin. Allocated lazily on first use,
+// sized to match Adafruit_SSD1306's internal buffer formula
+// (WIDTH * ((HEIGHT + 7) / 8)). Kept around between holds so a hot
+// path (rapid undo/redo) doesn't pay malloc/free on every toast.
+static uint8_t* oledHoldShadow = nullptr;
+static int oledHoldShadowSize = 0;
+// Panel shadow. Mirrors the bytes that were last shipped to the
+// physical OLED via I2C while a hold is active. Updated at:
+//   * oledHoldBegin: panel currently equals the live framebuffer, so
+//     we seed the panel shadow with a copy of live.
+//   * oledHoldStashAfterPriorityFlush: live has the toast that was
+//     just transmitted to the panel, so we copy it into the panel
+//     shadow right BEFORE the stash overwrites live with the
+//     pre-toast background.
+// During a hold, dumpFrameBuffer / dumpFrameBufferQuarterSize read
+// from the panel shadow instead of the live framebuffer, so the
+// terminal-side dump matches what the user actually sees on the OLED
+// rather than the post-stash snapshot+writes accumulator.
+// Same size/lifecycle as oledHoldShadow.
+static uint8_t* oledPanelShadow = nullptr;
+static int oledPanelShadowSize = 0;
+// True between oledHoldBegin and the next priority flush. The flush
+// path checks this and, if set, copies oledHoldShadow back into the
+// live framebuffer and clears the flag. Single-threaded with respect
+// to the GFX buffer (oled writes happen on the same core), so no
+// atomicity concerns beyond the volatile read.
+static volatile bool oledHoldArmed = false;
+
+static int oledHoldComputeBufferSize( int w, int h ) {
+    if ( w <= 0 || h <= 0 ) return 0;
+    // Match Adafruit_SSD1306's allocation: WIDTH * ((HEIGHT + 7) / 8).
+    // For 128x32 this is 512; for 128x64 it's 1024.
+    return w * ( ( h + 7 ) / 8 );
+}
+
+bool oledHoldActive( ) {
+    uint32_t until = holdUntilMs;
+    return until != 0 && (int32_t)(until - millis()) > 0;
+}
+
+void oled::oledHold( uint32_t durationMs ) {
+    uint32_t target = millis() + durationMs;
+    if ( target > holdUntilMs ) holdUntilMs = target;  // extend, never shorten
+}
+
+void oled::oledHoldBegin( uint32_t durationMs ) {
+    // No panel or no display object - no point snapshotting; degrade to
+    // a plain hold so callers can use this API unconditionally.
+    if ( !oledConnected || _displayPtr == nullptr ) {
+        oledHold( durationMs );
+        return;
+    }
+    int needSize = oledHoldComputeBufferSize( displayWidth, displayHeight );
+    if ( needSize <= 0 ) {
+        oledHold( durationMs );
+        return;
+    }
+    // (Re)allocate shadow on first use or if display geometry changed.
+    if ( oledHoldShadow == nullptr || oledHoldShadowSize != needSize ) {
+        if ( oledHoldShadow != nullptr ) {
+            delete[] oledHoldShadow;
+            oledHoldShadow = nullptr;
+            oledHoldShadowSize = 0;
+        }
+        // Arduino-Pico runs with exceptions disabled, so operator new
+        // returns nullptr on heap exhaustion rather than throwing -
+        // matching how the rest of this file treats new (see the
+        // Adafruit_SSD1306 allocation at the top, which also assumes
+        // a non-throwing new and checks for nullptr).
+        oledHoldShadow = new uint8_t[ (size_t) needSize ];
+        if ( oledHoldShadow == nullptr ) {
+            // OOM - fall back to plain hold. Toast still works, just
+            // without background preservation.
+            oledHold( durationMs );
+            return;
+        }
+        oledHoldShadowSize = needSize;
+    }
+    // Panel shadow: same lifecycle as the hold shadow. OOM here is
+    // tolerable - the dump-during-hold path will fall back to the live
+    // framebuffer if oledPanelShadow stays nullptr.
+    if ( oledPanelShadow == nullptr || oledPanelShadowSize != needSize ) {
+        if ( oledPanelShadow != nullptr ) {
+            delete[] oledPanelShadow;
+            oledPanelShadow = nullptr;
+            oledPanelShadowSize = 0;
+        }
+        oledPanelShadow = new uint8_t[ (size_t) needSize ];
+        if ( oledPanelShadow != nullptr ) {
+            oledPanelShadowSize = needSize;
+        }
+    }
+    uint8_t* live = _displayPtr->getBuffer();
+    if ( live != nullptr ) {
+        memcpy( oledHoldShadow, live, (size_t) oledHoldShadowSize );
+        // Seed the panel shadow with the current live framebuffer.
+        // At this instant panel == live (the caller hasn't painted the
+        // toast yet); a dump during the brief armed-but-not-flushed
+        // window will show the pre-toast frame, which is what's
+        // actually on the panel.
+        if ( oledPanelShadow != nullptr && oledPanelShadowSize == oledHoldShadowSize ) {
+            memcpy( oledPanelShadow, live, (size_t) oledPanelShadowSize );
+        }
+        oledHoldArmed = true;
+    }
+    oledHold( durationMs );
+}
+
+static void oledHoldStashAfterPriorityFlush() {
+    if ( !oledHoldArmed ) return;
+    // Defensive: clear the latch on any abnormal state so a stale arm
+    // doesn't poison the next priority flush.
+    if ( oledHoldShadow == nullptr || oledHoldShadowSize == 0 ||
+         _displayPtr == nullptr ) {
+        oledHoldArmed = false;
+        return;
+    }
+    uint8_t* live = _displayPtr->getBuffer();
+    if ( live != nullptr ) {
+        // Capture the just-shipped toast into the panel shadow BEFORE
+        // we overwrite live with the pre-toast snapshot. After this,
+        // oledPanelShadow tracks what's actually on the panel and
+        // dumpFrameBuffer* during the hold will read it instead of
+        // live (which is about to become the snapshot).
+        if ( oledPanelShadow != nullptr && oledPanelShadowSize == oledHoldShadowSize ) {
+            memcpy( oledPanelShadow, live, (size_t) oledPanelShadowSize );
+        }
+        memcpy( live, oledHoldShadow, (size_t) oledHoldShadowSize );
+    }
+    oledHoldArmed = false;
+}
+
+bool oled::oledIsHeld( ) const {
+    return oledHoldActive();
+}
+
+// Pick the buffer that dumpFrameBuffer / dumpFrameBufferQuarterSize
+// should read from. During a hold, the live framebuffer has been
+// stashed to the pre-toast snapshot and no longer matches the panel,
+// so we read from the panel shadow (updated at every priority flush)
+// to make the terminal-side dump match what the user actually sees on
+// the OLED. When no hold is active or the panel shadow isn't allocated
+// (OOM, hold never started), fall back to the live framebuffer - which
+// in those states equals the panel.
+static uint8_t* oledGetDumpBuffer() {
+    if ( oledHoldActive() && oledPanelShadow != nullptr &&
+         oledPanelShadowSize > 0 ) {
+        return oledPanelShadow;
+    }
+    if ( _displayPtr != nullptr ) {
+        return _displayPtr->getBuffer();
+    }
+    return nullptr;
+}
+
 void oled::oledPeriodic( ) {
-    
+    // If the hold just expired, do one flush so the panel catches up to
+    // whatever the framebuffer was painted with during the held window.
+    // (probeMode does its own hold-end polling in its main loop because
+    // OLEDService is a low-priority service that probeMode's tight
+    // loop doesn't run; this path handles every other context.)
+    //
+    // Routed through show() rather than _displayPtr->display() so the
+    // post-hold flush picks up the terminal-mirror dump and the
+    // checkConnection liveness probe consistently with every other
+    // ship-to-panel path. holdUntilMs is cleared above so show()'s
+    // own hold gate passes through without short-circuiting.
+    if ( holdUntilMs != 0 && (int32_t)(holdUntilMs - millis()) <= 0 ) {
+        holdUntilMs = 0;
+        if ( oledNeedsFlushAfterHold ) {
+            oledNeedsFlushAfterHold = false;
+            show();
+        }
+    }
+
     // CRITICAL FIX: Don't attempt OLED operations during command processing
     // OLED connect() calls refreshConnections() which can cause recursive refresh
     // issues and potentially stack overflow if commands are being processed rapidly.
@@ -2585,17 +3031,21 @@ void oled::oledPeriodic( ) {
         return;
     }
     
-    // Adaptive check interval: poll faster when disconnected to catch reconnection quickly
-    // When connected: check every 3 seconds (save resources)
-    // When disconnected but retrying: check every 1 second (responsive reconnection)
+    // Adaptive check interval. Faster polling when connected lets us catch a
+    // hot-unplug *before* dozens of slow display() writes pile up and stall
+    // the UI; the cost is one 1-byte I2C ping every ~750ms, which is far
+    // cheaper than a single 1024-byte frame to a missing device.
+    //
+    // When disconnected: check every 2 seconds (responsive reconnection)
     // When max retries hit: check every 4 seconds (back off, allow retry reset)
+    // When connected: check every 750ms (bound disconnect detection latency)
     unsigned long currentCheckInterval;
     if (oledConnected) {
-        currentCheckInterval = 5000;  // Connected: slower polling
+        currentCheckInterval = 750;
     } else if (connectionRetries >= maxConnectionRetries) {
-        currentCheckInterval = 4000;  // Max retries: back off to save resources
+        currentCheckInterval = 4000;
     } else {
-        currentCheckInterval = 2000;  // Disconnected: fast polling for quick reconnection
+        currentCheckInterval = 2000;
     }
     
     if (millis() - lastConnectionCheck < currentCheckInterval) {
@@ -2834,7 +3284,11 @@ void oled::dumpFrameBufferQuarterSize( int clearFirst, int x_pos, int y_pos, int
     //     return;
     // }
 
-    uint8_t* buffer = getDisplay().getBuffer( );
+    // During a hold, oledGetDumpBuffer returns the panel shadow (what's
+    // actually on the OLED) instead of the live framebuffer (which is
+    // the pre-toast snapshot post-stash). This keeps the terminal dump
+    // synchronized with the panel during undo toasts and similar holds.
+    uint8_t* buffer = oledGetDumpBuffer();
     if ( !buffer ) {
         Serial.println( "No framebuffer available" );
         return;
@@ -2961,7 +3415,10 @@ void oled::dumpFrameBuffer( Stream* stream ) {
         stream = &Jerial;
     }
 
-    uint8_t* buffer = getDisplay( ).getBuffer( );
+    // See note on oledGetDumpBuffer in dumpFrameBufferQuarterSize:
+    // dumps the panel shadow when a hold is active so the terminal
+    // matches the OLED rather than the post-stash snapshot.
+    uint8_t* buffer = oledGetDumpBuffer();
     if ( !buffer ) {
         stream->println( "No framebuffer available" );
         return;
@@ -3174,9 +3631,15 @@ void oled::drawHighlightedChar( int16_t x, int16_t y, char c ) {
 }
 
 void oled::flushFramebuffer( ) {
-    if ( !oledConnected )
-        return;
-    getDisplay().display( );
+    // Thin delegate to show(). show() already handles the connection
+    // check, the hold-gate / oledNeedsFlushAfterHold latch, the
+    // checkConnection liveness probe, and (when configured) the
+    // terminal-mirror dump - all of which this function used to
+    // either duplicate or silently skip. Kept as a public API for the
+    // many external callers (Apps.cpp, Jerial.cpp, MeasureMode.cpp,
+    // EkiloEditor.cpp, BitmapEditor.cpp, ...) that already use this
+    // name; they pick up the missing dump + liveness check for free.
+    show();
 }
 
 uint8_t* oled::getFramebuffer( ) {
@@ -3527,6 +3990,142 @@ const char* getOledConnectionTypeShortName(int connectionType) {
         case 3: return "Custom";
         default: return "Unknown";
     }
+}
+
+// Quickly probe Wire (I2C0, GPIO 4/5) for an OLED at `address`.
+//
+// We do a one-byte addressed ping (beginTransmission/endTransmission) which
+// the SSD1306 ACKs without needing any register write. The bus is shared
+// with the MCP4728 DAC (0x60) and INA219 current sensors (0x40, 0x41); a
+// plain OLED probe at 0x3C won't collide with any of those.
+//
+// Why two attempts: the very first transaction on Wire after the DAC/INA
+// initialization sequence has been observed to NACK spuriously on some
+// boards (bus settling). A single follow-up after a brief delay is enough
+// to disambiguate a real "no device" from a transient hiccup.
+//
+// Why a tight setTimeout: the Earle pico Wire default lets a hung bus stall
+// for hundreds of milliseconds, which directly translates into UI lag if
+// the OLED disappears between checkConnection() polls. We set 5ms during
+// the probe to fail fast, then leave the timeout at 15ms (matching the
+// existing Wire1 setting in oled::init()) so any subsequent I2C0 OLED
+// traffic that hits a dead bus also bails out within a single frame.
+bool probeOledOnInternalI2C0(uint8_t address) {
+    // Snap to 7-bit and reject obviously-invalid addresses.
+    address &= 0x7F;
+    if (address == 0 || address > 0x77) {
+        return false;
+    }
+
+    // Caller must have initialized Wire (initDAC()/initINA219() do so during
+    // boot). We don't call Wire.begin() here on purpose -- we don't want to
+    // step on the DAC/INA bus configuration that's already up and running.
+    Wire.setTimeout(5);
+
+    bool found = false;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        Wire.beginTransmission(address);
+        int err = Wire.endTransmission();
+        if (err == 0) {
+            found = true;
+            break;
+        }
+        delayMicroseconds(250);
+    }
+
+    // Leave Wire with a bounded timeout so a later disconnect of the OLED
+    // can't wedge a 1024-byte display() write for an unbounded amount of
+    // time. 15ms matches the Wire1 timeout the OLED code sets elsewhere
+    // and is plenty for any single DAC/INA transaction on the same bus.
+    Wire.setTimeout(15);
+
+    return found;
+}
+
+// Boot-time auto-detect + config migration for an OLED on the internal I2C0
+// bus. See oled.h for the contract; see the commented policy below for the
+// full reasoning.
+//
+// Policy when the probe ACKs:
+//   * Always force `enabled = 1` and `connect_on_boot = 1`. The probe ACK
+//     is proof the user has actually wired up an OLED; respecting stale
+//     `enabled = 0` / `connect_on_boot = 0` flags from a previous hardware
+//     setup would mean firstLoop==2 silently skips oled.init() and the
+//     auto-detect is useless.
+//   * If stored revision < 7, additionally promote to rev 7 and switch
+//     connection_type to 2 (internal I2C0). This is the "first time
+//     seeing a rev 7 board" migration path -- the user never explicitly
+//     chose pins, so auto-routing the OLED to the internal bus is the
+//     right default.
+//   * If stored revision >= 7, leave revision and connection_type alone.
+//     A rev 7 user who has manually routed their OLED via GPIO 7/8 (with
+//     a separate phantom on the internal bus) should not have that
+//     decision silently overridden every reboot.
+//
+// Policy when the probe NACKs:
+//   * Never touch any field. A user who has deliberately unplugged their
+//     OLED, or whose hardware doesn't have one, keeps their config
+//     intact.
+//
+// The probe itself uses a 5ms transaction timeout, so a missing OLED costs
+// ~10ms of boot time at worst. We also leave Wire with a 15ms timeout
+// after the probe to bound any future "OLED disappeared" stalls on this
+// bus (see probeOledOnInternalI2C0()).
+bool autoDetectAndConfigureOled(void) {
+    uint8_t oledAddr = (uint8_t)( jumperlessConfig.top_oled.i2c_address & 0x7F );
+    if ( oledAddr == 0 ) {
+        oledAddr = 0x3C; // SSD1306 default
+    }
+
+    if ( !probeOledOnInternalI2C0( oledAddr ) ) {
+        return false;
+    }
+
+    // Hardware-revision migration: a working OLED on the internal I2C0 bus
+    // is conclusive evidence this is rev 7+ silicon. Bump the stored
+    // revision (which is EEPROM-backed by saveConfig()) and switch the
+    // OLED to connection_type = 2 so it uses the dedicated GPIO 4/5 path
+    // instead of tying up crossbar nodes.
+    bool migrateRev = ( jumperlessConfig.hardware.revision < 7 );
+    if ( migrateRev ) {
+        Serial.printf( "[OLED] Detected OLED at 0x%02X on internal I2C0 "
+                       "- promoting hardware revision %d -> 7 and "
+                       "switching OLED to internal bus\n",
+            oledAddr, jumperlessConfig.hardware.revision );
+        jumperlessConfig.hardware.revision = 7;
+        // Keep the legacy global mirror in sync; loadHardwareFromEEPROM()
+        // and other call sites both read this value.
+        extern int revisionNumber;
+        revisionNumber = 7;
+        // updateOledPinsForConnectionType() updates pins/rows/connection_type
+        // and flips oledUsingHardwiredPins, so no crossbar bridges will be
+        // created when oled.init() runs later in firstLoop==2.
+        updateOledPinsForConnectionType( 2 );
+    }
+
+    // Force the enable + connect-on-boot flags any time we detect a real
+    // device, even on already-rev-7 boards. See the policy block at the
+    // top of this function for the asymmetry rationale ("probe ACK is
+    // proof of presence, so the user clearly wants this device to come
+    // up at boot").
+    bool flagsChanged = false;
+    if ( jumperlessConfig.top_oled.enabled != 1 ) {
+        jumperlessConfig.top_oled.enabled = 1;
+        flagsChanged = true;
+    }
+    if ( jumperlessConfig.top_oled.connect_on_boot != 1 ) {
+        jumperlessConfig.top_oled.connect_on_boot = 1;
+        flagsChanged = true;
+    }
+
+    // Single save covers all dirty fields. Skipped entirely if nothing
+    // actually changed, so a board that's already correctly configured
+    // doesn't pay a flash write on every reboot.
+    if ( migrateRev || flagsChanged ) {
+        saveConfig( );
+    }
+
+    return true;
 }
 
 // V5 hardware (revision 5) routes the OLED through the crossbar on GPIO 7/8.

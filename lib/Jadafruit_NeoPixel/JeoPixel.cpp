@@ -323,7 +323,25 @@ void JeoPixel::show(void) {
   while (numBytes--) {
     pio_sm_put_blocking(pio, pio_sm, ((uint32_t)*ptr++) << 24);
   }
-  
+
+  // The put_blocking loop only blocks until the LAST word is in the 4-deep
+  // TX FIFO. The PIO state machine is still clocking those bits out for up
+  // to (FIFO_DEPTH * 8 bits * 1.25us) + last-bit time after we return.
+  // If a caller multiplexes this pin (e.g. the Jumperless probe button
+  // share with PROBE_LED_PIN) the instant we return, we cut the WS2812
+  // stream mid-byte and get shifted/garbled output.
+  //
+  // Spin until the FIFO has fully drained, then add the trailing bit time
+  // so the PIO state machine is genuinely idle before we let the caller
+  // touch the pin. Cost when the FIFO was already empty: ~10us per LED
+  // strip update, which is negligible vs. the 300us latch already eaten
+  // by canShow().
+  while (!pio_sm_is_tx_fifo_empty(pio, pio_sm)) {
+    tight_loop_contents();
+  }
+  // 8 bits * 1.25us = 10us for the last byte to shift out of the OSR
+  delayMicroseconds(12);
+
 #else
   // For non-RP2040 platforms, just call regular show()
   // (they don't use async DMA so show() is already blocking)

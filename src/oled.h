@@ -149,6 +149,52 @@ public:
     void showJogo32h();
     // Periodic maintenance (connection health check, auto-reinit)
     void oledPeriodic();
+
+    // Hold the current frame for `durationMs`. show()/flushFramebuffer()
+    // calls during this window mutate the live framebuffer normally but
+    // skip the I2C transmit, so the panel stays frozen on whatever was
+    // last pushed. When the hold expires, oledPeriodic() flushes the
+    // final framebuffer state. Calling again during an active hold
+    // extends the timer (never shortens it).
+    void oledHold(uint32_t durationMs);
+
+    // Preferred entry point when a held message will be priority-flushed
+    // immediately after this call (e.g. the undo toast). Snapshots the
+    // current live framebuffer into a shadow buffer BEFORE the caller
+    // paints the held message, then arms a post-flush latch. The next
+    // priority flush (clearPrintShowSmall with show=true) transmits the
+    // held message to the panel and then restores the shadow back into
+    // the live framebuffer, so any probe-mode / clearHighlighting / etc.
+    // writes during the hold window accumulate against the pre-toast
+    // background instead of layering on top of toast pixels. When the
+    // hold expires, oledPeriodic() flushes the accumulated live buffer
+    // (background + intervening writes, no toast residue) cleanly.
+    //
+    // If the OLED isn't connected or shadow allocation fails, this
+    // degrades silently to a plain oledHold(durationMs).
+    void oledHoldBegin(uint32_t durationMs);
+
+    bool oledIsHeld() const;
+    // Force-render path that bypasses clearPrintShow's auto-fit ladder
+    // and renders directly with two fixed fonts (top + bottom line),
+    // regardless of any active hold. Used by the undo toast and history
+    // scrub menu to keep a stable 2-line layout that doesn't size-flicker
+    // when the label width straddles a tier boundary. Default font
+    // indices are tuned for the toast: a larger top line (the verb) and
+    // a more compact bottom line (the detail) - callers that want
+    // matched line sizes can pass the same index for both.
+    //
+    //   topFontIndex / botFontIndex: indices into fontList[] in oled.cpp.
+    //   line_gap: pixels between the two lines (vertical block centered).
+    //   leftJustifyTop: when true, the top line is flush-left at x=0
+    //     instead of horizontally centered. Bottom line stays centered.
+    void clearPrintShowSmall(const char* text,
+                             bool clear = true,
+                             bool show = true,
+                             int topFontIndex = 21,   // Pragmatism 10pt
+                             int botFontIndex = 18,   // Pragmatism 7pt
+                             int line_gap = 4,
+                             bool leftJustifyTop = true);
     bool clear(int waitToFinish = 0);
     bool show(int waitToFinish = 0);
     void moveToNextLine();
@@ -376,6 +422,37 @@ bool applyOledConnectionType(int newConnectionType, bool reinitDisplay = true, b
 // Cycle to the next cycleable connection type (skips type 3 = custom).
 // Returns the new connection type.
 int cycleOledConnectionType(bool reinitDisplay = true, bool persist = false);
+
+// Quickly probe the internal I2C0 bus (Wire on GPIO 4/5) for an OLED at the
+// given 7-bit address. Returns true if a device ACKs.
+//
+// Caller is responsible for ensuring Wire has been initialized (initDAC()
+// does this on boot). Uses a tight, short timeout internally so a missing
+// device costs only a few milliseconds rather than the platform default.
+// Restores Wire's timeout to a bounded "OLED-friendly" value (15ms) on exit
+// so that future I2C0 transactions can't stall the main loop indefinitely
+// even if the OLED is later unplugged.
+bool probeOledOnInternalI2C0(uint8_t address);
+
+// Run the boot-time OLED auto-detect + config-migration sequence.
+//
+// Call once from setup() AFTER initDAC()/initINA219() have brought Wire up,
+// and BEFORE the firstLoop==2 path that decides whether to oled.init().
+//
+// Behavior when an OLED is detected on the internal I2C0 bus:
+//   * Promotes hardware.revision to 7 if it's currently lower (rev 7 is
+//     the silicon that broke out GPIO 4/5 as a usable I2C bus).
+//   * Switches top_oled.connection_type to 2 (internal I2C0) on first
+//     migration; leaves it alone on already-rev-7 boards so a manual user
+//     choice isn't silently overridden.
+//   * Forces top_oled.enabled = 1 and top_oled.connect_on_boot = 1 so
+//     the existing firstLoop==2 gate will actually call oled.init().
+//   * Persists every change in a single saveConfig() call.
+//
+// Behavior when no OLED is detected: nothing is modified.
+//
+// Returns true iff a device was detected on the bus.
+bool autoDetectAndConfigureOled(void);
 
 // Bitmap buffer access - exposed for MicroPython
 extern uint8_t customBitmapBuffer[1024];

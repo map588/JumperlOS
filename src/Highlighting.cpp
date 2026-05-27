@@ -21,6 +21,8 @@
 #include "PersistentStuff.h"
 #include "Commands.h"
 #include "FileParsing.h"
+#include "Undo.h"
+#include "Menus.h"
 #include <Arduino.h>
 #include <cmath>
 
@@ -79,7 +81,7 @@ ServiceStatus Highlighting::service() {
         }
         // If not handled, button press will be processed by other systems (menus, etc.)
     }
-        // ============================================================================
+    // ============================================================================
     // CRITICAL PATH: Encoder highlighting - MUST run every loop for smooth UX
     // ============================================================================
     int encoderNetHighlighted = encoderNetHighlight();

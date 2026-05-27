@@ -324,6 +324,41 @@ bool safeFileWriteAll(const char* path, const char* content, size_t content_len 
 int safeFileWrite(File& file, const uint8_t* data, size_t len);
 
 /**
+ * @brief Held-pause variant of safeFileWrite for callers that already
+ *        own a Core-1 pause window.
+ *
+ * Used by the FileCache flush path which wraps the entire write+commit
+ * sequence in a single pauseCore2ForFlash + suspendUARTRxIRQ pair so
+ * Core 1 freezes once (continuous) instead of N times (with flicker).
+ *
+ * Caller MUST currently hold:
+ *   - pauseCore2ForFlash (i.e. the global `pauseCore2` flag is true)
+ *   - the fs_mutex (acquired via safeFileOpen)
+ *   - AsyncPassthrough UART RX IRQ already suspended
+ *
+ * @param file Open file handle (caller still owns fs_mutex)
+ * @param data Buffer to write (any heap is fine; must be CPU-readable)
+ * @param len Byte count
+ * @return Number of bytes written, or -1 on error
+ */
+int safeFileWriteHeld(File& file, const uint8_t* data, size_t len);
+
+/**
+ * @brief Held-pause variant of safeFileClose. Calls file.close() then
+ *        releases fs_mutex but does NOT pause/unpause Core 1 (caller
+ *        already holds that wrap). Pair with safeFileWriteHeld.
+ */
+void safeFileCloseHeld(File& file);
+
+/**
+ * @brief Like safeFileCloseHeld but does NOT release fs_mutex either.
+ *        Used by atomic-write commits that chain close + unlink + rename
+ *        under one fs_mutex acquisition so the filesystem-activity LED
+ *        indicator only blinks once per logical save.
+ */
+void safeFileCloseHeldNoRelease(File& file);
+
+/**
  * Safely flush a file with Core2 pause protection
  * @param file File handle (must be open for writing)
  * @return true on success
