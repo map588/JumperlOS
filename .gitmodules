@@ -1,0 +1,3 @@
+[submodule "lib/FatFS/lib/SPIFTL"]
+	path = lib/FatFS/lib/SPIFTL
+	url = https://github.com/Architeuthis-Flux/SPIFTL.git

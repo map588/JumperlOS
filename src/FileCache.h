@@ -19,6 +19,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Master switch for the PSRAM write-back cache. DEFAULT ON.
+//
+// The SPIFTL delta-journal made the *metadata* persist cheap (~2 ms per
+// f_close), but the underlying FatFS data write for a slot save is still
+// ~15-80 ms (open/truncate + sector programs + dir/FAT update). Doing that
+// synchronously on every connection edit stalls the UI core and drops button
+// presses, so we keep the write-back cache: a save is an instant memcpy into
+// PSRAM and the real flash write is coalesced + deferred to the background
+// flush service. What the journal DID let us drop is the separate deferred
+// "SPIFTL metadata sync" layer - metadata is now persisted inline (cheaply) at
+// each flush's f_close, so there is no 750 ms debt to coalesce anymore.
+//
+// Define USE_FILE_CACHE=0 to compile the cache out entirely (the fileCache*
+// API becomes a thin pass-through to the raw safeFile* FatFS calls - see the
+// #else block in FileCache.cpp). That removes the PSRAM/SRAM body buffers but
+// makes every save a synchronous ~70 ms flash write, so only do it on builds
+// that don't care about UI latency.
+#ifndef USE_FILE_CACHE
+#define USE_FILE_CACHE 1
+#endif
+
 #include "JumperlOS.h"  // Service base class
 
 // Maximum number of cache entries (file slots). Each entry tracks a path
@@ -86,6 +107,22 @@ bool fileCacheFlushAll();
 // natural pause-point: clear-all, slot switch, USB mount, probe-mode exit,
 // graceful shutdown, explicit 's' save). `reason` is logged for debug.
 void fileCacheFlushNowAll(const char* reason);
+
+// Force the SPIFTL metadata to be persisted to flash NOW. SPIFTL runs
+// in lazy-persist mode (see lib/FatFS/src/FatFS_LazyPersist.h) so each
+// successful flushEntryChunked leaves the L2P / peCount / ebState
+// metadata dirty in RAM. The flush service drains this debt during
+// idle windows; this call drives it explicitly at coarse-grained safe
+// points where a longer freeze is acceptable - slot switch, USB MSC
+// mount, shutdown, etc. No-op if the metadata is already coherent.
+// `reason` is logged for debug.
+//
+// `force` bypasses the internal dirty-burst gate. That gate only counts writes
+// that went through the PSRAM cache flush path, so it is blind to direct
+// safeFile*/FatFS writes (every write on a no-PSRAM unit, and saveConfig's r+
+// overwrite). Durability-critical callers should pass force=true; it stays
+// cheap because SPIFTL's forceSync() itself no-ops when nothing was written.
+bool fileCacheSpiftlSync(const char* reason, bool force = false);
 
 // Drop all cached state (does NOT flush). Used by recovery / manual reset.
 void fileCacheDropAll();

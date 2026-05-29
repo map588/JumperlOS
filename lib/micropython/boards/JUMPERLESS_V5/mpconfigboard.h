@@ -1,6 +1,13 @@
 // Board and hardware specific configuration
 #define MICROPY_HW_BOARD_NAME                   "Jumperless v5"
-#define MICROPY_HW_FLASH_STORAGE_BYTES          (PICO_FLASH_SIZE_BYTES - 1024 * 1024)
+// Storage region size for a standalone MicroPython firmware on Jumperless V5.
+// JumperlOS itself reserves 4 MB at the top of flash for its FatFS partition
+// (see scripts/lock_fs_partition.py); to keep this standalone-MP variant
+// binary-compatible with the JumperlOS partition layout, we size MP's
+// storage region to 4 MB. The remaining ~12 MB is sketch + EEPROM. If you
+// want a larger MP storage region, you must NOT also flash JumperlOS-managed
+// data into the same flash; pick one or the other.
+#define MICROPY_HW_FLASH_STORAGE_BYTES          (4 * 1024 * 1024)
 
 // USB VID/PID
 #define MICROPY_HW_USB_VID (0x1D50)

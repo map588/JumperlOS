@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <FatFS.h>
+#include <FatFS_LazyPersist.h>  // fatFsForceSync() - SPIFTL metadata sync hook
 #include <string.h>
 #include "hardware/structs/sio.h"
 
@@ -53,11 +54,18 @@ extern int32_t safeFileSizeRaw(const char* path, uint32_t timeout_ms);
 extern bool safeFileDeleteRaw(const char* path, uint32_t timeout_ms);
 extern bool safeFileRenameRaw(const char* pathFrom, const char* pathTo, uint32_t timeout_ms);
 
+#if USE_FILE_CACHE
+// ===========================================================================
+// Full write-back PSRAM file cache. Compiled in only when USE_FILE_CACHE != 0.
+// (The thin pass-through used when the cache is disabled is in the #else block
+// at the very bottom of this file.)
+// ===========================================================================
+
 namespace {
 
 // Debounce: a dirty entry waits this long before being flushed unless it
 // gets force-flushed. ~6s gives time for follow-up writes to coalesce.
-constexpr uint32_t FLUSH_DEBOUNCE_MS = 3000;
+constexpr uint32_t FLUSH_DEBOUNCE_MS = 1000;
 
 // Service tick rate - we run roughly every 250ms even when nothing is dirty.
 constexpr uint32_t SERVICE_TICK_MS = 350;
@@ -89,6 +97,25 @@ struct Entry {
 
 Entry g_entries[FILE_CACHE_MAX_ENTRIES];
 bool g_initialized = false;
+
+// Deferred-SPIFTL-metadata-sync accounting. DORMANT under the current
+// configuration: SPIFTL runs in delta-journal mode with lazy-persist OFF, so
+// each flushEntryChunked's f_close already persists the L2P/peCount metadata
+// inline (a cheap ~2 ms journal append) - there is no deferred debt to track,
+// and flushEntryChunked no longer increments this counter. The counter and the
+// flush-service drain branch are retained because they're the mechanism that
+// would be needed again if lazy-persist were re-enabled (then f_close would
+// NOT persist metadata and a coalesced fatFsForceSync() during idle would be
+// required). With journaling on it simply stays 0 and the drain branch never
+// fires.
+//
+// Volatile so reads from any core see the latest value without the
+// compiler caching it across the cooperative service ticks.
+volatile uint32_t g_metaDirtyBursts = 0;
+// Wall clock at which g_metaDirtyBursts last became non-zero (unused while the
+// counter is dormant; kept for the lazy-persist path described above).
+volatile uint32_t g_metaDirtySinceMs = 0;
+constexpr uint32_t META_BACKSTOP_MS = 60000;
 
 // SRAM fallback cap. We don't want a runaway cache to drain the 60-70 KB
 // SRAM free heap, so when PSRAM isn't backing us we hard-limit the total
@@ -529,6 +556,17 @@ static bool flushEntryChunked(const char* path, const uint8_t* psramData, size_t
     // back-to-back with a 25ms gap; with this they're spaced ~750ms+
     // apart and the second only fires if the user is still idle.
     noteUserInput();
+
+    // NOTE: We deliberately do NOT bump g_metaDirtyBursts here anymore.
+    // SPIFTL now runs in delta-journal mode with lazy-persist OFF, so the
+    // f_close inside the write above already persisted the L2P/peCount
+    // metadata to flash (a ~2 ms journal append, logged as
+    // "[SPIFTL] persist ... journal-append"). There is no deferred metadata
+    // debt to coalesce, so the old "schedule a fatFsForceSync() during the
+    // next idle window" path is obsolete - keeping it just produced redundant
+    // background metaSync ticks. The explicit fileCacheSpiftlSync(force=true)
+    // path (e.g. saveConfig) still works: it calls fatFsForceSync(), which is
+    // a cheap no-op when (as now) the metadata is already coherent.
     return overallOk;
 }
 
@@ -550,6 +588,83 @@ bool flushEntry(Entry& e) {
         e.dirty = false;
         e.flushedVersion = e.version;
     }
+    return ok;
+}
+
+// Drain the SPIFTL lazy-persist debt. Calls fatFsForceSync() inside
+// the standard Core1-pause + UART-IRQ-suspend envelope so it doesn't
+// race the LED render loop or USB interrupt handlers. Returns true
+// on success or no-op (g_metaDirtyBursts was already 0).
+//
+// Caller MUST verify it's safe to freeze Core 1 (idle gate) before
+// calling - this routine intentionally doesn't second-guess the
+// caller because the explicit-sync paths (slot switch, USB mount,
+// shutdown) want to fire it regardless of idle state.
+bool flushSpiftlMetaSync(const char* reason, bool force = false) {
+    // The g_metaDirtyBursts counter only tracks writes that went through the
+    // PSRAM cache flush path (flushEntryChunked). Direct safeFile*/FatFS writes
+    // (e.g. every write on a no-PSRAM unit, or saveConfig's r+ overwrite) leave
+    // SPIFTL metadata debt that this counter never sees. `force` callers (the
+    // explicit "must be durable now" paths) therefore skip the gate and let
+    // SPIFTL's own metadataAge check (inside forceSync()) decide whether there
+    // is actually anything to persist - so a forced sync is a cheap no-op when
+    // nothing was written, and a real persist when there was.
+    if (!force && g_metaDirtyBursts == 0) {
+        return true;  // already coherent
+    }
+    uint32_t bursts = g_metaDirtyBursts;
+    uint32_t age = millis() - g_metaDirtySinceMs;
+    FCDBG("metaSync ENTER reason=%s bursts=%u age=%ums",
+          reason ? reason : "?", (unsigned)bursts, (unsigned)age);
+
+    filesystemActive = true;
+    filesystemActiveUntil = millis() + 4000;
+    __dmb();
+    delay(2);
+
+    AsyncPassthrough::suspendUARTRxIRQ();
+    uint32_t pauseStartMs = millis();
+    bool was_paused = pauseCore2ForFlash(100);
+    uint32_t pauseEnteredMs = millis();
+
+    bool gotMutex = fs_mutex_acquire_timeout_ms(5000);
+    bool ok = false;
+    if (!gotMutex) {
+        FCDBG("metaSync fs_mutex acquire FAILED");
+    } else {
+        ok = fatFsForceSync();
+        fs_mutex_release();
+    }
+
+    uint32_t pauseExitMs = millis();
+    unpauseCore2ForFlash(was_paused);
+    AsyncPassthrough::resumeUARTRxIRQ();
+
+    if (ok) {
+        // Clear the debt. If a new write came in between fatFsForceSync()
+        // and now, it would have re-armed g_metaDirtySinceMs in the
+        // accountant inside flushEntryChunked, but the bursts counter
+        // we read at function entry is what we successfully drained.
+        // Subtract atomically (within the cooperative service tick)
+        // rather than zeroing so concurrent writes aren't lost.
+        if (g_metaDirtyBursts >= bursts) {
+            g_metaDirtyBursts -= bursts;
+        } else {
+            g_metaDirtyBursts = 0;
+        }
+        if (g_metaDirtyBursts == 0) {
+            g_metaDirtySinceMs = 0;
+        }
+    }
+
+    FCDBG("metaSync EXIT ok=%d drained=%u remaining=%u (Core1 paused for %ums, total %ums)",
+          (int)ok, (unsigned)bursts, (unsigned)g_metaDirtyBursts,
+          (unsigned)(pauseExitMs - pauseEnteredMs),
+          (unsigned)(millis() - pauseStartMs));
+
+    // Same idle-gate re-arm trick as flushEntryChunked - prevents the
+    // next mirror-sync / canonical-flush from firing back-to-back.
+    noteUserInput();
     return ok;
 }
 
@@ -938,11 +1053,26 @@ bool fileCacheFlushAll() {
 void fileCacheFlushNowAll(const char* reason) {
     if (!g_initialized) return;
     size_t dirty = fileCacheDirtyCount();
-    if (dirty == 0) return;
+    if (dirty == 0) {
+        // Even with nothing dirty in the cache, SPIFTL may still owe a
+        // metadata persist from previous flushes that were in lazy mode.
+        // Drain it now so the caller's "be durable" guarantee actually
+        // holds (e.g. before USB MSC hands the volume to the host).
+        fileCacheSpiftlSync(reason ? reason : "flushNowAll-no-dirty");
+        return;
+    }
     FCDBG("flushNowAll reason=%s dirty=%u",
           reason ? reason : "(null)", (unsigned)dirty);
     fileCacheFlushAll();
+    // After draining the per-file flushes, also drain SPIFTL metadata
+    // so the entire write chain is durable on flash before we return.
+    fileCacheSpiftlSync(reason ? reason : "flushNowAll");
     FCDBG("flushNowAll reason=%s done", reason ? reason : "(null)");
+}
+
+bool fileCacheSpiftlSync(const char* reason, bool force) {
+    if (!g_initialized) return true;
+    return flushSpiftlMetaSync(reason, force);
 }
 
 void fileCacheDropAll() {
@@ -1059,7 +1189,7 @@ ServiceStatus FileCacheFlushService::service() {
     }
     m_lastTickMs = now;
 
-    // Two kinds of work this service can do, in priority order:
+    // Three kinds of work this service can do, in priority order:
     //   1. CANONICAL FLUSH: an entry has dirty=true (in-RAM body changed
     //      since last canonical write). Required for durability of the
     //      latest save.
@@ -1067,6 +1197,14 @@ ServiceStatus FileCacheFlushService::service() {
     //      (canonical is on flash but the /.bak mirror is one or more
     //      saves behind). Reduces worst-case loss window if a future
     //      canonical-write power-loss corrupts the canonical.
+    //   3. SPIFTL META SYNC: g_metaDirtyBursts > 0 (one or more flushes
+    //      have been done in lazy mode and the SPIFTL L2P/peCount
+    //      metadata is dirty in RAM). Without this drain, a power loss
+    //      after a save would lose the FTL pointer to the new sectors
+    //      even though the data was physically programmed. Cheaper
+    //      than canonical flush only in the sense that we coalesce many
+    //      saves into one persist - the persist itself is still
+    //      ~750 ms on a 4 MB partition.
     //
     // We do at most ONE flash op per tick so the user only sees one
     // ~700 ms Core-1 freeze per tick, never two stacked.
@@ -1077,7 +1215,8 @@ ServiceStatus FileCacheFlushService::service() {
         if (e.dirty) anyDirty = true;
         if (!e.dirty && e.flushedVersion != e.mirroredVersion) anyMirrorStale = true;
     }
-    if (!anyDirty && !anyMirrorStale) {
+    bool spiftlDebt = (g_metaDirtyBursts > 0);
+    if (!anyDirty && !anyMirrorStale && !spiftlDebt) {
         lastStatus = ServiceStatus::IDLE;
         return lastStatus;
     }
@@ -1094,7 +1233,9 @@ ServiceStatus FileCacheFlushService::service() {
     // editor/REPL/etc, or within IDLE_QUIET_MS of the last user input.
     // Emergency backstop bounds worst-case cold-power-off loss for
     // canonical writes only (mirror staleness isn't urgent enough to
-    // override the idle gate - mirror is best-effort).
+    // override the idle gate - mirror is best-effort). SPIFTL debt also
+    // gets a backstop because a power loss with debt outstanding loses
+    // every save in the burst.
     constexpr uint32_t IDLE_BACKSTOP_MS = 60000;
     uint32_t oldestDirtyAge = 0;
     for (auto& e : g_entries) {
@@ -1102,15 +1243,29 @@ ServiceStatus FileCacheFlushService::service() {
         uint32_t age = now - e.lastModifiedMs;
         if (age > oldestDirtyAge) oldestDirtyAge = age;
     }
+    uint32_t metaDebtAge = (spiftlDebt && g_metaDirtySinceMs)
+        ? (now - g_metaDirtySinceMs) : 0;
     bool idle = systemIdleForFlush();
-    bool emergency = (anyDirty && oldestDirtyAge > IDLE_BACKSTOP_MS);
+    bool emergency = (anyDirty && oldestDirtyAge > IDLE_BACKSTOP_MS) ||
+                     (spiftlDebt && metaDebtAge > META_BACKSTOP_MS);
     if (!idle && !emergency) {
         lastStatus = ServiceStatus::IDLE;
         return lastStatus;
     }
     if (emergency && !idle) {
-        FCDBG("flushService EMERGENCY backstop firing (dirty for %ums)",
-              (unsigned)oldestDirtyAge);
+        FCDBG("flushService EMERGENCY backstop firing (dirty for %ums, metaDebt %ums)",
+              (unsigned)oldestDirtyAge, (unsigned)metaDebtAge);
+    }
+
+    // If everything else is clean and only SPIFTL debt remains, drain it
+    // this tick. This is the steady-state "user finished a save burst,
+    // is now idle, persist the FTL metadata" path.
+    if (!anyDirty && !anyMirrorStale && spiftlDebt) {
+        FCDBG("flushService spiftl-meta-sync bursts=%u age=%ums",
+              (unsigned)g_metaDirtyBursts, (unsigned)metaDebtAge);
+        flushSpiftlMetaSync("idle-tick");
+        lastStatus = ServiceStatus::BUSY;
+        return lastStatus;
     }
 
     // If only mirror is stale (no dirty canonical work), do a mirror
@@ -1213,3 +1368,72 @@ ServiceStatus FileCacheFlushService::service() {
     lastStatus = ServiceStatus::BUSY;
     return lastStatus;
 }
+
+#else  // !USE_FILE_CACHE
+// ===========================================================================
+// Pass-through mode (cache compiled out).
+//
+// The cache-aware safe* wrappers in FilesystemStuff.cpp already fall back to
+// the *Raw FatFS calls when the cache "misses" (read/readInto/write return
+// false, exists returns false, size returns -1) or run a Raw op right after a
+// coherence call (delete/rename). So the pass-through simply reports "miss"
+// for the read/write/exists/size hooks - letting FilesystemStuff do the real
+// Raw op with the caller's own timeout - and no-ops the coherence/flush hooks.
+// Durability is handled by SPIFTL itself: every f_close -> CTRL_SYNC ->
+// persist() appends a journal page, so there is nothing to "flush" here.
+// ===========================================================================
+
+#include <FatFS_LazyPersist.h>  // fatFsForceSync()
+
+void fileCacheInit() {
+    Serial.println("FileCache: disabled (compile-time pass-through to FatFS)");
+}
+
+void fileCacheRecoverPendingWrites() { /* no atomic .new commits in pass-through */ }
+
+// Read/write hooks always "miss" so FilesystemStuff falls back to the Raw call
+// (which carries the caller's timeout and does the real flash I/O).
+bool fileCacheRead(const char*, const uint8_t**, size_t*) { return false; }
+bool fileCacheReadInto(const char*, uint8_t*, size_t, size_t*) { return false; }
+bool fileCacheWrite(const char*, const uint8_t*, size_t) { return false; }
+
+// Coherence hooks: nothing is cached, so nothing to invalidate/drop.
+bool fileCacheInvalidate(const char*) { return false; }
+void fileCacheDropAll() {}
+
+// "Already on flash" - flush hooks are no-ops. The big-event/ explicit-sync
+// hooks still drive a (cheap, usually no-op) SPIFTL forceSync so metadata is
+// coherent at coarse safe points even after direct writes.
+bool fileCacheFlushNow(const char*) { return true; }
+bool fileCacheFlushAll() { return true; }
+void fileCacheFlushNowAll(const char* reason) { (void)reason; fatFsForceSync(); }
+bool fileCacheSpiftlSync(const char* reason, bool force) { (void)reason; (void)force; return fatFsForceSync(); }
+
+// Existence/size "miss" so the wrapper consults flash directly; delete/rename
+// are coherence no-ops (the wrapper runs the Raw op right after).
+bool fileCacheExists(const char*) { return false; }
+int32_t fileCacheSize(const char*) { return -1; }
+bool fileCacheDelete(const char*) { return false; }
+bool fileCacheRename(const char*, const char*) { return false; }
+
+void fileCacheDumpStatus() {
+    Serial.println("FileCache: disabled (compile-time pass-through)");
+}
+
+size_t fileCacheEntryCount() { return 0; }
+size_t fileCacheDirtyCount() { return 0; }
+size_t fileCacheBytesInUse() { return 0; }
+
+// The flush service still exists (jOSmanager registers it) but has no work.
+FileCacheFlushService& FileCacheFlushService::getInstance() {
+    static FileCacheFlushService instance;
+    return instance;
+}
+
+ServiceStatus FileCacheFlushService::service() {
+    return ServiceStatus::IDLE;
+}
+
+FileCacheFlushService& fileCacheFlushService = FileCacheFlushService::getInstance();
+
+#endif  // USE_FILE_CACHE

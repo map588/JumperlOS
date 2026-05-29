@@ -4936,7 +4936,11 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 
     // Update global timestamp BEFORE reading current so other code knows we're about to read
     lastProbeCurrentCheckTime = millis();
-    float current_mA = checkProbeCurrent( ); // - currentReadingOffset1_mA;
+    // Use the zero-corrected current (raw - probe_current_zero). The switch
+    // thresholds are calibrated against this same corrected value, so existing
+    // users keep their saved thresholds across firmware updates without having
+    // to re-run calibration.
+    float current_mA = checkProbeCurrent( );
 
     // HYSTERESIS LOGIC to prevent oscillation:
     // Use different thresholds depending on current state to create a "dead zone"
@@ -4988,15 +4992,16 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
     return switchPosition;
 }
 
-float Probing::checkProbeCurrent( void ) {
-    // showProbeLEDs = 10;
-    // probeLEDs.setPixelColor( 0, 0x010101 );
-    // probeLEDs.show( );
-    int bs = 0;
+// ABSOLUTE probe-path current (INA1) with NO probe_current_zero subtraction.
+// This is the reference used for switch-position detection and threshold
+// calibration: because the zero offset (measured with DAC0 disconnected, and
+// re-measured every boot) drifts relative to operating conditions, subtracting
+// it would put calibration and runtime in different frames. Switch detection
+// only needs to tell SELECT (DAC0 sourcing LED current) from MEASURE (DAC0
+// driving the high-impedance tip, ~0 mA), so the raw absolute value is what we
+// compare on BOTH sides.
+float Probing::checkProbeCurrentRaw( void ) {
     int div = 1;
-
-    float lastDac = globalState.power.dac0;
-
     float current = 0.0;
 
     // Wait for INA219 conversion to complete (~8.5ms with 16 sample averaging)
@@ -5014,9 +5019,17 @@ float Probing::checkProbeCurrent( void ) {
             delayMicroseconds( 100 );
         }
         current += INA1.getCurrent_mA( );
-        // delayMicroseconds( 2000 );  // Allow time for next conversion (~8.5ms needed)
     }
     current = current / (float)div;
+    return current;
+}
+
+// Zero-corrected probe current for the user-facing "current at the tip" display.
+// This is checkProbeCurrentRaw() minus the calibrated rest offset; do NOT use
+// this for switch detection or threshold calibration (use the raw value).
+float Probing::checkProbeCurrent( void ) {
+    float current = checkProbeCurrentRaw( );
+
     // Serial.print("current (before zero) = ");
     // Serial.println(current);
     // Serial.flush();

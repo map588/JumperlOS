@@ -3751,6 +3751,8 @@ bool safeFileReadAllRaw( const char* path, char* buffer, size_t buffer_size,
 // toggle for filesystem layer traces. Either one enables FSDBG.
 extern "C" volatile int psram_debug;
 extern "C" volatile int fc_debug;
+// Set non-zero (via fatFsSetTimingDebug) to log end-to-end direct-write timing.
+extern "C" volatile int spiftl_timing_debug;
 #include "hardware/structs/sio.h"
 #define FSDBG(fmt, ...) do { if (fc_debug || psram_debug) { Serial.printf("[%lu c%d] FS> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); Serial.flush(); } } while(0)
 
@@ -3761,6 +3763,8 @@ bool safeFileWriteAllRaw( const char* path, const char* content, size_t content_
 
     if ( content_len == 0 )
         content_len = strlen( content );
+
+    uint32_t _wt0 = spiftl_timing_debug ? micros() : 0;
 
     FSDBG("WriteAllRaw ENTER path=%s len=%u", path, (unsigned)content_len);
 
@@ -3806,6 +3810,12 @@ bool safeFileWriteAllRaw( const char* path, const char* content, size_t content_
     AsyncPassthrough::resumeUARTRxIRQ();
 
     FSDBG("WriteAllRaw EXIT written=%u/%u", (unsigned)written, (unsigned)content_len);
+    if ( spiftl_timing_debug ) {
+        // End-to-end direct write incl. f_close -> CTRL_SYNC -> FTL persist.
+        Serial.printf("[FSWRITE] %s %u bytes in %lu us\n",
+                      path, (unsigned)content_len, (unsigned long)(micros() - _wt0));
+        Serial.flush();
+    }
     return ( written == content_len );
 }
 

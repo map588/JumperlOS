@@ -52,6 +52,61 @@ Reserved: Other GPIOs used by crosspoint switches, display, etc.
   Treat the shared-line case as the conservative default and gate any
   TRRRS-only optimizations on a runtime/config check.
 
+## Probe Switch + Current Sense Hardware (DPDT measure/select, INA219s)
+
+This is the weird-but-important analog topology behind probe switch detection and
+the calibration in `calibrateProbeSwitchThresholds()` / `checkProbeCurrent()` /
+`checkSwitchPosition()`.
+
+**Two INA219s** (defined in `Peripherals.cpp`):
+- `INA0` = `0x40` → breadboard rail / `ISENSE_PLUS`/`ISENSE_MINUS` current sense
+  (the user-facing "current between rows" / rail measurement path).
+- `INA1` = `0x41` → the **probe / DAC0 path**. This is what `checkProbeCurrent()`
+  and `checkSwitchPosition()` read. (Note: the user verbally calls this "INA0"
+  conceptually as "the one DAC0 hardwires through" — in *code* it is `INA1`.)
+  Each INA has **470R series resistors** (RN2x) between the 2Ω sense resistor and
+  the INA inputs. Those series resistors were added so the INA wouldn't clamp on
+  negative bus voltages; the side effect is the probe current reading is only
+  roughly accurate, which is the whole reason switch-position calibration exists.
+
+**How switch position is detected:** by watching whether **DAC0 is sourcing
+current into the single probe RGB LED** (the probe has one WS2812; "pink/white/
+blue" are just the colors used). A DPDT switch on the probe swaps two roles:
+- **SELECT** (switch toward tip): DAC0 powers the probe LED → INA1 reads a
+  non-trivial current (varies with which LED color/brightness is lit, but clearly
+  > ~0 mA). The probe tip is driven to ~3.3 V by a GPIO.
+- **MEASURE** (switch away from tip): roles flip via the DPDT. The GPIO now powers
+  the LED, and the probe **tip is driven by DAC0** (so the tip is ±9 V tolerant;
+  currently DAC0 is just fixed to a calibrated ~3.3 V to match the GPIO). DAC0
+  therefore sources ~0 mA (tip is read by a resistive divider and draws
+  negligible current) → INA1 reads ~0 mA.
+
+So the switch discriminator is simply: **SELECT current >> MEASURE current** on
+INA1. Hysteresis thresholds (`calibration.probe_switch_threshold_low/high`) sit
+between the two.
+
+**Absolute vs offset-corrected current — and why we standardized on corrected:**
+`probe_current_zero` is a calibration offset (measured with DAC0 disconnected)
+that `checkProbeCurrent()` subtracts to give the "0 mA at rest" reading.
+`checkProbeCurrentRaw()` is the same INA1 read WITHOUT that subtraction.
+
+Decision (current): **use the zero-corrected reading (`checkProbeCurrent()`)
+EVERYWHERE — switch detection (`checkSwitchPosition`), threshold calibration
+(`calibrateProbeSwitchThresholds`), and the user-facing display.** The reason is
+update-compatibility: thresholds are stored in `config.txt` in corrected units,
+so keeping runtime/calibration in the same corrected frame means a firmware
+update never invalidates a user's saved thresholds and they don't have to
+re-calibrate. `checkProbeCurrentRaw()` still exists as the internal building
+block (and for diagnostics) but is NOT used for detection/calibration.
+
+Caveat to watch: `probe_current_zero` is re-measured at boot
+(`checkProbeCurrentZero()` at `main.cpp` firstLoop==2). Calibration run from the
+menu after boot shares that same offset, so it matches. The one mismatch window
+is FIRST-START auto-calibration, which runs at firstLoop==1 (before the boot
+zero measurement) and then restarts — there the offset used for calibration can
+differ from the post-reboot runtime offset. If first-start calibration accuracy
+matters, measure/commit the zero before those readings.
+
 ## Config Manager - Adding New Config Options
 
 When adding a new config option to JumperlOS, you must update ALL of these sections in `src/configManager.cpp`:

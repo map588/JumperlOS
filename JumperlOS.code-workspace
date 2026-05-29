@@ -24,6 +24,9 @@
         },
         {
             "path": "../Large Breadboard Model"
+        },
+        {
+            "path": "../SPIFTL"
         }
     ]
 }

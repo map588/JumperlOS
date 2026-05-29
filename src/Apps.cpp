@@ -238,9 +238,20 @@ void calibrateProbeSwitchThresholds( void ) {
     int tempSlot = 8;
     netSlot = tempSlot;
     SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
-    //refreshConnections( -1, 0 );
-    routableBufferPower( 1, 1, 1 );
+    refreshConnections( -1, 0 );
+    // routableBufferPower( 1, 1, 1 );
     //delay( 50 );
+    checkProbeCurrentZero( );
+
+    routableBufferPower( 1, 1, 1 );
+
+    // NOTE: thresholds are calibrated against the zero-corrected current
+    // (checkProbeCurrent(), i.e. raw - probe_current_zero) - the SAME quantity
+    // the live detector (checkSwitchPosition) compares. Using the calibrated
+    // reading everywhere means a firmware update never invalidates a user's
+    // saved thresholds, so they don't have to re-calibrate. (The zero offset
+    // is measured at boot in checkProbeCurrentZero(); as long as calibration is
+    // run after boot, both sides share the same probe_current_zero.)
 
     // Arrays to store current readings for both positions
     const int NUM_READINGS = 20;
@@ -372,6 +383,9 @@ int row = 0;
     selectAvg /= NUM_READINGS;
     Serial.printf( "\nSELECT mode average: %.3f mA\n\n\r", selectAvg );
 
+    // Clamp the zero-corrected averages to >= 0. In the calibrated frame the
+    // MEASURE-mode current sits at ~0 and INA noise can push the average
+    // slightly negative; clamping keeps the midpoint/threshold math well-behaved.
     if (measureAvg < 0.0){
         measureAvg = 0.0;
     }
@@ -428,38 +442,6 @@ int row = 0;
 void testSwitchThresholds( void ) {
     float thresholdLow = jumperlessConfig.calibration.probe_switch_threshold_low;
     float thresholdHigh = jumperlessConfig.calibration.probe_switch_threshold_high;
-
-
-
-// while (true) {
-
-
-
-
-
-
-
-
-
-
-
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -793,15 +775,20 @@ void probeCalibApp( void ) {
         
 
         if ( done ) {
+            // int timeout = 1200;
+            // uint32_t startTime = millis();
+
+            oled.checkConnection(true);
             if (oled.isConnected()) {
                 oled.showMultiLineSmallText( "Probe calibration\n\rsaved!\n\rReturning to menu", true, true );
             }
-            delay( 1200 );
+            
 
             Serial.println( "\n\n\r" );
             Serial.println( "Saving config..." );
 
             saveConfig( );
+            delay( 1200 );
             if (oled.isConnected()) {
                 oled.showJogo32h();
             }

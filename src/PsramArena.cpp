@@ -183,6 +183,50 @@ BlockHeader* allocFromPool(size_t bytes) {
     return nullptr;
 }
 
+// Verify the PSRAM window is backed by real, coherent memory before we
+// trust any of it. Some boards report a PSRAM size (rp2040.getPSRAMSize())
+// even when the chip is absent, unpopulated, or dead - in that case writes
+// to the 0x11xxxxxx window are silently dropped and reads return flash/ROM
+// alias garbage. Anything we place there (eKilo's file buffer, the file
+// cache, the undo log) gets silently corrupted: files open as garbled text
+// and "buffer overflow" appears on save.
+//
+// We probe several addresses spread across the chip - including the first
+// and last byte - writing a distinct value to each. Distinct values mean an
+// aliasing window (the same physical byte mapped repeatedly) also fails the
+// check, not just a fully dead bus. Original bytes are saved and restored so
+// a genuine warm-boot's arena state survives the test.
+bool psramSelfTest(size_t chipBytes) {
+    if (chipBytes < 64) return false;
+
+    volatile uint8_t* mem = reinterpret_cast<volatile uint8_t*>(PSRAM_BASE);
+    constexpr int N = 5;
+    const size_t off[N] = {
+        0,
+        chipBytes / 4,
+        chipBytes / 2,
+        (chipBytes / 4) * 3,
+        chipBytes - 1,
+    };
+
+    uint8_t saved[N];
+    for (int i = 0; i < N; i++) saved[i] = mem[off[i]];
+
+    for (int i = 0; i < N; i++) mem[off[i]] = static_cast<uint8_t>(0xA5 ^ (i * 37 + 1));
+    __asm volatile("" ::: "memory");  // prevent the write/read pair being elided
+
+    bool ok = true;
+    for (int i = 0; i < N; i++) {
+        if (mem[off[i]] != static_cast<uint8_t>(0xA5 ^ (i * 37 + 1))) {
+            ok = false;
+            break;
+        }
+    }
+
+    for (int i = 0; i < N; i++) mem[off[i]] = saved[i];
+    return ok;
+}
+
 }  // namespace
 
 // =============================================================================
@@ -207,6 +251,15 @@ bool psram_arena_init(size_t detectedPsramBytes, int appSizeKb) {
 
     if (detectedPsramBytes == 0 || appSizeKb <= 0) {
         return false;
+    }
+
+    // Confirm the reported PSRAM is actually present and working. If the
+    // window isn't backed by real RAM, refuse the arena entirely so callers
+    // (psram_alloc) return null and fall back to the SRAM heap instead of
+    // handing out dead pointers.
+    if (!psramSelfTest(detectedPsramBytes)) {
+        Serial.println("[PSRAM] self-test failed - window not backed by working RAM; disabling app arena");
+        return false;  // g_available stays false
     }
 
     // Clamp app region to a reasonable fraction of total PSRAM.

@@ -19,6 +19,7 @@
 #include "AsyncPassthrough.h"
 #include "Probing.h"
 #include "Python_Proper.h"
+#include "FileCache.h"  // fileCacheFlushNow / fileCacheSpiftlSync - force config durable
 
 #ifdef DONOTUSE_SERIALWRAPPER
     #include "SerialWrapper.h"
@@ -2081,8 +2082,22 @@ bool saveConfig(void) {
     // Use optimized incremental save - only writes if config has changed
     // Falls back to full save if file doesn't exist or incremental fails
     bool success = saveConfigIncremental("/config.txt");
-    
+
     if (success) {
+        // Force the save all the way to flash NOW. FatFS runs SPIFTL in
+        // lazy-persist mode, so the write above only programmed the data
+        // sector - the L2P metadata that makes it reachable after reboot is
+        // still in RAM. Without forcing it here, config changes (calibration,
+        // settings) silently revert on the next power cycle. A brief UI pause
+        // is acceptable for an explicit config save.
+        //   1) drain any dirty PSRAM-cache entry for the file (PSRAM units), then
+        //   2) force the SPIFTL metadata persist (force=true so it fires even
+        //      for direct/cache-bypassing writes, e.g. on no-PSRAM units).
+        // forceSync() self-gates on SPIFTL's metadataAge, so this is a cheap
+        // no-op when nothing was actually written.
+        fileCacheFlushNow("/config.txt");
+        fileCacheSpiftlSync("saveConfig", true);
+
         readSettingsFromConfig();
     }
     return success;

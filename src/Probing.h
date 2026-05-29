@@ -329,7 +329,8 @@ int switchPosition = -1; // -1 = unknown, 0 = measure, 1 = select
     int readFloatingOrState(int pin = 0, int row = 0);
     
     int checkSwitchPosition(void);
-    float checkProbeCurrent(void);
+    float checkProbeCurrentRaw(void);   // ABSOLUTE INA1 current, NO probe_current_zero subtraction (internal building block / diagnostics)
+    float checkProbeCurrent(void);      // zero-corrected current (raw - probe_current_zero); used for switch detection, calibration, and display
     float checkProbeCurrentZero(void);
     
     void routableBufferPower(int offOn, int flash = 0, int force = 0);
@@ -483,6 +484,10 @@ inline int readProbeRaw(int readNothingTouched = 0, bool allowDuplicates = false
 
 inline float checkProbeCurrent(void) {
     return Probing::getInstance().checkProbeCurrent();
+}
+
+inline float checkProbeCurrentRaw(void) {
+    return Probing::getInstance().checkProbeCurrentRaw();
 }
 
 inline int delayWithButton(int delayTime = 1000) {

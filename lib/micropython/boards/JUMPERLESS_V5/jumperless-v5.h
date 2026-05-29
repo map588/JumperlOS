@@ -79,9 +79,12 @@
 #define PICO_FLASH_SPI_CLKDIV 2
 #endif
 
-// pico_cmake_set_default PICO_FLASH_SIZE_BYTES = (128 * 1024 * 1024)
+// pico_cmake_set_default PICO_FLASH_SIZE_BYTES = (16 * 1024 * 1024)
+// Jumperless V5 ships with a 16 MB QSPI flash (W25Q128). Upstream
+// Pico SDK templates often use 128 MB which is wrong for this board
+// and would make MicroPython compute a 127 MB storage region.
 #ifndef PICO_FLASH_SIZE_BYTES
-#define PICO_FLASH_SIZE_BYTES (128 * 1024 * 1024)
+#define PICO_FLASH_SIZE_BYTES (16 * 1024 * 1024)
 #endif
 
 // pico_cmake_set_default PICO_RP2350_A2_SUPPORTED = 1

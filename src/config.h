@@ -116,7 +116,7 @@ struct config {
         float probe_switch_threshold_high = 1.2;  // mA - switch to SELECT
         float probe_switch_threshold_low = 0.90;   // mA - switch to MEASURE
         float probe_switch_threshold = 0.40;       // DEPRECATED - kept for backward compatibility
-        float measure_mode_output_voltage = 3.27;
+        float measure_mode_output_voltage = 3.33;
         float probe_current_zero = 2.0;
         int minimum_probe_reading = 85;
     } calibration;

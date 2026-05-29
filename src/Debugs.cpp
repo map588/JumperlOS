@@ -30,6 +30,9 @@
 
 extern bool printPowerSupplySense;
 
+// SPIFTL per-persist timing logs (defined in lib/FatFS/src/FatFS.cpp).
+extern "C" volatile int spiftl_timing_debug;
+
 
 
 
@@ -66,6 +69,7 @@ debugFlags:
   bool temp_fcDebug = (fc_debug != 0);
   bool temp_fcAtomicDebug = (fc_atomic_debug != 0);
   bool temp_undoDebug = (undo_debug != 0);
+  bool temp_spiftlTiming = (spiftl_timing_debug != 0);
   // Probe button reader: persistent hardware path selector + ephemeral
   // verbose trace. Both toggled from this menu.
   bool temp_usePIOProbeButton = jumperlessConfig.hardware.use_pio_probe_button;
@@ -89,6 +93,7 @@ debugFlags:
   bool orig_fcDebug = temp_fcDebug;
   bool orig_fcAtomicDebug = temp_fcAtomicDebug;
   bool orig_undoDebug = temp_undoDebug;
+  bool orig_spiftlTiming = temp_spiftlTiming;
   bool orig_usePIOProbeButton = temp_usePIOProbeButton;
   bool orig_probeButtonTrace  = temp_probeButtonTrace;
   
@@ -146,6 +151,8 @@ debugFlags:
 
     Serial.print("\n\rd. undo system trace          =    "); Serial.print(temp_undoDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
 
+    Serial.print("\n\rq. SPIFTL persist timing      =    "); Serial.print(temp_spiftlTiming ? 1 : 0); lines_printed++; cycleTerminalColor();
+
     // Probe button hardware path. Show counters too so the user can
     // verify whichever path they picked is the one actually firing.
     Serial.print("\n\rt. probe button PIO path      =    ");
@@ -188,6 +195,7 @@ debugFlags:
         fc_debug = temp_fcDebug ? 1 : 0;
         fc_atomic_debug = temp_fcAtomicDebug ? 1 : 0;
         undo_debug = temp_undoDebug ? 1 : 0;
+        spiftl_timing_debug = temp_spiftlTiming ? 1 : 0;
         // Probe button trace tracks the bulk on/off too; the PIO path
         // selector deliberately doesn't (see note in the bulk-off branch).
         probe_button_trace = temp_probeButtonTrace ? 1 : 0;
@@ -234,6 +242,7 @@ debugFlags:
         if (temp_fcDebug != orig_fcDebug) fc_debug = temp_fcDebug ? 1 : 0;
         if (temp_fcAtomicDebug != orig_fcAtomicDebug) fc_atomic_debug = temp_fcAtomicDebug ? 1 : 0;
         if (temp_undoDebug != orig_undoDebug) undo_debug = temp_undoDebug ? 1 : 0;
+        if (temp_spiftlTiming != orig_spiftlTiming) spiftl_timing_debug = temp_spiftlTiming ? 1 : 0;
         // Probe button path (persisted) + trace (runtime-only).
         if (temp_usePIOProbeButton != orig_usePIOProbeButton) {
           jumperlessConfig.hardware.use_pio_probe_button = temp_usePIOProbeButton;
@@ -319,6 +328,7 @@ debugFlags:
       temp_fcDebug = false;
       temp_fcAtomicDebug = false;
       temp_undoDebug = false;
+      temp_spiftlTiming = false;
       temp_probeButtonTrace = false;
       // NB: temp_usePIOProbeButton is NOT touched by "all off" - that's
       // a hardware-config selector (PIO vs CPU button reader path),
@@ -360,6 +370,7 @@ debugFlags:
     else if (sel == 'k' || sel == 'K') { temp_fcDebug = !temp_fcDebug; last_bulk_cmd = -1; }
     else if (sel == 'i' || sel == 'I') { temp_fcAtomicDebug = !temp_fcAtomicDebug; last_bulk_cmd = -1; }
     else if (sel == 'd' || sel == 'D') { temp_undoDebug = !temp_undoDebug; last_bulk_cmd = -1; }
+    else if (sel == 'q' || sel == 'Q') { temp_spiftlTiming = !temp_spiftlTiming; last_bulk_cmd = -1; }
     else if (sel == 't' || sel == 'T') { temp_usePIOProbeButton = !temp_usePIOProbeButton; last_bulk_cmd = -1; }
     else if (sel == 'y' || sel == 'Y') { temp_probeButtonTrace = !temp_probeButtonTrace; last_bulk_cmd = -1; }
     else {
@@ -373,7 +384,7 @@ debugFlags:
         sel == 'w' || sel == 'W' || sel == 'b' || sel == 'B' || sel == 'g' || sel == 'G' ||
         sel == 'm' || sel == 'M' || sel == 'p' || sel == 'P' || sel == 's' || sel == 'S' ||
         sel == 'v' || sel == 'V' || sel == 'r' || sel == 'R' || sel == 'k' || sel == 'K' ||
-        sel == 'i' || sel == 'I' || sel == 'd' || sel == 'D' ||
+        sel == 'i' || sel == 'I' || sel == 'd' || sel == 'D' || sel == 'q' || sel == 'Q' ||
         sel == 't' || sel == 'T' || sel == 'y' || sel == 'Y') {
       Serial.printf("\033[%dA", lines);
       for (int i = 0; i < lines; i++) { Serial.print("\033[2K\r\n\r"); }

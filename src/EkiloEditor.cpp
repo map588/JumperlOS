@@ -1349,52 +1349,145 @@ int ekilo_open(const char* filename) {
         E.filename = nullptr;
         return -1;
     }
-    
-    // Read entire file into SharedBuffer
-    size_t bytes_read = file.read((uint8_t*)buf.rawBuffer(), file_size);
-    safeFileClose(file, false);
-    
-    buf.setLength(bytes_read);
-    Serial.printf("[ekilo_open] Read %d bytes into SharedBuffer\n", (int)bytes_read);
-    
-    // ========== PARSE SHAREDBUFFER INTO EDITORROWS ==========
-    // Rows point directly into SharedBuffer (zero-copy)
-    // They will be copied to heap on first edit (copy-on-write)
-    
+
+    // Try to use the SharedBuffer for zero-copy loading. On units without
+    // PSRAM the 24KB allocation can fail, in which case rawBuffer() is null -
+    // we MUST NOT read into it (that reads/writes a null pointer and shows
+    // raw flash/ROM garbage). Fall back to copying each line onto the heap.
     char* data = buf.rawBuffer();
-    size_t pos = 0;
-    size_t line_count = 0;
-    
-    while (pos < bytes_read) {
-        size_t line_start = pos;
-        
-        // Find end of line
-        while (pos < bytes_read && data[pos] != '\n' && data[pos] != '\r') {
-            pos++;
+
+    if (data != nullptr) {
+        // ---------- ZERO-COPY PATH: read whole file into SharedBuffer ----------
+        size_t bytes_read = file.read((uint8_t*)data, file_size);
+        safeFileClose(file, false);
+
+        buf.setLength(bytes_read);
+        Serial.printf("[ekilo_open] Read %d bytes into SharedBuffer\n", (int)bytes_read);
+
+        // Parse SharedBuffer into EditorRows that point directly into it
+        // (zero-copy). They are copied to heap on first edit (copy-on-write).
+        size_t pos = 0;
+        size_t line_count = 0;
+
+        while (pos < bytes_read) {
+            size_t line_start = pos;
+
+            // Find end of line
+            while (pos < bytes_read && data[pos] != '\n' && data[pos] != '\r') {
+                pos++;
+            }
+
+            size_t line_len = pos - line_start;
+
+            // Create row pointing into SharedBuffer
+            ekilo_insert_row_ref(E.numrows, &data[line_start], line_len);
+            line_count++;
+
+            // Skip newline characters
+            if (pos < bytes_read && data[pos] == '\r') pos++;
+            if (pos < bytes_read && data[pos] == '\n') pos++;
+
+            // Yield periodically
+            if (line_count % 50 == 0) {
+                yield();
+            }
         }
-        
-        size_t line_len = pos - line_start;
-        
-        // Create row pointing into SharedBuffer
-        ekilo_insert_row_ref(E.numrows, &data[line_start], line_len);
-        line_count++;
-        
-        // Skip newline characters
-        if (pos < bytes_read && data[pos] == '\r') pos++;
-        if (pos < bytes_read && data[pos] == '\n') pos++;
-        
-        // Yield periodically
-        if (line_count % 50 == 0) {
-            yield();
+
+        E.dirty = 0;
+        E.screen_dirty = true;
+
+        Serial.printf("[ekilo_open] SUCCESS: Parsed %d lines from %d bytes\n", (int)line_count, (int)bytes_read);
+        ekilo_set_status_message("Loaded %d lines (%d bytes)", line_count, bytes_read);
+        return 0;
+    }
+
+    // ---------- FALLBACK PATH: SharedBuffer unavailable ----------
+    // No 24KB transfer buffer (e.g. no PSRAM and SRAM heap couldn't satisfy
+    // the request). Read the file line-by-line into heap-allocated rows, the
+    // same way ekilo_insert_row() copies content. Slower and uses more small
+    // allocations, but it always produces correct content.
+    Serial.println("[ekilo_open] SharedBuffer unavailable - using per-row heap load");
+
+    size_t line_count = 0;
+    size_t bytes_read = 0;
+
+    // Accumulate one line at a time on the heap, reading byte-by-byte so we
+    // don't depend on a transfer buffer and handle both LF and CRLF endings.
+    String line;
+    line.reserve(96);
+
+    while (true) {
+        int c = file.read();
+        if (c < 0) {
+            // EOF - flush any pending partial line
+            if (line.length() > 0) {
+                ekilo_insert_row(E.numrows, line.c_str(), line.length());
+                bytes_read += line.length() + 1;
+                line_count++;
+            }
+            break;
+        }
+
+        if (c == '\n') {
+            int line_len = line.length();
+            if (line_len > 0 && line[line_len - 1] == '\r') {
+                line.remove(line_len - 1);  // strip trailing CR on CRLF
+            }
+            ekilo_insert_row(E.numrows, line.c_str(), line.length());
+            bytes_read += line.length() + 1;
+            line_count++;
+            line = "";
+
+            if (line_count % 25 == 0) {
+                yield();
+            }
+        } else {
+            line += (char)c;
         }
     }
-    
+    safeFileClose(file, false);
+
     E.dirty = 0;
     E.screen_dirty = true;
-    
-    Serial.printf("[ekilo_open] SUCCESS: Parsed %d lines from %d bytes\n", (int)line_count, (int)bytes_read);
-    ekilo_set_status_message("Loaded %d lines (%d bytes)", line_count, bytes_read);
+
+    Serial.printf("[ekilo_open] FALLBACK: Loaded %d lines (~%d bytes) onto heap\n", (int)line_count, (int)bytes_read);
+    ekilo_set_status_message("Loaded %d lines (low-mem mode)", line_count);
     return 0;
+}
+
+// Write editor rows straight to flash, one row at a time.
+// Used when the SharedBuffer is unavailable (e.g. no PSRAM and the 24KB
+// SRAM allocation failed) so saving still works without the transfer buffer.
+static int ekilo_save_direct_to_flash() {
+    Serial.println("[ekilo_save] SharedBuffer unavailable - writing rows directly to flash");
+
+    bool was_paused = pauseCore2ForFlash(100);
+    File file = safeFileOpen(E.filename, "w", 2000);
+    if (!file) {
+        unpauseCore2ForFlash(was_paused);
+        ekilo_set_status_message("ERROR: Could not open file for writing");
+        return 0;
+    }
+
+    size_t total = 0;
+    for (int j = 0; j < E.numrows; j++) {
+        if (E.row[j].chars && E.row[j].size > 0) {
+            file.write((const uint8_t*)E.row[j].chars, E.row[j].size);
+            total += E.row[j].size;
+        }
+        file.write((uint8_t)'\n');
+        total++;
+        if (j % 50 == 0) yield();
+    }
+    file.flush();
+    safeFileClose(file, true);
+    unpauseCore2ForFlash(was_paused);
+
+    ContextManager::getInstance().setTransferPath(E.filename);
+    E.dirty = 0;
+    E.screen_dirty = true;
+    ekilo_set_status_message("%d bytes written to flash (low-mem)", total);
+    return total;
 }
 
 // Save file - serialize rows to SharedBuffer, then write to flash
@@ -1406,6 +1499,14 @@ int ekilo_save() {
     }
     
     SharedBuffer& buf = SharedBuffer::getInstance();
+
+    // If the transfer buffer can't be allocated, bypass it entirely and
+    // write rows straight to flash. (Ctrl+P transfer to the REPL relies on
+    // the shared buffer and won't carry content in this mode, but the file
+    // is still saved correctly.)
+    if (buf.rawBuffer() == nullptr) {
+        return ekilo_save_direct_to_flash();
+    }
     
     // ========== OPTIMIZATION: CHECK IF WE CAN SKIP SERIALIZATION ==========
     // If NO rows have been edited (all still point into SharedBuffer), 

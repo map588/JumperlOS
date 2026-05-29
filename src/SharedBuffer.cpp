@@ -28,12 +28,74 @@ SharedBuffer::SharedBuffer()
     , isReadyFlag(false)
     , sourceContext(0)
 {
-    buffer = (char*)psram_alloc(SHARED_BUFFER_SIZE);
-    if (!buffer) {
+    filename[0] = '\0';
+    ensureBuffer();  // best-effort; retried lazily if it fails here
+}
+
+/**
+ * @brief Lazily (re)allocate the backing buffer.
+ *
+ * Tries PSRAM first, then the SRAM heap. On units without PSRAM the
+ * constructor's early allocation can fail when the heap is fragmented or
+ * already claimed (e.g. by the MicroPython GC heap). Retrying here lets a
+ * later call succeed once memory frees up, instead of leaving `buffer`
+ * permanently null - which previously caused reads/writes against a null
+ * pointer (garbage content, "buffer overflow" on save).
+ */
+// Write/read-back validation that a freshly allocated block is real,
+// coherent RAM. PSRAM detection can misfire on boards where the chip is
+// absent or dead, in which case psram_alloc() hands back a pointer into the
+// 0x11xxxxxx window where writes are dropped and reads return ROM/flash
+// garbage. eKilo loads files into this buffer, so a bad pointer shows up as
+// garbled text and a bogus "buffer overflow" on save. Verifying here lets us
+// reject the PSRAM block and fall back to SRAM regardless of detection.
+static bool sharedBufferRoundtripOk(char* buf, size_t size) {
+    if (!buf || size < 64) return false;
+
+    const size_t off[] = { 0, size / 4, size / 2, (size / 4) * 3, size - 1 };
+    constexpr int N = 5;
+    char saved[N];
+    for (int i = 0; i < N; i++) saved[i] = buf[off[i]];
+
+    // Distinct values per probe so an aliasing window also fails the check.
+    for (int i = 0; i < N; i++) buf[off[i]] = (char)(0xA5 ^ (i * 37 + 1));
+    __asm volatile("" ::: "memory");
+
+    bool ok = true;
+    for (int i = 0; i < N; i++) {
+        if (buf[off[i]] != (char)(0xA5 ^ (i * 37 + 1))) { ok = false; break; }
+    }
+
+    for (int i = 0; i < N; i++) buf[off[i]] = saved[i];
+    return ok;
+}
+
+bool SharedBuffer::ensureBuffer() {
+    if (buffer) return true;
+
+    // Prefer PSRAM to keep 24KB off the SRAM heap, but only if it's real,
+    // working memory. Otherwise give the block back and use the SRAM heap.
+    char* psbuf = (char*)psram_alloc(SHARED_BUFFER_SIZE);
+    if (psbuf && sharedBufferRoundtripOk(psbuf, SHARED_BUFFER_SIZE)) {
+        buffer = psbuf;
+    } else {
+        if (psbuf) {
+            psram_free(psbuf);
+            Serial.println("SharedBuffer: PSRAM block failed verification - using SRAM");
+        }
         buffer = (char*)malloc(SHARED_BUFFER_SIZE);
     }
-    if (buffer) buffer[0] = '\0';
-    filename[0] = '\0';
+
+    if (buffer) {
+        buffer[0] = '\0';
+        contentLen = 0;
+    }
+    return buffer != nullptr;
+}
+
+char* SharedBuffer::rawBuffer() {
+    ensureBuffer();
+    return buffer;
 }
 
 /**
@@ -57,6 +119,9 @@ SharedBuffer& SharedBuffer::getInstance() {
  * @brief Clear all content and metadata
  */
 void SharedBuffer::clear() {
+    // NOTE: clear() must NOT allocate. It is called on REPL cleanup paths
+    // where forcing a 24KB malloc would be wasteful (and dangerous on tight
+    // no-PSRAM heaps). Allocation happens lazily in the write paths instead.
     core_sync_acquire();
     
     contentLen = 0;
@@ -73,7 +138,7 @@ void SharedBuffer::clear() {
  * @brief Write data to the buffer (overwrites existing content)
  */
 bool SharedBuffer::write(const uint8_t* data, size_t len) {
-    if (data == nullptr || buffer == nullptr) {
+    if (data == nullptr || !ensureBuffer()) {
         return false;
     }
     
@@ -116,7 +181,7 @@ bool SharedBuffer::append(const uint8_t* data, size_t len) {
     if (data == nullptr || len == 0) {
         return true;  // Nothing to append is not an error
     }
-    if (buffer == nullptr) return false;
+    if (!ensureBuffer()) return false;
     
     // Check if it fits
     if (contentLen + len >= SHARED_BUFFER_SIZE) {
@@ -156,7 +221,7 @@ bool SharedBuffer::append(const char* data, size_t len) {
  * @brief Append a line with newline at end
  */
 bool SharedBuffer::appendLine(const char* line, size_t len) {
-    if (buffer == nullptr) return false;
+    if (!ensureBuffer()) return false;
     // Check if line + newline fits
     if (contentLen + len + 1 >= SHARED_BUFFER_SIZE) {
         Serial.print("SharedBuffer: Line would overflow (");
@@ -196,7 +261,7 @@ bool SharedBuffer::appendLine(const char* line) {
  * @brief Append a single character
  */
 bool SharedBuffer::appendChar(char c) {
-    if (buffer == nullptr) return false;
+    if (!ensureBuffer()) return false;
     if (contentLen + 1 >= SHARED_BUFFER_SIZE) {
         return false;
     }

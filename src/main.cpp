@@ -10,6 +10,8 @@ KevinC@ppucc.io
 
 */
 
+#include "FatFS.h"
+#include "FatFS_LazyPersist.h"
 #include "Jerial.h"
 
 #include "pico.h"
@@ -137,15 +139,40 @@ void setup( ) {
 
     digitalWrite( RESETPIN, HIGH );
 
+
+    // Keep wear leveling on (default useFTL=true). The earlier
+    // setUseFTL(false) experiment was only here to measure the
+    // FatFS-without-FTL baseline (~127 ms per save) - production
+    // mode uses the FTL plus lazy-persist mode below to get
+    // <50 ms per save while preserving wear leveling.
+
     // CRITICAL: Hold Arduino in reset during JumperlOS boot
     // This prevents the Arduino from sending commands before the system is ready
     // The reset will be released in AsyncPassthrough::signalStartupComplete()
 
-    // FatFS.begin();
+    // Note: there is NO per-boot FS-erase path here. To wipe the FatFS
+    // partition you flash [env:jumperless_v5_erase] instead, which uses
+    // scripts/erase_fs_partition.py to picotool-erase the FS region at
+    // upload time (one-shot, single flash). On the next boot, FatFS sees
+    // a blank partition and the existing _autoFormat=true path below
+    // creates a fresh empty volume.
+
     if ( !FatFS.begin( ) ) {
         Serial.println( "Failed to initialize FatFS" );
     } else {
         Serial.println( "FatFS initialized successfully" );
+        // SPIFTL now runs in delta-journal mode (enabled at construction via
+        // FATFS_SPIFTL_JOURNAL). persist() on every disk_ioctl(CTRL_SYNC) /
+        // f_close appends ONE already-erased flash page with just the changed
+        // L2P/peCount entries (~sub-millisecond) instead of the old ~750 ms
+        // full-snapshot rewrite. So every save is now both fast AND immediately
+        // power-loss durable - we no longer need lazy deferral. Keep lazy OFF.
+        // FileCache's fatFsForceSync() calls become cheap no-ops (the CTRL_SYNC
+        // append already persisted the metadata). See FatFS_LazyPersist.h.
+        fatFsSetJournal( true );
+        fatFsSetLazyPersist( false );
+        Serial.printf( "SPIFTL delta-journal: %s\n",
+                       fatFsIsJournal() ? "ON (fast durable saves)" : "OFF (full-snapshot persist)" );
     }
 
     // Initialize multicore synchronization primitives BEFORE Core 2 starts

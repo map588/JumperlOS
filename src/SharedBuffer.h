@@ -138,9 +138,26 @@ public:
      * setLength() to update the content length, and the null terminator
      * is YOUR responsibility.
      * 
-     * @return Pointer to raw buffer (writable)
+     * Lazily (re)allocates the backing buffer if it isn't allocated yet.
+     * May still return nullptr if allocation fails (e.g. no PSRAM and the
+     * SRAM heap can't satisfy the request); callers MUST null-check.
+     * 
+     * @return Pointer to raw buffer (writable), or nullptr if unavailable
      */
-    char* rawBuffer() { return buffer; }
+    char* rawBuffer();
+
+    /**
+     * @brief Ensure the backing buffer is allocated.
+     *
+     * The body is allocated lazily (PSRAM first, then SRAM heap). The
+     * original allocation happens in the constructor, but on units without
+     * PSRAM that early malloc can fail if the heap is fragmented/claimed.
+     * This retries on demand so a later call (when more memory is free) can
+     * succeed instead of leaving the buffer null forever.
+     *
+     * @return true if the buffer is available after the call
+     */
+    bool ensureBuffer();
     
     /**
      * @brief Set the content length after direct buffer writes
