@@ -41,6 +41,18 @@ def _lock(*_args, **_kwargs):
     env["FS_END"] = JL_FS_END
     # Sketch length must follow so the linker script's flash region matches.
     env["PICO_FLASH_LENGTH"] = JL_FS_START - JL_FLASH_BASE
+    # EEPROM emulation lives in the 4 KB immediately above the FatFS partition,
+    # i.e. exactly at FS_END. arduino-pico >= 5.x generates memmap_default.ld via
+    # simplesub.py, substituting __EEPROM_START__ from PICO_EEPROM_START. The
+    # platform normally derives that in fetch_fs_size(), but that function bails
+    # out early once FS_START is set (which we set above), so we must provide it
+    # here too -- otherwise the substitution is empty and the linker-script step
+    # fails with "argument -s/--sub: expected 2 arguments".
+    env["PICO_EEPROM_START"] = JL_FS_END
+    # Filesystem geometry. Only used when building a FatFS/LittleFS image, but
+    # set here for parity since fetch_fs_size() skips these as well.
+    env["FS_PAGE"] = 256
+    env["FS_BLOCK"] = 4096
 
 
 # Lock immediately so any later script (e.g. the platform's own
