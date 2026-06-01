@@ -4,7 +4,7 @@
 set -e
 
 # Configuration
-MICROPYTHON_VERSION="v1.25.0"
+MICROPYTHON_VERSION="v1.28.0"
 MICROPYTHON_REPO_PATH=$(realpath "$(dirname "$0")/../micropython_repo")
 MICROPYTHON_LOCAL_PATH=$(realpath "$(dirname "$0")/../lib/micropython")
 PROJECT_ROOT=$(realpath "$(dirname "$0")/../")
@@ -79,27 +79,29 @@ fi
 
 echo -e "${YELLOW}Building MicroPython embed port with Jumperless module and built-in modules...${NC}"
 
+MICROPYTHON_URL="https://github.com/micropython/micropython.git"
+
 # Check if MicroPython repo exists
 if [ ! -d "$MICROPYTHON_REPO_PATH" ]; then
-    echo -e "${YELLOW}Cloning MicroPython repository (read-only)...${NC}"
-    git clone "https://github.com/micropython/micropython.git" "${MICROPYTHON_REPO_PATH}"
-    
-    # Configure the repository to prevent accidental pushes to GitHub
-    pushd "${MICROPYTHON_REPO_PATH}"
-    echo -e "${YELLOW}Configuring repository to prevent GitHub commits...${NC}"
-    # Remove the origin remote to prevent accidental pushes
-    git remote remove origin 2>/dev/null || true
-    # Set a dummy remote URL to prevent accidental remote operations
-    git remote add origin "file:///dev/null"
-    popd
+    echo -e "${YELLOW}Cloning MicroPython repository...${NC}"
+    git clone "$MICROPYTHON_URL" "${MICROPYTHON_REPO_PATH}"
 fi
 
 pushd "${MICROPYTHON_REPO_PATH}"
-# Ensure no remote operations can happen
-if git remote get-url origin 2>/dev/null | grep -q "github.com"; then
-    echo -e "${YELLOW}WARNING: Removing GitHub remote to prevent accidental commits...${NC}"
-    git remote remove origin
-    git remote add origin "file:///dev/null"
+
+# Keep origin pointed at GitHub for FETCHES (so bumping MICROPYTHON_VERSION can
+# pull new release tags), but disable PUSHES so we can never write upstream.
+# (The old approach of pointing origin at file:///dev/null blocked fetches too,
+# which made version bumps impossible.)
+git remote set-url origin "$MICROPYTHON_URL" 2>/dev/null \
+    || git remote add origin "$MICROPYTHON_URL"
+git remote set-url --push origin "no_push://disabled.invalid" 2>/dev/null || true
+
+# Fetch the requested tag if it isn't present locally (e.g. after a version bump).
+if ! git rev-parse -q --verify "refs/tags/${MICROPYTHON_VERSION}" >/dev/null; then
+    echo -e "${YELLOW}Fetching ${MICROPYTHON_VERSION} from upstream...${NC}"
+    git fetch --tags --depth 1 origin \
+        "refs/tags/${MICROPYTHON_VERSION}:refs/tags/${MICROPYTHON_VERSION}"
 fi
 
 git checkout "${MICROPYTHON_VERSION}"
@@ -109,7 +111,7 @@ git submodule update --init --recursive lib/uzlib lib/libm lib/libm_dbl
 popd
 
 # Newer Clang (~19+) treats -Wunterminated-string-initialization as an error,
-# but MicroPython 1.25.0 has several intentional truncated-string initializers
+# but MicroPython has several intentional truncated-string initializers
 # (e.g. {10, "r10"} into a char[3]) where only the first N bytes are read by
 # design. Disable that specific warning while keeping -Werror everywhere else.
 MPY_RELAX_CFLAGS='-Wno-error=unterminated-string-initialization -Wno-unterminated-string-initialization'

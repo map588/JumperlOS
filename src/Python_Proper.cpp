@@ -229,7 +229,9 @@ extern "C" void mp_hal_delay_ms(mp_uint_t ms) {
       // is unreliable. mp_handle_pending(true) checks mp_pending_exception directly
       // and nlr_raise()s it, which is the standard MicroPython pattern used by
       // mp_hal_stdin_rx_chr and MICROPY_EVENT_POLL_HOOK in other ports.
-      mp_handle_pending(true);
+      // MicroPython >= 1.28: the bool arg became mp_handle_pending_behaviour_t;
+      // AND_EXCEPTIONS == the old `true` (run callbacks and raise the exception).
+      mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS);
 
       // Fast-path check for flags that mp_handle_pending doesn't cover
       if (mp_soft_reset_requested) {
@@ -1098,7 +1100,8 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
       // Caught an exception that escaped all inner handlers.
       // This prevents nlr_jump_fail -> device crash / USB disconnect.
       mp_hal_set_interrupt_char(-1);
-      mp_handle_pending(false);
+      // MicroPython >= 1.28: CLEAR_EXCEPTIONS == the old `false`.
+      mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_CLEAR_EXCEPTIONS);
       mp_interrupt_requested = false;
       MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
       mp_stdin_locked_stream_ptr = nullptr;  // Clear stdin lock on exception

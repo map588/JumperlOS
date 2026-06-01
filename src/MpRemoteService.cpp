@@ -189,7 +189,10 @@ ServiceStatus MpRemoteService::service( ) {
             // Caught exception from event REPL processing.
             // This prevents nlr_jump_fail -> device crash / USB disconnect.
             mp_hal_set_interrupt_char(-1);
-            mp_handle_pending(false);
+            // MicroPython >= 1.28 takes mp_handle_pending_behaviour_t; the
+            // CLEAR_EXCEPTIONS variant == the old bool `false` (run pending
+            // callbacks, clear/discard any pending exception).
+            mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_CLEAR_EXCEPTIONS);
             mp_interrupt_requested = false;
             MP_STATE_MAIN_THREAD(mp_pending_exception) = MP_OBJ_NULL;
             Serial.printf("[MpRemote] Caught stray exception val=%p\r\n", nlr.ret_val);

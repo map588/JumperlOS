@@ -33,13 +33,14 @@
 #include "py/objlist.h"
 #include "py/runtime.h"
 #include "py/cstack.h"
+#include "py/objtuple.h"
 
 #if MICROPY_PY_BUILTINS_STR_OP_MODULO
 static mp_obj_t str_modulo_format(mp_obj_t pattern, size_t n_args, const mp_obj_t *args, mp_obj_t dict);
 #endif
 
 static mp_obj_t mp_obj_new_bytes_iterator(mp_obj_t str, mp_obj_iter_buf_t *iter_buf);
-static NORETURN void bad_implicit_conversion(mp_obj_t self_in);
+static MP_NORETURN void bad_implicit_conversion(mp_obj_t self_in);
 
 static mp_obj_t mp_obj_new_str_type_from_vstr(const mp_obj_type_t *type, vstr_t *vstr);
 
@@ -65,6 +66,14 @@ static void str_check_arg_type(const mp_obj_type_t *self_type, const mp_obj_t ar
 
 static void check_is_str_or_bytes(mp_obj_t self_in) {
     mp_check_self(mp_obj_is_str_or_bytes(self_in));
+}
+
+static mp_obj_t make_empty_str_of_type(const mp_obj_type_t *type) {
+    if (type == &mp_type_str) {
+        return MP_OBJ_NEW_QSTR(MP_QSTR_); // empty str
+    } else {
+        return mp_const_empty_bytes;
+    }
 }
 
 static const byte *get_substring_data(const mp_obj_t obj, size_t n_args, const mp_obj_t *args, size_t *len) {
@@ -281,7 +290,10 @@ static mp_obj_t bytes_make_new(const mp_obj_type_t *type_in, size_t n_args, size
         }
         vstr_t vstr;
         vstr_init_len(&vstr, len);
+        // If this config is set then the GC clears all memory, so we don't need to.
+        #if !MICROPY_GC_CONSERVATIVE_CLEAR
         memset(vstr.buf, 0, len);
+        #endif
         return mp_obj_new_bytes_from_vstr(&vstr);
     }
 
@@ -357,8 +369,7 @@ mp_obj_t mp_obj_str_binary_op(mp_binary_op_t op, mp_obj_t lhs_in, mp_obj_t rhs_i
         mp_obj_t *args = &rhs_in;
         size_t n_args = 1;
         mp_obj_t dict = MP_OBJ_NULL;
-        if (mp_obj_is_type(rhs_in, &mp_type_tuple)) {
-            // TODO: Support tuple subclasses?
+        if (mp_obj_is_tuple_compatible(rhs_in)) {
             mp_obj_tuple_get(rhs_in, &n_args, &args);
         } else if (mp_obj_is_type(rhs_in, &mp_type_dict)) {
             dict = rhs_in;
@@ -380,11 +391,7 @@ mp_obj_t mp_obj_str_binary_op(mp_binary_op_t op, mp_obj_t lhs_in, mp_obj_t rhs_i
             return MP_OBJ_NULL; // op not supported
         }
         if (n <= 0) {
-            if (lhs_type == &mp_type_str) {
-                return MP_OBJ_NEW_QSTR(MP_QSTR_); // empty str
-            } else {
-                return mp_const_empty_bytes;
-            }
+            return make_empty_str_of_type(lhs_type);
         }
         vstr_t vstr;
         vstr_init_len(&vstr, lhs_len * n);
@@ -903,11 +910,7 @@ static mp_obj_t str_uni_strip(int type, size_t n_args, const mp_obj_t *args) {
 
     if (!first_good_char_pos_set) {
         // string is all whitespace, return ''
-        if (self_type == &mp_type_str) {
-            return MP_OBJ_NEW_QSTR(MP_QSTR_);
-        } else {
-            return mp_const_empty_bytes;
-        }
+        return make_empty_str_of_type(self_type);
     }
 
     assert(last_good_char_pos >= first_good_char_pos);
@@ -1001,7 +1004,7 @@ static mp_obj_t arg_as_int(mp_obj_t arg) {
 #endif
 
 #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
-static NORETURN void terse_str_format_value_error(void) {
+static MP_NORETURN void terse_str_format_value_error(void) {
     mp_raise_ValueError(MP_ERROR_TEXT("bad format string"));
 }
 #else
@@ -1184,7 +1187,7 @@ static vstr_t mp_obj_str_format_helper(const char *str, const char *top, int *ar
         int width = -1;
         int precision = -1;
         char type = '\0';
-        int flags = 0;
+        unsigned int flags = 0;
 
         if (format_spec) {
             // The format specifier (from http://docs.python.org/2/library/string.html#formatspec)
@@ -1229,8 +1232,9 @@ static vstr_t mp_obj_str_format_helper(const char *str, const char *top, int *ar
                 }
             }
             s = str_to_int(s, stop, &width);
-            if (*s == ',') {
-                flags |= PF_FLAG_SHOW_COMMA;
+            if (*s == ',' || *s == '_') {
+                MP_STATIC_ASSERT((unsigned)'_' << PF_FLAG_SEP_POS >> PF_FLAG_SEP_POS == '_');
+                flags |= (unsigned)*s << PF_FLAG_SEP_POS;
                 s++;
             }
             if (*s == '.') {
@@ -1303,7 +1307,7 @@ static vstr_t mp_obj_str_format_helper(const char *str, const char *top, int *ar
                 }
 
                 case '\0':  // No explicit format type implies 'd'
-                case 'n':   // I don't think we support locales in uPy so use 'd'
+                case 'n':   // I don't think we support locales in MicroPython so use 'd'
                 case 'd':
                     mp_print_mp_int(&print, arg, 10, 'a', flags, fill, width, 0);
                     continue;
@@ -1832,15 +1836,9 @@ static mp_obj_t str_partitioner(mp_obj_t self_in, mp_obj_t arg, int direction) {
     }
 
     mp_obj_t result[3];
-    if (self_type == &mp_type_str) {
-        result[0] = MP_OBJ_NEW_QSTR(MP_QSTR_);
-        result[1] = MP_OBJ_NEW_QSTR(MP_QSTR_);
-        result[2] = MP_OBJ_NEW_QSTR(MP_QSTR_);
-    } else {
-        result[0] = mp_const_empty_bytes;
-        result[1] = mp_const_empty_bytes;
-        result[2] = mp_const_empty_bytes;
-    }
+    result[0] = make_empty_str_of_type(self_type);
+    result[1] = make_empty_str_of_type(self_type);
+    result[2] = make_empty_str_of_type(self_type);
 
     if (direction > 0) {
         result[0] = self_in;
@@ -1997,7 +1995,7 @@ mp_obj_t mp_obj_bytes_hex(size_t n_args, const mp_obj_t *args, const mp_obj_type
     // Code below assumes non-zero buffer length when computing size with
     // separator, so handle the zero-length case here.
     if (bufinfo.len == 0) {
-        return mp_const_empty_bytes;
+        return make_empty_str_of_type(type);
     }
 
     vstr_t vstr;
@@ -2357,7 +2355,7 @@ bool mp_obj_str_equal(mp_obj_t s1, mp_obj_t s2) {
     }
 }
 
-static NORETURN void bad_implicit_conversion(mp_obj_t self_in) {
+static MP_NORETURN void bad_implicit_conversion(mp_obj_t self_in) {
     #if MICROPY_ERROR_REPORTING <= MICROPY_ERROR_REPORTING_TERSE
     mp_raise_TypeError(MP_ERROR_TEXT("can't convert to str implicitly"));
     #else

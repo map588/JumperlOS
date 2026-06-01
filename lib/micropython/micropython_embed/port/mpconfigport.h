@@ -243,6 +243,15 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_EMIT_INLINE_THUMB       (1)  // @micropython.asm_thumb
 // MICROPY_EMIT_THUMB_ARMV7M (1) and MICROPY_EMIT_INLINE_THUMB_FLOAT (1) inherit
 // their mpconfig.h defaults, which suit the M33 (ARMv7-M Thumb-2 + FPU).
+//
+// We do runtime JIT codegen only (@micropython.native compiles in RAM); we do
+// NOT load precompiled native .mpy files from the filesystem. Since v1.28,
+// MICROPY_PERSISTENT_CODE_LOAD_NATIVE defaults to MICROPY_EMIT_MACHINE_CODE,
+// which would turn on host-architecture detection in py/persistentcode.h. That
+// host arch table has no entry for Apple Silicon (__aarch64__), so the host-side
+// QSTR/preprocess pass fails to build with "Unsupported native architecture".
+// Disabling it keeps native codegen working while fixing the host build.
+#define MICROPY_PERSISTENT_CODE_LOAD_NATIVE (0)
 #ifdef __cplusplus
 extern "C" {
 #endif
