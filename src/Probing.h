@@ -116,6 +116,9 @@ public:
         connectHoldTime = 0;
         removeHoldTime = 0;
         pressStartTime = 0;
+        // Treat an explicit clear as a confirmed release so the next genuine
+        // press registers cleanly (the block, intentionally, still stands).
+        releaseConfirmed = true;
         // isBlocked and blockStartTime are NOT cleared - block must stay active!
     }
 
@@ -133,6 +136,14 @@ public:
     unsigned long checkIntervalMsMeasure = 4;          // Rate limiting between hardware checks
     unsigned long blockDurationMs = 200;        // Block duration after press detected
     unsigned long minimumBlockMs = 30;          // Minimum block time before release can clear (debounce)
+    // Sustained-float release debounce. A release (newState==0) must persist
+    // for this long before we (a) clear the press-block and (b) mark the
+    // release "confirmed" so the NEXT press is allowed to register and feed
+    // the double-tap history. This rejects the brief mid-press float glitches
+    // that otherwise turn one physical press into two presses (and a stray
+    // undo). 50ms is well under any human inter-tap gap, so genuine fast
+    // double-taps (kWindowMs = 350ms) still register.
+    unsigned long releaseDebounceMs = 50;
     unsigned long connectHoldThresholdMs = 800;        // Threshold to set connectHeld
     unsigned long removeHoldThresholdMs = 1000;        // Threshold to set removeHeld
 
@@ -162,6 +173,12 @@ private:
     // the release-bounce filter so it gates on sustained-released time
     // instead of time-since-press (which would block fast double-taps).
     unsigned long releaseStartTime = 0;
+    // True once a release has been observed continuously for
+    // releaseDebounceMs. Gates press registration + the double-tap history
+    // so a transient mid-press float (which momentarily reads as released)
+    // can't be (mis)counted as a fresh press. Starts true so the first
+    // press after boot registers.
+    bool releaseConfirmed = true;
 };
 
 enum probePressType {

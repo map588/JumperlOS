@@ -236,6 +236,28 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_HW_BOARD_NAME "jumperless-v5"
 #define MICROPY_HW_MCU_NAME   "rp2350b"
 
+// Surface the Jumperless firmware version in the REPL banner's machine field
+// (the segment after "; ") and in sys.implementation._machine, so external
+// tooling like JumperIDE can parse "jumperless-v5 vX.Y.Z.W with rp2350b" from
+// the greeting. Single source of truth is the project VERSION file, emitted as
+// FIRMWARE_VERSION by scripts/version_from_file.py into
+// include/FirmwareVersion.generated.h. That header is only on the include path
+// during the PlatformIO firmware build (global -Iinclude/), so guard the include
+// with __has_include: the host-side QSTR/embed build (scripts/build_micropython.sh)
+// can't see it and falls back to "dev". MICROPY_BANNER_MACHINE is a runtime ROM
+// string, not a QSTR, so the fallback never changes the generated headers — the
+// real firmware always gets the version baked in.
+#if defined(__has_include)
+#  if __has_include("FirmwareVersion.generated.h")
+#    include "FirmwareVersion.generated.h"
+#  endif
+#endif
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "dev"
+#endif
+#define MICROPY_BANNER_MACHINE \
+    MICROPY_HW_BOARD_NAME " v" FIRMWARE_VERSION " with " MICROPY_HW_MCU_NAME
+
 // Built-in modules - minimal set (most modules disabled to save memory)
 // Only the jumperless module will be available via MP_REGISTER_MODULE
 

@@ -1,4 +1,5 @@
 #include "oled.h"
+#include "OledGui.h"   // persistent idle screen takes the logo's place
 #include "Adafruit_GFX.h"
 #include "Adafruit_SSD1306.h"
 #include "Apps.h"
@@ -760,68 +761,74 @@ int oled::cycleFont( void ) {
     return currentFontFamily;
 }
 
-FontFamily oled::getFontFamily( String fontName ) {
-    auto normalizeFontName = []( String name ) -> String {
-        name.trim( );
-        String normalized = "";
-        normalized.reserve( name.length( ) );
-        for ( size_t i = 0; i < name.length( ); i++ ) {
-            char c = name[ i ];
-
-            // Treat these as separators so "comic_sans", "comic-sans", and "Comic Sans" all match.
-            if ( c == ' ' || c == '_' || c == '-' ) {
+// Allocation-free font-name normalization: lowercases and strips spaces, tabs,
+// newlines, underscores and dashes so "Comic Sans" / "comic_sans" /
+// "comic-sans" all match. Writes a NUL-terminated result into `out`.
+//
+// The old path built an Arduino String per font-table entry (and one for the
+// input) on every call - ~60 heap alloc/frees per lookup. getFontFamily() is
+// called from the OLED render path, so at the live-screen refresh rate that was
+// thousands of allocations per second on core0, thrashing the heap (and racing
+// core1's allocations). This version touches only stack buffers.
+static void normalizeFontNameInto( const char* in, char* out, size_t cap ) {
+    size_t o = 0;
+    if ( cap == 0 ) return;
+    if ( in ) {
+        for ( const char* p = in; *p && o + 1 < cap; ++p ) {
+            char c = *p;
+            if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                 c == '_' || c == '-' ) {
                 continue;
             }
-
             if ( c >= 'A' && c <= 'Z' ) {
                 c = (char)( c + ( 'a' - 'A' ) );
             }
-            normalized += c;
+            out[ o++ ] = c;
         }
-        return normalized;
-    };
+    }
+    out[ o ] = '\0';
+}
 
-    String normalizedInput = normalizeFontName( fontName );
+// Longest real font name ("Iosevka Regular" -> "iosevkaregular", 14 chars).
+#define OLED_FONT_NORM_MAX 32
+
+FontFamily oled::getFontFamily( const char* fontName ) {
+    char normInput[ OLED_FONT_NORM_MAX ];
+    normalizeFontNameInto( fontName, normInput, sizeof( normInput ) );
+
+    char normCand[ OLED_FONT_NORM_MAX ];
     for ( int i = 0; i < numFonts; i++ ) {
-        if ( normalizedInput == normalizeFontName( String( fontList[ i ].longName ) ) ) {
+        normalizeFontNameInto( fontList[ i ].longName, normCand, sizeof( normCand ) );
+        if ( strcmp( normInput, normCand ) == 0 ) {
             return fontList[ i ].family;
         }
-        if ( normalizedInput == normalizeFontName( String( fontList[ i ].shortName ) ) ) {
+        normalizeFontNameInto( fontList[ i ].shortName, normCand, sizeof( normCand ) );
+        if ( strcmp( normInput, normCand ) == 0 ) {
             return fontList[ i ].family;
         }
     }
     return FONT_EUROSTILE;
 }
+
+FontFamily oled::getFontFamily( String fontName ) {
+    return getFontFamily( fontName.c_str( ) );
+}
+
 int oled::setFont( String fontName, int justGetIndex ) {
-    auto normalizeFontName = []( String name ) -> String {
-        name.trim( );
-        String normalized = "";
-        normalized.reserve( name.length( ) );
-        for ( size_t i = 0; i < name.length( ); i++ ) {
-            char c = name[ i ];
+    char normInput[ OLED_FONT_NORM_MAX ];
+    normalizeFontNameInto( fontName.c_str( ), normInput, sizeof( normInput ) );
 
-            // Treat these as separators so "comic_sans", "comic-sans", and "Comic Sans" all match.
-            if ( c == ' ' || c == '_' || c == '-' ) {
-                continue;
-            }
-
-            if ( c >= 'A' && c <= 'Z' ) {
-                c = (char)( c + ( 'a' - 'A' ) );
-            }
-            normalized += c;
-        }
-        return normalized;
-    };
-
-    String normalizedInput = normalizeFontName( fontName );
+    char normCand[ OLED_FONT_NORM_MAX ];
     for ( int i = 0; i < numFonts; i++ ) {
-        if ( normalizedInput == normalizeFontName( String( fontList[ i ].longName ) ) ) {
+        normalizeFontNameInto( fontList[ i ].longName, normCand, sizeof( normCand ) );
+        if ( strcmp( normInput, normCand ) == 0 ) {
             if ( justGetIndex == 0 ) {
                 setFont( i );
             }
             return i;
         }
-        if ( normalizedInput == normalizeFontName( String( fontList[ i ].shortName ) ) ) {
+        normalizeFontNameInto( fontList[ i ].shortName, normCand, sizeof( normCand ) );
+        if ( strcmp( normInput, normCand ) == 0 ) {
             if ( justGetIndex == 0 ) {
                 setFont( i );
             }
@@ -1227,6 +1234,9 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
     if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false )
         return;
 
+    // Drawing our own content: let a persistent idle GUI page step aside.
+    OledGui::getInstance().notePanelTakenByOther();
+
     if ( clear ) {
         charPos = 0;
         getDisplay().clearDisplay( );
@@ -1448,17 +1458,16 @@ void oled::clearPrintShow( const char* text, int textSize, bool clear, bool show
 // font. Up to 2 lines are rendered; if the caller passes more, only
 // the first 2 are used. Defaults are tuned for the undo toast (larger
 // verb + smaller detail); pass equal top/bot indices for matched sizes.
-void oled::clearPrintShowSmall( const char* text, bool clear, bool show,
-                                int topFontIndex, int botFontIndex,
-                                int line_gap, bool leftJustifyTop ) {
+void oled::clearPrintShowRich( const OledTextRow* rows, int rowCount,
+                               int rowGap, bool clear, bool show ) {
     if ( jumperlessConfig.top_oled.enabled == 0 ) return;
-    if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false ) return;
+    if ( ( !oledConnected || !rows ) && stillWriteToFramebuffer == false ) return;
+    if ( rowCount < 1 ) return;
 
-    // Bounds-check font indices against the global table so a bad caller
-    // can't read past the array.
+    // Drawing our own content: let a persistent idle GUI page step aside.
+    OledGui::getInstance().notePanelTakenByOther();
+
     const int kFontCount = (int)( sizeof( fontList ) / sizeof( fontList[0] ) );
-    if ( topFontIndex < 0 || topFontIndex >= kFontCount ) topFontIndex = 21;
-    if ( botFontIndex < 0 || botFontIndex >= kFontCount ) botFontIndex = 18;
 
     if ( clear ) {
         clearFramebuffer();
@@ -1469,13 +1478,164 @@ void oled::clearPrintShowSmall( const char* text, bool clear, bool show,
     FontFamily savedFamily = currentFontFamily;
     uint8_t savedTextSize = currentTextSize;
 
-    const GFXfont* topFont = fontList[ topFontIndex ].font;
-    const GFXfont* botFont = fontList[ botFontIndex ].font;
     getDisplay().setTextWrap( false );
     getDisplay().setTextSize( 1 );
     currentTextSize = 1;
 
-    // Split into up to 2 lines on '\n'.
+    // Per-segment measured geometry, plus per-row aggregate width/height.
+    // Each row's height is the tallest segment so the shared baseline sits
+    // at rowTop + rowHeight; smaller segments on the same row hang their
+    // baseline from there (baseline alignment) rather than top alignment.
+    // `flowW` is the packed width of only the INHERIT (flowing) segments -
+    // segments with their own align anchor independently and don't take up
+    // space in the flowing group.
+    int16_t segW[8][OLED_RICH_MAX_SEGS] = {{0}};
+    int16_t segH[8][OLED_RICH_MAX_SEGS] = {{0}};
+    int flowW[8] = {0};
+    int rowH[8] = {0};
+    if ( rowCount > 8 ) rowCount = 8;
+
+    int blockHeight = 0;
+    for ( int r = 0; r < rowCount; r++ ) {
+        const OledTextRow& row = rows[r];
+        int n = row.segCount;
+        if ( n > OLED_RICH_MAX_SEGS ) n = OLED_RICH_MAX_SEGS;
+        int gap = row.segGap;
+        int flowTotal = 0;
+        int maxH = 0;
+        int flowDrawn = 0;
+        for ( int s = 0; s < n; s++ ) {
+            const char* t = row.segs[s].text;
+            if ( !t || !t[0] ) continue;
+            int fi = row.segs[s].fontIndex;
+            if ( fi < 0 || fi >= kFontCount ) fi = 18;
+            int16_t w = 0, h = 0;
+            getTextBoundsWithFont( getDisplay(), fontList[fi].font, t, &w, &h );
+            segW[r][s] = w;
+            segH[r][s] = h;
+            if ( h > maxH ) maxH = h;
+            if ( row.segs[s].align == OLED_ALIGN_INHERIT ) {
+                if ( flowDrawn > 0 ) flowTotal += gap;
+                flowTotal += w;
+                flowDrawn++;
+            }
+        }
+        flowW[r] = flowTotal;
+        rowH[r] = maxH;
+        blockHeight += maxH;
+        if ( r > 0 ) blockHeight += rowGap;
+    }
+
+    int yTop = ( displayHeight - blockHeight ) / 2;
+    if ( yTop < 0 ) yTop = 0;
+
+    // Resolve a left-edge x for a given alignment and content width.
+    auto anchorX = [&]( OledAlign a, int w ) -> int {
+        int x;
+        switch ( a ) {
+            case OLED_ALIGN_CENTER: x = ( displayWidth - w ) / 2; break;
+            case OLED_ALIGN_RIGHT:  x = displayWidth - w;          break;
+            case OLED_ALIGN_LEFT:
+            default:                x = LEFT_JUSTIFY_TOP;          break;
+        }
+        if ( x < 0 ) x = 0;
+        return x;
+    };
+
+    int y = yTop;
+    for ( int r = 0; r < rowCount; r++ ) {
+        const OledTextRow& row = rows[r];
+        int n = row.segCount;
+        if ( n > OLED_RICH_MAX_SEGS ) n = OLED_RICH_MAX_SEGS;
+        int gap = row.segGap;
+        int baseline = y + rowH[r];
+
+        // Flowing (INHERIT) segments pack together and the group is placed
+        // using the row's alignment.
+        int flowX = anchorX( row.align, flowW[r] );
+
+        int flowDrawn = 0;
+        for ( int s = 0; s < n; s++ ) {
+            const char* t = row.segs[s].text;
+            if ( !t || !t[0] ) continue;
+            int fi = row.segs[s].fontIndex;
+            if ( fi < 0 || fi >= kFontCount ) fi = 18;
+            getDisplay().setFont( fontList[fi].font );
+            currentFont = fontList[fi].font;
+            currentFontFamily = fontList[fi].family;
+
+            int x;
+            if ( row.segs[s].align == OLED_ALIGN_INHERIT ) {
+                if ( flowDrawn > 0 ) flowX += gap;
+                x = flowX;
+                flowX += segW[r][s];
+                flowDrawn++;
+            } else {
+                // Independently-anchored segment: pin to its own edge and
+                // leave the flowing group's layout untouched.
+                x = anchorX( row.segs[s].align, segW[r][s] );
+            }
+            // Adafruit GFX uses a baseline cursor for custom fonts; placing
+            // every segment at the shared baseline keeps mixed sizes aligned.
+            setCursor( x, baseline, POS_BASELINE );
+            getDisplay().print( t );
+        }
+
+        y += rowH[r] + rowGap;
+    }
+
+    if ( show && oledConnected ) {
+        priorityFlushHeldFrame();
+    }
+
+    // Restore prior font state so callers that rely on it aren't surprised.
+    currentFont = savedFont;
+    currentFontFamily = savedFamily;
+    currentTextSize = savedTextSize;
+    getDisplay().setFont( currentFont );
+    getDisplay().setTextSize( currentTextSize );
+}
+
+void oled::priorityFlushHeldFrame() {
+    // PRIORITY FLUSH: bypass the hold gate so back-to-back toasts (e.g. rapid
+    // undo / redo) always display the most recent frame immediately, replacing
+    // whatever was painted by an earlier toast that is still inside its hold
+    // window. Clearing the dirty flag here means oledPeriodic won't
+    // double-flush at hold expiry.
+    if ( _displayPtr ) {
+        _displayPtr->display();
+    }
+    oledNeedsFlushAfterHold = false;
+    // If oledHoldBegin armed a snapshot, the panel now shows the held message
+    // but the live framebuffer still contains those toast pixels. Restore the
+    // snapshot so subsequent writes during the hold accumulate against the
+    // pre-toast background; when the hold expires, the panel transitions
+    // cleanly to background+writes with no toast residue. No-op if not armed.
+    // The stash also copies live -> oledPanelShadow first, so the dump call
+    // below sees the toast via oledGetDumpBuffer.
+    oledHoldStashAfterPriorityFlush();
+    // Mirror what show() does for normal flushes: if terminal mirroring is
+    // enabled, dump the just-shipped frame so the user sees the toast in the
+    // terminal too. Without this, the toast hits the panel via the priority
+    // flush above but never appears in the terminal stream (this path bypasses
+    // show() and thus its dumpFrameBufferQuarterSize hook). oledGetDumpBuffer
+    // returns the panel shadow during the now-active hold, so the dump matches
+    // the panel.
+    if ( jumperlessConfig.top_oled.show_in_terminal > 0 ) {
+        dumpFrameBufferQuarterSize( 1 );
+        Serial.flush();
+    }
+}
+
+// Backward-compatible two-line helper. Splits `text` on a single '\n'
+// into a top row (font topFontIndex) and bottom row (font botFontIndex),
+// then defers to the granular clearPrintShowRich. Top row honors
+// leftJustifyTop; bottom row is always centered (matching prior behavior).
+void oled::clearPrintShowSmall( const char* text, bool clear, bool show,
+                                int topFontIndex, int botFontIndex,
+                                int line_gap, bool leftJustifyTop ) {
+    if ( !text ) return;
+
     char line0[48] = {0};
     char line1[48] = {0};
     int idx = 0;
@@ -1495,80 +1655,30 @@ void oled::clearPrintShowSmall( const char* text, bool clear, bool show,
         idx++;
     }
     int lineCount = (line1[0] != '\0') ? 2 : (line0[0] != '\0' ? 1 : 0);
-
-    // Measure each line with its own font so horizontal centering and
-    // vertical block height account for the actual glyph metrics, not
-    // a worst-case approximation.
-    int16_t w0 = 0, h0 = 0, w1 = 0, h1 = 0;
-    if ( lineCount >= 1 ) getTextBoundsWithFont( getDisplay(), topFont, line0, &w0, &h0 );
-    if ( lineCount >= 2 ) getTextBoundsWithFont( getDisplay(), botFont, line1, &w1, &h1 );
-
-    // Vertical centering on 32px panel. Fixed inter-line spacing so the
-    // layout doesn't jitter when one line happens to lack descenders.
-    int blockHeight = h0 + (lineCount == 2 ? line_gap + h1 : 0);
-    int yTop = ( displayHeight - blockHeight ) / 2;
-    if ( yTop < 0 ) yTop = 0;
-
-    if ( lineCount >= 1 ) {
-        getDisplay().setFont( topFont );
-        currentFont = topFont;
-        currentFontFamily = fontList[ topFontIndex ].family;
-        int x = leftJustifyTop ? LEFT_JUSTIFY_TOP : ( displayWidth - w0 ) / 2;
-        if ( x < 0 ) x = 0;
-        // Adafruit GFX uses a baseline cursor for custom fonts; baseline
-        // = top + height (h0 already accounts for descender extent).
-        setCursor( x, yTop + h0, POS_BASELINE );
-        getDisplay().print( line0 );
-    }
-    if ( lineCount >= 2 ) {
-        getDisplay().setFont( botFont );
-        currentFont = botFont;
-        currentFontFamily = fontList[ botFontIndex ].family;
-        int x = ( displayWidth - w1 ) / 2;
-        if ( x < 0 ) x = 0;
-        setCursor( x, yTop + h0 + line_gap + h1, POS_BASELINE );
-        getDisplay().print( line1 );
+    if ( lineCount == 0 ) {
+        // Empty input: still honor clear/show by rendering one empty row
+        // (draws nothing but performs the clear + priority flush).
+        OledTextRow empty = {};
+        empty.segs[0] = { "", (int16_t)topFontIndex, OLED_ALIGN_INHERIT };
+        empty.segCount = 1;
+        empty.align = leftJustifyTop ? OLED_ALIGN_LEFT : OLED_ALIGN_CENTER;
+        clearPrintShowRich( &empty, 1, line_gap, clear, show );
+        return;
     }
 
-    if ( show && oledConnected ) {
-        // PRIORITY FLUSH: bypass the hold gate so back-to-back toasts
-        // (e.g. rapid undo / redo) always display the most recent label
-        // immediately, replacing whatever was painted by an earlier toast
-        // that is still inside its hold window. Clearing the dirty flag
-        // here means oledPeriodic won't double-flush at hold expiry.
-        if ( _displayPtr ) {
-            _displayPtr->display();
-        }
-        oledNeedsFlushAfterHold = false;
-        // If oledHoldBegin armed a snapshot, the panel now shows the
-        // held message but the live framebuffer still contains those
-        // toast pixels. Restore the snapshot so subsequent writes
-        // during the hold accumulate against the pre-toast background;
-        // when the hold expires, the panel transitions cleanly to
-        // background+writes with no toast residue. No-op if not armed.
-        // The stash also copies live -> oledPanelShadow first, so the
-        // dump call below sees the toast via oledGetDumpBuffer.
-        oledHoldStashAfterPriorityFlush();
-        // Mirror what show() does for normal flushes: if terminal
-        // mirroring is enabled, dump the just-shipped frame so the
-        // user sees the toast in the terminal too. Without this, the
-        // toast hits the panel via the priority flush above but never
-        // appears in the terminal stream because clearPrintShowSmall
-        // bypasses show() (and thus its dumpFrameBufferQuarterSize
-        // hook). oledGetDumpBuffer returns the panel shadow during
-        // the now-active hold, so the dump matches the panel.
-        if ( jumperlessConfig.top_oled.show_in_terminal > 0 ) {
-            dumpFrameBufferQuarterSize( 1 );
-            Serial.flush();
-        }
+    OledTextRow rows[2] = {};
+    rows[0].segs[0] = { line0, (int16_t)topFontIndex, OLED_ALIGN_INHERIT };
+    rows[0].segCount = 1;
+    rows[0].align = leftJustifyTop ? OLED_ALIGN_LEFT : OLED_ALIGN_CENTER;
+    rows[0].segGap = 0;
+    if ( lineCount == 2 ) {
+        rows[1].segs[0] = { line1, (int16_t)botFontIndex, OLED_ALIGN_INHERIT };
+        rows[1].segCount = 1;
+        rows[1].align = OLED_ALIGN_CENTER;
+        rows[1].segGap = 0;
     }
 
-    // Restore prior font state so callers that rely on it aren't surprised.
-    currentFont = savedFont;
-    currentFontFamily = savedFamily;
-    currentTextSize = savedTextSize;
-    getDisplay().setFont( currentFont );
-    getDisplay().setTextSize( currentTextSize );
+    clearPrintShowRich( rows, lineCount, line_gap, clear, show );
 }
 
 // Main display function with font family selection
@@ -1579,6 +1689,9 @@ void oled::clearPrintShow( const char* text, int textSize, FontFamily family, bo
     }
     if ( ( !oledConnected || !text ) && stillWriteToFramebuffer == false )
         return;
+
+    // Drawing our own content: let a persistent idle GUI page step aside.
+    OledGui::getInstance().notePanelTakenByOther();
 
     if ( clear ) {
         charPos = 0;
@@ -1847,7 +1960,7 @@ void oled::displayMultiLineText( const char* text, bool center ) {
     
     // Only add nudge if ANY line was scaled down
     if (minScaledPt < originalPt) {
-        verticalNudge = (originalPt - minScaledPt) / 2 + 2; // 2 base pixels plus half the reduction
+        verticalNudge = (originalPt - minScaledPt) / 2 - 2; // 2 base pixels plus half the reduction
         // Serial.print("verticalNudge: ");
         // Serial.println(verticalNudge);
         // Serial.flush();
@@ -2767,6 +2880,13 @@ int startupDisplayed = 0;
 void oled::showJogo32h( ) {
     if ( ( !oledConnected ) && stillWriteToFramebuffer == false )
         return;
+
+    // If a persistent OLED-GUI screen is registered (oledgui show(persist=True)),
+    // it takes the logo's place as the idle display. Drawing it here is what
+    // makes it reappear when the UI returns to idle (leaving a menu, etc.)
+    // instead of constantly fighting other OLED output in the background.
+    if ( OledGui::getInstance().showIdle() ) return;
+
     getDisplay().clearDisplay( );
 
     // Check if startup_message is set and looks like a file path
@@ -3930,8 +4050,8 @@ int oled::connect( void ) {
         #endif
 
         // Use RAM-based state system for crossbar connections
-        addBridgeToState( jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, 1 );
-        addBridgeToState( jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, 1 );
+        addBridgeToState( jumperlessConfig.top_oled.gpio_sda, jumperlessConfig.top_oled.sda_row, 0 );
+        addBridgeToState( jumperlessConfig.top_oled.gpio_scl, jumperlessConfig.top_oled.scl_row, 0 );
 
         // Extra refresh to ensure OLED connections are applied
         #if OLED_DEBUG

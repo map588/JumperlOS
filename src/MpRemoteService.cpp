@@ -304,6 +304,7 @@ void MpRemoteService::onScriptExecutionComplete() {
     switchPosition = switchPositionOnMpRemoteService;
     showLEDmeasurementsInterval = lastShowLEDmeasurementsintervalinMpRemoteService;
     readGPIOInterval = lastReadGPIOIntervalinMpRemoteService;
+    
     // routableBufferPower( 1, 1, 0 );
     // refreshConnections( 0, 1, 0 );
     // Example: You could add cleanup, logging, or state management here

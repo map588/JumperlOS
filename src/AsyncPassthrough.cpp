@@ -49,6 +49,7 @@
 #include <hardware/uart.h>
 #include <hardware/regs/uart.h>
 #include <hardware/structs/uart.h>
+#include <hardware/dma.h>
 #include <pico/stdlib.h>
 // TinyUSB
 #include <tusb.h>
@@ -114,9 +115,10 @@ static volatile bool     s_any_flash_data      = false;   // Has any USB→UART 
 static uint8_t           s_stk_prev_byte       = 0;      // Previous byte for 2-byte sequence detection
 
 // Flash detection timeouts
-static const uint32_t FLASH_STK_GRACE_MS    = 500;    // Grace period after STK_LEAVE_PROGMODE
-static const uint32_t FLASH_INACTIVITY_MS   = 1500;   // Inactivity fallback
-static const uint32_t FLASH_HARD_TIMEOUT_MS = 30000;  // 30s safety cap
+static const uint32_t FLASH_STK_GRACE_MS     = 500;    // Grace period after STK_LEAVE_PROGMODE
+static const uint32_t FLASH_INACTIVITY_MS    = 1500;   // Inactivity fallback
+static const uint32_t FLASH_NO_DATA_TIMEOUT_MS = 4000; // Abort if avrdude never sent any data
+static const uint32_t FLASH_HARD_TIMEOUT_MS  = 15000;  // 15s safety cap
 
 // ============================================================================
 // Jumperless Command Tag Detection
@@ -327,17 +329,53 @@ static volatile bool s_uart_suspended_by_mpy = false;
 static volatile bool s_uart_irq_enabled = false;
 // Deferred resync flag - set by ISR, handled in task() to avoid busy_wait in ISR context
 static volatile bool s_resync_requested = false;
-// Exposed ring: uartReceived
-uint8_t uartReceived[ 4096 ];
+// =============================================================================
+// Zero-CPU DMA UART bridge
+// =============================================================================
+// RX: a single DMA channel continuously drains the UART RX FIFO into the
+// `uartReceived` ring (DREQ_UART0_RX). The PL011 asserts a single-transfer DMA
+// request for every byte (FIFO non-empty), so even tiny replies - like the
+// 2-byte STK500 bootloader sync - land in RAM immediately with no CPU, no
+// FIFO-threshold stranding, and effectively no overrun. The old per-byte ISR
+// (timing/garbage heuristics + forced resync) is gone; the PL011 naturally
+// re-aligns on the next start bit after any idle gap.
+//
+// Exposed ring: uartReceived. Must be aligned to its own size for the DMA
+// ring-wrap feature. `uartReceivedHead` now tracks the DMA write pointer
+// (producer) and `uartReceivedTail` is the consume index (consumer, in task()).
+#define UART_RX_RING_BITS 13                 // 2^13 = 8192 bytes
+uint8_t uartReceived[ 1u << UART_RX_RING_BITS ]
+    __attribute__( ( aligned( 1u << UART_RX_RING_BITS ) ) );
 volatile uint16_t uartReceivedHead = 0;
 volatile uint16_t uartReceivedTail = 0;
 static volatile uint32_t uartReceivedOverflowCount = 0;
 static volatile uint32_t s_uart_overrun_count = 0;
 
-// TX ring buffer — main thread pushes, ISR pops to UART HW FIFO
+// DMA channels (claimed in begin()). -1 = unclaimed.
+static int s_rx_dma_chan = -1;
+static int s_tx_dma_chan = -1;
+static volatile uint32_t s_tx_dma_inflight = 0;  // bytes handed to TX DMA, not yet retired
+
+// When to release the AVR RST pulse (asserted in checkDTRState(), released by
+// the task() timer). Declared here so task() - which appears earlier in the
+// file than the DTR section - can see it. 0 = no pulse pending.
+static volatile uint32_t s_reset_release_at_ms = 0;
+
+// While true, UART->USB forwarding is suppressed and the RX ring is discarded.
+// Set during the Arduino reset pulse so the sketch's dying bytes and the
+// reset-glitch bytes never reach avrdude. Cleared (along with a flush of BOTH
+// the RX ring and the CDC1 TX FIFO) when the pulse is released, so avrdude sees
+// a clean stream that starts at the bootloader.
+static volatile bool s_reset_rx_suppress = false;
+
+// Forward declarations for DMA setup (used by begin()/enableUARTReceiver()).
+static void setupRxDma( void );
+static void setupTxDma( void );
+
+// TX staging ring — main thread pushes, TX DMA drains to the UART HW FIFO.
 static uint8_t uartToSend[ 1024 ];
 static volatile uint16_t uartToSendHead = 0;   // Main thread writes
-static volatile uint16_t uartToSendTail = 0;   // ISR reads
+static volatile uint16_t uartToSendTail = 0;   // TX DMA reads
 #define UART_TOSEND_MASK 0x03FF
 static volatile uint32_t uartToSendOverflowCount = 0;
 
@@ -406,21 +444,18 @@ static char s_last_usb_to_uart_buf[LAST_DATA_SNAPSHOT_SIZE];
 static uint8_t s_last_usb_to_uart_head = 0; // next write index (task context)
 static uint8_t s_last_usb_to_uart_len = 0;  // number of valid bytes
 
-static inline bool ring_push_byte( uint8_t b ) {
-    uint16_t next_head = (uint16_t)( ( uartReceivedHead + 1 ) & UART_RECEIVED_MASK );
-    if ( next_head == uartReceivedTail ) {
-        uartReceivedOverflowCount++;
-        return false;
+// Refresh uartReceivedHead from the live RX-DMA write pointer. The DMA writes
+// the ring with zero CPU; this is how the consumer "sees" newly arrived bytes.
+static inline void rx_dma_sync_head( void ) {
+    if ( s_rx_dma_chan < 0 ) return;
+    if ( !dma_channel_is_busy( s_rx_dma_chan ) ) {
+        // Transfer count exhausted (only after ~GBs of data) - re-arm cleanly.
+        setupRxDma();
+        return;
     }
-    uartReceived[ uartReceivedHead ] = b;
-    uartReceivedHead = next_head;
-
-    // Update small RX snapshot (keep last N bytes). This is ISR-safe (single-byte writes).
-    s_last_uart_rx_buf[s_last_uart_rx_head] = (char)b;
-    s_last_uart_rx_head = (uint8_t)( ( s_last_uart_rx_head + 1 ) % LAST_DATA_SNAPSHOT_SIZE );
-    if ( s_last_uart_rx_len < LAST_DATA_SNAPSHOT_SIZE ) s_last_uart_rx_len++;
-
-    return true;
+    uint32_t wa = dma_hw->ch[ s_rx_dma_chan ].write_addr;
+    uartReceivedHead =
+        (uint16_t)( ( wa - (uint32_t)(uintptr_t)uartReceived ) & UART_RECEIVED_MASK );
 }
 
 static inline bool ring_pop_byte( uint8_t* out ) {
@@ -431,6 +466,7 @@ static inline bool ring_pop_byte( uint8_t* out ) {
 }
 
 static inline uint16_t ring_available( ) {
+    rx_dma_sync_head();
     return (uint16_t)( ( uartReceivedHead - uartReceivedTail ) & UART_RECEIVED_MASK );
 }
 
@@ -439,10 +475,11 @@ static inline uint8_t ring_peek_at( uint16_t offset ) {
     return uartReceived[ idx ];
 }
 
-// Clear ring buffer - for use during Arduino reset to discard stale data
+// "Clear" the RX ring - discard everything currently buffered by snapping the
+// consume index up to the live DMA write pointer (the DMA keeps running).
 static inline void ring_clear( void ) {
-    uartReceivedHead = 0;
-    uartReceivedTail = 0;
+    rx_dma_sync_head();
+    uartReceivedTail = uartReceivedHead;
 }
 
 // TX ring buffer helper functions (main context pushes, ISR pops)
@@ -469,8 +506,83 @@ static inline uint16_t tx_ring_available( void ) {
 }
 
 static inline void tx_ring_clear( void ) {
+    if ( s_tx_dma_chan >= 0 && dma_channel_is_busy( s_tx_dma_chan ) ) {
+        dma_channel_abort( s_tx_dma_chan );
+    }
+    s_tx_dma_inflight = 0;
     uartToSendHead = 0;
     uartToSendTail = 0;
+}
+
+// Drive the TX DMA: retire a finished transfer, then start the next contiguous
+// span from the staging ring. Zero-CPU after kick; non-blocking. Safe to call
+// often (no-op while a transfer is in flight or the ring is empty).
+static inline void tx_dma_pump( void ) {
+    if ( s_tx_dma_chan < 0 ) return;
+    if ( dma_channel_is_busy( s_tx_dma_chan ) ) return;
+
+    // A previous transfer has completed - retire those bytes from the ring.
+    if ( s_tx_dma_inflight ) {
+        uartToSendTail = (uint16_t)( ( uartToSendTail + s_tx_dma_inflight ) & UART_TOSEND_MASK );
+        s_tx_dma_inflight = 0;
+    }
+
+    uint16_t avail = tx_ring_available();
+    if ( avail == 0 ) return;
+
+    // DMA can't wrap a plain transfer, so send up to the end of the buffer; the
+    // remainder goes on the next pump.
+    uint16_t to_end = (uint16_t)( ( UART_TOSEND_MASK + 1 ) - uartToSendTail );
+    uint16_t span = ( avail < to_end ) ? avail : to_end;
+
+    s_tx_dma_inflight = span;
+    dma_channel_set_read_addr( s_tx_dma_chan, &uartToSend[ uartToSendTail ], false );
+    dma_channel_set_trans_count( s_tx_dma_chan, span, true );  // trigger
+}
+
+// Arm the continuous RX DMA: UART RX FIFO -> uartReceived ring, paced by the
+// UART RX DREQ, wrapping within the (size-aligned) ring. Runs forever.
+static void setupRxDma( void ) {
+    if ( s_rx_dma_chan < 0 ) s_rx_dma_chan = dma_claim_unused_channel( true );
+
+    dma_channel_config c = dma_channel_get_default_config( s_rx_dma_chan );
+    channel_config_set_transfer_data_size( &c, DMA_SIZE_8 );
+    channel_config_set_read_increment( &c, false );          // UART data reg is fixed
+    channel_config_set_write_increment( &c, true );           // walk the ring
+    channel_config_set_ring( &c, true, UART_RX_RING_BITS );   // wrap the write address
+    channel_config_set_dreq( &c, uart_get_dreq( ASYNC_PASSTHROUGH_UART, false ) );
+    channel_config_set_high_priority( &c, true );
+
+    uartReceivedTail = 0;
+    dma_channel_configure(
+        s_rx_dma_chan, &c,
+        uartReceived,                                          // write: ring (aligned)
+        &uart_get_hw( ASYNC_PASSTHROUGH_UART )->dr,            // read: UART data register
+        0xFFFFFFFFu,                                           // ~infinite transfer
+        true );                                                // start now
+}
+
+// Configure the TX DMA channel (started per-span by tx_dma_pump()). Read address
+// and transfer count are set on each pump; the write address (UART data reg) and
+// DREQ are fixed here.
+static void setupTxDma( void ) {
+    if ( s_tx_dma_chan < 0 ) s_tx_dma_chan = dma_claim_unused_channel( true );
+
+    dma_channel_config c = dma_channel_get_default_config( s_tx_dma_chan );
+    channel_config_set_transfer_data_size( &c, DMA_SIZE_8 );
+    channel_config_set_read_increment( &c, true );            // walk the staging ring
+    channel_config_set_write_increment( &c, false );          // UART data reg is fixed
+    channel_config_set_dreq( &c, uart_get_dreq( ASYNC_PASSTHROUGH_UART, true ) );
+
+    s_tx_dma_inflight = 0;
+    uartToSendHead = 0;
+    uartToSendTail = 0;
+    dma_channel_configure(
+        s_tx_dma_chan, &c,
+        &uart_get_hw( ASYNC_PASSTHROUGH_UART )->dr,            // write: UART data register
+        uartToSend,                                            // read: staging ring (set per pump)
+        0,                                                     // count set per pump
+        false );                                               // don't start
 }
 
 // ---------------------------------------------------------------------------
@@ -543,54 +655,20 @@ static inline void flush_cdc_buffers( uint8_t itf ) {
 // Forward declaration for clearTagParserState used in checkDTRState
 void clearTagParserState( void );
 
-// Force UART receiver resync by disabling/re-enabling RX
-// This flushes the FIFO and forces the receiver to wait for a new start bit
-// Also clears the ring buffer since it likely contains garbage
+// "Resync" in the DMA model. There is no shift-register/FIFO state to fight and
+// no software ring to clear byte-by-byte: the DMA streams every byte into RAM,
+// and the PL011 itself re-aligns on the next valid start bit after any idle gap.
+// So a forced resync just means "discard whatever is currently buffered and
+// resume cleanly" - i.e. snap the consume index up to the live DMA head.
 static inline void uart_force_receiver_resync( void ) {
-    // return;  // DISABLED - was causing upload failures due to mistimed resyncs during flashing
-    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
-
-    // PL011 UART resync procedure (per RP2350B datasheet §12.1):
-
-    // 1. Disable UART receiver — completes current character then stops.
-    //    Clears the shift register so we don't receive a partial byte.
-    hw_clear_bits( &hw->cr, UART_UARTCR_RXE_BITS );
-
-    // 2. Drain any remaining bytes from HW FIFO (they're garbage from desync)
-    while ( !(hw->fr & UART_UARTFR_RXFE_BITS) ) {
-        volatile uint32_t discard = hw->dr;
-        (void)discard;
-    }
-
-    // 3. Clear error flags in UARTRSR (OE, BE, PE, FE)
-    hw->rsr = 0xFFFFFFFFu;
-
-    // 4. Clear sticky interrupt flags in UARTICR — PL011 error interrupts
-    //    are NOT auto-cleared by reading DR or writing RSR. Without this,
-    //    the FE/PE/BE/OE/RT interrupt flags remain asserted and the ISR
-    //    keeps re-entering on stale errors.
-    hw->icr = UART_UARTICR_OEIC_BITS |   // Overrun error
-              UART_UARTICR_BEIC_BITS |   // Break error
-              UART_UARTICR_PEIC_BITS |   // Parity error
-              UART_UARTICR_FEIC_BITS |   // Framing error
-              UART_UARTICR_RTIC_BITS;    // Receive timeout
-
-    // 5. Clear the software ring buffer — it likely contains garbage
-    uartReceivedHead = 0;
-    uartReceivedTail = 0;
-
-    // 6. Brief delay to ensure the receiver fully stops and line settles.
-    //    At 115200 baud, one bit time is ~8.7µs, so 100µs is ~11 bit times (>1 frame).
-    busy_wait_us( 100 );
-
-    // 7. Re-enable receiver — it will now wait for the next valid start bit
-    hw_set_bits( &hw->cr, UART_UARTCR_RXE_BITS );
-
+    rx_dma_sync_head();
+    uartReceivedTail = uartReceivedHead;
     s_uart_resync_count++;
-    s_uart_framing_error_count = 0;  // Reset consecutive error counters
+    s_uart_framing_error_count = 0;
     s_uart_garbage_count = 0;
 }
 
+#if 0  // RX is now DMA-driven; the per-byte ISR (and its resync heuristics) is gone.
 static void async_uart_irq_handler( void ) {
 
 
@@ -753,6 +831,7 @@ static void async_uart_irq_handler( void ) {
 
    
 }
+#endif  // disabled async_uart_irq_handler
 
 
 // ----------------------------------------------------------------------------
@@ -833,16 +912,15 @@ static inline bool process_runtime_command(uint8_t c) {
                     // Update RUNTIME state only (not config file)
                     asyncPassthroughTagParsingEnabled = new_state;
                     
-                    // Send confirmation back over UART (NON-BLOCKING)
-                    // CRITICAL: Do NOT use uart_write_blocking - can hang Core 0
+                    // Send confirmation back over UART via the TX DMA staging
+                    // ring (non-blocking, no FIFO interleave with the DMA).
                     char response[64];
                     int rlen = snprintf(response, sizeof(response), "\r\nTag parsing %s\r\n", 
                             new_state ? "enabled" : "disabled");
                     for (int ri = 0; ri < rlen && ri < (int)sizeof(response); ri++) {
-                        if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
-                            uart_putc_raw(ASYNC_PASSTHROUGH_UART, response[ri]);
-                        }
+                        tx_ring_push_byte( (uint8_t)response[ri] );
                     }
+                    tx_dma_pump();
                 }
             }
         }
@@ -1242,9 +1320,11 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
                 }
             }
             
-            // Write accumulated bytes to UART (non-blocking to prevent Core 0 hang)
-            // CRITICAL: Do NOT use uart_write_blocking - if Arduino stops reading,
-            // the TX FIFO fills and uart_write_blocking blocks FOREVER, hanging Core 0.
+            // Forward to UART via the zero-CPU TX DMA. Identical path during
+            // flashing and normal passthrough: push into the staging ring and
+            // kick the DMA. STK500 request/response timing is fine because the
+            // DMA moves bytes into the UART FIFO immediately, and it never
+            // blocks Core 0 (the old flashing path busy-waited on the FIFO).
             if ( forward_idx > 0 ) {
                 // Update USB→UART "last data" snapshot (keep last LAST_DATA_SNAPSHOT_SIZE bytes)
                 for ( size_t fi = 0; fi < forward_idx; fi++ ) {
@@ -1253,32 +1333,10 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
                     if ( s_last_usb_to_uart_len < LAST_DATA_SNAPSHOT_SIZE ) s_last_usb_to_uart_len++;
                 }
 
-                if ( flashingArduino ) {
-                    // During flashing, write directly with timeout — STK500 protocol
-                    // requires strict request/response timing that a ring buffer would break.
-                    const uint32_t wait_timeout_us = 10000;
-                    for ( size_t fi = 0; fi < forward_idx; fi++ ) {
-                        uint32_t wait_start = time_us_32();
-                        while ( !uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
-                            if ( (time_us_32() - wait_start) > wait_timeout_us ) {
-                                break;
-                            }
-                            tight_loop_contents();
-                        }
-                        if ( uart_is_writable( ASYNC_PASSTHROUGH_UART ) ) {
-                            uart_putc_raw( ASYNC_PASSTHROUGH_UART, forward_buf[fi] );
-                        }
-                    }
-                } else {
-                    // Normal passthrough: non-blocking push to TX ring buffer.
-                    // ISR drains the ring buffer to UART HW FIFO via TXIM interrupt.
-                    for ( size_t fi = 0; fi < forward_idx; fi++ ) {
-                        tx_ring_push_byte( forward_buf[fi] );
-                    }
-                    // Enable TXIM to trigger ISR drain — ISR disables when ring is empty
-                    hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc,
-                                 UART_UARTIMSC_TXIM_BITS );
+                for ( size_t fi = 0; fi < forward_idx; fi++ ) {
+                    tx_ring_push_byte( forward_buf[fi] );
                 }
+                tx_dma_pump();
             }
            
         } else {
@@ -1290,14 +1348,24 @@ static inline void bridge_usb_to_uart( uint8_t itf ) {
 }
 
 static inline void bridge_uart_to_usb( uint8_t itf ) {
-    // Flush any ring-buffered bytes from UART IRQ to CDC
+    // Flush any ring-buffered bytes from the RX DMA to CDC
     if ( !tud_inited( ) ) return;
-    
+
+    // During an Arduino reset pulse, do NOT forward UART->USB - just discard
+    // whatever the DMA captured (the sketch's dying bytes and reset glitch).
+    // This keeps avrdude's stream clean so its first real bytes are from the
+    // freshly-reset bootloader, not leftover sketch output.
+    if ( s_reset_rx_suppress ) {
+        rx_dma_sync_head();
+        uartReceivedTail = uartReceivedHead;
+        return;
+    }
+
     // If CDC is not connected, drain ring buffer to prevent overflow.
-    // Without this, the ISR keeps pushing bytes while nobody pops them,
-    // and the 4096-byte ring buffer fills up — dropping all subsequent
-    // UART data until the host reconnects. During flashing, this would
-    // lose bootloader responses if avrdude hasn't opened the port yet.
+    // Without this, the DMA keeps filling the ring while nobody pops it,
+    // and the ring fills up — dropping all subsequent UART data until the
+    // host reconnects. During flashing, this would lose bootloader responses
+    // if avrdude hasn't opened the port yet.
     if ( !tud_cdc_n_connected( itf ) ) {
         // Just advance tail to head — discard all buffered data
         uartReceivedTail = uartReceivedHead;
@@ -1369,7 +1437,14 @@ static inline void bridge_uart_to_usb( uint8_t itf ) {
         }
         
         if ( !ring_pop_byte( &c ) ) break;
-        
+
+        // Update the RX "last data" snapshot for the OLED. This used to live in
+        // the per-byte ISR (ring_push_byte); with DMA filling the ring, the
+        // consumer maintains it instead.
+        s_last_uart_rx_buf[s_last_uart_rx_head] = (char)c;
+        s_last_uart_rx_head = (uint8_t)( ( s_last_uart_rx_head + 1 ) % LAST_DATA_SNAPSHOT_SIZE );
+        if ( s_last_uart_rx_len < LAST_DATA_SNAPSHOT_SIZE ) s_last_uart_rx_len++;
+
         // Monitor for runtime control commands (e.g., "tag parsing = on")
         // Skip during flashing - binary bootloader responses would corrupt the
         // 32-char ring buffer and could false-trigger command matches
@@ -1461,9 +1536,11 @@ void tud_cdc_line_coding_cb( uint8_t itf, cdc_line_coding_t const* p ) {
 }
 
 // ----------------------------------------------------------------------------
-// External functions from ArduinoStuff.cpp
+// External functions / state from ArduinoStuff.cpp
 // ----------------------------------------------------------------------------
 extern void SetArduinoResetLine(bool state, int topBottomBoth);
+extern void ESPReset(void);
+extern volatile bool flashingArduino;
 
 // ----------------------------------------------------------------------------
 // Foreground task runner
@@ -1471,58 +1548,64 @@ extern void SetArduinoResetLine(bool state, int topBottomBoth);
 
 namespace AsyncPassthrough {
 
-// Helper: Enable UART RX IRQ after boot is complete.
-// Drains any stale data from HW FIFO, clears errors and ring buffer,
-// then enables the UART interrupt mask and NVIC IRQ.
-// Safe to call multiple times (no-op if already enabled).
-static void enableUARTReceiver() {
-    if ( s_uart_irq_enabled ) return;
-
-    // Drain HW FIFO - discard any bytes that accumulated during boot
+// Force the PL011 receiver to re-align to a clean byte boundary.
+//
+// Why this is needed: a UART receiver only self-aligns across a genuine *idle*
+// gap (line high) - the next high->low is then a true start bit. When the
+// Jumperless reboots while the Arduino is already mid-transmission, the DMA
+// receiver can come up mid-byte. With continuous-ish data it can stay misframed,
+// which is the "out of sync until I flash" symptom (flashing resets the Arduino,
+// whose setup() delay produces a long clean idle, so it re-aligns there).
+//
+// This waits for a real idle gap (no new DMA bytes for IDLE_US, capped), then
+// disables/re-enables RXE during that idle so the receiver is guaranteed to
+// start the next byte aligned, and re-arms the RX DMA from the ring base.
+static void uart_rx_clean_resync( uint32_t max_wait_us ) {
     uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
-    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
-        (void)hw->dr;  // Discard
+    const uint32_t IDLE_US = 2000;   // > any inter-byte gap at >=115200; sketch gaps are ms
+
+    // 1. Wait for a genuine idle gap (DMA write pointer stops advancing).
+    //    (:: - these ring indices are file-scope globals, not namespace members.)
+    uint32_t start = time_us_32();
+    rx_dma_sync_head();
+    uint16_t last_head = ::uartReceivedHead;
+    uint32_t last_change = start;
+    while ( time_us_32() - start < max_wait_us ) {
+        rx_dma_sync_head();
+        if ( ::uartReceivedHead != last_head ) {
+            last_head = ::uartReceivedHead;
+            last_change = time_us_32();
+        } else if ( time_us_32() - last_change > IDLE_US ) {
+            break;  // line has been idle long enough
+        }
+        tud_task();  // keep USB alive during the (boot-time) wait
     }
 
-    // Clear sticky error flags in RSR
-    hw->rsr = 0xFFFFFFFFu;
+    // 2. Re-align the receiver during the idle. Abort the DMA first so we can
+    //    drain the HW FIFO without racing it, cycle RXE, then re-arm.
+    if ( s_rx_dma_chan >= 0 && dma_channel_is_busy( s_rx_dma_chan ) ) {
+        dma_channel_abort( s_rx_dma_chan );
+    }
+    hw_clear_bits( &hw->cr, UART_UARTCR_RXE_BITS );
+    busy_wait_us( 50 );
+    while ( !( hw->fr & UART_UARTFR_RXFE_BITS ) ) { (void)hw->dr; }  // drain residue
+    hw->rsr = 0xFFFFFFFFu;                                            // clear sticky errors
+    hw_set_bits( &hw->cr, UART_UARTCR_RXE_BITS );
 
-    // Clear ALL pending UART interrupt flags via ICR.
-    // During boot, overrun/framing errors accumulate while the IRQ is disabled.
-    // These are sticky in the PL011 RIS register and would fire IMMEDIATELY
-    // when the NVIC IRQ is enabled.
-    hw->icr = UART_UARTICR_OEIC_BITS | UART_UARTICR_FEIC_BITS
-            | UART_UARTICR_PEIC_BITS | UART_UARTICR_BEIC_BITS
-            | UART_UARTICR_RTIC_BITS | UART_UARTICR_RXIC_BITS;
+    // 3. Re-arm the RX DMA from the ring base (resets head/tail to 0).
+    setupRxDma();
+}
 
-    // Clear software ring buffers
-    ring_clear();
+// "Go live" point for RX, called when boot is complete. The RX DMA was armed in
+// begin(); here we force a clean byte-aligned resync (handles the case where the
+// Arduino was already streaming when the Jumperless rebooted), discard anything
+// captured during boot, and mark the receiver live.
+static void enableUARTReceiver() {
+    if ( s_uart_irq_enabled ) return;
+    if ( s_rx_dma_chan < 0 ) setupRxDma();
+    uart_rx_clean_resync( 60000 );  // up to 60ms (one-time, at boot) to find an idle gap
+    ring_clear();                   // discard boot-time bytes (snap tail to DMA head)
     tx_ring_clear();
-
-    // NOTE: Do NOT call clearTagParserState() or CommandBuffer here.
-    // Tag parsing hasn't started yet (enabled later after ARDUINO_BOOT_DELAY_MS),
-    // so there's no stale state to clear.
-
-    // Enable UART interrupt mask: RX=true, TX=false
-    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
-    // Enable RX timeout interrupt only — NOT overrun (OEIM).
-    // Overrun errors are already detected per-byte via DR register flags (bit 11).
-    // Enabling OEIM creates an additional interrupt source that fires when the
-    // HW FIFO overflows. With continuous external data and a full ring buffer,
-    // this causes rapid repeated ISR invocations that starve the USB stack.
-    hw_set_bits( &hw->imsc, UART_UARTIMSC_RTIM_BITS );
-
-    // Clear any latched pending interrupt in the NVIC from boot-time activity.
-    // Even after clearing ICR, the NVIC may have registered a pending interrupt
-    // while the IRQ was disabled. Without this, the ISR fires immediately on
-    // enable with stale/phantom state.
-    // UART0_IRQ=33 on RP2350 → ICPR1 bit 1 (IRQ 33-32=1)
-    *((io_rw_32*)(PPB_BASE + M33_NVIC_ICPR0_OFFSET + 4 * (ASYNC_PASSTHROUGH_UART_IRQ / 32)))
-        = 1u << (ASYNC_PASSTHROUGH_UART_IRQ % 32);
-
-    // Enable NVIC IRQ - ISR will now fire on UART data
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-
     s_uart_irq_enabled = true;
 }
 
@@ -1537,85 +1620,15 @@ void begin( unsigned long baud ) {
     uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
     uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
 
+    // Enable the UART's DMA request lines (uart_init already does this, but be
+    // explicit). The PL011 then asserts a single-transfer DREQ per RX byte and
+    // a TX DREQ whenever the TX FIFO has space.
+    uart_get_hw( ASYNC_PASSTHROUGH_UART )->dmacr =
+        UART_UARTDMACR_TXDMAE_BITS | UART_UARTDMACR_RXDMAE_BITS;
+
     setDTRLockout(3000);
-    
-    // =========================================================================
-    // AGGRESSIVE STARTUP RESYNC SEQUENCE
-    // =========================================================================
-    // On boot, the Arduino might already be transmitting, or there could be
-    // noise on the line. This can cause the UART to start sampling mid-byte,
-    // leading to persistent framing errors and crashes.
-    // 
-    // This aggressive sequence does MULTIPLE resync attempts to ensure both
-    // sides start clean, even in worst-case scenarios.
-    // =========================================================================
-    
-    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
-    
-    // Do multiple resync cycles to handle worst-case scenarios
-    // Each cycle: drain FIFO, disable RX, send break, wait, drain again
-    for (int resync_attempt = 0; resync_attempt < 3; resync_attempt++) {
-        
-        // Serial.println("Resync attempt " + String(resync_attempt));
-        // Serial.flush();
-        // Step 1: Drain any garbage from RX FIFO (don't process, just discard)
-        int drained = 0;
-        while ( !(hw->fr & UART_UARTFR_RXFE_BITS) && drained < 1000 ) {
-            volatile uint32_t discard = hw->dr;  // Read and discard
-            (void)discard;
-            drained++;
-        }
-        
-        // Step 2: Clear any error flags that accumulated
-        hw->rsr = 0xFFFFFFFFu;
-        
-        // Step 3: Disable receiver to clear shift register state
-        hw_clear_bits( &hw->cr, UART_UARTCR_RXE_BITS );
-        busy_wait_us( 100 );  // Give it time to fully stop
-        
-        // Step 4: Send break condition to force Arduino's UART to resync
-        // Wait for TX FIFO to be empty first
-        int tx_wait = 0;
-        while ( !(hw->fr & UART_UARTFR_TXFE_BITS) && tx_wait < 10000 ) {
-            busy_wait_us(1);
-            tx_wait++;
-        }
-        hw_set_bits( &hw->lcr_h, UART_UARTLCR_H_BRK_BITS );  // Start break (TX LOW)
-        busy_wait_us( 500 );  // Hold break for ~50 bit times at 115200 (longer!)
-        hw_clear_bits( &hw->lcr_h, UART_UARTLCR_H_BRK_BITS );  // End break
-        
-        // Step 5: Wait for line to stabilize and any echo/response to clear
-        busy_wait_us( 1000 );  // ~100 bit times - longer wait
-        
-        // Step 6: Drain any bytes that arrived during break/stabilization
-        drained = 0;
-        while ( !(hw->fr & UART_UARTFR_RXFE_BITS) && drained < 1000 ) {
-            volatile uint32_t discard = hw->dr;
-            (void)discard;
-            drained++;
-        }
-        hw->rsr = 0xFFFFFFFFu;  // Clear errors again
-        
-        // Step 7: Re-enable receiver
-        hw_set_bits( &hw->cr, UART_UARTCR_RXE_BITS );
-        
-        // Brief pause before next attempt (if any)
-        if (resync_attempt < 2) {
-            busy_wait_us( 500 );
-        }
-    }
-    
-    // Final wait to ensure line is truly idle
-    busy_wait_us( 500 );  // 2ms final stabilization
-    
-    // One more drain in case anything came in during final wait
-    while ( !(hw->fr & UART_UARTFR_RXFE_BITS) ) {
-        volatile uint32_t discard = hw->dr;
-        (void)discard;
-    }
-    hw->rsr = 0xFFFFFFFFu;
-    
-    // Reset all timing/error stats for clean start
+
+    // Reset legacy stats (still surfaced by the diagnostics API; mostly 0 now).
     s_uart_framing_error_count = 0;
     s_uart_framing_error_total = 0;
     s_uart_overrun_count = 0;
@@ -1627,29 +1640,11 @@ void begin( unsigned long baud ) {
     s_idle_periods_detected = 0;
     s_bytes_since_last_idle = 0;
     s_last_rx_byte_time_us = 0;
-    s_line_was_idle = true;  // Fresh start = synced
-    
-    // Clear ring buffer too (should already be empty but be sure)
-    // Use global scope :: because these are file-scope variables, not namespace members
-    ::uartReceivedHead = 0;
-    ::uartReceivedTail = 0;
-    
-    // =========================================================================
-    // END STARTUP RESYNC SEQUENCE
-    // =========================================================================
+    s_line_was_idle = true;
 
-    // Configure IRQ handler and priority, but DO NOT enable yet.
-    // IRQ is deferred to enableUARTReceiver() (called from signalStartupComplete())
-    // to prevent the priority-1 ISR from running during boot and starving USB/main code.
-    irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
-    irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 1 );
-    // NOTE: irq_set_enabled() NOT called here — deferred to enableUARTReceiver()
-
-    // Configure FIFO trigger levels (hardware config only, no interrupts generated yet)
-    // Set RX IRQ trigger at 1/8 FIFO, TX at 1/2 FIFO
-    hw_write_masked( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->ifls,
-                     ( 0u << UART_UARTIFLS_RXIFLSEL_LSB ) | ( 2u << UART_UARTIFLS_TXIFLSEL_LSB ),
-                     UART_UARTIFLS_RXIFLSEL_BITS | UART_UARTIFLS_TXIFLSEL_BITS );
+    // Set up the zero-CPU DMA bridge: RX ring (continuous) + TX (per-span).
+    setupRxDma();
+    setupTxDma();
 
     // Track initial micros per byte based on default config
     s_line_coding.bit_rate = (uint32_t)baud;
@@ -1657,18 +1652,10 @@ void begin( unsigned long baud ) {
     s_line_coding.parity = 0;
     s_line_coding.stop_bits = 0; // 1 stop
     set_micros_per_byte( &s_line_coding );
-    
-    // Initialize tag parsing state - ALWAYS disabled during init
-    // Tag parsing will be enabled by signalStartupComplete() after system is fully initialized
-    // This prevents crashes from early Arduino commands before the system is ready
-    // Note: config setting is respected in signalStartupComplete() when enabling
+
+    // Tag parsing stays disabled until signalStartupComplete().
     asyncPassthroughTagParsingEnabled = false;
 
-    // // Register default forward prefixes
-    // registerForwardPrefix( "jcommand:" );
-    // registerForwardPrefix( "\x02" ); // SOH
-    // registerForwardPrefix( "\x03" ); // DLE
-    // registerForwardPrefix( "jl:" );
     async_begun = true;
 }
 // #define DEBUG_INJECTED_COMMANDS 1
@@ -1738,6 +1725,35 @@ void processPendingLineCoding() {
         // #endif
     }
 }
+// Poll the host's CDC1 line coding and apply it to the UART whenever it diverges
+// from what's currently set. This makes the UART baud/format ALWAYS track the
+// host's serial monitor, not just when the host happens to change it while we're
+// listening. Without this, a baud the host set before the passthrough went live
+// (e.g. the monitor opened at 500000 before/across a Jumperless reboot) never
+// reaches the UART - it stayed at the 115200 default until something read the
+// host baud (printMicrosPerByte -> checkForConfigChangesUSBSer1). The event
+// callback (tud_cdc_line_coding_cb) only fires on a *change*, so it misses the
+// already-open case; this poll closes that gap.
+static void syncUartToHostLineCoding() {
+    if ( !tud_inited() ) return;
+    if ( !tud_cdc_n_connected( ASYNC_PASSTHROUGH_CDC_ITF ) ) return;
+
+    cdc_line_coding_t hc;
+    tud_cdc_n_get_line_coding( ASYNC_PASSTHROUGH_CDC_ITF, &hc );
+    if ( hc.bit_rate == 0 ) return;  // host hasn't set a real baud yet
+
+    // Apply only on an actual difference (cheap compare; avoids reconfiguring
+    // the UART every iteration).
+    if ( hc.bit_rate != s_line_coding.bit_rate ||
+         hc.data_bits != s_line_coding.data_bits ||
+         hc.parity   != s_line_coding.parity ||
+         hc.stop_bits != s_line_coding.stop_bits ) {
+        s_line_coding = hc;
+        s_apply_line_coding_pending = true;
+        processPendingLineCoding();
+    }
+}
+
 bool enableResync = true;  // Set to true to enable resync sequence on demand (e.g. via runtime command)
 
 unsigned long last_usb_uart = 0;
@@ -1761,19 +1777,37 @@ void task( ) {
     if (s_in_task) return;
     s_in_task = true;
 
-    // CRITICAL: Check DTR state FIRST, before any data processing
-    // This ensures DTR pulse detection takes absolute priority over command injection
-    // USBSer1 is declared extern at file scope (line 21), outside the namespace
-    // SKIP during flashing: avrdude toggles DTR multiple times during a flash session.
-    // If we process DTR mid-flash, we'll reset the Arduino, clear all buffers, and
-    // call connectArduino() (heavy crossbar reprogramming) — causing USB disconnect.
+    // Cap-emulation reset release: if checkDTRState() asserted the AVR RST pulse,
+    // release it once the pulse width elapses. Runs unconditionally (even while
+    // flashing) and is latency-tolerant - holding RST a little longer is harmless.
+    if ( s_reset_release_at_ms && millis() >= s_reset_release_at_ms ) {
+        SetArduinoResetLine( HIGH, 1 );
+        s_reset_release_at_ms = 0;
+        // Flush EVERY stale buffer so avrdude's stream starts at the bootloader:
+        //  - the RX ring (sketch backlog + reset-glitch bytes), and
+        //  - the CDC1 TX FIFO (bytes we'd already queued toward avrdude before
+        //    the reset). Without the CDC flush, avrdude reads leftover sketch
+        //    output ("<p>disconn...") as the sync response -> "not in sync".
+        ring_clear();
+        if ( tud_inited() ) tud_cdc_n_write_clear( ASYNC_PASSTHROUGH_CDC_ITF );
+        s_reset_rx_suppress = false;   // resume forwarding (now clean)
+    }
+
+    // CRITICAL: Check DTR state FIRST, before any data processing.
+    // checkDTRState() fires the cap-emulation reset on a DTR *rising* edge.
+    // It MUST run even while flashing: the host opening the port often asserts
+    // DTR once (an early rising edge), and then avrdude does its real reset by
+    // deasserting and RE-asserting DTR ~50ms before it sends sync. We have to
+    // catch that second rising edge - exactly like a hardware DTR cap pulses
+    // RESET on every edge - or we reset too early and miss the bootloader
+    // window. avrdude holds DTR asserted for the whole rest of the session
+    // (only a falling edge on close, which we ignore), so this never re-resets
+    // mid-flash.
     t0 = micros();
     
     if (printCheckpoints) { Serial.write('1'); tud_task(); }
     
-    if (!flashingArduino) {
-        checkDTRState( USBSer1 );
-    }
+    checkDTRState( USBSer1 );
     
     if (printCheckpoints) { Serial.write('2'); tud_task(); }
     t1 = micros();
@@ -1949,19 +1983,25 @@ void task( ) {
         uart_force_receiver_resync();
     }
 
-    // If suspended by MicroPython, avoid touching UART hardware
+    // If suspended by MicroPython, avoid touching UART hardware (and don't
+    // fire the cap-emulation reset - MP owns the UART, no flash is happening).
     if ( s_uart_suspended_by_mpy ) {
         tud_task();
-        checkDTRState( USBSer1 );
         return;
     }
     
     if (printCheckpoints) { Serial.write('4'); tud_task(); }
     
-    // Apply pending line coding from host
+    // Apply pending line coding from host, and keep the UART baud/format in sync
+    // with the host's CDC line coding (handles the "monitor already open at a
+    // non-default baud" case the event callback misses). Skip during flashing -
+    // avrdude's line coding is handled via the callback and we don't want to
+    // reconfigure the UART mid-session.
     t0 = micros();
-   
-    // processPendingLineCoding();
+    processPendingLineCoding();
+    if ( !flashingArduino ) {
+        syncUartToHostLineCoding();
+    }
 
     if (printCheckpoints) { Serial.write('5'); tud_task(); }
     
@@ -2041,7 +2081,19 @@ last_uart_usb = millis();
     
     // Send any pending UART responses (responses to commands from Arduino)
     sendPendingUARTResponses();
-    
+
+    // CRITICAL: pump the TX DMA every iteration, unconditionally. The pump is
+    // event-driven elsewhere (only on new USB data / queued responses), but a
+    // single avrdude command (e.g. a 128-byte flash page) is read in 64-byte
+    // chunks: the first chunk kicks the DMA and the rest queue behind it. Since
+    // avrdude then WAITS for the bootloader's OK before sending more, no new
+    // event arrives to drain that remainder - the bootloader gets a partial
+    // command, never replies, and avrdude reports "programmer is not
+    // responding" mid-write. Draining here guarantees the staging ring always
+    // empties to the UART. Cheap: returns immediately if the DMA is busy or the
+    // ring is empty.
+    tx_dma_pump();
+
     if (printCheckpoints) { Serial.write('8'); Serial.write('\n'); }  // Task completed
     
     s_in_task = false;  // Release re-entrancy guard
@@ -2130,83 +2182,77 @@ bool isStartupComplete() {
 // DTR Pulse Detection and Arduino Reset
 // ============================================================================
 
-// DTR state tracking
+// DTR state tracking. The reset is cap-emulation: a DTR rising edge pulses the
+// Arduino RESET line, exactly like a real Arduino's DTR-through-a-capacitor
+// auto-reset circuit. This now happens IMMEDIATELY in checkDTRState() (which
+// runs every task() iteration as part of the CRITICAL passthrough service),
+// instead of being deferred to a blocking flashArduino() servicing loop.
 static bool s_dtr_state[3] = { false, false, false };
 static bool s_dtr_pulse_detected = false;
-static uint32_t s_last_dtr_reset_time = 0;  // Debounce: track last reset time
-#define DTR_RESET_DEBOUNCE_MS 500  // Minimum time between resets
+static uint32_t s_last_dtr_reset_time = 0;
+// Debounce between accepted rising edges. Small enough that avrdude's
+// open-assert and its later real reset-assert (≈250ms apart on avrdude 6.3,
+// less on newer versions) both get through, but large enough to swallow
+// contact-bounce-style double edges.
+#define DTR_MIN_RESET_INTERVAL_MS 40
 
-// DTR edge locking: only trigger on the first transition direction we see
-// 0 = accept either direction, 1 = only falling (HIGH→LOW), -1 = only rising (LOW→HIGH)
-static int8_t s_dtr_accepted_edge = 0;
-// Post-flash lockout: suppress DTR detection for 2s after flash ends
-// Prevents port-close DTR toggle from re-triggering a flash cycle
+// Post-flash lockout: suppress reset detection briefly after a flash completes
+// so the host's port-close DTR toggle can't immediately re-trigger a reset.
 static uint32_t s_dtr_lockout_until = 0;
 
+// (s_reset_release_at_ms is declared near the DMA globals so task() can see it.)
+
+// Enter "dumb pipe" flash mode and fire the cap-emulation reset. Lightweight:
+// flips flags, clears the parser, and (for AVR) asserts RST now + schedules the
+// release in task(). The heavy crossbar auto-connect is done once by
+// secondSerialHandler()/flashArduino() via the s_dtr_pulse_detected flag.
+static void triggerArduinoFlashReset() {
+    // Stop the running sketch's <j>/<p> command flood from hogging Core 0 and
+    // turn the bridge into a transparent pipe for avrdude RIGHT NOW.
+    flashingArduino = true;
+    asyncPassthroughTagParsingEnabled = false;
+    disableTagParsingWithInactivityTimeout( 8000, 2000 );
+    enterFlashMode();
+    s_dtr_pulse_detected = true;   // secondSerialHandler() does the one-time UART auto-connect
+
+    int rt = jumperlessConfig.serial_1.flash_reset_type;
+    if ( rt == 1 ) {
+        // AVR: assert RST on the real RST net (GPIO 18 / selector 1 - works with
+        // PSRAM installed). Released ~12ms later by the task() timer. Suppress
+        // UART->USB forwarding for the whole pulse and drop the current RX
+        // backlog AND the already-queued CDC1 TX bytes now, so the sketch's
+        // last bytes can't leak to avrdude (a second flush happens at release).
+        s_reset_rx_suppress = true;
+        ring_clear();
+        if ( tud_inited() ) tud_cdc_n_write_clear( ASYNC_PASSTHROUGH_CDC_ITF );
+        SetArduinoResetLine( LOW, 1 );
+        s_reset_release_at_ms = millis() + 12;
+    }
+    // rt == 2 (ESP32): the blocking B1+RST dance is done by flashArduino() on the
+    //   main loop (it can't be a simple GPIO pulse here).
+    // rt == 0: no reset, just a transparent pipe.
+}
+
 void checkDTRState(Adafruit_USBD_CDC& cdc) {
-
-    // if (jumperlessConfig.usb_cdc.ignore_dtr == true) {
-    //     return;
-    // }
-
     bool current_dtr = cdc.dtr();
+    bool prev = s_dtr_state[2];
 
-    // Post-flash lockout: suppress DTR detection entirely
-    if ( s_dtr_lockout_until > 0 ) {
-        if ( millis() < s_dtr_lockout_until ) {
-            // Update state tracking so we don't see a stale edge when lockout expires
-            s_dtr_state[0] = s_dtr_state[1];
-            s_dtr_state[1] = s_dtr_state[2];
-            s_dtr_state[2] = current_dtr;
-            return;
-        }
-        // Lockout expired — reset edge tracking for next cycle
-        s_dtr_lockout_until = 0;
-        s_dtr_accepted_edge = 0;
-    }
+    // Maintain the small history (used by some diagnostics) and detect the edge.
+    s_dtr_state[0] = s_dtr_state[1];
+    s_dtr_state[1] = s_dtr_state[2];
+    s_dtr_state[2] = current_dtr;
 
-    // Shift the array to track state changes
-    if (current_dtr != s_dtr_state[2]) {
-        s_dtr_state[0] = s_dtr_state[1];
-        s_dtr_state[1] = s_dtr_state[2];
-        s_dtr_state[2] = current_dtr;
+    // Cap emulation: only a rising edge (host asserts DTR) resets - like the
+    // series capacitor passing the falling edge of DTR# into the RESET pin.
+    if ( !( prev == false && current_dtr == true ) ) return;
 
-        bool falling = (s_dtr_state[1] == true  && s_dtr_state[2] == false);
-        bool rising  = (s_dtr_state[1] == false && s_dtr_state[2] == true);
+    uint32_t now = millis();
+    if ( now < 4000 ) return;                                        // ignore boot-time toggles
+    if ( s_dtr_lockout_until && now < s_dtr_lockout_until ) return;  // post-flash lockout
+    if ( now - s_last_dtr_reset_time < DTR_MIN_RESET_INTERVAL_MS ) return;
+    s_last_dtr_reset_time = now;
 
-        // Debounce: Ignore pulses during boot and within debounce window
-        uint32_t now = millis();
-        bool debounce_ok = (now > 6000) &&
-                          (now - s_last_dtr_reset_time > DTR_RESET_DEBOUNCE_MS);
-
-        if ((falling || rising) && debounce_ok) {
-            bool should_trigger = false;
-
-            if ( s_dtr_accepted_edge == 0 ) {
-                // First edge this cycle — accept it and lock out the opposite direction
-                s_dtr_accepted_edge = falling ? 1 : -1;
-                should_trigger = true;
-            } else if ( ( s_dtr_accepted_edge == 1 && falling ) ||
-                        ( s_dtr_accepted_edge == -1 && rising ) ) {
-                // Same direction as previously accepted — trigger
-                should_trigger = true;
-            }
-            // else: opposite direction (port-close event) — ignore
-
-            if ( should_trigger ) {
-                s_dtr_pulse_detected = true;
-                s_last_dtr_reset_time = now;
-            }
-
-            // ALL heavy operations (reset, tag parsing, flush, connect) are
-            // deferred to flashArduino() which runs from secondSerialHandler()
-            // in the same main loop iteration. This keeps checkDTRState()
-            // fast and prevents USB stack crashes from long operations
-            // (refreshLocalConnections, addBridgeToState, etc.) running inside
-            // the service dispatch loop without USB servicing.
-        }
-    }
-
+    triggerArduinoFlashReset();
 }
 
 // Set DTR lockout — called after flash completes to suppress port-close DTR
@@ -2279,7 +2325,16 @@ bool checkFlashDone() {
         return true;
     }
 
-    // Priority 3: Hard safety timeout
+    // Priority 3: No-data abort. If avrdude never actually sent anything after
+    // we entered flash mode, the DTR pulse was spurious (port-open toggle, an
+    // App port-accessibility probe, a serial monitor connecting, etc.). Bail
+    // quickly instead of holding the main loop hostage for the full hard
+    // timeout — this is the "hang when the flash doesn't finish" case.
+    if ( !s_any_flash_data && ( now - s_flash_start_time >= FLASH_NO_DATA_TIMEOUT_MS ) ) {
+        return true;
+    }
+
+    // Priority 4: Hard safety timeout
     if ( now - s_flash_start_time >= FLASH_HARD_TIMEOUT_MS ) {
         return true;
     }
@@ -2306,20 +2361,19 @@ static volatile bool s_uart_rx_irq_suspended = false;
 // Command processing state (prevents new commands during execution)
 static volatile bool s_command_processing_active = false;
 
+// In the DMA model these are effectively no-ops. The old IRQ-based RX needed to
+// be suspended during flash-erase / filesystem critical sections (the priority-1
+// ISR could starve USB, or race on shared state). DMA RX has neither problem: it
+// fills a RAM ring with zero CPU and keeps working even during XIP stalls - which
+// is strictly BETTER (it's exactly the data loss the IRQ model suffered). Kept
+// for ABI: many callers (FileCache, FilesystemStuff, configManager, the MP API)
+// wrap operations in suspend/resume pairs.
 void suspendUARTRxIRQ() {
-    if (!s_uart_rx_irq_suspended) {
-        // Disable UART RX interrupt to prevent new bytes during critical operations
-        uart_set_irq_enables(ASYNC_PASSTHROUGH_UART, false, false);
-        s_uart_rx_irq_suspended = true;
-    }
+    s_uart_rx_irq_suspended = true;
 }
 
 void resumeUARTRxIRQ() {
-    if (s_uart_rx_irq_suspended) {
-        // Re-enable UART RX interrupt
-        uart_set_irq_enables(ASYNC_PASSTHROUGH_UART, true, false);
-        s_uart_rx_irq_suspended = false;
-    }
+    s_uart_rx_irq_suspended = false;
 }
 
 bool isUARTRxIRQSuspended() {
@@ -2327,49 +2381,14 @@ bool isUARTRxIRQSuspended() {
 }
 
 void drainUARTRxBuffers() {
-    // Safely drain all UART RX data (HW FIFO + software ring buffer)
-    // CRITICAL: Call after Arduino reset to discard phantom 0xFF bytes.
-    // During reset, the ATmega TX pin goes tri-state and the UART RX line
-    // sees glitches that produce valid-looking 0xFF bytes (idle line = all
-    // bits HIGH, stop bit HIGH = no framing error). These phantom bytes
-    // sit in the ring buffer and get forwarded to avrdude before the real
-    // bootloader response, causing "resp=0xff" on every sync attempt.
-    
-    // Disable BOTH the UART interrupt mask AND the NVIC to fully suppress
-    // any IRQ during the drain. suspendUARTRxIRQ() may have already disabled
-    // the UART mask; we also disable the NVIC for completeness.
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
-    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, false, false );
-    
-    // Drain hardware FIFO
-    uart_hw_t* hw = uart_get_hw( ASYNC_PASSTHROUGH_UART );
-    while ( uart_is_readable( ASYNC_PASSTHROUGH_UART ) ) {
-        (void)hw->dr;  // Discard
-    }
-    
-    // Clear software ring buffers (uses file-scope variables directly)
+    // Discard everything currently buffered. With DMA there's no IRQ to disable
+    // and no HW-FIFO/ring to walk byte-by-byte: the DMA continuously empties the
+    // RX FIFO into the ring, so we just snap the consume index up to the live DMA
+    // write pointer (ring_clear) and reset the TX staging ring. Used after an
+    // Arduino reset to drop the phantom bytes the tri-stated TX pin produces.
     ring_clear();
     tx_ring_clear();
-    
-    // Clear any sticky error flags
-    uint32_t rsr = hw->rsr;
-    if ( rsr ) {
-        hw->rsr = 0xFFFFFFFFu;
-    }
-
-    // Clear pending UART interrupt flags before re-enabling IRQ
-    hw->icr = UART_UARTICR_OEIC_BITS | UART_UARTICR_FEIC_BITS
-            | UART_UARTICR_PEIC_BITS | UART_UARTICR_BEIC_BITS
-            | UART_UARTICR_RTIC_BITS;
-    
-    // Re-enable BOTH mechanisms so UART RX interrupts work again.
-    // CRITICAL: Previous bug — suspendUARTRxIRQ() disables the UART mask
-    // (UARTIMSC.RXIM) but we only re-enabled the NVIC here. The UART never
-    // generated interrupts after reset, so bootloader responses sat in the
-    // HW FIFO forever → avrdude got resp=0x00 (timeout, no data).
-    uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );  // RX=true, TX=false
-    s_uart_rx_irq_suspended = false;  // Clear the suspend flag
-    irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
+    s_uart_rx_irq_suspended = false;
 }
 
 void clearTagParserState() {
@@ -2439,25 +2458,27 @@ bool queueUARTResponse(const String& data) {
 }
 
 void sendPendingUARTResponses() {
-    // CRITICAL: Non-blocking UART transmission
-    // At 115200 baud, each byte takes ~87us. Limit bytes per call to prevent blocking.
-    const uint32_t MAX_BYTES_PER_CALL = 64;  // ~5.5ms max per call
+    // Push command responses into the TX DMA staging ring (zero-CPU drain).
+    // Bounded per call so a large response can't monopolise the staging ring;
+    // the remainder goes out on subsequent calls. tx_ring_push_byte drops if
+    // the ring is momentarily full (rare for these small responses).
+    const uint32_t MAX_BYTES_PER_CALL = 64;
     uint32_t bytesSent = 0;
-    
+    bool pushed = false;
+
     // First, drain the legacy queue (for backwards compatibility)
     while (s_uart_response_count > 0 && bytesSent < MAX_BYTES_PER_CALL) {
         UARTResponseEntry* entry = &s_uart_response_queue[s_uart_response_tail];
         if (entry->pending && entry->read_offset < entry->length) {
-            // Write bytes one at a time, checking FIFO space
             while (entry->read_offset < entry->length && bytesSent < MAX_BYTES_PER_CALL) {
-                if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
-                    uart_putc_raw(ASYNC_PASSTHROUGH_UART, entry->data[entry->read_offset]);
-                    entry->read_offset++;
-                    bytesSent++;
-                } else {
-                    // UART FIFO full, try again next call
+                if (!tx_ring_push_byte(entry->data[entry->read_offset])) {
+                    // Staging ring momentarily full - resume next call.
+                    if (pushed) tx_dma_pump();
                     return;
                 }
+                entry->read_offset++;
+                bytesSent++;
+                pushed = true;
             }
             if (entry->read_offset >= entry->length) {
                 entry->pending = false;
@@ -2468,21 +2489,22 @@ void sendPendingUARTResponses() {
             s_uart_response_count--;
         }
     }
-    
+
     // Second, drain the CommandBuffer outgoing buffer (new system)
     CommandBuffer& cb = CommandBuffer::getInstance();
     while (cb.hasOutgoingData() && bytesSent < MAX_BYTES_PER_CALL) {
-        if (uart_is_writable(ASYNC_PASSTHROUGH_UART)) {
-            int byte = cb.getOutgoingByte();
-            if (byte >= 0) {
-                uart_putc_raw(ASYNC_PASSTHROUGH_UART, (uint8_t)byte);
-                bytesSent++;
-            }
-        } else {
-            // UART FIFO full, try again next call
-            return;
+        int byte = cb.peekOutgoingByte();
+        if (byte < 0) break;
+        if (!tx_ring_push_byte((uint8_t)byte)) {
+            // Staging ring full - leave the byte queued, resume next call.
+            break;
         }
+        cb.getOutgoingByte();  // consume the peeked byte
+        bytesSent++;
+        pushed = true;
     }
+
+    if (pushed) tx_dma_pump();
 }
 
 bool wasCommandFromUART() {
@@ -2655,43 +2677,29 @@ bool waitForLineIdle(uint32_t timeout_ms) {
 // (defined above to gate task() too)
 
 extern "C" void jl_asyncpassthrough_suspend_uart0( void ) {
-// #if JL_UART0_INTEROP_MODE == 1
-//     if ( s_uart_suspended_by_mpy ) return;
-//     // Disable our IRQs and release exclusive handler so shared handlers can be installed safely
-//     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, false );
-//     uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, false, false );
-//     // Disable RX timeout and overrun interrupts we enabled
-//     hw_clear_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
-//     // Release exclusive handler slot (set to null)
-//     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, 0 );
-//     s_uart_suspended_by_mpy = true;
-// #else
-//     (void)s_uart_suspended_by_mpy; // unused
-// #endif
+    if ( s_uart_suspended_by_mpy ) return;
+    // Hand UART0 to MicroPython: stop the DMA bridge and drop the UART's DMA
+    // request lines so MP's own driver isn't disturbed. task() early-returns
+    // while s_uart_suspended_by_mpy is set, so the consumer won't touch the ring.
+    if ( s_rx_dma_chan >= 0 && dma_channel_is_busy( s_rx_dma_chan ) ) dma_channel_abort( s_rx_dma_chan );
+    if ( s_tx_dma_chan >= 0 && dma_channel_is_busy( s_tx_dma_chan ) ) dma_channel_abort( s_tx_dma_chan );
+    s_tx_dma_inflight = 0;
+    uart_get_hw( ASYNC_PASSTHROUGH_UART )->dmacr = 0;
+    s_uart_suspended_by_mpy = true;
 }
 
 extern "C" void jl_asyncpassthrough_resume_uart0( void ) {
-// #if JL_UART0_INTEROP_MODE == 1
-//     if ( !s_uart_suspended_by_mpy ) return;
-//     // Reconfigure UART hardware and restore our IRQ configuration
-//     gpio_set_function( ASYNC_PASSTHROUGH_UART_TX_PIN, GPIO_FUNC_UART );
-//     gpio_set_function( ASYNC_PASSTHROUGH_UART_RX_PIN, GPIO_FUNC_UART );
-
-//     uart_init( ASYNC_PASSTHROUGH_UART, serial1baud );
-//     uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
-//     uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
-
-//     irq_set_exclusive_handler( ASYNC_PASSTHROUGH_UART_IRQ, async_uart_irq_handler );
-//     // Priority 64 (was 0) - allow main loop to get CPU time during fast command streams
-//     irq_set_priority( ASYNC_PASSTHROUGH_UART_IRQ, 64 );
-//     irq_set_enabled( ASYNC_PASSTHROUGH_UART_IRQ, true );
-//     uart_set_irq_enables( ASYNC_PASSTHROUGH_UART, true, false );
-//     hw_set_bits( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->imsc, UART_UARTIMSC_RTIM_BITS | UART_UARTIMSC_OEIM_BITS );
-//     hw_write_masked( &uart_get_hw( ASYNC_PASSTHROUGH_UART )->ifls,
-//                      ( 0u << UART_UARTIFLS_RXIFLSEL_LSB ) | ( 2u << UART_UARTIFLS_TXIFLSEL_LSB ),
-//                      UART_UARTIFLS_RXIFLSEL_BITS | UART_UARTIFLS_TXIFLSEL_BITS );
-//     s_uart_suspended_by_mpy = false;
-// #endif
+    if ( !s_uart_suspended_by_mpy ) return;
+    // Re-take UART0 for the DMA bridge after MicroPython is done with it.
+    gpio_set_function( ASYNC_PASSTHROUGH_UART_TX_PIN, GPIO_FUNC_UART );
+    gpio_set_function( ASYNC_PASSTHROUGH_UART_RX_PIN, GPIO_FUNC_UART );
+    uart_set_format( ASYNC_PASSTHROUGH_UART, 8, 1, UART_PARITY_NONE );
+    uart_set_fifo_enabled( ASYNC_PASSTHROUGH_UART, true );
+    uart_get_hw( ASYNC_PASSTHROUGH_UART )->dmacr =
+        UART_UARTDMACR_TXDMAE_BITS | UART_UARTDMACR_RXDMAE_BITS;
+    setupRxDma();   // re-arm continuous RX ring
+    setupTxDma();   // re-arm TX channel
+    s_uart_suspended_by_mpy = false;
 }
 
 // Expose an override for MicroPython to update UART0 line coding

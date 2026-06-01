@@ -3,19 +3,16 @@
 	"tasks": [
 		{
 			"type": "PlatformIO",
-			"task": "Pre-Debug",
-			"problemMatcher": [
-				"$platformio"
-			],
-			"label": "PlatformIO: Pre-Debug",
-			"server": "${config:openocd.bin}/openocd",
-			"serverArgs": [
-				"-f",
-				"interface/cmsis-dap.cfg",
-				"-f",
-				"target/rp2350.cfg"
-			],
-			//"isBackground": true,
+			"task": "Build",
+			"problemMatcher": ["$platformio"],
+			"label": "PlatformIO: Build"
+		},
+		{
+			"label": "Flash via Probe (SWD)",
+			"detail": "Build + upload the firmware over the Raspberry Pi Debug Probe (CMSIS-DAP).",
+			"type": "shell",
+			"command": "~/.platformio/penv/bin/pio run -e jumperless_v5_debug -t upload",
+			"problemMatcher": ["$platformio"],
 			"presentation": {
 				"echo": true,
 				"reveal": "always",
@@ -23,59 +20,35 @@
 				"panel": "shared",
 				"showReuseMessage": false,
 				"clear": true
-			},
-			//"dependsOrder": "sequence",
-			// "dependsOn": [
-			// 	"stop",
-			// ]
-			
-		},
-		{
-			"label": "Refresh Debug",
-			"dependsOrder": "sequence",
-			"dependsOn": [
-				"stop",
-				"wait",
-				"PlatformIO: Upload",
-				"PlatformIO: Pre-Debug"
-			]
-		},
-		{
-			"label": "stop",
-			"problemMatcher": [
-				
-			],
-			//"isBackground": false,
-			"command": "pkill openocd",
-			"type": "shell"
-
-		},
-		{
-			"label": "wait",
-			//"isBackground": false,
-			"command": "sleep 3",
-			"type": "shell"
-
-		},
-		{
-			"type": "PlatformIO",
-			"task": "Upload",
-			"problemMatcher": [
-				"$platformio"
-			],
-			"label": "PlatformIO: Upload",
-			//"dependsOrder": "sequence",
-			// "dependsOn": [
-			// 	"stop",
-			// ]
-		}
-	],
-		"inputs": [
-			{
-			  "id": "terminate",
-			  "type": "command",
-			  "command": "workbench.action.tasks.terminate",
-			  "args": "terminateAll"
 			}
-		]
-	}
+		},
+		{
+			"label": "Kill OpenOCD",
+			"detail": "Kills any leftover OpenOCD started by PlatformIO so the next debug session can grab the probe. Wired to postDebugTask in launch.json.",
+			"type": "shell",
+			"command": "pkill -f openocd; exit 0",
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "shared",
+				"close": true,
+				"showReuseMessage": false
+			}
+		},
+		{
+			"label": "Flash via USB (UF2/BOOTSEL)",
+			"detail": "Build + upload the firmware over USB to the normal env (preserves user data).",
+			"type": "shell",
+			"command": "~/.platformio/penv/bin/pio run -e jumperless_v5 -t upload",
+			"problemMatcher": ["$platformio"],
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": true,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": true
+			}
+		}
+	]
+}

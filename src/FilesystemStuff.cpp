@@ -3198,6 +3198,17 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
 #ifdef INCLUDE_SIMPLE_FAKE_GPIO_TEST
         { "/python_scripts/examples/simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY, "simple_fake_gpio_test.py", SIMPLE_FAKE_GPIO_TEST_PY_HASHES, SIMPLE_FAKE_GPIO_TEST_PY_HASH_COUNT },
 #endif
+#ifdef INCLUDE_OLEDGUI
+        // oledgui is a library module - provision to /lib (which is ahead of
+        // /examples on sys.path), so `import oledgui` from any script gets it.
+        { "/python_scripts/lib/oledgui.py", OLEDGUI_PY, "oledgui.py", OLEDGUI_PY_HASHES, OLEDGUI_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_OLED_STATS_PAGE
+        { "/python_scripts/examples/oled_stats_page.py", OLED_STATS_PAGE_PY, "oled_stats_page.py", OLED_STATS_PAGE_PY_HASHES, OLED_STATS_PAGE_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_OLED_LAYOUT_EDITOR
+        { "/python_scripts/examples/oled_layout_editor.py", OLED_LAYOUT_EDITOR_PY, "oled_layout_editor.py", OLED_LAYOUT_EDITOR_PY_HASHES, OLED_LAYOUT_EDITOR_PY_HASH_COUNT },
+#endif
 #ifdef INCLUDE_VIPERIDE_REINIT
         { "/python_scripts/examples/viperide_reinit.py", VIPERIDE_REINIT_PY, "viperide_reinit.py", VIPERIDE_REINIT_PY_HASHES, VIPERIDE_REINIT_PY_HASH_COUNT },
 #endif
@@ -3591,6 +3602,15 @@ bool verifyMicroPythonExamples( ) {
 #ifdef INCLUDE_EXCEL_LISTENER
         { "/python_scripts/examples/excel_listener.py", EXCEL_LISTENER_PY, "excel_listener.py", EXCEL_LISTENER_PY_HASHES, EXCEL_LISTENER_PY_HASH_COUNT },
 #endif
+#ifdef INCLUDE_OLEDGUI
+        { "/python_scripts/lib/oledgui.py", OLEDGUI_PY, "oledgui.py", OLEDGUI_PY_HASHES, OLEDGUI_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_OLED_STATS_PAGE
+        { "/python_scripts/examples/oled_stats_page.py", OLED_STATS_PAGE_PY, "oled_stats_page.py", OLED_STATS_PAGE_PY_HASHES, OLED_STATS_PAGE_PY_HASH_COUNT },
+#endif
+#ifdef INCLUDE_OLED_LAYOUT_EDITOR
+        { "/python_scripts/examples/oled_layout_editor.py", OLED_LAYOUT_EDITOR_PY, "oled_layout_editor.py", OLED_LAYOUT_EDITOR_PY_HASHES, OLED_LAYOUT_EDITOR_PY_HASH_COUNT },
+#endif
     };
 
     int totalExamples = sizeof( examples ) / sizeof( examples[ 0 ] );
@@ -3754,7 +3774,10 @@ extern "C" volatile int fc_debug;
 // Set non-zero (via fatFsSetTimingDebug) to log end-to-end direct-write timing.
 extern "C" volatile int spiftl_timing_debug;
 #include "hardware/structs/sio.h"
-#define FSDBG(fmt, ...) do { if (fc_debug || psram_debug) { Serial.printf("[%lu c%d] FS> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); Serial.flush(); } } while(0)
+// No Serial.flush() - a per-line blocking flush in this hot FS path can stall
+// USB CDC servicing and wedge an SRAM-only board under heavy trace output.
+// Lines drain in the background; worst case we lose the last few on a crash.
+#define FSDBG(fmt, ...) do { if (fc_debug || psram_debug) { Serial.printf("[%lu c%d] FS> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); } } while(0)
 
 bool safeFileWriteAllRaw( const char* path, const char* content, size_t content_len,
                           uint32_t timeout_ms ) {

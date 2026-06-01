@@ -448,11 +448,11 @@ bool LogicAnalyzer::setup_adc_for_analog() {
 	for (int i = 0; i < 8; i++) if ((a_mask >> i) & 1) { a_cnt++; adc_rr_mask |= (1u << i); }
 	if (a_cnt == 0) return true; // no analog - don't claim ADC
 
-	// Wait for ADC to be free, then claim it for exclusive use during LA operation
-	while (readingADC) {
+	// Wait for ADC to be free, then claim it for exclusive use during LA operation.
+	// Atomic acquire to match readAdc() (a plain check-then-set races across cores).
+	while (__atomic_test_and_set(&readingADC, __ATOMIC_ACQUIRE)) {
 		tight_loop_contents();
 	}
-	readingADC = true;
 
 	adc_init();
 	// Configure FIFO: EN write results, DREQ_EN, THRESH=1 (trigger DREQ when 1+ samples ready)
@@ -823,7 +823,7 @@ void LogicAnalyzer::stop() {
 		JULSEDEBUG_STA("adc fifo left after stop: %d\n\r", adc_fifo_get_level());
 
 		// Release ADC for other cores to use
-		readingADC = false;
+		__atomic_clear(&readingADC, __ATOMIC_RELEASE);
 	// Reset DMA write addrs and counts to safe defaults
 	if (dig_taddr0) *dig_taddr0 = (uint32_t)dig_half0;
 	if (dig_taddr1) *dig_taddr1 = (uint32_t)dig_half1;

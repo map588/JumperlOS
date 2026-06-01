@@ -20,6 +20,7 @@
 #include "Peripherals.h"
 #include "RotaryEncoder.h"
 #include "oled.h"
+#include "OledGui.h"  // retained OLED screen system (jl_oled_screen_* bridge)
 
 #include "JumperlessDefines.h"
 #include "SafeString.h"
@@ -1772,6 +1773,137 @@ int jl_oled_get_pixel( int x, int y ) {
     if ( !oled.isConnected( ) ) return -1;
     return getDisplay( ).getPixel( x, y );
 }
+
+// =============================================================================
+// OLED GUI (retained screens) - flat handle-based bridge for MicroPython
+// =============================================================================
+// Screen handles are 1-based ints. Element handles encode the owning screen
+// and the element index as (screenHandle << 8) | elementIndex, so a single
+// integer fully identifies an element. The Python wrapper (oledgui.py) builds
+// Screen/Text/Shape classes on top of these.
+extern "C" {
+
+static inline int jl_oled_pack_elem( int screen, int idx ) {
+    if ( screen < 1 || idx < 0 ) return -1;
+    return ( screen << 8 ) | ( idx & 0xFF );
+}
+static inline int jl_oled_elem_screen( int elem ) { return ( elem >> 8 ) & 0xFF; }
+static inline int jl_oled_elem_index( int elem )  { return elem & 0xFF; }
+
+int jl_oled_screen_new( void ) {
+    return oledGuiCreateScreen( );
+}
+
+void jl_oled_screen_free( int screen ) {
+    oledGuiDestroyScreen( screen );
+}
+
+void jl_oled_screen_clear( int screen ) {
+    OledScreen* s = oledGuiGetScreen( screen );
+    if ( s ) s->clearElements( );
+}
+
+int jl_oled_screen_show( int screen, int persist ) {
+    OledScreen* s = oledGuiGetScreen( screen );
+    if ( !s ) return 0;
+    // persist != 0 registers this as the idle screen: it takes the place of the
+    // boot logo (drawn by showJogo32h when the UI returns to idle) and survives
+    // the script/REPL that created it. persist == 0 is a foreground show that is
+    // torn down when the script ends.
+    OledGui::getInstance( ).activate( s, persist != 0 );
+    // Render immediately on this (core0/Python) thread - the background
+    // render service is NORMAL priority and does NOT run while a Python
+    // script blocks in time.sleep (that path only runs CRITICAL services),
+    // so a script that shows a screen and then loops would otherwise never
+    // see it drawn. This uses the same safe flush path as oled_print.
+    OledGui::getInstance( ).renderNow( true );
+    return 1;
+}
+
+void jl_oled_screen_hide( void ) {
+    // Stop rendering AND blank the panel so the screen is visually removed.
+    // Also forget any persistent idle registration - an explicit hide() means
+    // "take it down", so it must not reappear at the next showJogo32h().
+    OledGui::getInstance( ).clearIdle( );
+    OledGui::getInstance( ).hideAndClear( );
+}
+
+void jl_oled_screen_reset( void ) {
+    // Free EVERY screen handle and blank the panel. Call at the start of a
+    // script to cleanly discard any screens a previous run left behind
+    // (otherwise re-running leaks handles until the pool is exhausted).
+    oledGuiShutdownAll( );
+}
+
+int jl_oled_add_text( int screen, const char* text, int x, int y,
+                      const char* font, int size, int halign, int valign, int z ) {
+    OledScreen* s = oledGuiGetScreen( screen );
+    if ( !s ) return -1;
+    int idx = s->addText( text, (int16_t)x, (int16_t)y, font, (uint8_t)( size > 0 ? size : 8 ) );
+    if ( idx < 0 ) return -1;
+    if ( z != 0 ) s->setZ( idx, (int8_t)z );
+    // halign/valign < 0 means "free placement" (use x/y); >=0 enables anchoring.
+    if ( halign >= 0 && valign >= 0 ) {
+        s->setAnchor( idx, (OledHAlign)( halign & 3 ), (OledVAlign)( valign & 3 ) );
+    }
+    return jl_oled_pack_elem( screen, idx );
+}
+
+int jl_oled_add_shape( int screen, int kind, int x, int y, int w, int h,
+                       int filled, int z ) {
+    OledScreen* s = oledGuiGetScreen( screen );
+    if ( !s ) return -1;
+    int idx = s->addShape( (OledShapeKind)( kind & 3 ), (int16_t)x, (int16_t)y,
+                           (int16_t)w, (int16_t)h, filled != 0 );
+    if ( idx < 0 ) return -1;
+    if ( z != 0 ) s->setZ( idx, (int8_t)z );
+    return jl_oled_pack_elem( screen, idx );
+}
+
+int jl_oled_elem_set_str( int elem, const char* prop, const char* value ) {
+    OledScreen* s = oledGuiGetScreen( jl_oled_elem_screen( elem ) );
+    if ( !s ) return 0;
+    bool ok = s->setStrProp( jl_oled_elem_index( elem ), prop, value );
+    if ( ok && OledGui::getInstance( ).active( ) == s ) {
+        OledGui::getInstance( ).renderNow( false );
+    }
+    return ok ? 1 : 0;
+}
+
+int jl_oled_elem_set_int( int elem, const char* prop, int value ) {
+    OledScreen* s = oledGuiGetScreen( jl_oled_elem_screen( elem ) );
+    if ( !s ) return 0;
+    bool ok = s->setIntProp( jl_oled_elem_index( elem ), prop, value );
+    if ( ok && OledGui::getInstance( ).active( ) == s ) {
+        OledGui::getInstance( ).renderNow( false );
+    }
+    return ok ? 1 : 0;
+}
+
+int jl_oled_set_var( const char* name, const char* value ) {
+    OledVars::setStr( name, value );
+    // Re-render so any {name} token on the active screen updates now.
+    OledGui::getInstance( ).renderNow( false );
+    return 1;
+}
+
+int jl_oled_set_var_num( const char* name, float value ) {
+    OledVars::setNum( name, value );
+    OledGui::getInstance( ).renderNow( false );
+    return 1;
+}
+
+int jl_oled_screen_save( int screen, const char* name ) {
+    OledScreen* s = oledGuiGetScreen( screen );
+    if ( !s ) return 0;
+    return oledGuiSaveScreen( s, name ) ? 1 : 0;
+}
+
+int jl_oled_screen_load( const char* name ) {
+    return oledGuiLoadScreen( name );
+}
+
+} // extern "C"
 
 // Arduino Functions
 void jl_arduino_reset( void ) {

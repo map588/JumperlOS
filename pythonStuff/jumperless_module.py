@@ -568,6 +568,21 @@ oled_get_framebuffer_size = _native.oled_get_framebuffer_size
 oled_set_pixel = _native.oled_set_pixel
 oled_get_pixel = _native.oled_get_pixel
 
+# OLED GUI (retained screens) - flat handle API (the Screen/Text/Shape
+# classes below wrap these into a nicer object-oriented interface).
+oled_screen = _native.oled_screen
+oled_screen_free = _native.oled_screen_free
+oled_screen_clear = _native.oled_screen_clear
+oled_screen_show = _native.oled_screen_show
+oled_screen_hide = _native.oled_screen_hide
+oled_screen_reset = _native.oled_screen_reset
+oled_add_text = _native.oled_add_text
+oled_add_shape = _native.oled_add_shape
+oled_set = _native.oled_set
+oled_set_var = _native.oled_set_var
+oled_screen_save = _native.oled_screen_save
+oled_screen_load = _native.oled_screen_load
+
 # Graphic overlay functions
 overlay_set = _native.overlay_set
 overlay_clear = _native.overlay_clear
@@ -637,6 +652,263 @@ def voltage_divider(vin_node, vout_node, gnd_node=GND):
     connect(vout_node, gnd_node)
 
 
+# ============================================================================
+# OLED GUI - retained screen layout (object-oriented wrapper)
+# ============================================================================
+# A Screen holds a list of elements (Text + Shapes). Elements can be free
+# positioned (x/y) or anchored (align). Text may contain {token} templates
+# that auto-update from live values - built-in sources (gpio/adc/dac/uptime/
+# millis/freemem/undo) or anything pushed with set_var(name, value).
+#
+#   from jumperless import Screen, Text, set_var
+#   scr = Screen()
+#   scr.add(Text("ADC0: {adc:0} V", x=0, y=0, font="Pragmatism", size=10))
+#   scr.show()
+#   set_var("status", "ready")        # update a custom {status} token live
+#
+# These classes are also available as `from oledgui import Screen, Text, ...`.
+
+# Horizontal alignment
+ALIGN_LEFT = 0
+ALIGN_CENTER = 1
+ALIGN_RIGHT = 2
+# Vertical alignment
+ALIGN_TOP = 0
+ALIGN_MIDDLE = 1
+ALIGN_BOTTOM = 2
+# Shape kinds
+SHAPE_LINE = 0
+SHAPE_RECT = 1
+SHAPE_FILLED_RECT = 2
+
+
+class _Element:
+    """Base for screen elements. `handle` is assigned when added to a Screen."""
+    def __init__(self):
+        self.handle = -1
+        self._screen = None
+
+    def _set(self, prop, value):
+        # Apply immediately if already attached to a screen; the property is
+        # also stored so it can be (re)applied when added.
+        if self.handle >= 0:
+            oled_set(self.handle, prop, value)
+
+    # Common live-updatable properties
+    def set(self, prop, value):
+        self._set(prop, value)
+        return self
+
+    @property
+    def x(self):
+        return self._x
+    @x.setter
+    def x(self, v):
+        self._x = v
+        self._set("x", v)
+
+    @property
+    def y(self):
+        return self._y
+    @y.setter
+    def y(self, v):
+        self._y = v
+        self._set("y", v)
+
+    @property
+    def z(self):
+        return self._z
+    @z.setter
+    def z(self, v):
+        self._z = v
+        self._set("z", v)
+
+    @property
+    def visible(self):
+        return self._visible
+    @visible.setter
+    def visible(self, v):
+        self._visible = bool(v)
+        self._set("visible", 1 if v else 0)
+
+
+class Text(_Element):
+    """A text element. `text` may contain {token} templates that auto-update.
+
+    Position is absolute (x, y) unless halign/valign are given, in which case
+    the element is anchored (e.g. halign=ALIGN_CENTER centers it horizontally).
+    """
+    def __init__(self, text, x=0, y=0, font="Pragmatism", size=8,
+                 halign=None, valign=None, z=0):
+        super().__init__()
+        self._text = text
+        self._x = x
+        self._y = y
+        self._font = font
+        self._size = size
+        self._halign = halign
+        self._valign = valign
+        self._z = z
+        self._visible = True
+
+    def _create(self, screen_handle):
+        ha = -1 if self._halign is None else self._halign
+        va = -1 if self._valign is None else self._valign
+        self.handle = oled_add_text(screen_handle, self._text, x=self._x, y=self._y,
+                                    font=self._font, size=self._size,
+                                    halign=ha, valign=va, z=self._z)
+        return self.handle
+
+    @property
+    def text(self):
+        return self._text
+    @text.setter
+    def text(self, v):
+        self._text = v
+        self._set("text", v)
+
+    @property
+    def font(self):
+        return self._font
+    @font.setter
+    def font(self, v):
+        self._font = v
+        self._set("font", v)
+
+    @property
+    def size(self):
+        return self._size
+    @size.setter
+    def size(self, v):
+        self._size = v
+        self._set("size", v)
+
+    def anchor(self, halign, valign):
+        """Switch to anchored positioning."""
+        self._halign = halign
+        self._valign = valign
+        self._set("halign", halign)
+        self._set("valign", valign)
+        self._set("anchor", 1)
+        return self
+
+
+class Shape(_Element):
+    """A shape element: line, rectangle outline, or filled rectangle.
+
+    LINE draws from (x, y) to (x + w, y + h). RECT / FILLED_RECT are w x h.
+    """
+    def __init__(self, kind=SHAPE_RECT, x=0, y=0, w=0, h=0, filled=False, z=0):
+        super().__init__()
+        self._kind = kind
+        self._x = x
+        self._y = y
+        self._w = w
+        self._h = h
+        self._filled = filled
+        self._z = z
+        self._visible = True
+
+    def _create(self, screen_handle):
+        self.handle = oled_add_shape(screen_handle, kind=self._kind, x=self._x, y=self._y,
+                                     w=self._w, h=self._h,
+                                     filled=1 if self._filled else 0, z=self._z)
+        return self.handle
+
+    @property
+    def w(self):
+        return self._w
+    @w.setter
+    def w(self, v):
+        self._w = v
+        self._set("w", v)
+
+    @property
+    def h(self):
+        return self._h
+    @h.setter
+    def h(self, v):
+        self._h = v
+        self._set("h", v)
+
+
+def Line(x, y, x2, y2, z=0):
+    """Convenience: a line from (x, y) to (x2, y2)."""
+    return Shape(SHAPE_LINE, x=x, y=y, w=x2 - x, h=y2 - y, z=z)
+
+
+def Rect(x, y, w, h, filled=False, z=0):
+    """Convenience: a rectangle (outline unless filled=True)."""
+    kind = SHAPE_FILLED_RECT if filled else SHAPE_RECT
+    return Shape(kind, x=x, y=y, w=w, h=h, filled=filled, z=z)
+
+
+class Screen:
+    """A retained OLED screen. Add elements, then show() to make it the active
+    display. The background render service keeps {token} text up to date."""
+    def __init__(self):
+        self.handle = oled_screen()
+        if self.handle <= 0:
+            raise RuntimeError("out of OLED screen handles")
+        self.elements = []
+
+    def add(self, element):
+        """Add an element (Text/Shape). Returns the element for chaining."""
+        element._create(self.handle)
+        element._screen = self
+        self.elements.append(element)
+        return element
+
+    def text(self, *args, **kwargs):
+        """Shortcut: create + add a Text in one call; returns the Text."""
+        return self.add(Text(*args, **kwargs))
+
+    def shape(self, *args, **kwargs):
+        """Shortcut: create + add a Shape in one call; returns the Shape."""
+        return self.add(Shape(*args, **kwargs))
+
+    def clear(self):
+        """Remove all elements from the screen."""
+        oled_screen_clear(self.handle)
+        self.elements = []
+
+    def show(self, persist=False):
+        """Make this the active screen (starts live rendering).
+
+        persist=True registers the screen as the idle display: it takes the
+        place of the boot logo when the UI returns to idle, steps aside while
+        other content is shown instead of fighting it, and survives the script
+        that created it (call hide() to take it down). persist=False (default)
+        is a one-shot foreground show that's torn down when the script ends."""
+        oled_screen_show(self.handle, 1 if persist else 0)
+        return self
+
+    def hide(self):
+        """Stop showing this screen and forget any persistent idle registration."""
+        oled_screen_hide()
+
+    def save(self, name):
+        """Save this screen to /screens/<name>.json. Returns True on success."""
+        return oled_screen_save(self.handle, name)
+
+    def free(self):
+        """Release the screen handle."""
+        if self.handle > 0:
+            oled_screen_free(self.handle)
+            self.handle = -1
+
+
+def load_screen(name):
+    """Load /screens/<name>.json into a new Screen. Returns Screen or None."""
+    h = oled_screen_load(name)
+    if h <= 0:
+        return None
+    s = Screen.__new__(Screen)
+    s.handle = h
+    s.elements = []
+    return s
+
+
 # Export all functions and constants for "from jumperless import *"
 __all__ = [
     # DAC Functions
@@ -685,6 +957,14 @@ __all__ = [
     
     # OLED Functions
     'oled_print', 'oled_clear', 'oled_show', 'oled_connect', 'oled_disconnect',
+
+    # OLED GUI (retained screens) - flat API + OO wrapper
+    'oled_screen', 'oled_screen_free', 'oled_screen_clear', 'oled_screen_show',
+    'oled_screen_hide', 'oled_screen_reset', 'oled_add_text', 'oled_add_shape', 'oled_set', 'oled_set_var',
+    'oled_screen_save', 'oled_screen_load',
+    'Screen', 'Text', 'Shape', 'Line', 'Rect', 'load_screen',
+    'ALIGN_LEFT', 'ALIGN_CENTER', 'ALIGN_RIGHT', 'ALIGN_TOP', 'ALIGN_MIDDLE', 'ALIGN_BOTTOM',
+    'SHAPE_LINE', 'SHAPE_RECT', 'SHAPE_FILLED_RECT',
     
     # Probe Functions
     'probe_read', 'read_probe', 'probe_read_blocking', 'probe_read_nonblocking',

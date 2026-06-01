@@ -666,6 +666,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "logic_analyzer") == 0) jumperlessConfig.debug.logic_analyzer = parseBool(value);
             else if (strcmp(key, "arduino") == 0) jumperlessConfig.debug.arduino = parseInt(value);
             else if (strcmp(key, "usb_mass_storage") == 0) jumperlessConfig.debug.usb_mass_storage = parseBool(value);
+            else if (strcmp(key, "show_probe_current") == 0) jumperlessConfig.debug.show_probe_current = parseInt(value);
         } else if (strcmp(section, "routing") == 0) {
             if (strcmp(key, "stack_paths") == 0) {
                 jumperlessConfig.routing.stack_paths = parseInt(value);
@@ -949,31 +950,12 @@ bool saveConfigToFile(const char* filename) {
         return false;
     }
     
-    // Save hardware revision to EEPROM only if changed or invalid (survives config reset)
-    // EEPROM writes are slow and have limited endurance (~100K cycles)
-    bool needsEEPROMCommit = false;
-    
-    int currentRevision = EEPROM.read(REVISIONADDRESS);
-    int currentProbeRev = EEPROM.read(PROBE_REVISIONADDRESS);
-    
-    // Write revision if different or out of range
-    if (currentRevision != jumperlessConfig.hardware.revision || 
-        currentRevision <= 0 || currentRevision > 10) {
-        EEPROM.write(REVISIONADDRESS, jumperlessConfig.hardware.revision);
-        needsEEPROMCommit = true;
-    }
-    
-    // Write probe revision if different or out of range
-    if (currentProbeRev != jumperlessConfig.hardware.probe_revision ||
-        currentProbeRev <= 0 || currentProbeRev > 10) {
-        EEPROM.write(PROBE_REVISIONADDRESS, jumperlessConfig.hardware.probe_revision);
-        needsEEPROMCommit = true;
-    }
-    
-    // Only commit if we actually wrote something
-    if (needsEEPROMCommit) {
-        EEPROM.commit();
-    }
+    // Mirror identity + calibration into the durable EEPROM store. This only
+    // dirties the in-RAM EEPROM buffer and flags a pending commit; the actual
+    // flash commit is deferred to the FileCache flush window (coalesced with a
+    // file save) - NOT done synchronously here (that synchronous commit while
+    // Core 1 was running was the hardfault path).
+    eepromPersistFromConfig();
     
     // Delete existing file if it exists
     if (safeFileExists(filename, 500)) {
@@ -1031,6 +1013,7 @@ bool saveConfigToFile(const char* filename) {
     file.print("logic_analyzer = "); file.print(jumperlessConfig.debug.logic_analyzer ? 1:0); file.println(";");
     file.print("arduino = "); file.print(jumperlessConfig.debug.arduino); file.println(";");
     file.print("usb_mass_storage = "); file.print(jumperlessConfig.debug.usb_mass_storage ? 1:0); file.println(";");
+    file.print("show_probe_current = "); file.print(jumperlessConfig.debug.show_probe_current); file.println(";");
     file.println();
 
     // Write routing settings section
@@ -1205,6 +1188,7 @@ bool configHasChanges() {
     if (jumperlessConfig.debug.logic_analyzer != lastSavedConfig.debug.logic_analyzer) return true;
     if (jumperlessConfig.debug.arduino != lastSavedConfig.debug.arduino) return true;
     if (jumperlessConfig.debug.usb_mass_storage != lastSavedConfig.debug.usb_mass_storage) return true;
+    if (jumperlessConfig.debug.show_probe_current != lastSavedConfig.debug.show_probe_current) return true;
     
     // Routing section
     if (jumperlessConfig.routing.stack_paths != lastSavedConfig.routing.stack_paths) return true;
@@ -2330,6 +2314,11 @@ bool checkAndHandleFirmwareUpdate(void) {
                 sizeof(jumperlessConfig.firmware.last_version) - 1);
         jumperlessConfig.firmware.last_version[sizeof(jumperlessConfig.firmware.last_version) - 1] = '\0';
         
+        // Mirror the new last_version into the durable EEPROM store so update
+        // sensing survives an FS wipe (deferred commit, coalesced with the
+        // config save below).
+        eepromPersistFromConfig();
+
         // Save config with new version
         if (debugConfigSaveTiming) Serial.println("[ConfigSave] TRIGGER: checkAndHandleFirmwareUpdate");
         saveConfig();
@@ -2347,33 +2336,12 @@ bool checkAndHandleFirmwareUpdate(void) {
  * Should be called BEFORE loadConfig() to set hardware defaults
  */
 void loadHardwareFromEEPROM(void) {
-    // Ensure EEPROM is initialized
-    static bool eepromInitialized = false;
-    if (!eepromInitialized) {
-        EEPROM.begin(512);
-        eepromInitialized = true;
-    }
-    
-    // Read hardware revision directly from EEPROM
-    int storedRevision = EEPROM.read(REVISIONADDRESS);
-    int storedProbeRev = EEPROM.read(PROBE_REVISIONADDRESS);
-    
-    // Validate and use stored revision
-    if (storedRevision > 0 && storedRevision <= 10) {
-        jumperlessConfig.hardware.revision = storedRevision;
-        jumperlessConfig.hardware.generation = 5;  // Always V5 for now
-    }
-    
-    // Validate and use stored probe revision
-    if (storedProbeRev > 0 && storedProbeRev <= 10) {
-        jumperlessConfig.hardware.probe_revision = storedProbeRev;
-    }
-    
-    // Update global variables for backward compatibility
-    extern int revisionNumber;
-    extern int probeRevision;
-    revisionNumber = jumperlessConfig.hardware.revision;
-    probeRevision = jumperlessConfig.hardware.probe_revision;
+    // Load the packed EEPROM store (magic+version tagged) and apply hardware
+    // identity to jumperlessConfig BEFORE loadConfig() runs. The full
+    // identity+calibration reconciliation (EEPROM wins for the kept fields, so
+    // they survive an FS wipe) happens in eepromReconcileAfterConfig() AFTER
+    // loadConfig(). See PersistentStuff.cpp for the store layout + migration.
+    eepromStoreLoadAndApplyIdentity();
 }
 
 void loadConfig(void) {
@@ -2497,6 +2465,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("arduino = "); Serial.print(jumperlessConfig.debug.arduino); Serial.println(";");
         if (pasteable == true) Serial.print("`[debug] ");
         Serial.print("usb_mass_storage = "); Serial.print(getStringFromTable(jumperlessConfig.debug.usb_mass_storage, boolTable)); Serial.println(";");
+        if (pasteable == true) Serial.print("`[debug] ");
+        Serial.print("show_probe_current = "); Serial.print(jumperlessConfig.debug.show_probe_current); Serial.println(";");
     }
     cycleTerminalColor();
     // Print routing settings section
@@ -3142,7 +3112,8 @@ bool dacChange = false;
                 Serial.flush();
                 
                 EEPROM.write(FIRSTSTARTUPADDRESS, 0x00);
-                EEPROM.commit();
+                eepromMarkDirty();
+                eepromCommitSafe();  // reboot imminent - commit synchronously (safe envelope)
                 cycleTerminalColor(false, 100.0, true, &Serial, 0, 1);
                 Serial.println("First startup flag cleared.");
                 Serial.flush();
@@ -3311,7 +3282,8 @@ bool dacChange = false;
                     
 
                     EEPROM.write(FIRSTSTARTUPADDRESS, 0x00);
-                    EEPROM.commit();
+                    eepromMarkDirty();
+                    eepromCommitSafe();  // reboot imminent - commit synchronously (safe envelope)
                     cycleTerminalColor(false, 100.0, true,  &Serial, 0, 1);
                     Serial.println("First startup flag cleared.");
                     Serial.flush();
@@ -3490,6 +3462,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "logic_analyzer") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.logic_analyzer);
         else if (strcmp(key, "arduino") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.arduino);
         else if (strcmp(key, "usb_mass_storage") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.usb_mass_storage);
+        else if (strcmp(key, "show_probe_current") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.show_probe_current);
     }
     else if (strcmp(section, "routing") == 0) {
         if (strcmp(key, "stack_paths") == 0) sprintf(oldValue, "%d", jumperlessConfig.routing.stack_paths);
@@ -3637,6 +3610,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "logic_analyzer") == 0) jumperlessConfig.debug.logic_analyzer = parseBool(value);
         else if (strcmp(key, "arduino") == 0) jumperlessConfig.debug.arduino = parseInt(value);
         else if (strcmp(key, "usb_mass_storage") == 0) jumperlessConfig.debug.usb_mass_storage = parseBool(value);
+        else if (strcmp(key, "show_probe_current") == 0) jumperlessConfig.debug.show_probe_current = parseInt(value);
     }
     else if (strcmp(section, "routing") == 0) {
         if (strcmp(key, "stack_paths") == 0) jumperlessConfig.routing.stack_paths = parseInt(value);

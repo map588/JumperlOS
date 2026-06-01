@@ -867,6 +867,64 @@ def oled_get_pixel(x: int, y: int) -> int:
     ...
 
 # ============================================================================
+# OLED GUI (retained screens)
+# ============================================================================
+
+def oled_screen() -> int:
+    """Create a new retained screen; returns a screen handle (>=1) or 0."""
+    ...
+def oled_screen_free(screen: int) -> None: ...
+def oled_screen_clear(screen: int) -> None: ...
+def oled_screen_show(screen: int, persist: bool = False) -> bool:
+    """Make the screen the active display (starts live rendering).
+
+    persist=True registers it as the idle display (takes the boot logo's place,
+    steps aside for other content, and survives the script). persist=False
+    (default) is a one-shot foreground show."""
+    ...
+def oled_screen_hide() -> None: ...
+def oled_screen_reset() -> None:
+    """Free every retained screen and blank the panel (call at script start to discard prior screens)."""
+    ...
+def oled_add_text(screen: int, text: str, x: int = 0, y: int = 0, font: str = "Pragmatism",
+                  size: int = 8, halign: int = -1, valign: int = -1, z: int = 0) -> int:
+    """Add a text element. text may contain {token} templates. Returns an element handle."""
+    ...
+def oled_add_shape(screen: int, kind: int = 1, x: int = 0, y: int = 0, w: int = 0, h: int = 0,
+                   filled: int = 0, z: int = 0) -> int:
+    """Add a shape (0=line, 1=rect outline, 2=filled rect). Returns an element handle."""
+    ...
+def oled_set(elem: int, prop: str, value: Union[int, str]) -> bool:
+    """Set an element property: text/font (str) or x/y/w/h/z/size/visible/anchor/halign/valign/shape/filled (int)."""
+    ...
+def oled_set_var(name: str, value: Union[int, float, str]) -> None:
+    """Push a live value into the variable registry, referenced as {name} in text templates."""
+    ...
+def oled_screen_save(screen: int, name: str) -> bool:
+    """Save the screen to /screens/<name>.json."""
+    ...
+def oled_screen_load(name: str) -> int:
+    """Load /screens/<name>.json into a new screen; returns its handle or 0."""
+    ...
+
+ALIGN_LEFT: int
+ALIGN_CENTER: int
+ALIGN_RIGHT: int
+ALIGN_TOP: int
+ALIGN_MIDDLE: int
+ALIGN_BOTTOM: int
+SHAPE_LINE: int
+SHAPE_RECT: int
+SHAPE_FILLED_RECT: int
+
+# NOTE: The object-oriented OLED layout API (Screen, Text, Shape, Line, Rect,
+# load_screen) is NOT part of the native `jumperless` module - it is pure-Python
+# and lives in `oledgui.py`, built on top of the flat oled_screen()/oled_add_*()
+# functions above. Import it explicitly:  from oledgui import Screen, Text, ...
+# (Declaring those classes here shadowed the real oledgui ones with a less
+# precise signature, so `scr.add(Text(...))` was typed as `Text | Shape`.)
+
+# ============================================================================
 # Probe Functions
 # ============================================================================
 

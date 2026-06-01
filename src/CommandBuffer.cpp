@@ -22,7 +22,9 @@ CommandBuffer& CommandBuffer::getInstance() {
 CommandBuffer& cmdBuffer = CommandBuffer::getInstance();
 
 CommandBuffer::CommandBuffer()
-    : has_pending_command(false)
+    : cmd_q_head(0)
+    , cmd_q_tail(0)
+    , cmd_q_count(0)
     , is_python_command(false)
     , respond_to_uart(false)
     , uart_out_read(0)
@@ -32,116 +34,120 @@ CommandBuffer::CommandBuffer()
     , bytes_queued_to_uart(0)
     , bytes_sent_to_uart(0)
 {
-    memset(pending_command, 0, sizeof(pending_command));
+    memset(cmd_queue, 0, sizeof(cmd_queue));
     memset(uart_out_buffer, 0, sizeof(uart_out_buffer));
 }
 
 // =========================================================================
-// INCOMING: Pending commands
+// INCOMING: Pending commands (ring queue)
 // =========================================================================
 
 bool CommandBuffer::setPendingJCommand(const char* cmd) {
-    if (has_pending_command) {
-        // Already have a pending command - can't accept another
-        // Caller should wait or handle this
+    if (cmd_q_count >= CMD_QUEUE_DEPTH) {
+        // Queue full - drop cleanly (caller resets its parser state).
         return false;
     }
-    
     if (!cmd || strlen(cmd) == 0) {
         return false;
     }
-    
+
+    PendingEntry& e = cmd_queue[cmd_q_tail];
+
     // Copy command (truncate if too long)
     size_t len = strlen(cmd);
     if (len >= CMD_BUFFER_SIZE) {
         len = CMD_BUFFER_SIZE - 1;
     }
-    memcpy(pending_command, cmd, len);
-    pending_command[len] = '\0';
-    
-    is_python_command = false;
-    respond_to_uart = true;  // Commands from UART get response to UART
+    memcpy(e.cmd, cmd, len);
+    e.cmd[len] = '\0';
+    e.is_python = false;
+    e.respond_to_uart = true;  // Commands from UART get response to UART
+
+    cmd_q_tail = (cmd_q_tail + 1) % CMD_QUEUE_DEPTH;
     commands_received++;
-    has_pending_command = true;  // Set flag LAST (memory barrier)
-    
+    cmd_q_count++;  // publish LAST
     return true;
 }
 
 bool CommandBuffer::setPendingPCommand(const char* cmd) {
-    if (has_pending_command) {
+    if (cmd_q_count >= CMD_QUEUE_DEPTH) {
         return false;
     }
-    
     if (!cmd) {
         return false;
     }
-    
+
     // Skip leading whitespace
     while (*cmd == ' ' || *cmd == '\t') {
         cmd++;
     }
-    
+
+    PendingEntry& e = cmd_queue[cmd_q_tail];
+
     // Build command with '>' prefix if not already present
     size_t len = strlen(cmd);
     size_t offset = 0;
-    
     if (cmd[0] != '>') {
-        pending_command[0] = '>';
+        e.cmd[0] = '>';
         offset = 1;
     }
-    
     if (len + offset >= CMD_BUFFER_SIZE) {
         len = CMD_BUFFER_SIZE - offset - 1;
     }
-    memcpy(pending_command + offset, cmd, len);
-    pending_command[offset + len] = '\0';
-    
-    is_python_command = true;
-    respond_to_uart = true;
+    memcpy(e.cmd + offset, cmd, len);
+    e.cmd[offset + len] = '\0';
+    e.is_python = true;
+    e.respond_to_uart = true;
+
+    cmd_q_tail = (cmd_q_tail + 1) % CMD_QUEUE_DEPTH;
     commands_received++;
-    has_pending_command = true;
-    
+    cmd_q_count++;  // publish LAST
     return true;
 }
 
 String CommandBuffer::consumePendingCommand() {
-    if (!has_pending_command) {
+    if (cmd_q_count == 0) {
         return String();
     }
-    
-    String result(pending_command);
-    
-    // Clear command state BUT KEEP respond_to_uart flag!
-    // The flag will be cleared by main loop after command execution completes
-    has_pending_command = false;
-    is_python_command = false;
-    pending_command[0] = '\0';
-    // Note: respond_to_uart is NOT cleared here - it stays set during execution
-    // so that mp_hal_stdout_tx_strn_cooked can capture output for UART
-    
+
+    PendingEntry& e = cmd_queue[cmd_q_head];
+    String result(e.cmd);
+
+    // Latch per-command flags for the command now being executed.
+    is_python_command = e.is_python;
+    respond_to_uart = e.respond_to_uart;  // stays set during execution for UART capture
+
+    cmd_q_head = (cmd_q_head + 1) % CMD_QUEUE_DEPTH;
+    cmd_q_count--;
     return result;
 }
 
 const char* CommandBuffer::consumePendingCommandPtr() {
-    if (!has_pending_command) {
+    if (cmd_q_count == 0) {
         return nullptr;
     }
-    
-    // Clear command state BUT KEEP respond_to_uart flag and buffer contents!
-    // The buffer remains valid until next setPending*Command() call
-    has_pending_command = false;
-    is_python_command = false;
-    // Note: Do NOT clear pending_command - caller needs to read it
-    // Note: respond_to_uart is NOT cleared here
-    
-    return pending_command;
+
+    uint8_t idx = cmd_q_head;
+    PendingEntry& e = cmd_queue[idx];
+
+    // Latch per-command flags for the command now being executed.
+    is_python_command = e.is_python;
+    respond_to_uart = e.respond_to_uart;
+
+    // Advance head/count, but the entry's buffer stays intact until the producer
+    // wraps all the way around (CMD_QUEUE_DEPTH more pushes) - far longer than a
+    // single command execution - so the returned pointer is safe to use.
+    cmd_q_head = (cmd_q_head + 1) % CMD_QUEUE_DEPTH;
+    cmd_q_count--;
+    return e.cmd;
 }
 
 void CommandBuffer::clearPendingCommand() {
-    has_pending_command = false;
+    cmd_q_head = 0;
+    cmd_q_tail = 0;
+    cmd_q_count = 0;
     is_python_command = false;
     respond_to_uart = false;  // Only clear respond_to_uart when explicitly called
-    pending_command[0] = '\0';
 }
 
 // =========================================================================

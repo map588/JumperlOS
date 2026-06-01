@@ -21,6 +21,9 @@
 #define INCLUDE_LED_BRIGHTNESS_CONTROL
 #define INCLUDE_NODE_CONNECTIONS
 #define INCLUDE_OLED_DEMO
+#define INCLUDE_OLED_LAYOUT_EDITOR
+#define INCLUDE_OLED_STATS_PAGE
+#define INCLUDE_OLEDGUI
 #define INCLUDE_OSCILLOSCOPE
 #define INCLUDE_OUTPUT_TEST
 #define INCLUDE_PSRAM_TEST
@@ -56,6 +59,9 @@
 #undef INCLUDE_LED_BRIGHTNESS_CONTROL
 #undef INCLUDE_NODE_CONNECTIONS
 #undef INCLUDE_OLED_DEMO
+#undef INCLUDE_OLED_LAYOUT_EDITOR
+#undef INCLUDE_OLED_STATS_PAGE
+#undef INCLUDE_OLEDGUI
 #undef INCLUDE_OSCILLOSCOPE
 #undef INCLUDE_OUTPUT_TEST
 #undef INCLUDE_PSRAM_TEST
@@ -886,6 +892,630 @@ oled_print(text)
 )";
 const uint32_t OLED_DEMO_PY_HASHES[1] = { 0xB1547810 };
 const int OLED_DEMO_PY_HASH_COUNT = 1;
+#endif
+
+#ifdef INCLUDE_OLED_LAYOUT_EDITOR
+const char* OLED_LAYOUT_EDITOR_PY = R"===("""
+OLED layout editor (probe pads + clickwheel + terminal)
+=======================================================
+Design a 2-line OLED layout on the hardware, then save it to JSON so you can
+read off the font / size / position values to bake into native code.
+
+Controls:
+  - Probe-tap a TOP-row pad (1-30)    -> move the selected text to the TOP line
+  - Probe-tap a BOTTOM-row pad (31-60) -> move it to the BOTTOM line
+        pad 1 / 31  = left justified
+        pad 30 / 60 = right justified
+        in between  = slide along that line
+  - Probe-tap a TOP rail pad (+ or GND)    -> nudge the selected text UP 1 px
+  - Probe-tap a BOTTOM rail pad (+ or GND) -> nudge it DOWN 1 px (hold to repeat)
+  - Clickwheel turn   -> change the selected text's font SIZE
+  - Clickwheel press  -> select the next text box
+  - Probe CONNECT btn -> cycle the selected text's FONT
+  - Probe REMOVE btn  -> save the layout to /screens/layout.json
+  - Type in this terminal then Enter -> set the selected text's TEXT
+  - Ctrl-C            -> quit (clears the OLED)
+
+The currently selected box is highlighted with a rectangle.
+"""
+
+import time
+import sys
+import oledgui
+from oledgui import *      # Screen, Text, ALIGN_*, set_var, reset, ...
+from jumperless import *   # read_probe, NO_PAD, clickwheel_*, check_button, BUTTON_*, rail pads, ...
+
+# Discard any screens a previous run left active (so re-running is clean).
+oledgui.reset()
+
+FONTS = ["Eurostile", "Pragmatism", "Jokerman", "Comic Sans",
+         "Courier New", "New Science", "Berkeley Mono", "Iosevka Regular"]
+SIZE_MIN, SIZE_MAX = 5, 40
+
+# Rail pads (probe), used to nudge the selected text vertically by 1 px.
+# Top rails move it up; bottom rails move it down. Values come from the probe
+# pad constants (TOP_RAIL_PAD=101, BOTTOM_RAIL_PAD=102, TOP_GND_PAD=104, ...).
+TOP_NUDGE_PADS = (int(TOP_RAIL_PAD), int(BOTTOM_RAIL_PAD))
+BOT_NUDGE_PADS = (int(TOP_GND_PAD), int(BOTTOM_GND_PAD))
+NUDGE_THROTTLE_MS = 10   # while a rail pad is held, step at most this often
+
+scr = Screen()
+boxes = [
+    scr.add(Text("Text 1", x=0, y=0, font="Eurostile",  size=10, halign=ALIGN_LEFT, valign=ALIGN_TOP)),
+    scr.add(Text("Text 2", x=0, y=0, font="Pragmatism", size=10, halign=ALIGN_LEFT, valign=ALIGN_BOTTOM)),
+]
+# One font-cycle index per box, derived from each box's starting font so this
+# stays correct no matter how many boxes are in the list above (a hardcoded
+# [0, 1] used to IndexError as soon as a third box was added).
+font_idx = [FONTS.index(b.font) if b.font in FONTS else 0 for b in boxes]
+sel = 0
+
+
+def refresh_selection():
+    for i, b in enumerate(boxes):
+        b.box = (i == sel)
+
+
+def place(box, pad):
+    """Move `box` to the line + horizontal position implied by a probe pad."""
+    if pad <= 30:
+        local, valign = pad, ALIGN_TOP
+    else:
+        local, valign = pad - 30, ALIGN_BOTTOM
+    if local <= 1:
+        box.anchor(ALIGN_LEFT, valign)          # left justified
+    elif local >= 30:
+        box.anchor(ALIGN_RIGHT, valign)         # right justified
+    else:
+        box.x = int((local - 1) * 110 / 29)     # slide along the line
+        box.anchor(ALIGN_FREE, valign)
+
+
+def nudge_y(box, dy):
+    """Move `box` vertically by `dy` pixels. Switches the vertical placement to
+    free/absolute (keeping the current horizontal anchor) so it can step pixel
+    by pixel. The first nudge off a TOP/BOTTOM line seeds y from that edge."""
+    if box._valign != ALIGN_FREE:
+        if box._valign == ALIGN_BOTTOM:
+            box._y = 32 - box._size
+        elif box._valign == ALIGN_MIDDLE:
+            box._y = (32 - box._size) // 2
+        else:                                    # TOP (or unset)
+            box._y = 0
+    y = box._y + dy
+    if y < 0:
+        y = 0
+    elif y > 31:
+        y = 31
+    box.y = y                                    # absolute y
+    ha = box._halign if box._halign is not None else ALIGN_LEFT
+    box.anchor(ha, ALIGN_FREE)                   # keep H anchor, free V
+
+
+# --- non-blocking terminal line reader (best effort) -----------------------
+try:
+    import select
+    _poll = select.poll()
+    _poll.register(sys.stdin, select.POLLIN)
+except Exception:
+    _poll = None
+_inbuf = ""
+
+
+def prompt_text():
+    """Print the text-entry prompt."""
+    print("Enter new text: ", end="")
+
+
+def poll_line():
+    """Return a typed line (without newline) on Enter, else None. Echoes typed
+    characters so you can see what you're entering."""
+    global _inbuf
+    if _poll is None:
+        return None
+    try:
+        if not _poll.poll(0):
+            return None
+        ch = sys.stdin.read(1)
+    except Exception:
+        return None
+    if not ch:
+        return None
+    if ch == "\x03":                 # Ctrl-C
+        raise KeyboardInterrupt
+    if ch in ("\n", "\r"):
+        line, _inbuf = _inbuf, ""
+        print()                      # finish the prompt line
+        return line
+    if ch in ("\x08", "\x7f"):       # backspace
+        if _inbuf:
+            _inbuf = _inbuf[:-1]
+            print("\b \b", end="")   # erase the last echoed char
+        return None
+    _inbuf += ch
+    print(ch, end="")                # echo
+    return None
+
+
+refresh_selection()
+scr.show()
+
+clickwheel_reset_position()
+last_pos = clickwheel_get_position()
+lastBtn = BUTTON_NONE
+lastBtnTime = 0
+lastBtnTimeout = 500
+
+lastClick = CLICKWHEEL_IDLE
+lastClickTime = 0
+lastClickTimeout = 500
+
+lastNudgeTime = 0
+
+print("Layout editor:")
+print("  tap pads 1-30 (top) / 31-60 (bottom) to position the selected box")
+print("  tap rail pads to nudge it vertically 1px (top rails=up, bottom rails=down)")
+print("  wheel=size  press=next box  CONNECT=font  REMOVE=save  type+Enter=text  Ctrl-C=quit")
+prompt_text()
+
+try:
+    while True:
+        # Probe pad -> position the selected box.
+        pad = read_probe(False)
+        if pad != NO_PAD:
+            p = int(pad)
+            if 1 <= p <= 60:
+                place(boxes[sel], p)
+            elif (p in TOP_NUDGE_PADS or p in BOT_NUDGE_PADS):
+                # Rail pads nudge the selected text vertically by 1 px
+                # (top rails up, bottom rails down), throttled while held.
+                if time.ticks_ms() - lastNudgeTime > NUDGE_THROTTLE_MS:
+                    nudge_y(boxes[sel], -1 if p in TOP_NUDGE_PADS else 1)
+                    lastNudgeTime = time.ticks_ms()
+
+        # Clickwheel turn -> font size of selected box.
+        pos = clickwheel_get_position()
+        d = pos - last_pos
+        if d != 0:
+            last_pos = pos
+            s = boxes[sel].size + d
+            s = SIZE_MIN if s < SIZE_MIN else SIZE_MAX if s > SIZE_MAX else s
+            boxes[sel].size = s
+
+        # Clickwheel press -> select next box.
+        if clickwheel_get_button() == CLICKWHEEL_PRESSED and lastClick != CLICKWHEEL_PRESSED:
+            sel = (sel + 1) % len(boxes)
+            refresh_selection()
+            lastClick = CLICKWHEEL_PRESSED
+            lastClickTime = time.ticks_ms()
+
+        # Probe buttons: CONNECT cycles font, REMOVE saves.
+        # force_service("ProbeButton")
+        
+        btn = check_button()
+        if btn == BUTTON_CONNECT and lastBtn != BUTTON_CONNECT:
+            font_idx[sel] = (font_idx[sel] + 1) % len(FONTS)
+            boxes[sel].font = FONTS[font_idx[sel]]
+            lastBtn = BUTTON_CONNECT
+            lastBtnTime = time.ticks_ms()
+        elif btn == BUTTON_REMOVE and lastBtn != BUTTON_REMOVE:
+            if scr.save("layout"):
+                print("saved -> /screens/layout.json")
+                lastBtn = BUTTON_REMOVE
+                lastBtnTime = time.ticks_ms()
+
+        if time.ticks_ms() - lastBtnTime > lastBtnTimeout:
+            lastBtn = BUTTON_NONE
+
+        if time.ticks_ms() - lastClickTime > lastClickTimeout:
+            lastClick = CLICKWHEEL_IDLE
+
+        # Terminal text -> set selected box text (then re-prompt).
+        line = poll_line()
+        if line is not None:
+            if line:
+                boxes[sel].text = line
+            prompt_text()
+
+        time.sleep_ms(20)
+finally:
+    scr.hide()
+    scr.free()
+    print("editor stopped, OLED cleared")
+)===";
+const uint32_t OLED_LAYOUT_EDITOR_PY_HASHES[7] = { 0xA9B7B1E3, 0xABBB23E5, 0x6634AF66, 0x9DB9D3EA, 0xE6C77EA2, 0xBDE018FA, 0xA8402742 };
+const int OLED_LAYOUT_EDITOR_PY_HASH_COUNT = 7;
+#endif
+
+#ifdef INCLUDE_OLED_STATS_PAGE
+const char* OLED_STATS_PAGE_PY = R"("""
+OLED live stats page
+=====================
+Builds a retained OLED screen with live-updating readouts and shows it as a
+PERSISTENT idle page (show(persist=True)). It takes the place of the boot logo:
+whenever the UI returns to idle (e.g. after leaving a menu) it reappears, it
+steps aside while other content is shown instead of fighting it, and it keeps
+updating in the background even after this script ends - no redraw loop needed.
+
+Text {tokens} auto-resolve from:
+  - built-in sources: {adc:N}, {gpio:N}, {dac:N}, {uptime}, {freemem}, {undo}
+  - custom values you push with set_var("name", value)
+
+Run it, then watch the top OLED. Change a GPIO or ADC input and the numbers
+update on their own. Open a menu and the menu shows cleanly; leave it and the
+stats page comes back.
+"""
+
+import time
+import oledgui
+from oledgui import Screen, Text, Line, set_var, ALIGN_CENTER, ALIGN_TOP
+
+# Discard any screen a previous run left active so re-running doesn't leak
+# handles. (The page below is intentionally left persistent on exit.)
+oledgui.reset()
+
+scr = Screen()
+
+# Title centered along the top, with a divider line beneath it.
+scr.add(Text("JUMPERLESS", font="Pragmatism", size=5,
+             halign=ALIGN_CENTER, valign=ALIGN_TOP))
+scr.add(Line(0, 4, 34, 4))
+scr.add(Line(94, 4, 127, 4))
+
+# Live readouts (free-positioned). These re-resolve every render tick.
+scr.add(Text("{adc:0}V {adc:1}V {adc:2}V {adc:3}V", x=0, y=10, font="Pragmatism", size=5))
+scr.add(Text("uptime {uptime}", x=50, y=18, font="Pragmatism", size=6))
+
+# # # A custom value pushed from code, shown on the right.
+# status = scr.add(Text("{status}", x=60, y=14, font="Pragmatism", size=6))
+
+# persist=True: register this as the idle screen so it survives this script and
+# takes the logo's place when the UI is idle. (Without persist it would only be
+# a one-shot foreground show that's dropped once anything else draws.)
+scr.show(persist=True)
+set_var("status", "ready")
+
+# This screen is PERSISTENT: built-in tokens ({adc:0}, {uptime}) keep updating
+# on their own in the background even after this script exits. The loop below
+# just demonstrates pushing a custom value; Ctrl-C stops the loop and LEAVES the
+# page registered as the idle display.
+#
+# To take it down later, from the REPL:
+#     import oledgui; oledgui.hide()
+n = 0
+try:
+    while True:
+        set_var("status", "n" + str(n))
+        n = (n + 1) % 1000
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("stats page left running; call oledgui.hide() to clear it")
+)";
+const uint32_t OLED_STATS_PAGE_PY_HASHES[5] = { 0x93D2F737, 0x6FAAF5CD, 0x1568F456, 0xBCAE120A, 0x3CC090AF };
+const int OLED_STATS_PAGE_PY_HASH_COUNT = 5;
+#endif
+
+#ifdef INCLUDE_OLEDGUI
+const char* OLEDGUI_PY = R"("""
+oledgui - object-oriented OLED screen layout for Jumperless
+===========================================================
+
+A friendly object-oriented wrapper over the native retained-screen API
+(oled_screen, oled_add_text, oled_add_shape, oled_set, oled_set_var, ...).
+
+    from oledgui import Screen, Text, Rect, set_var
+
+    scr = Screen()
+    scr.add(Text("ADC0: {adc:0} V", x=0, y=0, font="Pragmatism", size=10))
+    scr.add(Rect(0, 0, 128, 32))            # border
+    scr.show()
+
+Text may contain {token} templates that update automatically in the
+background:
+  - built-in sources: {gpio:N}, {adc:N}, {dac:N}, {uptime}, {millis},
+    {freemem}, {undo}
+  - custom values pushed from code: set_var("name", value) -> {name}
+
+Screens can be saved/loaded as JSON (one self-contained file per screen):
+  scr.save("mylayout")            # -> /screens/mylayout.json
+  scr = load_screen("mylayout")
+
+This module is self-contained: it uses only the native flat functions from
+the built-in `jumperless` module, so `import oledgui` works directly.
+"""
+
+from jumperless import (
+    oled_screen as _screen_new,
+    oled_screen_free as _screen_free,
+    oled_screen_clear as _screen_clear,
+    oled_screen_show as _screen_show,
+    oled_screen_hide as _screen_hide,
+    oled_screen_reset as _screen_reset,
+    oled_add_text as _add_text,
+    oled_add_shape as _add_shape,
+    oled_set as _set,
+    oled_set_var as set_var,
+    oled_screen_save as _screen_save,
+    oled_screen_load as _screen_load,
+)
+
+# Horizontal alignment
+ALIGN_LEFT = 0
+ALIGN_CENTER = 1
+ALIGN_RIGHT = 2
+# Vertical alignment
+ALIGN_TOP = 0
+ALIGN_MIDDLE = 1
+ALIGN_BOTTOM = 2
+# FREE: use the element's absolute x (for H) or y (for V) on that axis, so it
+# can slide continuously while the other axis stays anchored.
+ALIGN_FREE = 3
+# Shape kinds
+SHAPE_LINE = 0
+SHAPE_RECT = 1
+SHAPE_FILLED_RECT = 2
+
+
+class _Element:
+    """Base for screen elements. `handle` is assigned when added to a Screen."""
+    def __init__(self):
+        self.handle = -1
+        self._screen = None
+
+    def _apply(self, prop, value):
+        if self.handle >= 0:
+            _set(self.handle, prop, value)
+
+    def set(self, prop, value):
+        self._apply(prop, value)
+        return self
+
+    @property
+    def x(self):
+        return self._x
+    @x.setter
+    def x(self, v):
+        self._x = v
+        self._apply("x", v)
+
+    @property
+    def y(self):
+        return self._y
+    @y.setter
+    def y(self, v):
+        self._y = v
+        self._apply("y", v)
+
+    @property
+    def z(self):
+        return self._z
+    @z.setter
+    def z(self, v):
+        self._z = v
+        self._apply("z", v)
+
+    @property
+    def visible(self):
+        return self._visible
+    @visible.setter
+    def visible(self, v):
+        self._visible = bool(v)
+        self._apply("visible", 1 if v else 0)
+
+
+class Text(_Element):
+    """A text element. `text` may contain {token} templates that auto-update.
+
+    Position is absolute (x, y) unless halign/valign are given, in which case
+    the element is anchored (e.g. halign=ALIGN_CENTER centers it horizontally).
+    """
+    def __init__(self, text, x=0, y=0, font="Pragmatism", size=8,
+                 halign=None, valign=None, z=0):
+        super().__init__()
+        self._text = text
+        self._x = x
+        self._y = y
+        self._font = font
+        self._size = size
+        self._halign = halign
+        self._valign = valign
+        self._z = z
+        self._visible = True
+
+    def _create(self, screen_handle):
+        ha = -1 if self._halign is None else self._halign
+        va = -1 if self._valign is None else self._valign
+        self.handle = _add_text(screen_handle, self._text, x=self._x, y=self._y,
+                                font=self._font, size=self._size,
+                                halign=ha, valign=va, z=self._z)
+        return self.handle
+
+    @property
+    def text(self):
+        return self._text
+    @text.setter
+    def text(self, v):
+        self._text = v
+        self._apply("text", v)
+
+    @property
+    def font(self):
+        return self._font
+    @font.setter
+    def font(self, v):
+        self._font = v
+        self._apply("font", v)
+
+    @property
+    def size(self):
+        return self._size
+    @size.setter
+    def size(self, v):
+        self._size = v
+        self._apply("size", v)
+
+    def anchor(self, halign, valign):
+        """Switch to anchored positioning. Either axis may be ALIGN_FREE to use
+        the element's absolute x/y on that axis (continuous positioning)."""
+        self._halign = halign
+        self._valign = valign
+        self._apply("halign", halign)
+        self._apply("valign", valign)
+        self._apply("anchor", 1)
+        return self
+
+    @property
+    def box(self):
+        return getattr(self, "_box", False)
+    @box.setter
+    def box(self, v):
+        self._box = bool(v)
+        self._apply("box", 1 if v else 0)
+
+
+class Shape(_Element):
+    """A shape element: line, rectangle outline, or filled rectangle.
+
+    LINE draws from (x, y) to (x + w, y + h). RECT / FILLED_RECT are w x h.
+    """
+    def __init__(self, kind=SHAPE_RECT, x=0, y=0, w=0, h=0, filled=False, z=0):
+        super().__init__()
+        self._kind = kind
+        self._x = x
+        self._y = y
+        self._w = w
+        self._h = h
+        self._filled = filled
+        self._z = z
+        self._visible = True
+
+    def _create(self, screen_handle):
+        self.handle = _add_shape(screen_handle, kind=self._kind, x=self._x, y=self._y,
+                                 w=self._w, h=self._h,
+                                 filled=1 if self._filled else 0, z=self._z)
+        return self.handle
+
+    @property
+    def w(self):
+        return self._w
+    @w.setter
+    def w(self, v):
+        self._w = v
+        self._apply("w", v)
+
+    @property
+    def h(self):
+        return self._h
+    @h.setter
+    def h(self, v):
+        self._h = v
+        self._apply("h", v)
+
+
+def Line(x, y, x2, y2, z=0):
+    """Convenience: a line from (x, y) to (x2, y2)."""
+    return Shape(SHAPE_LINE, x=x, y=y, w=x2 - x, h=y2 - y, z=z)
+
+
+def Rect(x, y, w, h, filled=False, z=0):
+    """Convenience: a rectangle (outline unless filled=True)."""
+    kind = SHAPE_FILLED_RECT if filled else SHAPE_RECT
+    return Shape(kind, x=x, y=y, w=w, h=h, filled=filled, z=z)
+
+
+class Screen:
+    """A retained OLED screen. Add elements, then show() to make it the active
+    display. The background render service keeps {token} text up to date."""
+    def __init__(self):
+        self.handle = _screen_new()
+        if self.handle <= 0:
+            raise RuntimeError("out of OLED screen handles")
+        self.elements = []
+
+    def add(self, element):
+        """Add an element (Text/Shape). Returns the element for chaining."""
+        element._create(self.handle)
+        element._screen = self
+        self.elements.append(element)
+        return element
+
+    def text(self, *args, **kwargs):
+        """Shortcut: create + add a Text in one call; returns the Text."""
+        return self.add(Text(*args, **kwargs))
+
+    def shape(self, *args, **kwargs):
+        """Shortcut: create + add a Shape in one call; returns the Shape."""
+        return self.add(Shape(*args, **kwargs))
+
+    def clear(self):
+        """Remove all elements from the screen."""
+        _screen_clear(self.handle)
+        self.elements = []
+
+    def show(self, persist=False):
+        """Make this the active screen (starts live rendering).
+
+        persist=False (default): a one-shot foreground show. The screen is
+        displayed and live-updates while it's on top, but it does NOT come back
+        on its own once other content (a menu, a toast, ...) draws over it, and
+        it's torn down when the Python script/REPL session ends.
+
+        persist=True: the screen takes the place of the boot logo as the idle
+        display. Whenever the UI returns to idle (e.g. leaving a menu) it is
+        redrawn automatically, it steps aside while other content is shown
+        instead of fighting it, and it survives the script that created it.
+        Call oledgui.hide() to take it down."""
+        _screen_show(self.handle, 1 if persist else 0)
+        return self
+
+    def hide(self):
+        """Stop showing this screen and forget any persistent idle registration
+        so it won't reappear when the UI next returns to idle."""
+        _screen_hide()
+
+    def save(self, name):
+        """Save this screen to /screens/<name>.json. Returns True on success."""
+        return _screen_save(self.handle, name)
+
+    def free(self):
+        """Release the screen handle."""
+        if self.handle > 0:
+            _screen_free(self.handle)
+            self.handle = -1
+
+
+def load_screen(name):
+    """Load /screens/<name>.json into a new Screen. Returns Screen or None."""
+    h = _screen_load(name)
+    if h <= 0:
+        return None
+    s = Screen.__new__(Screen)
+    s.handle = h
+    s.elements = []
+    return s
+
+
+def hide():
+    """Hide any active screen (module-level convenience)."""
+    _screen_hide()
+
+
+def reset():
+    """Free EVERY screen and blank the panel. Call at the start of a script to
+    cleanly discard screens a previous run left active (re-running otherwise
+    leaks screen handles until the pool is exhausted)."""
+    _screen_reset()
+
+
+__all__ = [
+    "Screen", "Text", "Shape", "Line", "Rect", "load_screen", "set_var", "hide", "reset",
+    "ALIGN_LEFT", "ALIGN_CENTER", "ALIGN_RIGHT", "ALIGN_FREE",
+    "ALIGN_TOP", "ALIGN_MIDDLE", "ALIGN_BOTTOM",
+    "SHAPE_LINE", "SHAPE_RECT", "SHAPE_FILLED_RECT",
+]
+)";
+const uint32_t OLEDGUI_PY_HASHES[3] = { 0xE919633C, 0xC3CCF279, 0xCA1A418F };
+const int OLEDGUI_PY_HASH_COUNT = 3;
 #endif
 
 #ifdef INCLUDE_OSCILLOSCOPE
@@ -2707,6 +3337,21 @@ oled_get_framebuffer_size = _native.oled_get_framebuffer_size
 oled_set_pixel = _native.oled_set_pixel
 oled_get_pixel = _native.oled_get_pixel
 
+# OLED GUI (retained screens) - flat handle API (the Screen/Text/Shape
+# classes below wrap these into a nicer object-oriented interface).
+oled_screen = _native.oled_screen
+oled_screen_free = _native.oled_screen_free
+oled_screen_clear = _native.oled_screen_clear
+oled_screen_show = _native.oled_screen_show
+oled_screen_hide = _native.oled_screen_hide
+oled_screen_reset = _native.oled_screen_reset
+oled_add_text = _native.oled_add_text
+oled_add_shape = _native.oled_add_shape
+oled_set = _native.oled_set
+oled_set_var = _native.oled_set_var
+oled_screen_save = _native.oled_screen_save
+oled_screen_load = _native.oled_screen_load
+
 # ============================================================================
 # Probe Functions
 # ============================================================================
@@ -3073,6 +3718,260 @@ fs_cwd = _native.fs_cwd
 jfs = _native.jfs
 
 
+# ============================================================================
+# OLED GUI - retained screen layout (object-oriented wrapper)
+# ============================================================================
+# A Screen holds a list of elements (Text + Shapes). Elements can be free
+# positioned (x/y) or anchored (align). Text may contain {token} templates
+# that auto-update from live values - built-in sources (gpio/adc/dac/uptime/
+# millis/freemem/undo) or anything pushed with set_var(name, value).
+#
+#   from jumperless import Screen, Text, set_var
+#   scr = Screen()
+#   scr.add(Text("ADC0: {adc:0} V", x=0, y=0, font="Pragmatism", size=10))
+#   scr.show()
+#   set_var("status", "ready")        # update a custom {status} token live
+#
+# These classes are also available as `from oledgui import Screen, Text, ...`.
+
+# Horizontal alignment
+ALIGN_LEFT = 0
+ALIGN_CENTER = 1
+ALIGN_RIGHT = 2
+# Vertical alignment
+ALIGN_TOP = 0
+ALIGN_MIDDLE = 1
+ALIGN_BOTTOM = 2
+# Shape kinds
+SHAPE_LINE = 0
+SHAPE_RECT = 1
+SHAPE_FILLED_RECT = 2
+
+
+class _Element:
+    """Base for screen elements. `handle` is assigned when added to a Screen."""
+    def __init__(self):
+        self.handle = -1
+        self._screen = None
+
+    def _set(self, prop, value):
+        if self.handle >= 0:
+            oled_set(self.handle, prop, value)
+
+    def set(self, prop, value):
+        self._set(prop, value)
+        return self
+
+    @property
+    def x(self):
+        return self._x
+    @x.setter
+    def x(self, v):
+        self._x = v
+        self._set("x", v)
+
+    @property
+    def y(self):
+        return self._y
+    @y.setter
+    def y(self, v):
+        self._y = v
+        self._set("y", v)
+
+    @property
+    def z(self):
+        return self._z
+    @z.setter
+    def z(self, v):
+        self._z = v
+        self._set("z", v)
+
+    @property
+    def visible(self):
+        return self._visible
+    @visible.setter
+    def visible(self, v):
+        self._visible = bool(v)
+        self._set("visible", 1 if v else 0)
+
+
+class Text(_Element):
+    """A text element. `text` may contain {token} templates that auto-update.
+
+    Position is absolute (x, y) unless halign/valign are given, in which case
+    the element is anchored (e.g. halign=ALIGN_CENTER centers it horizontally).
+    """
+    def __init__(self, text, x=0, y=0, font="Pragmatism", size=8,
+                 halign=None, valign=None, z=0):
+        super().__init__()
+        self._text = text
+        self._x = x
+        self._y = y
+        self._font = font
+        self._size = size
+        self._halign = halign
+        self._valign = valign
+        self._z = z
+        self._visible = True
+
+    def _create(self, screen_handle):
+        ha = -1 if self._halign is None else self._halign
+        va = -1 if self._valign is None else self._valign
+        self.handle = oled_add_text(screen_handle, self._text, x=self._x, y=self._y,
+                                    font=self._font, size=self._size,
+                                    halign=ha, valign=va, z=self._z)
+        return self.handle
+
+    @property
+    def text(self):
+        return self._text
+    @text.setter
+    def text(self, v):
+        self._text = v
+        self._set("text", v)
+
+    @property
+    def font(self):
+        return self._font
+    @font.setter
+    def font(self, v):
+        self._font = v
+        self._set("font", v)
+
+    @property
+    def size(self):
+        return self._size
+    @size.setter
+    def size(self, v):
+        self._size = v
+        self._set("size", v)
+
+    def anchor(self, halign, valign):
+        """Switch to anchored positioning."""
+        self._halign = halign
+        self._valign = valign
+        self._set("halign", halign)
+        self._set("valign", valign)
+        self._set("anchor", 1)
+        return self
+
+
+class Shape(_Element):
+    """A shape element: line, rectangle outline, or filled rectangle.
+
+    LINE draws from (x, y) to (x + w, y + h). RECT / FILLED_RECT are w x h.
+    """
+    def __init__(self, kind=SHAPE_RECT, x=0, y=0, w=0, h=0, filled=False, z=0):
+        super().__init__()
+        self._kind = kind
+        self._x = x
+        self._y = y
+        self._w = w
+        self._h = h
+        self._filled = filled
+        self._z = z
+        self._visible = True
+
+    def _create(self, screen_handle):
+        self.handle = oled_add_shape(screen_handle, kind=self._kind, x=self._x, y=self._y,
+                                     w=self._w, h=self._h,
+                                     filled=1 if self._filled else 0, z=self._z)
+        return self.handle
+
+    @property
+    def w(self):
+        return self._w
+    @w.setter
+    def w(self, v):
+        self._w = v
+        self._set("w", v)
+
+    @property
+    def h(self):
+        return self._h
+    @h.setter
+    def h(self, v):
+        self._h = v
+        self._set("h", v)
+
+
+def Line(x, y, x2, y2, z=0):
+    """Convenience: a line from (x, y) to (x2, y2)."""
+    return Shape(SHAPE_LINE, x=x, y=y, w=x2 - x, h=y2 - y, z=z)
+
+
+def Rect(x, y, w, h, filled=False, z=0):
+    """Convenience: a rectangle (outline unless filled=True)."""
+    kind = SHAPE_FILLED_RECT if filled else SHAPE_RECT
+    return Shape(kind, x=x, y=y, w=w, h=h, filled=filled, z=z)
+
+
+class Screen:
+    """A retained OLED screen. Add elements, then show() to make it the active
+    display. The background render service keeps {token} text up to date."""
+    def __init__(self):
+        self.handle = oled_screen()
+        if self.handle <= 0:
+            raise RuntimeError("out of OLED screen handles")
+        self.elements = []
+
+    def add(self, element):
+        """Add an element (Text/Shape). Returns the element for chaining."""
+        element._create(self.handle)
+        element._screen = self
+        self.elements.append(element)
+        return element
+
+    def text(self, *args, **kwargs):
+        """Shortcut: create + add a Text in one call; returns the Text."""
+        return self.add(Text(*args, **kwargs))
+
+    def shape(self, *args, **kwargs):
+        """Shortcut: create + add a Shape in one call; returns the Shape."""
+        return self.add(Shape(*args, **kwargs))
+
+    def clear(self):
+        """Remove all elements from the screen."""
+        oled_screen_clear(self.handle)
+        self.elements = []
+
+    def show(self, persist=False):
+        """Make this the active screen (starts live rendering).
+
+        persist=True registers the screen as the idle display: it takes the
+        place of the boot logo when the UI returns to idle, steps aside while
+        other content is shown instead of fighting it, and survives the script
+        that created it (call hide() to take it down). persist=False (default)
+        is a one-shot foreground show that's torn down when the script ends."""
+        oled_screen_show(self.handle, 1 if persist else 0)
+        return self
+
+    def hide(self):
+        """Stop showing this screen and forget any persistent idle registration."""
+        oled_screen_hide()
+
+    def save(self, name):
+        """Save this screen to /screens/<name>.json. Returns True on success."""
+        return oled_screen_save(self.handle, name)
+
+    def free(self):
+        """Release the screen handle."""
+        if self.handle > 0:
+            oled_screen_free(self.handle)
+            self.handle = -1
+
+
+def load_screen(name):
+    """Load /screens/<name>.json into a new Screen. Returns Screen or None."""
+    h = oled_screen_load(name)
+    if h <= 0:
+        return None
+    s = Screen.__new__(Screen)
+    s.handle = h
+    s.elements = []
+    return s
+
+
 # Export all functions and constants for "from jumperless import *"
 __all__ = [
     # DAC Functions
@@ -3127,6 +4026,14 @@ __all__ = [
     
     # OLED Functions
     'oled_print', 'oled_clear', 'oled_show', 'oled_connect', 'oled_disconnect',
+
+    # OLED GUI (retained screens) - flat API + OO wrapper
+    'oled_screen', 'oled_screen_free', 'oled_screen_clear', 'oled_screen_show',
+    'oled_screen_hide', 'oled_screen_reset', 'oled_add_text', 'oled_add_shape', 'oled_set', 'oled_set_var',
+    'oled_screen_save', 'oled_screen_load',
+    'Screen', 'Text', 'Shape', 'Line', 'Rect', 'load_screen',
+    'ALIGN_LEFT', 'ALIGN_CENTER', 'ALIGN_RIGHT', 'ALIGN_TOP', 'ALIGN_MIDDLE', 'ALIGN_BOTTOM',
+    'SHAPE_LINE', 'SHAPE_RECT', 'SHAPE_FILLED_RECT',
     
     # Probe Functions
     'probe_read', 'read_probe', 'probe_read_blocking', 'probe_read_nonblocking',
@@ -3263,8 +4170,8 @@ __all__ = [
 ]
 
 )";
-const uint32_t JUMPERLESS_MODULE_PY_HASHES[1] = { 0x843D1F2A };
-const int JUMPERLESS_MODULE_PY_HASH_COUNT = 1;
+const uint32_t JUMPERLESS_MODULE_PY_HASHES[4] = { 0x211A88F7, 0x7ED8BA57, 0xAA5F9F89, 0x843D1F2A };
+const int JUMPERLESS_MODULE_PY_HASH_COUNT = 4;
 #endif
 
 //==============================================================================
@@ -4141,6 +5048,64 @@ def oled_get_pixel(x: int, y: int) -> int:
     ...
 
 # ============================================================================
+# OLED GUI (retained screens)
+# ============================================================================
+
+def oled_screen() -> int:
+    """Create a new retained screen; returns a screen handle (>=1) or 0."""
+    ...
+def oled_screen_free(screen: int) -> None: ...
+def oled_screen_clear(screen: int) -> None: ...
+def oled_screen_show(screen: int, persist: bool = False) -> bool:
+    """Make the screen the active display (starts live rendering).
+
+    persist=True registers it as the idle display (takes the boot logo's place,
+    steps aside for other content, and survives the script). persist=False
+    (default) is a one-shot foreground show."""
+    ...
+def oled_screen_hide() -> None: ...
+def oled_screen_reset() -> None:
+    """Free every retained screen and blank the panel (call at script start to discard prior screens)."""
+    ...
+def oled_add_text(screen: int, text: str, x: int = 0, y: int = 0, font: str = "Pragmatism",
+                  size: int = 8, halign: int = -1, valign: int = -1, z: int = 0) -> int:
+    """Add a text element. text may contain {token} templates. Returns an element handle."""
+    ...
+def oled_add_shape(screen: int, kind: int = 1, x: int = 0, y: int = 0, w: int = 0, h: int = 0,
+                   filled: int = 0, z: int = 0) -> int:
+    """Add a shape (0=line, 1=rect outline, 2=filled rect). Returns an element handle."""
+    ...
+def oled_set(elem: int, prop: str, value: Union[int, str]) -> bool:
+    """Set an element property: text/font (str) or x/y/w/h/z/size/visible/anchor/halign/valign/shape/filled (int)."""
+    ...
+def oled_set_var(name: str, value: Union[int, float, str]) -> None:
+    """Push a live value into the variable registry, referenced as {name} in text templates."""
+    ...
+def oled_screen_save(screen: int, name: str) -> bool:
+    """Save the screen to /screens/<name>.json."""
+    ...
+def oled_screen_load(name: str) -> int:
+    """Load /screens/<name>.json into a new screen; returns its handle or 0."""
+    ...
+
+ALIGN_LEFT: int
+ALIGN_CENTER: int
+ALIGN_RIGHT: int
+ALIGN_TOP: int
+ALIGN_MIDDLE: int
+ALIGN_BOTTOM: int
+SHAPE_LINE: int
+SHAPE_RECT: int
+SHAPE_FILLED_RECT: int
+
+# NOTE: The object-oriented OLED layout API (Screen, Text, Shape, Line, Rect,
+# load_screen) is NOT part of the native `jumperless` module - it is pure-Python
+# and lives in `oledgui.py`, built on top of the flat oled_screen()/oled_add_*()
+# functions above. Import it explicitly:  from oledgui import Screen, Text, ...
+# (Declaring those classes here shadowed the real oledgui ones with a less
+# precise signature, so `scr.add(Text(...))` was typed as `Text | Shape`.)
+
+# ============================================================================
 # Probe Functions
 # ============================================================================
 
@@ -4927,8 +5892,8 @@ class JFSModule:
 jfs: JFSModule
 
 )===";
-const uint32_t JUMPERLESS_STUB_PYI_HASHES[1] = { 0x2E64EB37 };
-const int JUMPERLESS_STUB_PYI_HASH_COUNT = 1;
+const uint32_t JUMPERLESS_STUB_PYI_HASHES[5] = { 0xB35468E2, 0x591678B8, 0x05D64A8B, 0x34AD1B61, 0x2E64EB37 };
+const int JUMPERLESS_STUB_PYI_HASH_COUNT = 5;
 #endif
 
 //==============================================================================
@@ -5014,6 +5979,15 @@ const int VIPERIDE_REINIT_PY_HASH_COUNT = 4;
 // #endif
 // #ifdef INCLUDE_OLED_DEMO
 //     { "/python_scripts/examples/oled_demo.py", OLED_DEMO_PY, "oled_demo.py", OLED_DEMO_PY_HASHES, OLED_DEMO_PY_HASH_COUNT },
+// #endif
+// #ifdef INCLUDE_OLED_LAYOUT_EDITOR
+//     { "/python_scripts/examples/oled_layout_editor.py", OLED_LAYOUT_EDITOR_PY, "oled_layout_editor.py", OLED_LAYOUT_EDITOR_PY_HASHES, OLED_LAYOUT_EDITOR_PY_HASH_COUNT },
+// #endif
+// #ifdef INCLUDE_OLED_STATS_PAGE
+//     { "/python_scripts/examples/oled_stats_page.py", OLED_STATS_PAGE_PY, "oled_stats_page.py", OLED_STATS_PAGE_PY_HASHES, OLED_STATS_PAGE_PY_HASH_COUNT },
+// #endif
+// #ifdef INCLUDE_OLEDGUI
+//     { "/python_scripts/examples/oledgui.py", OLEDGUI_PY, "oledgui.py", OLEDGUI_PY_HASHES, OLEDGUI_PY_HASH_COUNT },
 // #endif
 // #ifdef INCLUDE_OSCILLOSCOPE
 //     { "/python_scripts/examples/oscilloscope.py", OSCILLOSCOPE_PY, "oscilloscope.py", OSCILLOSCOPE_PY_HASHES, OSCILLOSCOPE_PY_HASH_COUNT },

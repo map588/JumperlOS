@@ -20,8 +20,10 @@ namespace AsyncPassthrough {
     // apply any pending line-coding changes safely outside ISRs
     void task();
 
-    // Expose UART received ring for other modules
-    extern uint8_t uartReceived[4096];
+    // Expose UART received ring for other modules.
+    // DMA-filled ring (zero-CPU RX); see AsyncPassthrough.cpp. Size must match
+    // the definition there (1 << UART_RX_RING_BITS == 8192).
+    extern uint8_t uartReceived[8192];
     extern volatile uint16_t uartReceivedHead;
     extern volatile uint16_t uartReceivedTail;
 

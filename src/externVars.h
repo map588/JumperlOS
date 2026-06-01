@@ -90,10 +90,18 @@ bool core_sync_try_acquire(void); // Non-blocking, returns true if acquired
 
 
 // Filesystem mutex functions
-// Use these around ALL filesystem operations to prevent concurrent access
+// Use these around ALL filesystem operations to prevent concurrent access.
+// fs_mutex is per-core RECURSIVE: the owning core may re-acquire without
+// deadlocking (depth-counted); only the outermost release drops the lock.
+// Cross-core exclusion is unchanged.
 void fs_mutex_acquire(void);      // Blocking acquire
-void fs_mutex_release(void);      // Release
+void fs_mutex_release(void);      // Release (depth-counted)
 bool fs_mutex_try_acquire(void);  // Non-blocking, returns true if acquired
+
+// True iff the calling core currently holds fs_mutex. Lets a path that may or
+// may not already own the lock decide whether to acquire (avoids the
+// self-deadlock footgun documented in FileCache.cpp).
+bool fs_mutex_held_by_this_core(void);
 
 // Timeout versions (returns true if acquired within timeout)
 bool core_sync_acquire_timeout_ms(uint32_t timeout_ms);

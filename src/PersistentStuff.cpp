@@ -11,265 +11,195 @@
 #include "config.h"
 #include "States.h"
 #include "ArduinoStuff.h"
+#include "externVars.h"        // pauseCore2ForFlash / fs_mutex_* for eepromCommitSafe
+#include "AsyncPassthrough.h"  // suspend/resumeUARTRxIRQ around the commit envelope
 
 bool firstStart = false;
 
-void debugFlagInit(int forceDefaults) {
+// =============================================================================
+// EEPROM persistent store (identity + firmware version + calibration)
+// =============================================================================
+// config.txt is the source of truth for runtime settings. EEPROM holds ONLY
+// the values that must survive an FS wipe, packed into one struct (EepromStore)
+// and committed via the deferred FileCache flush path (or eepromCommitSafe on
+// boot/reboot). debugFlagInit() and the per-setting EEPROM byte map are gone.
 
-  EEPROM.begin(512);
+static EepromStore   g_store;
+static bool          g_storeValid = false;
+static volatile bool g_eepromCommitPending = false;
 
-  if (EEPROM.read(FIRSTSTARTUPADDRESS) != 0xAA || forceDefaults == 1) {
+static bool g_eepromBegun = false;
+static void eepromBeginOnce(void) {
+  if (!g_eepromBegun) { EEPROM.begin(512); g_eepromBegun = true; }
+}
 
-    //delay(1000);
-    Serial.println("First startup");
-    //delay(1000);
+void eepromMarkDirty(void)   { g_eepromCommitPending = true; }
+bool eepromCommitPending(void) { return g_eepromCommitPending; }
+
+// Copy identity + last_version + calibration FROM the store INTO jumperlessConfig.
+static void applyStoreToConfig(void) {
+  jumperlessConfig.hardware.generation     = g_store.generation;
+  jumperlessConfig.hardware.revision       = g_store.revision;
+  jumperlessConfig.hardware.probe_revision = g_store.probe_revision;
+  strncpy(jumperlessConfig.firmware.last_version, g_store.last_version,
+          sizeof(jumperlessConfig.firmware.last_version) - 1);
+  jumperlessConfig.firmware.last_version[sizeof(jumperlessConfig.firmware.last_version) - 1] = '\0';
+
+  jumperlessConfig.calibration.top_rail_zero      = g_store.top_rail_zero;
+  jumperlessConfig.calibration.top_rail_spread    = g_store.top_rail_spread;
+  jumperlessConfig.calibration.bottom_rail_zero   = g_store.bottom_rail_zero;
+  jumperlessConfig.calibration.bottom_rail_spread = g_store.bottom_rail_spread;
+  jumperlessConfig.calibration.dac_0_zero         = g_store.dac_0_zero;
+  jumperlessConfig.calibration.dac_0_spread       = g_store.dac_0_spread;
+  jumperlessConfig.calibration.dac_1_zero         = g_store.dac_1_zero;
+  jumperlessConfig.calibration.dac_1_spread       = g_store.dac_1_spread;
+  jumperlessConfig.calibration.adc_0_zero = g_store.adc_0_zero; jumperlessConfig.calibration.adc_0_spread = g_store.adc_0_spread;
+  jumperlessConfig.calibration.adc_1_zero = g_store.adc_1_zero; jumperlessConfig.calibration.adc_1_spread = g_store.adc_1_spread;
+  jumperlessConfig.calibration.adc_2_zero = g_store.adc_2_zero; jumperlessConfig.calibration.adc_2_spread = g_store.adc_2_spread;
+  jumperlessConfig.calibration.adc_3_zero = g_store.adc_3_zero; jumperlessConfig.calibration.adc_3_spread = g_store.adc_3_spread;
+  jumperlessConfig.calibration.adc_4_zero = g_store.adc_4_zero; jumperlessConfig.calibration.adc_4_spread = g_store.adc_4_spread;
+  jumperlessConfig.calibration.adc_7_zero = g_store.adc_7_zero; jumperlessConfig.calibration.adc_7_spread = g_store.adc_7_spread;
+  jumperlessConfig.calibration.probe_max  = g_store.probe_max;
+  jumperlessConfig.calibration.probe_min  = g_store.probe_min;
+  jumperlessConfig.calibration.probe_switch_threshold_high = g_store.probe_switch_threshold_high;
+  jumperlessConfig.calibration.probe_switch_threshold_low  = g_store.probe_switch_threshold_low;
+  jumperlessConfig.calibration.measure_mode_output_voltage = g_store.measure_mode_output_voltage;
+}
+
+// Copy FROM jumperlessConfig INTO the in-RAM store struct (no flash yet).
+static void fillStoreFromConfig(void) {
+  g_store.magic   = EEPROM_STORE_MAGIC;
+  g_store.version = EEPROM_STORE_VERSION;
+  g_store.size    = (uint16_t)sizeof(EepromStore);
+  g_store.generation     = jumperlessConfig.hardware.generation;
+  g_store.revision       = jumperlessConfig.hardware.revision;
+  g_store.probe_revision = jumperlessConfig.hardware.probe_revision;
+  strncpy(g_store.last_version, jumperlessConfig.firmware.last_version, sizeof(g_store.last_version) - 1);
+  g_store.last_version[sizeof(g_store.last_version) - 1] = '\0';
+  g_store.top_rail_zero      = jumperlessConfig.calibration.top_rail_zero;
+  g_store.top_rail_spread    = jumperlessConfig.calibration.top_rail_spread;
+  g_store.bottom_rail_zero   = jumperlessConfig.calibration.bottom_rail_zero;
+  g_store.bottom_rail_spread = jumperlessConfig.calibration.bottom_rail_spread;
+  g_store.dac_0_zero         = jumperlessConfig.calibration.dac_0_zero;
+  g_store.dac_0_spread       = jumperlessConfig.calibration.dac_0_spread;
+  g_store.dac_1_zero         = jumperlessConfig.calibration.dac_1_zero;
+  g_store.dac_1_spread       = jumperlessConfig.calibration.dac_1_spread;
+  g_store.adc_0_zero = jumperlessConfig.calibration.adc_0_zero; g_store.adc_0_spread = jumperlessConfig.calibration.adc_0_spread;
+  g_store.adc_1_zero = jumperlessConfig.calibration.adc_1_zero; g_store.adc_1_spread = jumperlessConfig.calibration.adc_1_spread;
+  g_store.adc_2_zero = jumperlessConfig.calibration.adc_2_zero; g_store.adc_2_spread = jumperlessConfig.calibration.adc_2_spread;
+  g_store.adc_3_zero = jumperlessConfig.calibration.adc_3_zero; g_store.adc_3_spread = jumperlessConfig.calibration.adc_3_spread;
+  g_store.adc_4_zero = jumperlessConfig.calibration.adc_4_zero; g_store.adc_4_spread = jumperlessConfig.calibration.adc_4_spread;
+  g_store.adc_7_zero = jumperlessConfig.calibration.adc_7_zero; g_store.adc_7_spread = jumperlessConfig.calibration.adc_7_spread;
+  g_store.probe_max = jumperlessConfig.calibration.probe_max;
+  g_store.probe_min = jumperlessConfig.calibration.probe_min;
+  g_store.probe_switch_threshold_high = jumperlessConfig.calibration.probe_switch_threshold_high;
+  g_store.probe_switch_threshold_low  = jumperlessConfig.calibration.probe_switch_threshold_low;
+  g_store.measure_mode_output_voltage = jumperlessConfig.calibration.measure_mode_output_voltage;
+}
+
+bool eepromStoreLoadAndApplyIdentity(void) {
+  eepromBeginOnce();
+
+  // First-start marker - kept as its own byte (survives an FS wipe). This is a
+  // secondary first-boot signal; the primary one is config.txt being absent.
+  if (EEPROM.read(FIRSTSTARTUPADDRESS) != 0xAA) {
     firstStart = true;
     EEPROM.write(FIRSTSTARTUPADDRESS, 0xAA);
-
-    EEPROM.write(REVISIONADDRESS, jumperlessConfig.hardware.revision);
-    EEPROM.write(PROBE_REVISIONADDRESS, jumperlessConfig.hardware.probe_revision);
-
-    EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
-    EEPROM.write(TIME_FILEPARSINGADDRESS, 0);
-    EEPROM.write(DEBUG_NETMANAGERADDRESS, 0);
-    EEPROM.write(TIME_NETMANAGERADDRESS, 0);
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSADDRESS, 0);
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS, 0);
-    EEPROM.write(DEBUG_LEDSADDRESS, 0);
-    EEPROM.write(LEDBRIGHTNESSADDRESS, DEFAULTBRIGHTNESS);
-    EEPROM.write(RAILBRIGHTNESSADDRESS, DEFAULTRAILBRIGHTNESS);
-    EEPROM.write(SPECIALBRIGHTNESSADDRESS, DEFAULTSPECIALNETBRIGHTNESS);
-
-    EEPROM.write(ROTARYENCODER_MODE_ADDRESS, 0);
-    EEPROM.write(DISPLAYMODE_ADDRESS, 1);
-    EEPROM.write(NETCOLORMODE_ADDRESS, 0);
-    EEPROM.write(MENUBRIGHTNESS_ADDRESS, 100);
-    EEPROM.write(PATH_DUPLICATE_ADDRESS, 2);
-    EEPROM.write(DAC_DUPLICATE_ADDRESS, 0);
-    EEPROM.write(POWER_DUPLICATE_ADDRESS, 2);
-    EEPROM.write(DAC_PRIORITY_ADDRESS, 1);
-    EEPROM.write(POWER_PRIORITY_ADDRESS, 1);
-    EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 0);
-
-    // saveVoltages(0.0f, 0.0f, 3.33f, 0.0f);
-
-    EEPROM.commit();
-    delay(5);
-    }
-
-#ifdef EEPROMSTUFF
-
-  debugFP = EEPROM.read(DEBUG_FILEPARSINGADDRESS);
-  debugFPtime = EEPROM.read(TIME_FILEPARSINGADDRESS);
-
-  debugNM = EEPROM.read(DEBUG_NETMANAGERADDRESS);
-  debugNMtime = EEPROM.read(TIME_NETMANAGERADDRESS);
-
-  debugNTCC = EEPROM.read(DEBUG_NETTOCHIPCONNECTIONSADDRESS);
-  debugNTCC2 = EEPROM.read(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS);
-
-  LEDbrightnessRail = EEPROM.read(RAILBRIGHTNESSADDRESS);
-  LEDbrightness = EEPROM.read(LEDBRIGHTNESSADDRESS);
-  LEDbrightnessSpecial = EEPROM.read(SPECIALBRIGHTNESSADDRESS);
-
-  debugLEDs = EEPROM.read(DEBUG_LEDSADDRESS);
-
-  rotaryEncoderMode = EEPROM.read(ROTARYENCODER_MODE_ADDRESS);
-
-  //displayMode = EEPROM.read(DISPLAYMODE_ADDRESS);
-
-
-  netColorMode = EEPROM.read(NETCOLORMODE_ADDRESS);
-
-  revisionNumber = EEPROM.read(REVISIONADDRESS);
-  probeRevision = EEPROM.read(PROBE_REVISIONADDRESS);
-
-  // pathDuplicates = EEPROM.read(PATH_DUPLICATE_ADDRESS);
-  // dacDuplicates = EEPROM.read(DAC_DUPLICATE_ADDRESS);
-  // powerDuplicates = EEPROM.read(POWER_DUPLICATE_ADDRESS);
-  // dacPriority = EEPROM.read(DAC_PRIORITY_ADDRESS);
-  // powerPriority = EEPROM.read(POWER_PRIORITY_ADDRESS);
-
-  showProbeCurrent = EEPROM.read(SHOW_PROBE_CURRENT_ADDRESS);
-
-
-
-  menuBrightnessSetting = EEPROM.read(MENUBRIGHTNESS_ADDRESS) - 100;
-
-  dacSpread[1] = EEPROM.get(DAC0_SPREAD_ADDRESS, dacSpread[0]);
-  dacSpread[1] = EEPROM.get(DAC1_SPREAD_ADDRESS, dacSpread[1]);
-  dacSpread[2] = EEPROM.get(TOP_RAIL_SPREAD_ADDRESS, dacSpread[2]);
-  dacSpread[3] = EEPROM.get(BOTTOM_RAIL_SPREAD_ADDRESS, dacSpread[3]);
-
-  dacZero[0] = EEPROM.get(DAC0_ZERO_ADDRESS, dacZero[0]);
-  dacZero[1] = EEPROM.get(DAC1_ZERO_ADDRESS, dacZero[1]);
-  dacZero[2] = EEPROM.get(TOP_RAIL_ZERO_ADDRESS, dacZero[2]);
-  dacZero[3] = EEPROM.get(BOTTOM_RAIL_ZERO_ADDRESS, dacZero[3]);
-
-  for (int i = 0; i < 4; i++) {
-    if (dacSpread[i] < 12.0 || dacSpread[i] > 28.0 || dacSpread[i] != dacSpread[i]) {
-      // delay(2000);
-
-      // Serial.print("dacSpread[");
-      // Serial.print(i);
-      // Serial.print("] out of range = ");
-      // Serial.println(dacSpread[i]);
-      dacSpread[i] = 21.0;
-      EEPROM.put(DAC0_SPREAD_ADDRESS + (i * 8), dacSpread[i]);
-      //EEPROM.put(CALIBRATED_ADDRESS, 0);
-      }
-    if (dacZero[i] < 1000 || dacZero[i] > 2000) {
-
-      // Serial.print("dacZero[");
-      // Serial.print(i);
-      // Serial.print("] out of range = ");
-      // Serial.println(dacZero[i]);
-      dacZero[i] = 1630;
-      EEPROM.put(DAC0_ZERO_ADDRESS + (i * 4), 1630);
-      // EEPROM.put(CALIBRATED_ADDRESS, 0);
-      }
-    }
-  if (showProbeCurrent != 0 && showProbeCurrent != 1)
-    {
-    EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 0);
-    showProbeCurrent = 0;
-    }
- 
-  if (revisionNumber <= 0 || revisionNumber > 10) {
-
-
-    //delay(5000);
-    Serial.print("Revision number out of range (");
-    Serial.print(revisionNumber);
-    Serial.print("), setting to revision ");
-    EEPROM.write(REVISIONADDRESS, REV);
-    revisionNumber = REV;
-
-    Serial.println(revisionNumber);
-    }
-  
-  if (probeRevision <= 0 || probeRevision > 10) {
-    Serial.print("Probe revision out of range (");
-    Serial.print(probeRevision);
-    Serial.print("), setting to probe revision ");
-    EEPROM.write(PROBE_REVISIONADDRESS, REV);
-    probeRevision = REV;
-    Serial.println(probeRevision);
-    }
-
-
-  if (debugFP != 0 && debugFP != 1)
-    {
-    EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
-
-    debugFP = false;
-    }
-  if (debugFPtime != 0 && debugFPtime != 1)
-    {
-    EEPROM.write(TIME_FILEPARSINGADDRESS, 0);
-    debugFPtime = false;
-    }
-
-  if (debugNM != 0 && debugNM != 1)
-    {
-    EEPROM.write(DEBUG_NETMANAGERADDRESS, 0);
-    debugNM = false;
-    }
-
-  if (debugNMtime != 0 && debugNMtime != 1)
-    {
-    EEPROM.write(TIME_NETMANAGERADDRESS, 0);
-    debugNMtime = false;
-    }
-
-  if (debugNTCC != 0 && debugNTCC != 1)
-    {
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSADDRESS, 0);
-    debugNTCC = false;
-    }
-
-  if (debugNTCC2 != 0 && debugNTCC2 != 1)
-    {
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS, 0);
-    debugNTCC2 = false;
-    }
-
-  if (debugLEDs != 0 && debugLEDs != 1)
-    {
-
-    EEPROM.write(DEBUG_LEDSADDRESS, 0);
-    debugLEDs = false;
-    }
-
-  if (LEDbrightnessRail < 0 || LEDbrightnessRail > 200) {
-    EEPROM.write(RAILBRIGHTNESSADDRESS, DEFAULTRAILBRIGHTNESS);
-
-    LEDbrightnessRail = DEFAULTRAILBRIGHTNESS;
-    }
-  if (LEDbrightness < 0 || LEDbrightness > 200) {
-    EEPROM.write(LEDBRIGHTNESSADDRESS, DEFAULTBRIGHTNESS);
-    LEDbrightness = DEFAULTBRIGHTNESS;
-    }
-
-  if (LEDbrightnessSpecial < 0 || LEDbrightnessSpecial > 200) {
-    EEPROM.write(SPECIALBRIGHTNESSADDRESS, DEFAULTSPECIALNETBRIGHTNESS);
-    LEDbrightnessSpecial = DEFAULTSPECIALNETBRIGHTNESS;
-    }
-  // delay(3000);
-  // Serial.print("menuBrightnessSetting out of range = ");
-  // Serial.println(menuBrightnessSetting);
-  if (menuBrightnessSetting < -100 || menuBrightnessSetting > 100) {
-
-
-    EEPROM.write(MENUBRIGHTNESS_ADDRESS, 100);
-    menuBrightnessSetting = 0;
-    }
-
-
-  if (rotaryEncoderMode != 0 && rotaryEncoderMode != 1) {
-    EEPROM.write(ROTARYENCODER_MODE_ADDRESS, 0);
-    rotaryEncoderMode = 0;
-    }
-  // if (displayMode != 0 && displayMode != 1) {
-  //   EEPROM.write(DISPLAYMODE_ADDRESS, 1);
-  //   displayMode = 0;
-  //   }
-  if (netColorMode != 0 && netColorMode != 1) {
-    EEPROM.write(NETCOLORMODE_ADDRESS, 0);
-    netColorMode = 0;
-    }
-
-#endif
-
-
-  readVoltages();
-  readLogoBindings();
-  EEPROM.commit();
-  delayMicroseconds(100);
-
-  //loadConfig();
-
+    eepromMarkDirty();
   }
+
+  extern int revisionNumber;
+  extern int probeRevision;
+
+  EepromStore tmp;
+  EEPROM.get(EEPROM_STORE_ADDRESS, tmp);
+  if (tmp.magic == EEPROM_STORE_MAGIC &&
+      tmp.version == EEPROM_STORE_VERSION &&
+      tmp.size == (uint16_t)sizeof(EepromStore)) {
+    g_store = tmp;
+    g_storeValid = true;
+    // Apply identity now so early boot (PSRAM sizing / probe rev) sees it.
+    if (g_store.revision > 0 && g_store.revision <= 10)
+      jumperlessConfig.hardware.revision = g_store.revision;
+    if (g_store.probe_revision > 0 && g_store.probe_revision <= 10)
+      jumperlessConfig.hardware.probe_revision = g_store.probe_revision;
+    jumperlessConfig.hardware.generation = (g_store.generation > 0) ? g_store.generation : 5;
+    revisionNumber = jumperlessConfig.hardware.revision;
+    probeRevision  = jumperlessConfig.hardware.probe_revision;
+    return true;
+  }
+
+  // Legacy layout / fresh chip: migrate just the identity bytes if valid. The
+  // calibration is preserved via config.txt on a normal upgrade and re-seeded
+  // into the store by eepromReconcileAfterConfig().
+  g_storeValid = false;
+  int legacyRev   = EEPROM.read(REVISIONADDRESS);
+  int legacyProbe = EEPROM.read(PROBE_REVISIONADDRESS);
+  if (legacyRev > 0 && legacyRev <= 10)   jumperlessConfig.hardware.revision = legacyRev;
+  if (legacyProbe > 0 && legacyProbe <= 10) jumperlessConfig.hardware.probe_revision = legacyProbe;
+  revisionNumber = jumperlessConfig.hardware.revision;
+  probeRevision  = jumperlessConfig.hardware.probe_revision;
+  return false;
+}
+
+void eepromReconcileAfterConfig(void) {
+  eepromBeginOnce();
+  if (g_storeValid) {
+    // EEPROM wins for the kept fields so they survive an FS wipe (which resets
+    // config.txt to defaults). Re-apply over whatever loadConfig() set.
+    applyStoreToConfig();
+    extern int revisionNumber;
+    extern int probeRevision;
+    revisionNumber = jumperlessConfig.hardware.revision;
+    probeRevision  = jumperlessConfig.hardware.probe_revision;
+  } else {
+    // No valid store yet (legacy unit upgrading, or fresh chip). config.txt is
+    // now fully loaded, so seed the store from it and schedule a deferred
+    // commit. On a normal upgrade this preserves the existing calibration.
+    fillStoreFromConfig();
+    EEPROM.put(EEPROM_STORE_ADDRESS, g_store);
+    g_storeValid = true;
+    eepromMarkDirty();
+  }
+}
+
+void eepromPersistFromConfig(void) {
+  eepromBeginOnce();
+  fillStoreFromConfig();
+  EEPROM.put(EEPROM_STORE_ADDRESS, g_store);
+  g_storeValid = true;
+  eepromMarkDirty();
+}
+
+bool eepromCommitHeld(void) {
+  if (!g_eepromCommitPending) return false;
+  // Caller already holds pauseCore2ForFlash() + fs_mutex. EEPROM.commit() does
+  // its own noInterrupts()+idleOtherCore() internally; that is safe here
+  // because Core 1 is parked and fs_mutex serializes us against any SPIFTL op.
+  EEPROM.commit();
+  g_eepromCommitPending = false;
+  return true;
+}
+
+bool eepromCommitSafe(void) {
+  if (!g_eepromCommitPending) return false;
+  AsyncPassthrough::suspendUARTRxIRQ();
+  bool was_paused = pauseCore2ForFlash(100);
+  bool committed = false;
+  if (fs_mutex_acquire_timeout_ms(5000)) {
+    EEPROM.commit();
+    g_eepromCommitPending = false;
+    committed = true;
+    fs_mutex_release();
+  }
+  unpauseCore2ForFlash(was_paused);
+  AsyncPassthrough::resumeUARTRxIRQ();
+  return committed;
+}
 
 void saveDacCalibration(void)
   {
-  // Save to EEPROM
-  EEPROM.put(DAC0_SPREAD_ADDRESS, dacSpread[0]);
-  EEPROM.put(DAC1_SPREAD_ADDRESS, dacSpread[1]);
-  EEPROM.put(TOP_RAIL_SPREAD_ADDRESS, dacSpread[2]);
-  EEPROM.put(BOTTOM_RAIL_SPREAD_ADDRESS, dacSpread[3]);
-
-  EEPROM.put(DAC0_ZERO_ADDRESS, dacZero[0]);
-  EEPROM.put(DAC1_ZERO_ADDRESS, dacZero[1]);
-  EEPROM.put(TOP_RAIL_ZERO_ADDRESS, dacZero[2]);
-  EEPROM.put(BOTTOM_RAIL_ZERO_ADDRESS, dacZero[3]);
-
-  EEPROM.put(CALIBRATED_ADDRESS, 0x55);
-
-  EEPROM.commit();
-  delayMicroseconds(100);
-
-  // Also save to config file
+  // Mirror calibration into config (the human-readable copy)...
   jumperlessConfig.calibration.dac_0_spread = dacSpread[0];
   jumperlessConfig.calibration.dac_1_spread = dacSpread[1];
   jumperlessConfig.calibration.top_rail_spread = dacSpread[2];
@@ -291,251 +221,80 @@ void saveDacCalibration(void)
   jumperlessConfig.calibration.adc_4_zero = adcZero[4];
   jumperlessConfig.calibration.adc_7_zero = adcZero[7];
 
+  // ...and into the durable EEPROM store (FS-wipe survivor). The actual flash
+  // commit is deferred to the FileCache flush window - saveConfig() below will
+  // trigger a file save that coalesces the EEPROM commit into the same Core-1
+  // pause (see eepromCommitHeld() in the FileCache flush path).
+  eepromPersistFromConfig();
+
   saveConfig();
-  //Serial.println("DAC calibration saved to both EEPROM and config file");
+  //Serial.println("DAC calibration saved to both EEPROM (deferred) and config file");
   }
 
 void debugFlagSet(int flag) {
-  int flagStatus;
+  // config.txt is the source of truth. Each case derives the new value from the
+  // CURRENT jumperlessConfig field (a single source - no more EEPROM read/toggle
+  // drift that desynced the menu) and updates the runtime global to match.
+  // Persistence: the debug menu calls saveConfig() ONCE after applying all
+  // diffs; the bulk/standalone cases (0/6/9/13) save themselves.
   switch (flag) {
-    case 1: {
-    flagStatus = EEPROM.read(DEBUG_FILEPARSINGADDRESS);
-    if (flagStatus == 0) {
-      EEPROM.write(DEBUG_FILEPARSINGADDRESS, 1);
+    case 1:  debugFP    = !jumperlessConfig.debug.file_parsing;       jumperlessConfig.debug.file_parsing      = debugFP;    break;
+    case 2:  debugNM    = !jumperlessConfig.debug.net_manager;        jumperlessConfig.debug.net_manager       = debugNM;    break;
+    case 3:  debugNTCC  = !jumperlessConfig.debug.nets_to_chips;      jumperlessConfig.debug.nets_to_chips     = debugNTCC;  break;
+    case 4:  debugNTCC2 = !jumperlessConfig.debug.nets_to_chips_alt;  jumperlessConfig.debug.nets_to_chips_alt = debugNTCC2; break;
+    case 5:  debugLEDs  = !jumperlessConfig.debug.leds;               jumperlessConfig.debug.leds              = debugLEDs;  break;
+    case 6:  debugLA    = !jumperlessConfig.debug.logic_analyzer;     jumperlessConfig.debug.logic_analyzer    = debugLA;
+             saveConfig(); break;  // standalone caller (Menus) - persist now
+    case 7:  showProbeCurrent = jumperlessConfig.debug.show_probe_current ? 0 : 1;
+             jumperlessConfig.debug.show_probe_current = showProbeCurrent; break;
+    case 8:
+      if (jumperlessConfig.serial_1.print_passthrough == 0)      jumperlessConfig.serial_1.print_passthrough = 2;
+      else if (jumperlessConfig.serial_1.print_passthrough == 1) jumperlessConfig.serial_1.print_passthrough = 0;
+      else if (jumperlessConfig.serial_1.print_passthrough == 2) jumperlessConfig.serial_1.print_passthrough = 1;
+      break;
+    case 14: debugWaitLoopTiming = !debugWaitLoopTiming; break;  // runtime only
+    case 15: debugUSB = !debugUSB; break;                        // runtime only
 
-      debugFP = true;
-      } else {
-      EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
-
-      debugFP = false;
-      }
-    jumperlessConfig.debug.file_parsing = debugFP;
-    break;
-    }
-
-    case 2: {
-    flagStatus = EEPROM.read(DEBUG_NETMANAGERADDRESS);
-
-    if (flagStatus == 0) {
-      EEPROM.write(DEBUG_NETMANAGERADDRESS, 1);
-
-      debugNM = true;
-      } else {
-      EEPROM.write(DEBUG_NETMANAGERADDRESS, 0);
-
-      debugNM = false;
-      }
-    jumperlessConfig.debug.net_manager = debugNM;
-    break;
-    }
-
-    case 3: {
-    flagStatus = EEPROM.read(DEBUG_NETTOCHIPCONNECTIONSADDRESS);
-
-    if (flagStatus == 0) {
-      EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSADDRESS, 1);
-
-      debugNTCC = true;
-      } else {
-      EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSADDRESS, 0);
-
-      debugNTCC = false;
-      }
-    jumperlessConfig.debug.nets_to_chips = debugNTCC;
-    break;
-    }
-    case 4: {
-    flagStatus = EEPROM.read(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS);
-
-    if (flagStatus == 0) {
-      EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS, 1);
-
-      debugNTCC2 = true;
-      } else {
-      EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS, 0);
-
-      debugNTCC2 = false;
-      }
-    jumperlessConfig.debug.nets_to_chips_alt = debugNTCC2;
-    break;
-    }
-
-    case 5: {
-    flagStatus = EEPROM.read(DEBUG_LEDSADDRESS);
-
-    if (flagStatus == 0) {
-      EEPROM.write(DEBUG_LEDSADDRESS, 1);
-
-      debugLEDs = true;
-      } else {
-      EEPROM.write(DEBUG_LEDSADDRESS, 0);
-
-      debugLEDs = false;
-      }
-    jumperlessConfig.debug.leds = debugLEDs;
-    break;
-    }
-
-    case 6: {
-    // **CONFIG FILE APPROACH**: Toggle logic analyzer debug in config
-    debugLA = !debugLA;
-    jumperlessConfig.debug.logic_analyzer = debugLA;
-    
-    // Save the updated config to file
-    saveConfig();
-    
-    // Serial.printf("◆ Logic Analyzer debug %s (saved to config.txt)\n", 
-    //              debugLA ? "enabled" : "disabled");
-    break;
-    }
-
-    case 7: {
-    flagStatus = EEPROM.read(SHOW_PROBE_CURRENT_ADDRESS);
-
-    if (flagStatus == 0) {
-      EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 1);
-
-      showProbeCurrent = 1;
-      } else {
-      EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 0);
-
+    case 0:  // all off
+      debugFP = debugFPtime = debugNM = debugNMtime = false;
+      debugNTCC = debugNTCC2 = debugLEDs = debugLA = false;
+      debugWaitLoopTiming = false;
+      debugArduino = 0;
       showProbeCurrent = 0;
-      }
-    //jumperlessConfig.debug_flags.show_probe_current = showProbeCurrent;
-    break;
+      jumperlessConfig.debug.file_parsing      = false;
+      jumperlessConfig.debug.net_manager       = false;
+      jumperlessConfig.debug.nets_to_chips     = false;
+      jumperlessConfig.debug.nets_to_chips_alt = false;
+      jumperlessConfig.debug.leds              = false;
+      jumperlessConfig.debug.logic_analyzer    = false;
+      jumperlessConfig.debug.arduino           = 0;
+      jumperlessConfig.debug.show_probe_current = 0;
+      saveConfig();
+      Serial.println("All debug flags disabled (saved to config.txt)");
+      break;
+
+    case 9:  // all on
+      debugFP = debugFPtime = debugNM = debugNMtime = true;
+      debugNTCC = debugNTCC2 = debugLEDs = debugLA = true;
+      debugWaitLoopTiming = true;
+      showProbeCurrent = 1;
+      jumperlessConfig.debug.file_parsing      = true;
+      jumperlessConfig.debug.net_manager       = true;
+      jumperlessConfig.debug.nets_to_chips     = true;
+      jumperlessConfig.debug.nets_to_chips_alt = true;
+      jumperlessConfig.debug.leds              = true;
+      jumperlessConfig.debug.logic_analyzer    = true;
+      jumperlessConfig.debug.show_probe_current = 1;
+      saveConfig();
+      Serial.println("All debug flags enabled (saved to config.txt)");
+      break;
+
+    case 10: rotaryEncoderMode = 0; break;  // runtime only now
+    case 11: rotaryEncoderMode = 1; break;  // runtime only now
+    case 12: break;                          // display mode - reserved
+    case 13: jumperlessConfig.display.net_color_mode = netColorMode; saveConfig(); break;
+    default: break;
     }
-
-    case 8: {
-    if (jumperlessConfig.serial_1.print_passthrough == 0) {
-      jumperlessConfig.serial_1.print_passthrough = 2;
-      } else if (jumperlessConfig.serial_1.print_passthrough == 1) {
-        jumperlessConfig.serial_1.print_passthrough = 0;
-        } else if (jumperlessConfig.serial_1.print_passthrough == 2) {
-          jumperlessConfig.serial_1.print_passthrough = 1;
-          }
-        // printSerial1Passthrough = jumperlessConfig.serial.serial_1.print_passthrough;
-        break;
-        }
-
-    case 14: {
-    // Toggle wait loop timing debug (runtime only, no persistence)
-    debugWaitLoopTiming = !debugWaitLoopTiming;
-    break;
-    }
-
-    case 15: {
-    // Toggle USB mass storage debug (runtime only, no persistence)
-    debugUSB = !debugUSB;
-    break;
-    }
-
-    case 0: {
-    EEPROM.write(DEBUG_FILEPARSINGADDRESS, 0);
-    EEPROM.write(TIME_FILEPARSINGADDRESS, 0);
-    EEPROM.write(DEBUG_NETMANAGERADDRESS, 0);
-    EEPROM.write(TIME_NETMANAGERADDRESS, 0);
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSADDRESS, 0);
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS, 0);
-    EEPROM.write(DEBUG_LEDSADDRESS, 0);
-    EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 0);
-
-    debugFP = false;
-    debugFPtime = false;
-    debugNM = false;
-    debugNMtime = false;
-    debugNTCC = false;
-    debugNTCC2 = false;
-    debugLEDs = false;
-    debugLA = false;
-    debugWaitLoopTiming = false;
-    jumperlessConfig.debug.arduino = 0;
-    debugArduino = 0;
-    showProbeCurrent = 0;
-    jumperlessConfig.debug.file_parsing = false;
-    jumperlessConfig.debug.net_manager = false;
-    jumperlessConfig.debug.nets_to_chips = false;
-    jumperlessConfig.debug.nets_to_chips_alt = false;
-    jumperlessConfig.debug.leds = false;
-    jumperlessConfig.debug.logic_analyzer = false;
-    //jumperlessConfig.debug_flags.show_probe_current = false;
-
-    // **CONFIG FILE**: Save all debug flags to config file
-    saveConfig();
-    Serial.println("All debug flags disabled (saved to config.txt)");
-
-    break;
-    }
-
-    case 9: {
-    EEPROM.write(DEBUG_FILEPARSINGADDRESS, 1);
-    EEPROM.write(TIME_FILEPARSINGADDRESS, 1);
-    EEPROM.write(DEBUG_NETMANAGERADDRESS, 1);
-    EEPROM.write(TIME_NETMANAGERADDRESS, 1);
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSADDRESS, 1);
-    EEPROM.write(DEBUG_NETTOCHIPCONNECTIONSALTADDRESS, 1);
-    EEPROM.write(DEBUG_LEDSADDRESS, 1);
-    EEPROM.write(SHOW_PROBE_CURRENT_ADDRESS, 1);
-    debugFP = true;
-    debugFPtime = true;
-    debugNM = true;
-    debugNMtime = true;
-    debugNTCC = true;
-    debugNTCC2 = true;
-    debugLEDs = true;
-    debugLA = true;
-    debugWaitLoopTiming = true;
-    // do not force arduino debug level here; leave as-is
-    showProbeCurrent = 1;
-    jumperlessConfig.debug.file_parsing = true;
-    jumperlessConfig.debug.net_manager = true;
-    jumperlessConfig.debug.nets_to_chips = true;
-    jumperlessConfig.debug.nets_to_chips_alt = true;
-    jumperlessConfig.debug.leds = true;
-    jumperlessConfig.debug.logic_analyzer = true;
-    //jumperlessConfig.debug_flags.show_probe_current = true;
-    
-    // **CONFIG FILE**: Save all debug flags to config file
-    saveConfig();
-    Serial.println("All debug flags enabled (saved to config.txt)");
-    
-    break;
-    }
-    case 10: {
-        {
-        EEPROM.write(ROTARYENCODER_MODE_ADDRESS, 0);
-
-        rotaryEncoderMode = 0;
-        }
-        break;
-    }
-    case 11: {
-        {
-        EEPROM.write(ROTARYENCODER_MODE_ADDRESS, 1);
-
-        rotaryEncoderMode = 1;
-        }
-        break;
-    }
-    case 12: {
-
-    //  EEPROM.write(DISPLAYMODE_ADDRESS, displayMode);
-    //jumperlessConfig.display_settings.display_mode = displayMode;
-
-
-    break;
-    }
-    case 13:
-    {
-    EEPROM.write(NETCOLORMODE_ADDRESS, netColorMode);
-    //jumperlessConfig.display_settings.net_color_mode = netColorMode;
-
-    }
-    break;
-    }
-  delayMicroseconds(100);
-  EEPROM.commit();
-  delayMicroseconds(100);
-  return;
   }
 
 void saveVoltages(float top, float bot, float dac0, float dac1) {
@@ -569,20 +328,7 @@ void readVoltages(void) {
   }
 
 void saveLogoBindings(void) {
-#ifdef EEPROMSTUFF
-  EEPROM.put(LOGO_TOP_ADDRESS0, logoTopSetting[0]);
-  EEPROM.put(LOGO_TOP_ADDRESS1, logoTopSetting[1]);
-  EEPROM.put(LOGO_BOTTOM_ADDRESS0, logoBottomSetting[0]);
-  EEPROM.put(LOGO_BOTTOM_ADDRESS1, logoBottomSetting[1]);
-  EEPROM.put(BUILDING_TOP_ADDRESS0, buildingTopSetting[0]);
-  EEPROM.put(BUILDING_TOP_ADDRESS1, buildingTopSetting[1]);
-  EEPROM.put(BUILDING_BOTTOM_ADDRESS0, buildingBottomSetting[0]);
-  EEPROM.put(BUILDING_BOTTOM_ADDRESS1, buildingBottomSetting[1]);
-  EEPROM.commit();
-  delayMicroseconds(100);
-#endif
-
-  // Save to config file
+  // config.txt is the source of truth (EEPROM no longer stores logo bindings).
   jumperlessConfig.logo_pads.top_guy = logoTopSetting[0];
   jumperlessConfig.logo_pads.bottom_guy = logoBottomSetting[0];
   jumperlessConfig.logo_pads.building_pad_top = buildingTopSetting[0];
@@ -594,33 +340,15 @@ void saveLogoBindings(void) {
   }
 
 void readLogoBindings(void) {
-  EEPROM.get(LOGO_TOP_ADDRESS0, logoTopSetting[0]);
-
-  EEPROM.get(LOGO_TOP_ADDRESS1, logoTopSetting[1]);
-  if (logoTopSetting[0] == 2) {
-    //gpioState[logoTopSetting[1]] = 0;
-    }
-  EEPROM.get(LOGO_BOTTOM_ADDRESS0, logoBottomSetting[0]);
-  EEPROM.get(LOGO_BOTTOM_ADDRESS1, logoBottomSetting[1]);
-  if (logoBottomSetting[0] == 2) {
-    // gpioState[logoBottomSetting[1]] = 0;
-    }
-  EEPROM.get(BUILDING_TOP_ADDRESS0, buildingTopSetting[0]);
-  EEPROM.get(BUILDING_TOP_ADDRESS1, buildingTopSetting[1]);
-
-  if (buildingTopSetting[0] == 2) {
-    //gpioState[buildingTopSetting[1]] = 0;
-    }
-  EEPROM.get(BUILDING_BOTTOM_ADDRESS0, buildingBottomSetting[0]);
-  EEPROM.get(BUILDING_BOTTOM_ADDRESS1, buildingBottomSetting[1]);
-  if (buildingBottomSetting[0] == 2) {
-    //gpioState[buildingBottomSetting[1]] = 0;
-    }
-  return;
+  // Load from config.txt (called from readSettingsFromConfig). The [1] slot is
+  // a runtime-only companion value that was never meaningfully persisted.
+  logoTopSetting[0]        = jumperlessConfig.logo_pads.top_guy;
+  logoBottomSetting[0]     = jumperlessConfig.logo_pads.bottom_guy;
+  buildingTopSetting[0]    = jumperlessConfig.logo_pads.building_pad_top;
+  buildingBottomSetting[0] = jumperlessConfig.logo_pads.building_pad_bottom;
   }
 
 void saveLEDbrightness(int forceDefaults) {
-#ifdef EEPROMSTUFF
   if (forceDefaults == 1) {
     LEDbrightness = DEFAULTBRIGHTNESS;
     LEDbrightnessRail = DEFAULTRAILBRIGHTNESS;
@@ -628,15 +356,7 @@ void saveLEDbrightness(int forceDefaults) {
     menuBrightnessSetting = 0;
     }
 
-  EEPROM.write(MENUBRIGHTNESS_ADDRESS, menuBrightnessSetting + 100);
-  EEPROM.write(LEDBRIGHTNESSADDRESS, LEDbrightness);
-  EEPROM.write(RAILBRIGHTNESSADDRESS, LEDbrightnessRail);
-  EEPROM.write(SPECIALBRIGHTNESSADDRESS, LEDbrightnessSpecial);
-  EEPROM.commit();
-  delayMicroseconds(100);
-#endif
-
-  // Save to config file
+  // Save to config file (EEPROM no longer stores brightness).
   jumperlessConfig.display.led_brightness = LEDbrightness;
   jumperlessConfig.display.rail_brightness = LEDbrightnessRail;
   jumperlessConfig.display.special_net_brightness = LEDbrightnessSpecial;
@@ -786,35 +506,9 @@ void updateGPIOConfigFromState(void) {
 
   }
 
-void runCommandAfterReset(char command) {
-  if (EEPROM.read(CLEARBEFORECOMMANDADDRESS) == 1) {
-    return;
-    } else {
-
-    EEPROM.write(CLEARBEFORECOMMANDADDRESS, 1);
-    EEPROM.write(LASTCOMMANDADDRESS, command);
-    EEPROM.commit();
-
-    digitalWrite(RESETPIN, HIGH);
-    delay(1);
-    digitalWrite(RESETPIN, LOW);
-
-    AIRCR_Register = 0x5FA0004; // hard reset
-    }
-  }
-
-char lastCommandRead(void) {
-
-  Serial.print("last command: ");
-
-  Serial.println((char)EEPROM.read(LASTCOMMANDADDRESS));
-
-  return EEPROM.read(LASTCOMMANDADDRESS);
-  }
-void lastCommandWrite(char lastCommand) {
-
-  EEPROM.write(LASTCOMMANDADDRESS, lastCommand);
-  }
+// (runCommandAfterReset / lastCommandRead / lastCommandWrite removed - the
+// reset-command handoff feature was unused, so its EEPROM control bytes are
+// gone too.)
 
 void readSettingsFromConfig() {
   // Debug flags
@@ -828,7 +522,10 @@ void readSettingsFromConfig() {
   debugLA = jumperlessConfig.debug.logic_analyzer;
   // Sync Arduino debug level to global
   debugArduino = jumperlessConfig.debug.arduino;
-  // showProbeCurrent = jumperlessConfig.debug_flags.show_probe_current;
+  showProbeCurrent = jumperlessConfig.debug.show_probe_current;
+
+  // Logo / building pad bindings (config is the source of truth now)
+  readLogoBindings();
 
   // Display settings
   LEDbrightness = jumperlessConfig.display.led_brightness;

@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 //
-// Delta-based undo/redo system - in-RAM only.
+// Delta-based undo/redo system.
 //
 // Compact delta ring (16k+ ops on PSRAM, ~512 SRAM-only) plus a small
 // PSRAM-resident snapshot ring that backs non-symmetric ops (clear-all).
-// History is fresh on every boot - nothing is persisted to flash.
+//
+// History is *persistent across reboots* on every board: a bounded slice of
+// the ring is written to /undo.hist (through the write-back file cache) on
+// every slot save, and restored at boot in undoInit(). PSRAM units keep a deep
+// history (256 states); units without PSRAM keep the most recent 32. Clear-all
+// stores the entire board as YAML so undoing it restores the full state.
 //
 // Hooks: undoBeginTxn(label, source) / undoRecord* / undoEndTxn (auto-
 // closes after 200ms of quiescence).
@@ -54,6 +59,17 @@ typedef enum {
 // Public lifecycle
 void undoInit(void);
 void undoShutdown(void);
+
+// Cross-reboot persistence.
+//
+// undoPersistHistory() serializes the most-recent bounded slice of the shared
+// undo ring to /undo.hist via the write-back file cache. It's cheap and
+// idempotent (early-outs when nothing changed since the last persist), so it's
+// safe to call from the slot-save path on every save. undoRestore() reloads
+// that file into the freshly-allocated ring and is called from undoInit();
+// it's exposed for reset/format paths that want to re-seed history.
+void undoPersistHistory(void);
+bool undoRestore(void);
 
 // Notify the undo system that the active slot has changed. The system
 // keeps a separate ring (lazily allocated) per slot, so undo/redo only

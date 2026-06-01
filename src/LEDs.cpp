@@ -1940,13 +1940,13 @@ void assignNetColors(int preview) {
       return;
     }
 
-    if (globalState.connections.nets[netIdx].machine == true) {
-      rgbColor specialNetRgb = unpackRgb(rawSpecialNetColors[slot]);
-      globalState.connections.nets[netIdx].color = specialNetRgb;
-      specialNetColors[slot] = specialNetRgb;
-      netColors[netIdx] = specialNetRgb;
-      return;
-    }
+    // if (globalState.connections.nets[netIdx].machine == true) {
+    //   rgbColor specialNetRgb = unpackRgb(rawSpecialNetColors[slot]);
+    //   globalState.connections.nets[netIdx].color = specialNetRgb;
+    //   specialNetColors[slot] = specialNetRgb;
+    //   netColors[netIdx] = specialNetRgb;
+    //   return;
+    // }
 
     uint32_t railColor = 0;
     switch (slot) {
@@ -2353,42 +2353,42 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
         break;
         }
 
-      if (globalState.connections.nets[netNumber].machine == true) {
-        //Serial.println("machine");
-        if (globalState.connections.nets[netNumber].nodes[j] == node || node == -1) {
-          if (onOff == 1) {
-            if (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]] > 0) {
-              leds.setPixelColor(
-                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 0,
-                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
-              leds.setPixelColor(
-                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 1,
-                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
-              leds.setPixelColor(
-                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 2,
-                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
-              leds.setPixelColor(
-                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 3,
-                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
-              leds.setPixelColor(
-                  (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 4,
-                  scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
+      // if (globalState.connections.nets[netNumber].machine == true) {
+      //   //Serial.println("machine");
+      //   if (globalState.connections.nets[netNumber].nodes[j] == node || node == -1) {
+      //     if (onOff == 1) {
+      //       if (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]] > 0) {
+      //         leds.setPixelColor(
+      //             (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 0,
+      //             scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
+      //         leds.setPixelColor(
+      //             (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 1,
+      //             scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
+      //         leds.setPixelColor(
+      //             (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 2,
+      //             scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
+      //         leds.setPixelColor(
+      //             (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 3,
+      //             scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
+      //         leds.setPixelColor(
+      //             (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 4,
+      //             scaleDownBrightness(globalState.connections.nets[netNumber].rawColor));
 
-              if (debugLEDs) {
-                Serial.print("net: ");
-                Serial.print(netNumber);
-                Serial.print(" node: ");
-                Serial.print(globalState.connections.nets[netNumber].nodes[j]);
-                Serial.print(" mapped to LED:");
-                Serial.println(nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]);
+      //         if (debugLEDs) {
+      //           Serial.print("net: ");
+      //           Serial.print(netNumber);
+      //           Serial.print(" node: ");
+      //           Serial.print(globalState.connections.nets[netNumber].nodes[j]);
+      //           Serial.print(" mapped to LED:");
+      //           Serial.println(nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]);
 
-                Serial.print("rawColor: ");
-                Serial.println(globalState.connections.nets[netNumber].rawColor, HEX);
-                }
-              }
-            }
-          }
-        } else {
+      //           Serial.print("rawColor: ");
+      //           Serial.println(globalState.connections.nets[netNumber].rawColor, HEX);
+      //           }
+      //         }
+      //       }
+      //     }
+      //   } else {
 
         if (globalState.connections.nets[netNumber].nodes[j] <= NANO_A7) {
 
@@ -2598,7 +2598,7 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
               }
             }
           }
-        }
+        // }
       }
     // turnOffSkippedNodes();
     /*                                                            Serial.print("color:

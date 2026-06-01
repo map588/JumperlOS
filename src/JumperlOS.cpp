@@ -9,6 +9,7 @@
 #include "States.h"
 #include "Jerial.h" // TermControl is now part of Jerial
 #include "oled.h"
+#include "OledGui.h" // OledGui::tick() for the retained-screen render service
 #include "USBfs.h"
 #include "AsyncPassthrough.h"
 #include "SingleCharCommands.h"
@@ -43,6 +44,7 @@ AsyncPassthroughService& asyncPassthroughService = AsyncPassthroughService::getI
 TinyUSBService& tinyUSBService = TinyUSBService::getInstance();
 USBPeriodicService& usbPeriodicService = USBPeriodicService::getInstance();
 OLEDService& oledService = OLEDService::getInstance();
+OledGuiService& oledGuiService = OledGuiService::getInstance();
 LiveCrossbarService& liveCrossbarService = LiveCrossbarService::getInstance();
 ConfigSaveService& configSaveService = ConfigSaveService::getInstance();
 
@@ -784,6 +786,30 @@ ServiceStatus OLEDService::service() {
     return lastStatus;
 }
 
+// OledGuiService - retained-screen rendering + live binding refresh
+OledGuiService* OledGuiService::instance = nullptr;
+
+OledGuiService& OledGuiService::getInstance() {
+    if (instance == nullptr) {
+        instance = new OledGuiService();
+    }
+    return *instance;
+}
+
+/**
+ * @brief Service method for the retained OLED GUI
+ * NORMAL priority - dirty-driven, internally rate-limited (~30 Hz). Does
+ * nothing until a screen is activated, so it's free when unused.
+ */
+ServiceStatus OledGuiService::service() {
+    lastStatus = ServiceStatus::IDLE;
+    if (OledGui::getInstance().active() != nullptr) {
+        OledGui::getInstance().tick();
+        lastStatus = ServiceStatus::BUSY;
+    }
+    return lastStatus;
+}
+
 // LiveCrossbarService - Live crossbar terminal display
 LiveCrossbarService* LiveCrossbarService::instance = nullptr;
 
@@ -1018,6 +1044,24 @@ bool ContextManager::popContext() {
     // If there's a parent context, call its onResume callback
     if (stackTop >= 0 && stack[stackTop].onResume != nullptr) {
         stack[stackTop].onResume(stack[stackTop].userData);
+    }
+
+    // Discard any probe-button press latched while we were inside an
+    // interactive child context. Those loops (menus, the MicroPython REPL,
+    // etc.) don't consume probe presses, so a press registered in there
+    // would otherwise be picked up by the idle loop on return and drop the
+    // user straight into probe mode. getButtonPress() also rejects stale
+    // latches by age; this clears even a freshly-latched one on the exit
+    // edge as a belt-and-suspenders guard.
+    switch (current.type) {
+        case ContextType::PYTHON_REPL:
+        case ContextType::MAIN_MENU:
+        case ContextType::CLICKWHEEL_MENU:
+        case ContextType::DEBUG_MENU:
+            ProbeButton::getInstance().clearButtonState();
+            break;
+        default:
+            break;
     }
     
     // NOTE: Transfer path is NOT cleared here - it's meant to be read by the

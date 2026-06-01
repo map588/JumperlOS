@@ -1294,22 +1294,15 @@ void clearAllNTCC(void) {
   //     Sense -"      ,{ISENSE_MINUS}        ,{{}} ,ISENSE_MINUS           ,{}
   //     ,{ISENSE_PLUS}                       , 2},
   // };
-  globalState.connections.nets[0] = {127,
-            "Empty Net",
-            {EMPTY_NET},
-            {{}},
-            EMPTY_NET,
-            {},
-            {EMPTY_NET, EMPTY_NET, EMPTY_NET, EMPTY_NET, EMPTY_NET, EMPTY_NET,
-             EMPTY_NET},
-            0};
-  globalState.connections.nets[1] = {1, "GND", {GND}, {{}}, GND, {}, {SUPPLY_3V3, SUPPLY_5V, DAC0, DAC1},
-            1};
-  globalState.connections.nets[2] = {2, "Top Rail", {TOP_RAIL}, {{}}, TOP_RAIL, {}, {GND}, 1};
-  globalState.connections.nets[3] = {3, "Bottom Rail", {BOTTOM_RAIL}, {{}}, BOTTOM_RAIL, {}, {GND}, 1};
-  globalState.connections.nets[4] = {4, "DAC 0", {DAC0}, {{}}, DAC0, {}, {GND}, 1};
-  globalState.connections.nets[5] = {5, "DAC 1", {DAC1}, {{}}, DAC1, {}, {GND}, 1};
-
+  globalState.connections.nets[0] = {     127      ,"Empty Net"      ,{EMPTY_NET}           ,{{}}                   ,EMPTY_NET                        ,{EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET,EMPTY_NET} , 0};
+  globalState.connections.nets[1] = {     1        ,"GND"            ,{GND}                 ,{{}}                   ,GND                              ,{BOTTOM_RAIL,TOP_RAIL,DAC1}    , 1};
+       
+  globalState.connections.nets[2] = {     2        ,"Top Rail"       ,{TOP_RAIL}            ,{{}}                   ,TOP_RAIL                         ,{GND, BOTTOM_RAIL, DAC0, DAC1}                               , 1};
+  globalState.connections.nets[3] = {     3        ,"Bottom Rail"    ,{BOTTOM_RAIL}         ,{{}}                   ,BOTTOM_RAIL                      ,{GND, TOP_RAIL, DAC0, DAC1}                               , 1};
+  globalState.connections.nets[4] = {     4        ,"DAC 0"          ,{DAC0}                ,{{}}                   ,DAC0                             ,{ TOP_RAIL, BOTTOM_RAIL, DAC1}                               , 1};
+  globalState.connections.nets[5] =  {     5        ,"DAC 1"          ,{DAC1}                ,{{}}                   ,DAC1                            ,{GND, TOP_RAIL, BOTTOM_RAIL, DAC0}                               , 1};
+  
+  
   //clang-format on
 
   initNets();

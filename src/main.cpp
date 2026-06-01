@@ -195,6 +195,12 @@ void setup( ) {
     loadConfig( );
     //delay(2000);
 
+    // Reconcile the durable EEPROM store with the just-loaded config. EEPROM
+    // wins for the kept identity+calibration fields (so they survive an FS
+    // wipe); if no valid store exists yet it's seeded from config here and
+    // committed later via the deferred flush path.
+    eepromReconcileAfterConfig( );
+
     // Auto-detect PSRAM hardware and fix config if it disagrees
     size_t detectedPsram = 0;
     {
@@ -392,6 +398,7 @@ void setup( ) {
     jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
     jOS.registerService( &peripherals );        // NORMAL - periodic monitoring
     jOS.registerService( &singleCharCommands ); // NORMAL - command execution (synchronous, not periodic)
+    jOS.registerService( &oledGuiService );      // NORMAL - retained OLED screen render + live bindings (inert until a screen is active)
 
     // LOW priority services - background tasks
     jOS.registerService( &oledService );         // LOW - display updates
@@ -1676,6 +1683,13 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
     // THREAD SAFETY: Release the core sync mutex
     // This MUST be called before returning to allow Core 1 to access shared resources
     core_sync_release( );
+
+    // Keep the full adcReadings[] cache fresh in the background (for the OLED
+    // GUI / cached {adc:N} tokens). Self-throttled and gated on pauseCore2.
+    // Done AFTER releasing core_sync so a background ADC read (which uses its
+    // own atomic ADC lock) can never extend the core_sync hold and stall core0.
+    // Compiled out when LAZY_ADC_READINGS == 0.
+    updateLazyAdcReadings( );
 
     // TIMING DEBUG OUTPUT - Smart accumulation and periodic printing
     if ( debugWaitLoopTimingCore2 ) {

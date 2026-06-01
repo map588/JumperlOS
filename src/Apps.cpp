@@ -692,7 +692,7 @@ void probeCalibApp( void ) {
   
 
        
-            if ( millis( ) - finishCountdownTimer > 350 ) {
+            if ( millis( ) - finishCountdownTimer > 30 ) {
                 int countup = 0;
                 if ( ( encoderButtonState == 4 && lastButtonEncoderState == 4 ) || ( encoderButtonState == 2 && lastButtonEncoderState == 2 ) || encoderButtonState >= 4 ) {
                     

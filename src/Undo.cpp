@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 //
-// Undo system - in-RAM only.
+// Undo system.
 //
 // Compact delta ring (16k+ ops on PSRAM, ~512 SRAM-only) plus a small
 // PSRAM-resident snapshot ring that backs non-symmetric ops (clear-all).
 // Apply/revert is symmetric for connect/disconnect/DAC/GPIO; clear-all
-// uses a blob captured at record time. History is fresh on every boot.
+// captures the full board state as YAML at record time. A bounded slice of
+// the ring is persisted to /undo.hist on every slot save and restored at
+// boot, so history now survives reboots (on every board - see persistence
+// section below).
 
 #include "Undo.h"
 #include "Graphics.h"
@@ -17,6 +20,7 @@
 #include "config.h"
 #include "externVars.h"
 #include "oled.h"
+#include "OledGui.h"  // OledVars::setStr() - publish last undo/redo label to live screens
 #include "NetManager.h"  // definesToChar() - friendly node names (GND/D2/...)
 #include "JumperlessDefines.h"  // DAC0/DAC1/ROUTABLE_BUFFER_IN node IDs
 #include "RotaryEncoder.h"  // NUM_SLOTS, extern netSlot
@@ -36,10 +40,25 @@ extern "C" {
     volatile int undo_debug = 0;
 }
 
-#define UNDBG(fmt, ...) do { if (undo_debug || psram_debug) { Serial.printf("[%lu c%d] UNDO> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); Serial.flush(); } } while(0)
+// NOTE: deliberately NO Serial.flush() here. These traces fire in hot paths
+// (including under core_sync / fs_mutex on the save path), and a per-line
+// blocking flush waits for the USB CDC TX FIFO to fully drain. On an SRAM-only
+// board that path has little headroom, and a flood of flushed trace lines can
+// stall the USB servicing long enough to wedge the device. Without flush the
+// lines coalesce and drain in the background; we may lose the last few lines on
+// a hard crash, which is an acceptable trade for not causing one.
+#define UNDBG(fmt, ...) do { if (undo_debug || psram_debug) { Serial.printf("[%lu c%d] UNDO> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); } } while(0)
 
 extern struct config jumperlessConfig;
 extern JumperlessState globalState;
+
+// Backing-store + cache hooks used by the persistence path below. Declared at
+// file scope (C++ linkage) on purpose: undoPersistHistory() lives inside the
+// extern "C" lifecycle block, so a local `extern` there would bind C linkage
+// and fail to resolve the C++ definitions in FilesystemStuff.cpp / FileCache.cpp.
+extern bool safeFileWriteAllRaw(const char* path, const char* content,
+                                size_t content_len, uint32_t timeout_ms);
+extern bool fileCacheInvalidate(const char* path);
 
 // =============================================================================
 // Op / txn record formats
@@ -186,6 +205,20 @@ uint32_t g_undoCount = 0;
 uint32_t g_redoCount = 0;
 uint32_t g_dropCount = 0;
 
+// Set whenever the committed ring (txns/ops/cursors) changes in a way that
+// would alter the persisted /undo.hist file. undoPersistHistory() early-outs
+// when this is false so the frequent autosave path doesn't re-serialize +
+// re-CRC unchanged history. Cleared inside undoPersistHistory().
+bool g_historyDirty = false;
+
+// Runtime persistence limits, chosen in undoInit() based on PSRAM. Persistence
+// works on every board now (the user only needs a handful of states without
+// PSRAM); these keep the no-PSRAM scratch buffer small. See UNDO_PERSIST_MAX_*
+// for the compile-time ceilings the static scratch arrays are sized to.
+size_t g_persistMaxTxns  = 0;   // most-recent txns to keep in the file
+size_t g_persistMaxBytes = 0;   // body byte budget (drops oldest past this)
+size_t g_persistBufBytes = 0;   // serialization scratch buffer size
+
 // Snapshot ring (single, not per-slot - clear-all snapshots are tagged
 // with the slot they were taken on via the SnapshotEntry.slot field).
 SnapshotEntry* g_snapshots = nullptr;
@@ -196,17 +229,19 @@ uint32_t g_lastSnapshotMs = 0;
 
 // ============================================================================
 // Blob arena - stores full-state captures for non-symmetric ops (clear_all)
-// and for periodic snapshots used as resync anchors.
+// and for snapshots used as resync anchors.
+//
+// Each blob is the COMPLETE board state serialized as the same YAML a slot
+// save writes (globalState.toYAML()), so a clear-all undo restores the entire
+// board - bridges, colors, DAC/rail voltages, GPIO, paths - not just a subset.
+// This is also what gets copied into /undo.hist, so persisted clear-all undo
+// reconstructs everything.
 //
 // Format of each blob:
 //   [u32 magic 'JLBS'][u32 size][u32 crc32][u32 reserved] -> 16-byte header
-//   [u16 numBridges]
-//   [Bridge × N]: { i16 n1, i16 n2, u32 color }                  // 8 B
-//   [float dacVolts[4]]  // dac0, dac1, topRail, bottomRail
-//   [u8 numCustomColors][NetColor × M]                           // optional
+//   [char yaml[size]]                                       -> toYAML() output
 //
-// For ~200 bridges + DAC state, a single blob is ~1.7 KB. Snapshot ring
-// holds 16 of these on PSRAM (~30 KB), plenty for resync anchors.
+// A typical board is ~0.5-2 KB of YAML.
 // ============================================================================
 
 constexpr uint32_t BLOB_MAGIC = 0x53424C4A;  // 'JLBS'
@@ -218,16 +253,9 @@ struct BlobHeader {
     uint32_t crc32;    // crc of body
     uint32_t reserved;
 };
-
-struct BlobBridge {
-    int16_t n1;
-    int16_t n2;
-    uint32_t color;
-};
 #pragma pack(pop)
 
 static_assert(sizeof(BlobHeader) == 16, "BlobHeader sized wrong");
-static_assert(sizeof(BlobBridge) == 8, "BlobBridge sized wrong");
 
 // Tiny CRC32 - matches the one in FileCache.cpp's journal code.
 uint32_t blobCrc32(const uint8_t* data, size_t n) {
@@ -240,67 +268,38 @@ uint32_t blobCrc32(const uint8_t* data, size_t n) {
     return ~crc;
 }
 
-// Serialize globalState's connections + DACs into a blob at *outOffset.
+// Capture the full board state (as slot YAML) into a blob at *outOffset.
 // Returns true on success and sets outOffset/outSize. Caller must hold no
 // other locks.
 bool blobAppendCurrentState(uint32_t* outOffset, uint32_t* outSize) {
-    UNDBG("blobAppendCurrentState ENTER blobs=%p cap=%u used=%u",
-          (void*)g_blobs, (unsigned)g_blobCap, (unsigned)g_blobUsed);
     if (!g_blobs || g_blobCap == 0) return false;
 
-    // First compute the body size we need.
-    int numBridges = globalState.connections.numBridges;
-    UNDBG("  numBridges=%d MAX_BRIDGES=%d", numBridges, MAX_BRIDGES);
-    if (numBridges > MAX_BRIDGES) numBridges = MAX_BRIDGES;
-    if (numBridges < 0) numBridges = 0;  // sanity
-
-    size_t bodySize = sizeof(uint16_t)                 // numBridges
-                    + (size_t)numBridges * sizeof(BlobBridge)
-                    + 4 * sizeof(float);               // dac voltages
+    String yaml;
+    if (!globalState.toYAML(yaml)) {
+        UNDBG("blobAppendCurrentState: toYAML failed");
+        return false;
+    }
+    size_t bodySize = yaml.length();
     size_t totalSize = sizeof(BlobHeader) + bodySize;
-
-    // Round up to 4 bytes for alignment.
     size_t aligned = (totalSize + 3u) & ~size_t(3u);
-    UNDBG("  bodySize=%u total=%u aligned=%u",
-          (unsigned)bodySize, (unsigned)totalSize, (unsigned)aligned);
+    UNDBG("blobAppendCurrentState yaml=%u total=%u aligned=%u used=%u cap=%u",
+          (unsigned)bodySize, (unsigned)totalSize, (unsigned)aligned,
+          (unsigned)g_blobUsed, (unsigned)g_blobCap);
 
     if (aligned > g_blobCap) {
-        UNDBG("  aligned > cap, abort");
+        UNDBG("  blob > arena cap, abort");
         return false;
     }
     if (g_blobUsed + aligned > g_blobCap) {
-        UNDBG("blob arena full (used=%u cap=%u need=%u) - reset",
-              (unsigned)g_blobUsed, (unsigned)g_blobCap, (unsigned)aligned);
+        UNDBG("  blob arena full - wrapping to 0");
         g_blobUsed = 0;
     }
 
     uint8_t* dst = g_blobs + g_blobUsed;
     BlobHeader* hdr = (BlobHeader*)dst;
     uint8_t* body = dst + sizeof(BlobHeader);
-    UNDBG("  dst=%p hdr=%p body=%p", (void*)dst, (void*)hdr, (void*)body);
+    memcpy(body, yaml.c_str(), bodySize);
 
-    uint8_t* p = body;
-    UNDBG("  writing numBridges field");
-    *(uint16_t*)p = (uint16_t)numBridges; p += sizeof(uint16_t);
-    UNDBG("  copying %d bridges", numBridges);
-    for (int i = 0; i < numBridges; i++) {
-        BlobBridge bb;
-        bb.n1 = (int16_t)globalState.connections.bridges[i][0];
-        bb.n2 = (int16_t)globalState.connections.bridges[i][1];
-        bb.color = globalState.connections.bridgeColors[i];
-        memcpy(p, &bb, sizeof(bb));
-        p += sizeof(bb);
-    }
-    UNDBG("  copying DAC voltages");
-    float dacs[4] = {
-        globalState.power.dac0,
-        globalState.power.dac1,
-        globalState.power.topRail,
-        globalState.power.bottomRail,
-    };
-    memcpy(p, dacs, sizeof(dacs)); p += sizeof(dacs);
-
-    UNDBG("  writing header + crc");
     hdr->magic = BLOB_MAGIC;
     hdr->size = (uint32_t)bodySize;
     hdr->reserved = 0;
@@ -310,57 +309,50 @@ bool blobAppendCurrentState(uint32_t* outOffset, uint32_t* outSize) {
     if (outSize) *outSize = (uint32_t)aligned;
     g_blobUsed += aligned;
 
-    UNDBG("blob append OK off=%u size=%u (bridges=%d)",
-          *outOffset, *outSize, numBridges);
+    UNDBG("blob append OK off=%u size=%u (yaml %u bytes)",
+          outOffset ? *outOffset : 0, outSize ? *outSize : 0, (unsigned)bodySize);
     return true;
 }
 
-// Restore globalState from a blob. Returns true if the blob is valid and
-// state was restored. Caller is responsible for setting g_undoApplying so
-// the restored mutations don't recurse into the undo log.
+// Restore globalState from a YAML blob and apply it. Returns true if the blob
+// is valid and state was restored. globalState.fromYAML() self-suppresses the
+// undo-record hooks for its whole duration, so this won't recurse into the
+// log even if the caller forgot to set g_undoApplying. The caller (undoUndo /
+// undoRedo) pushes the result to hardware via undoCommitToHardware().
 bool blobRestoreState(uint32_t offset, uint32_t size) {
-    if (!g_blobs || offset + sizeof(BlobHeader) > g_blobCap) return false;
+    (void)size;
+    if (!g_blobs || (size_t)offset + sizeof(BlobHeader) > g_blobCap) return false;
     BlobHeader* hdr = (BlobHeader*)(g_blobs + offset);
     if (hdr->magic != BLOB_MAGIC) {
         UNDBG("blob restore FAIL bad magic 0x%08X at off=%u",
               (unsigned)hdr->magic, (unsigned)offset);
         return false;
     }
+    if ((size_t)offset + sizeof(BlobHeader) + hdr->size > g_blobCap) {
+        UNDBG("blob restore FAIL size overflow at off=%u", (unsigned)offset);
+        return false;
+    }
     uint8_t* body = g_blobs + offset + sizeof(BlobHeader);
-    uint32_t want = blobCrc32(body, hdr->size);
-    if (want != hdr->crc32) {
+    if (blobCrc32(body, hdr->size) != hdr->crc32) {
         UNDBG("blob restore FAIL crc mismatch at off=%u", (unsigned)offset);
         return false;
     }
 
-    uint8_t* p = body;
-    uint16_t numBridges = *(uint16_t*)p; p += sizeof(uint16_t);
+    // Rebuild the YAML string (the arena copy isn't NUL-terminated) and apply.
+    char* tmp = (char*)malloc((size_t)hdr->size + 1);
+    if (!tmp) {
+        UNDBG("blob restore FAIL OOM for %u bytes", (unsigned)hdr->size);
+        return false;
+    }
+    memcpy(tmp, body, hdr->size);
+    tmp[hdr->size] = '\0';
+    String yaml(tmp);
+    free(tmp);
 
     String err;
-    // Clear current connections without recording a new clear-all op.
-    // We're already inside revert(), so g_undoApplying is true.
-    globalState.connections.clear();
-
-    for (uint16_t i = 0; i < numBridges; i++) {
-        BlobBridge bb;
-        memcpy(&bb, p, sizeof(bb)); p += sizeof(bb);
-        globalState.addConnection(bb.n1, bb.n2, err);
-        // Restore color hint
-        if (globalState.connections.numBridges > 0) {
-            int idx = globalState.connections.numBridges - 1;
-            globalState.connections.bridgeColors[idx] = bb.color;
-        }
-    }
-
-    float dacs[4];
-    memcpy(dacs, p, sizeof(dacs)); p += sizeof(dacs);
-    globalState.power.dac0 = dacs[0];
-    globalState.power.dac1 = dacs[1];
-    globalState.power.topRail = dacs[2];
-    globalState.power.bottomRail = dacs[3];
-
-    UNDBG("blob restore OK bridges=%u", (unsigned)numBridges);
-    return true;
+    bool ok = globalState.fromYAML(yaml, err);
+    UNDBG("blob restore (yaml %u bytes) ok=%d", (unsigned)hdr->size, (int)ok);
+    return ok;
 }
 
 }  // namespace
@@ -628,6 +620,9 @@ void takeSnapshot(const char* reason) {
     UNDBG("takeSnapshot ENTER reason=%s snapshots=%p cap=%u",
           reason, (void*)g_snapshots, (unsigned)g_snapshotCap);
     if (!g_snapshots || g_snapshotCap == 0) return;
+    // Never mutate the blob arena while we're applying/reverting - blobRestore
+    // is reading from it and a fresh append could clobber the source offset.
+    if (g_undoApplying) return;
     uint32_t off = 0, size = 0;
     if (!blobAppendCurrentState(&off, &size)) {
         UNDBG("snapshot capture FAILED (%s)", reason);
@@ -648,6 +643,324 @@ void takeSnapshot(const char* reason) {
           reason, (unsigned)((g_snapshotHead + g_snapshotCap - 1) % g_snapshotCap),
           (unsigned)g_globalTxnId);
     UNDBG("takeSnapshot DONE");
+}
+
+}  // namespace
+
+// =============================================================================
+// Cross-reboot persistence - bounded undo-history ring on flash
+// =============================================================================
+//
+// Now that the SPIFTL delta-journal makes flash writes cheap, the undo
+// history survives reboots. On every slot save we serialize the most-recent
+// slice of the shared ring into /undo.hist (through the write-back cache, so
+// it's an instant PSRAM memcpy that the background flush coalesces to flash).
+// On boot undoInit() reads it back so undo/redo continue across power cycles.
+//
+// The file is itself a *bounded* ring: we only persist the newest
+// UNDO_PERSIST_MAX_TXNS transactions (capped further at UNDO_PERSIST_MAX_BYTES
+// of body), dropping the oldest history so the file never grows without
+// bound. Obsolete (orphaned redo-tail) and empty transactions are skipped.
+//
+// Layout (all little-endian, packed):
+//   [UndoFileHeader]
+//   [uint32_t slotCursor[numSlots]]   - per-slot cursor as a linear txn index
+//   [UndoTxn  txns[txnCount]]         - oldest-first; firstOp rewritten linear
+//   [UndoOp   ops[opCount]]           - blob ops' blobOffset rewritten
+//   [uint8_t  blobs[blobBytes]]       - compacted clear-all/blob arena
+//
+// We do NOT persist the PSRAM snapshot ring: snapshots are purely capture-side
+// resync anchors and OP_CLEAR_ALL carries its own blob ref (a full board YAML,
+// which we copy into the file), so clear-all undo still restores the entire
+// board after a reboot. A fresh boot snapshot is taken when there's nothing to
+// restore.
+//
+// Persistence works on every board. With PSRAM we keep up to 256 states; with
+// only SRAM the scratch buffer comes from the small heap so we keep the most
+// recent 32 (g_persistMaxTxns, set in undoInit).
+
+namespace {
+
+constexpr uint32_t  UNDO_FILE_MAGIC   = 0x4F44554Au;  // 'JUDO'
+constexpr uint16_t  UNDO_FILE_VERSION = 2;             // v2: YAML clear-all blobs
+constexpr const char* UNDO_FILE_PATH  = "/undo_history.txt";
+
+// Compile-time ceilings the static scratch arrays are sized to. The *actual*
+// run-time limits are g_persistMaxTxns / g_persistMaxBytes (set in undoInit
+// from PSRAM availability) and are always <= these. Whichever run-time limit
+// hits first wins; the single newest transaction is always included even if it
+// alone exceeds the byte budget (it still has to fit the scratch buffer or
+// persistence is skipped for that save).
+constexpr size_t UNDO_PERSIST_MAX_TXNS  = 256;
+constexpr size_t UNDO_PERSIST_MAX_BYTES = 64u * 1024u;
+
+#pragma pack(push, 1)
+struct UndoFileHeader {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t numSlots;     // NUM_SLOTS at write time
+    uint32_t bodyCrc;      // crc32 over the body (everything after this header)
+    uint32_t bodySize;     // body byte count
+    uint32_t opCount;
+    uint32_t txnCount;
+    uint32_t blobBytes;
+    uint32_t globalTxnId;
+    uint32_t opCap;        // ring caps at write time (sanity / future migration)
+    uint32_t txnCap;
+    uint32_t reserved0;
+    uint32_t reserved1;
+};
+#pragma pack(pop)
+
+// Serialization scratch buffer size: header + cursors + body budget + slack
+// so a single oversized newest txn (or blob) still fits without overflow.
+constexpr size_t UNDO_PERSIST_BUF_BYTES =
+    sizeof(UndoFileHeader) + NUM_SLOTS * sizeof(uint32_t) +
+    UNDO_PERSIST_MAX_BYTES + 8192u;
+
+// Copy the blob living at `oldOff` in the live arena into the output blob
+// region (buf + blobsBase ..), de-duplicating by old offset. Validates the
+// blob's magic + CRC first; a stale/clobbered ref returns false so the caller
+// can neutralize the referencing op. On success *newOff gets the arena-
+// relative offset the blob will occupy after restore.
+bool persistBlob(uint32_t oldOff, uint32_t oldSize, uint8_t* buf, size_t blobsBase,
+                 size_t cap, size_t* outBlobUsed,
+                 uint32_t* mapOld, uint32_t* mapNew, size_t* nMap, size_t mapMax,
+                 uint32_t* newOff) {
+    if (!g_blobs || oldSize == 0) return false;
+    for (size_t k = 0; k < *nMap; k++) {
+        if (mapOld[k] == oldOff) { *newOff = mapNew[k]; return true; }
+    }
+    // Validate the source blob in the live arena.
+    if ((size_t)oldOff + sizeof(BlobHeader) > g_blobCap) return false;
+    const BlobHeader* hdr = (const BlobHeader*)(g_blobs + oldOff);
+    if (hdr->magic != BLOB_MAGIC) return false;
+    if ((size_t)oldOff + sizeof(BlobHeader) + hdr->size > g_blobCap) return false;
+    if (blobCrc32(g_blobs + oldOff + sizeof(BlobHeader), hdr->size) != hdr->crc32)
+        return false;
+    if (blobsBase + *outBlobUsed + oldSize > cap) return false;  // no room
+    memcpy(buf + blobsBase + *outBlobUsed, g_blobs + oldOff, oldSize);
+    *newOff = (uint32_t)*outBlobUsed;
+    *outBlobUsed += oldSize;
+    if (*nMap < mapMax) { mapOld[*nMap] = oldOff; mapNew[*nMap] = *newOff; (*nMap)++; }
+    return true;
+}
+
+// Serialize the live committed ring into `buf` (size `cap`). Returns the total
+// byte count (header + body) written, or 0 if there's nothing to persist / the
+// buffer is too small.
+size_t undoSerialize(uint8_t* buf, size_t cap) {
+    if (!g_ops || !g_txns) return 0;
+    if (cap < sizeof(UndoFileHeader) + NUM_SLOTS * sizeof(uint32_t)) return 0;
+
+    // Ring distance from the global tail (monotonic ordering helper).
+    auto dist = [](size_t x) -> size_t {
+        return (x + g_txnCap - g_txnTail) % g_txnCap;
+    };
+
+    // --- Select the newest reachable txns within the count + byte budget,
+    //     walking backward from head. keptIdx[] holds them newest-first.
+    static size_t keptIdx[UNDO_PERSIST_MAX_TXNS];
+    static uint32_t budgetBlobOff[UNDO_PERSIST_MAX_TXNS];
+    size_t nKept = 0;
+    size_t nBudgetBlob = 0;
+    size_t bytes = 0;
+    size_t maxTxns  = g_persistMaxTxns  ? g_persistMaxTxns  : UNDO_PERSIST_MAX_TXNS;
+    size_t maxBytes = g_persistMaxBytes ? g_persistMaxBytes : UNDO_PERSIST_MAX_BYTES;
+    if (maxTxns > UNDO_PERSIST_MAX_TXNS) maxTxns = UNDO_PERSIST_MAX_TXNS;
+    {
+        size_t pos = g_txnHead;
+        while (pos != g_txnTail && nKept < maxTxns) {
+            pos = (pos + g_txnCap - 1) % g_txnCap;
+            const UndoTxn& t = g_txns[pos];
+            if (t.opCount != 0 && !(t.flags & UNDO_TXN_OBSOLETE)) {
+                size_t add = sizeof(UndoTxn) + (size_t)t.opCount * sizeof(UndoOp);
+                size_t blobAdd = 0;
+                for (uint16_t i = 0; i < t.opCount; i++) {
+                    const UndoOp& op = g_ops[(t.firstOp + i) % g_opCap];
+                    if (op.type == UNDO_OP_CLEAR_ALL || op.type == UNDO_OP_BLOB_REPLACE) {
+                        uint32_t off = op.blob.blobOffset;
+                        bool seen = false;
+                        for (size_t k = 0; k < nBudgetBlob; k++)
+                            if (budgetBlobOff[k] == off) { seen = true; break; }
+                        if (!seen && op.blob.blobSize > 0 &&
+                            nBudgetBlob < UNDO_PERSIST_MAX_TXNS) {
+                            budgetBlobOff[nBudgetBlob++] = off;
+                            blobAdd += op.blob.blobSize;
+                        }
+                    }
+                }
+                if (nKept > 0 && bytes + add + blobAdd > maxBytes) break;
+                keptIdx[nKept++] = pos;
+                bytes += add + blobAdd;
+            }
+            if (pos == g_txnTail) break;
+        }
+    }
+
+    // Total ops across the kept txns -> fixes the ops region size + blob base.
+    size_t opCount = 0;
+    for (size_t k = 0; k < nKept; k++) opCount += g_txns[keptIdx[k]].opCount;
+
+    size_t hdrSize    = sizeof(UndoFileHeader);
+    size_t cursorsOff = hdrSize;
+    size_t txnsOff    = cursorsOff + (size_t)NUM_SLOTS * sizeof(uint32_t);
+    size_t opsOff     = txnsOff + nKept * sizeof(UndoTxn);
+    size_t blobsBase  = opsOff + opCount * sizeof(UndoOp);
+    if (blobsBase > cap) return 0;  // committed txns/ops alone overflow buffer
+
+    // --- Per-slot cursors as linear txn indices (count of kept txns strictly
+    //     older than the cursor). cursor==head therefore maps to nKept (live).
+    uint32_t* cur = (uint32_t*)(buf + cursorsOff);
+    for (int s = 0; s < NUM_SLOTS; s++) {
+        size_t dC = dist(g_slotCursor[s]);
+        size_t cnt = 0;
+        for (size_t k = 0; k < nKept; k++)
+            if (dist(keptIdx[k]) < dC) cnt++;
+        cur[s] = (uint32_t)cnt;
+    }
+
+    // --- Emit txns oldest-first, linearizing ops and compacting blobs.
+    UndoTxn* outTxns = (UndoTxn*)(buf + txnsOff);
+    UndoOp*  outOps  = (UndoOp*)(buf + opsOff);
+    static uint32_t mapOld[UNDO_PERSIST_MAX_TXNS];
+    static uint32_t mapNew[UNDO_PERSIST_MAX_TXNS];
+    size_t nMap = 0;
+    size_t outBlobUsed = 0;
+    size_t opOut = 0;
+    size_t outTxnIdx = 0;
+    for (int k = (int)nKept - 1; k >= 0; k--) {
+        const UndoTxn& t = g_txns[keptIdx[k]];
+        UndoTxn nt = t;
+        nt.firstOp = (uint32_t)opOut;
+        for (uint16_t i = 0; i < t.opCount; i++) {
+            UndoOp op = g_ops[(t.firstOp + i) % g_opCap];
+            if (op.type == UNDO_OP_CLEAR_ALL || op.type == UNDO_OP_BLOB_REPLACE) {
+                uint32_t newOff = 0;
+                if (persistBlob(op.blob.blobOffset, op.blob.blobSize, buf, blobsBase,
+                                cap, &outBlobUsed, mapOld, mapNew, &nMap,
+                                UNDO_PERSIST_MAX_TXNS, &newOff)) {
+                    op.blob.blobOffset = newOff;
+                } else {
+                    // Stale/missing blob - neutralize so restore leaves state
+                    // alone (matches the live revert's best-effort behavior).
+                    op.blob.blobOffset = 0;
+                    op.blob.blobSize = 0;
+                }
+            }
+            op.txnIdx = (uint16_t)(outTxnIdx & 0xFFFF);
+            outOps[opOut++] = op;
+        }
+        outTxns[outTxnIdx++] = nt;
+    }
+
+    size_t bodySize = (blobsBase - hdrSize) + outBlobUsed;
+
+    UndoFileHeader* hdr = (UndoFileHeader*)buf;
+    memset(hdr, 0, sizeof(*hdr));
+    hdr->magic       = UNDO_FILE_MAGIC;
+    hdr->version     = UNDO_FILE_VERSION;
+    hdr->numSlots    = (uint16_t)NUM_SLOTS;
+    hdr->bodySize    = (uint32_t)bodySize;
+    hdr->opCount     = (uint32_t)opCount;
+    hdr->txnCount    = (uint32_t)nKept;
+    hdr->blobBytes   = (uint32_t)outBlobUsed;
+    hdr->globalTxnId = g_globalTxnId;
+    hdr->opCap       = (uint32_t)g_opCap;
+    hdr->txnCap      = (uint32_t)g_txnCap;
+    hdr->bodyCrc     = blobCrc32(buf + hdrSize, bodySize);
+
+    UNDBG("serialize txns=%u ops=%u blob=%u body=%u total=%u",
+          (unsigned)nKept, (unsigned)opCount, (unsigned)outBlobUsed,
+          (unsigned)bodySize, (unsigned)(hdrSize + bodySize));
+    return hdrSize + bodySize;
+}
+
+// Rebuild the live ring from a serialized image. Returns true if any history
+// was restored (txnCount > 0).
+bool undoDeserialize(const uint8_t* buf, size_t len) {
+    if (!g_ops || !g_txns) return false;
+    if (len < sizeof(UndoFileHeader)) return false;
+
+    UndoFileHeader hdr;
+    memcpy(&hdr, buf, sizeof(hdr));
+    if (hdr.magic != UNDO_FILE_MAGIC || hdr.version != UNDO_FILE_VERSION) {
+        Serial.printf("[Undo] restore REJECT: bad magic/version (0x%08X v%u, "
+                      "want 0x%08X v%u)\n", (unsigned)hdr.magic,
+                      (unsigned)hdr.version, (unsigned)UNDO_FILE_MAGIC,
+                      (unsigned)UNDO_FILE_VERSION);
+        return false;
+    }
+
+    size_t hdrSize = sizeof(UndoFileHeader);
+    if (hdrSize + hdr.bodySize > len) {
+        Serial.printf("[Undo] restore REJECT: truncated (need %u have %u)\n",
+              (unsigned)(hdrSize + hdr.bodySize), (unsigned)len);
+        return false;
+    }
+    if (blobCrc32(buf + hdrSize, hdr.bodySize) != hdr.bodyCrc) {
+        Serial.printf("[Undo] restore REJECT: body CRC mismatch (body=%u)\n",
+              (unsigned)hdr.bodySize);
+        return false;
+    }
+
+    // Sanity-bound against this build's ring capacities.
+    if (hdr.txnCount >= g_txnCap || hdr.opCount >= g_opCap ||
+        hdr.blobBytes > g_blobCap) {
+        Serial.printf("[Undo] restore REJECT: counts exceed ring caps "
+              "(txn=%u/%u op=%u/%u blob=%u/%u)\n",
+              (unsigned)hdr.txnCount, (unsigned)g_txnCap,
+              (unsigned)hdr.opCount, (unsigned)g_opCap,
+              (unsigned)hdr.blobBytes, (unsigned)g_blobCap);
+        return false;
+    }
+
+    size_t cursorsOff = hdrSize;
+    size_t txnsOff    = cursorsOff + (size_t)hdr.numSlots * sizeof(uint32_t);
+    size_t opsOff     = txnsOff + (size_t)hdr.txnCount * sizeof(UndoTxn);
+    size_t blobsOff   = opsOff + (size_t)hdr.opCount * sizeof(UndoOp);
+    if (blobsOff + hdr.blobBytes != hdrSize + hdr.bodySize) {
+        Serial.printf("[Undo] restore REJECT: section layout mismatch "
+              "(numSlots=%u txn=%u op=%u blob=%u body=%u)\n",
+              (unsigned)hdr.numSlots, (unsigned)hdr.txnCount,
+              (unsigned)hdr.opCount, (unsigned)hdr.blobBytes,
+              (unsigned)hdr.bodySize);
+        return false;
+    }
+
+    if (hdr.txnCount > 0)
+        memcpy(g_txns, buf + txnsOff, (size_t)hdr.txnCount * sizeof(UndoTxn));
+    if (hdr.opCount > 0)
+        memcpy(g_ops, buf + opsOff, (size_t)hdr.opCount * sizeof(UndoOp));
+    if (hdr.blobBytes > 0)
+        memcpy(g_blobs, buf + blobsOff, hdr.blobBytes);
+
+    g_txnTail = 0;
+    g_txnHead = hdr.txnCount;   // < g_txnCap, never the full sentinel
+    g_opTail = 0;
+    g_opHead = hdr.opCount;
+    g_blobUsed = hdr.blobBytes;
+    g_globalTxnId = hdr.globalTxnId;
+
+    // Cursors were stored as linear txn indices; with tail==0 that's also the
+    // ring index. Clamp defensively into [0, txnHead].
+    const uint32_t* cur = (const uint32_t*)(buf + cursorsOff);
+    for (int s = 0; s < NUM_SLOTS; s++) {
+        if (s < (int)hdr.numSlots) {
+            uint32_t v = cur[s];
+            if (v > hdr.txnCount) v = hdr.txnCount;
+            g_slotCursor[s] = v;
+        } else {
+            g_slotCursor[s] = g_txnHead;
+        }
+    }
+
+    g_waypointsDirty = true;
+    g_historyDirty = false;
+    UNDBG("restore OK txns=%u ops=%u blob=%u gid=%u",
+          (unsigned)hdr.txnCount, (unsigned)hdr.opCount,
+          (unsigned)hdr.blobBytes, (unsigned)hdr.globalTxnId);
+    return hdr.txnCount > 0;
 }
 
 }  // namespace
@@ -771,6 +1084,27 @@ void undoInit(void) {
         g_blobCap = 4 * 1024;
     }
 
+    // Persistence limits. With PSRAM we keep a deep history; without it the
+    // serialization scratch buffer + /undo.hist body live in SRAM. SRAM-only
+    // builds run with the heap nearly full (often <15 KB free), so the old
+    // ~12 KB scratch buffer routinely failed to allocate and the save was
+    // silently dropped (you'd just keep restoring the previous file). Keep the
+    // no-PSRAM budget intentionally small so the scratch buffer reliably fits;
+    // a handful of undo steps is all that's expected without PSRAM anyway.
+    if (havePsram) {
+        g_persistMaxTxns  = 256;
+        g_persistMaxBytes = 64u * 1024u;
+    } else {
+        g_persistMaxTxns  = 24;
+        g_persistMaxBytes = 3u * 1024u;
+    }
+    // Slack covers one oversized newest txn/blob beyond the body budget. A
+    // clear-all blob is a full-board YAML capture (<2 KB), so 2 KB is plenty on
+    // the no-PSRAM path while keeping the total scratch buffer ~5 KB.
+    size_t persistSlack = havePsram ? 4096u : 2048u;
+    g_persistBufBytes = sizeof(UndoFileHeader) + (size_t)NUM_SLOTS * sizeof(uint32_t)
+                      + g_persistMaxBytes + persistSlack;
+
     auto isPow2 = [](size_t n) { return n != 0 && (n & (n - 1)) == 0; };
     if (!isPow2(g_opCap) || !isPow2(g_txnCap)) {
         Serial.println("[Undo] FATAL: ring caps must be powers of two");
@@ -808,22 +1142,171 @@ void undoInit(void) {
         NUM_SLOTS, havePsram ? "PSRAM" : "SRAM-only", g_activeSlot);
 
     snapshotInit();
-    if (g_snapshots) {
+    if (g_snapshots)
         Serial.printf("[Undo] snapshot ring: %u entries\n", (unsigned)g_snapshotCap);
-        takeSnapshot("boot");
+
+    // Restore persisted history (every board). If there's nothing to restore,
+    // seed the snapshot ring with a fresh boot capture as before.
+    bool restored = undoRestore();
+
+    // Boot-time restore summary (always on - this runs once on Core 0 before
+    // Core 1 is spamming Serial, so it's safe even when undo_debug would not
+    // be). For each slot that has reachable history it reports the cursor, the
+    // total reachable txns, and how many are undoable (reachable + strictly
+    // older than the cursor). If a slot shows tot>0 but undoable=0 the cursor
+    // was restored at the wrong end; if restore=0 the file was rejected.
+    {
+        size_t totalReachable = 0;
+        char summary[200];
+        size_t off = 0;
+        summary[0] = '\0';
+        for (int s = 0; s < NUM_SLOTS; s++) {
+            size_t reach = 0, undoable = 0;
+            bool pastCursor = (g_slotCursor[s] == g_txnTail);
+            size_t pos = g_txnTail;
+            while (pos != g_txnHead) {
+                if (pos == g_slotCursor[s]) pastCursor = true;
+                const UndoTxn& t = g_txns[pos];
+                if (t.opCount && !(t.flags & UNDO_TXN_OBSOLETE) &&
+                    t.slot == (uint8_t)s) {
+                    reach++;
+                    if (!pastCursor) undoable++;
+                }
+                pos = (pos + 1) % g_txnCap;
+            }
+            totalReachable += reach;
+            if (reach > 0 && off + 40 < sizeof(summary)) {
+                off += (size_t)snprintf(summary + off, sizeof(summary) - off,
+                    " s%d[cur=%u tot=%u undoable=%u]", s,
+                    (unsigned)g_slotCursor[s], (unsigned)reach, (unsigned)undoable);
+            }
+        }
+        Serial.printf("[Undo] restore=%d head=%u tail=%u gid=%u active=%d "
+                      "netSlot=%d reachable=%u%s\n",
+            (int)restored, (unsigned)g_txnHead, (unsigned)g_txnTail,
+            (unsigned)g_globalTxnId, g_activeSlot, netSlot,
+            (unsigned)totalReachable, summary);
     }
 
+    if (g_snapshots && !restored)
+        takeSnapshot("boot");
+
     // One-shot cleanup of artifacts from the old persistent-history
-    // implementation. Best-effort - if the files don't exist or the FS
-    // is busy, we silently move on.
+    // implementation (replaced by /undo.hist). Best-effort.
     FatFS.remove("/undo.log");
     FatFS.remove("/undo.snap");
 }
 
 void undoShutdown(void) {
     if (g_inTxn) undoEndTxn();
+    // Capture history one last time before the lights go out, then drain the
+    // write-back cache so /undo.hist actually reaches flash.
+    undoPersistHistory();
     extern void fileCacheFlushNowAll(const char* reason);
     fileCacheFlushNowAll("shutdown");
+}
+
+// Serialize the live history to /undo.hist via the normal file system.
+// Cheap and idempotent: early-outs when nothing changed since the last persist,
+// and the write-back cache dedups byte-identical writes. Runs on every board -
+// SRAM-only units just keep a smaller bounded slice (see the g_persistMaxTxns /
+// g_persistMaxBytes budgets chosen in undoInit). Durability (the eventual flush
+// to flash) is handled by the cache's flush service / shutdown drain, same as
+// every other slot/config save.
+void undoPersistHistory(void) {
+    if (!g_ops || !g_txns) return;
+    if (!g_historyDirty) return;        // nothing new to write
+    size_t bufBytes = g_persistBufBytes ? g_persistBufBytes : UNDO_PERSIST_BUF_BYTES;
+
+    uint8_t* buf = (uint8_t*)undoAlloc(bufBytes);
+    if (!buf) {
+        // Real durability failure (NOT debug-gated): on an SRAM-only board this
+        // ~12 KB scratch comes from the small heap, and if it can't be had the
+        // history never reaches flash - the previous (stale) file is what the
+        // next boot restores. Leave g_historyDirty set so the next save retries.
+        Serial.printf("[Undo] persist FAIL: scratch alloc of %u bytes failed "
+                      "- history NOT saved\n", (unsigned)bufBytes);
+        return;
+    }
+
+    size_t total = undoSerialize(buf, bufBytes);
+    if (total == 0) {
+        // Nothing reachable to persist. Drop any stale file so a future boot
+        // doesn't restore history that no longer exists.
+        undoFree(buf);
+        if (safeFileExists(UNDO_FILE_PATH)) safeFileDelete(UNDO_FILE_PATH);
+        g_historyDirty = false;
+        return;
+    }
+
+    // Durability is board-type dependent:
+    //  - PSRAM: the write-back file cache lives in a large PSRAM arena, so the
+    //    normal cache write (instant memcpy, content-dedup, coalesced flush in
+    //    the background) is both cheap and safe - the entry is pinned so it
+    //    can't be evicted before the idle flush carries it to flash.
+    //  - No PSRAM: the cache is a hard 16 KB SRAM budget, and its lazy flush
+    //    first CLONES the body (a 2nd SRAM copy) before writing. Under SRAM
+    //    pressure that clone - or the cached body itself - can fail, which
+    //    leaves the ONLY copy of undo history stuck dirty-in-RAM, never reaching
+    //    flash. That's the "opens an old file, new saves never stick" symptom.
+    //    There's no deferred-PSRAM-memcpy win to chase here anyway, so write
+    //    straight to flash at this natural save point and make it durable now.
+    bool ok;
+    if (psram_available()) {
+        ok = safeFileWriteAll(UNDO_FILE_PATH, (const char*)buf, total);
+    } else {
+        fileCacheInvalidate(UNDO_FILE_PATH);  // no stale cached copy shadows flash
+        ok = safeFileWriteAllRaw(UNDO_FILE_PATH, (const char*)buf, total, 3000);
+    }
+    undoFree(buf);
+    if (ok) {
+        g_historyDirty = false;
+    } else {
+        Serial.printf("[Undo] persist FAIL: write of %u bytes to %s failed\n",
+                      (unsigned)total, UNDO_FILE_PATH);
+    }
+    UNDBG("persist %s -> %u bytes (%s)", UNDO_FILE_PATH,
+          (unsigned)total, ok ? "ok" : "FAILED");
+}
+
+// Load /undo.hist (if present + valid) into the freshly-allocated ring.
+// Called from undoInit() after the rings exist. Returns true if any history
+// was restored.
+bool undoRestore(void) {
+    if (!g_ops || !g_txns) return false;
+    if (!safeFileExists(UNDO_FILE_PATH)) {
+        Serial.printf("[Undo] restore: no %s on flash (first boot or never "
+                      "persisted)\n", UNDO_FILE_PATH);
+        return false;
+    }
+    size_t bufBytes = g_persistBufBytes ? g_persistBufBytes : UNDO_PERSIST_BUF_BYTES;
+
+    int32_t sz = safeFileSize(UNDO_FILE_PATH);
+    if (sz <= (int32_t)sizeof(UndoFileHeader) || (size_t)sz > bufBytes) {
+        Serial.printf("[Undo] restore REJECT: size %ld out of range "
+                      "(hdr=%u max=%u)\n", (long)sz,
+                      (unsigned)sizeof(UndoFileHeader), (unsigned)bufBytes);
+        return false;
+    }
+
+    // fileCacheReadInto (under safeFileReadAll) reserves one byte for a NUL
+    // terminator, so size the buffer at file size + 1.
+    uint8_t* buf = (uint8_t*)undoAlloc((size_t)sz + 1);
+    if (!buf) return false;
+
+    size_t readBytes = 0;
+    bool ok = safeFileReadAll(UNDO_FILE_PATH, (char*)buf, (size_t)sz + 1, &readBytes);
+    bool restored = false;
+    if (ok && readBytes >= sizeof(UndoFileHeader)) {
+        restored = undoDeserialize(buf, readBytes);
+    }
+    undoFree(buf);
+
+    if (restored) {
+        Serial.printf("[Undo] restored history from %s (%u bytes)\n",
+                      UNDO_FILE_PATH, (unsigned)readBytes);
+    }
+    return restored;
 }
 
 void undoOnSlotSwitch(int newSlot) {
@@ -941,6 +1424,7 @@ void undoEndTxn(void) {
         // head (txn was appended at slot[g_openTxnSlot]'s "live" end).
         g_slotCursor[g_openTxnSlot] = g_txnHead;
         g_waypointsDirty = true;
+        g_historyDirty = true;
         undoMaybeTakeSnapshot("periodic");
         UNDBG("endTxn DONE");
     }
@@ -979,6 +1463,7 @@ static void appendOp(const UndoOp& op) {
     g_ops[g_opHead].txnIdx = (uint16_t)(g_openTxnIdx & 0xFFFF);
     g_opHead = opRingNext(g_opHead);
     g_lastOpMs = millis();
+    g_historyDirty = true;
 }
 
 // Each public record function opens a fresh transaction with a label that
@@ -1021,8 +1506,8 @@ static void recordOneAction(const UndoOp& op, const char* label) {
 // and can't meaningfully reason about undoing them.
 static inline bool isAutoManagedBridge(int n1, int n2) {
     auto isBufferPair = [](int a, int b) {
-        return (a == ROUTABLE_BUFFER_IN || a == ROUTABLE_BUFFER_OUT) &&
-               (b == DAC0 || b == DAC1);
+        return (a == ROUTABLE_BUFFER_IN || a == DAC0 || a == DAC1) &&
+               (b == DAC0 || b == DAC1 || b == ROUTABLE_BUFFER_IN);
     };
     return isBufferPair(n1, n2) || isBufferPair(n2, n1);
 }
@@ -1201,7 +1686,10 @@ bool undoCanRedo(void) {
 // rails / DACs (cheap: 4 small I2C writes). In-memory mutation alone
 // doesn't reroute switches, refresh LEDs, or re-issue DAC voltages.
 static void undoCommitToHardware(void) {
-    refreshConnections(-1, 1, 0);
+    // clean=1 forces a full re-route + LED repaint. Needed because a clear-all
+    // undo now replaces the entire board state (via YAML restore), not just a
+    // single bridge, so a partial commit could leave stale crosspoints/LEDs.
+    refreshConnections(-1, 1, 1);
     setRailsAndDACs(0);
 }
 
@@ -1216,6 +1704,7 @@ bool undoUndo(void) {
     applyTxn(t, -1);
     g_slotCursor[g_activeSlot] = prev;
     g_undoCount++;
+    g_historyDirty = true;
     undoCommitToHardware();
     UNDBG("UNDO done cursor=%u", (unsigned)g_slotCursor[g_activeSlot]);
     return true;
@@ -1231,6 +1720,7 @@ bool undoRedo(void) {
     applyTxn(t, +1);
     g_slotCursor[g_activeSlot] = txnRingNext(next);
     g_redoCount++;
+    g_historyDirty = true;
     undoCommitToHardware();
     UNDBG("REDO done cursor=%u", (unsigned)g_slotCursor[g_activeSlot]);
     return true;
@@ -1439,39 +1929,146 @@ void undoFlashLogo(uint32_t durationMs) {
     if (target > undoActivityUntil) undoActivityUntil = target;
 }
 
+// --- OLED undo/redo toast layout ---------------------------------------------
+// The toast is built from up to three logical pieces:
+//   tag    = "undo" / "redo"
+//   action = "connect" / "disconnect" / "top" / "slot" / ... (the verb/source)
+//   nodes  = "4-8" / "5.00V" / "2->3" / ...                  (the detail/value)
+// The layout below is hardcoded to match the design exported from the OLED
+// layout editor (device/screens/layout.json) - see undoBuildToastScreen.
+
+// Split a recorder label into action (first token) + nodes (the detail/value)
+// so the toast can render the verb/source small and the detail large. Covers
+// every label the undoRecord* helpers emit:
+//   "connect 4-8"    -> "connect"    / "4-8"
+//   "disconnect 5-9" -> "disconnect" / "5-9"
+//   "top 5.00V"      -> "top"        / "5.00V"   (rail / DAC voltage)
+//   "bot 3.30V"      -> "bot"        / "3.30V"
+//   "DAC0 1.50V"     -> "DAC0"       / "1.50V"
+//   "slot 2->3"      -> "slot"       / "2->3"
+//   "GPIO5 dir=1"    -> "GPIO5"      / "dir=1"
+//   "GPIO5=1"        -> "GPIO5"      / "1"        (no space: split on '=')
+//   "clear all"      -> ""           / "clear all" (kept whole - no value)
+// Anything with no separator (or unlabeled) is kept whole as the detail so it
+// still renders as a single segment.
+static void undoSplitLabel(const char* label, char* action, size_t actionSize,
+                           char* nodes, size_t nodesSize) {
+    action[0] = '\0';
+    nodes[0] = '\0';
+    if (!label || !label[0]) return;
+
+    // "clear all" (and similar bare commands) have no value half - the whole
+    // label is the detail, with no separable action.
+    if (strcmp(label, "clear all") == 0) {
+        strncpy(nodes, label, nodesSize - 1);
+        nodes[nodesSize - 1] = '\0';
+        return;
+    }
+
+    // Action = first token; detail = the remainder. Prefer a space separator;
+    // if there's none, fall back to '=' (e.g. "GPIO5=1") so the pin/source is
+    // still split out from its value.
+    const char* sep = strchr(label, ' ');
+    if (!sep) sep = strchr(label, '=');
+
+    if (sep && sep != label) {
+        size_t verbLen = (size_t)(sep - label);
+        if (verbLen >= actionSize) verbLen = actionSize - 1;
+        memcpy(action, label, verbLen);
+        action[verbLen] = '\0';
+        strncpy(nodes, sep + 1, nodesSize - 1);   // skip the single separator
+        nodes[nodesSize - 1] = '\0';
+        return;
+    }
+
+    // No separator - keep the whole label as the detail.
+    strncpy(nodes, label, nodesSize - 1);
+    nodes[nodesSize - 1] = '\0';
+}
+
+// Build the toast as a retained OledScreen of anchored Text elements.
+// Hardcoded to reproduce the design exported from the OLED layout editor
+// (device/screens/layout.json), i.e. exactly what oledGuiLoadScreen() would
+// produce from that file:
+//   tag    ("undo"/"redo") : New Science 13pt, anchored top-left  (x/y ignored)
+//   action ("connect"/...) : Pragmatism  8pt, absolute (7, 18)    (FREE/FREE)
+//   nodes  ("8-GP 2"/...)  : Pragmatism 10pt, right-anchored at y=11 (RIGHT/FREE)
+// Any piece that is empty is simply skipped.
+static void undoBuildToastScreen(OledScreen& screen, const char* tag,
+                                 const char* action, const char* nodes) {
+
+                                    // return;
+    screen.clearElements();
+    screen.w = 128;
+    screen.h = 32;
+
+    if (tag && tag[0]) {
+        int idx = screen.addText(tag, 3, 1, "New Science", 13);
+        if (idx >= 0) screen.setAnchor(idx, OLED_H_LEFT, OLED_V_TOP);
+    }
+    if (action && action[0]) {
+        int idx = screen.addText(action, 5, 18, "Pragmatism", 7);
+        if (idx >= 0) screen.setAnchor(idx, OLED_H_LEFT, OLED_V_FREE);
+    }
+    if (nodes && nodes[0]) {
+        int idx = screen.addText(nodes, 79, 11, "Pragmatism", 8);
+        if (idx >= 0) screen.setAnchor(idx, OLED_H_RIGHT, OLED_V_FREE);
+    }
+}
+
 void undoToast(bool isRedo, const char* label) {
     const char* tag = isRedo ? "redo" : "undo";
+
+// return;
+
     // Match the probeMode entry banner style: blank line above and
     // below, tab-indented body. Standalone block so probe-mode prints
     // and prompts before/after don't smear into the toast line.
 
-    if (oled.isConnected()) {
-    // Two-line OLED layout, both rows centered, rendered at a fixed 7pt
-    // font by clearPrintShowSmall (no auto-fit -> stable size regardless
-    // of label width):
-    //   undo
-    //   connect 4-8       (or "disconnect 50-46", "clear all", ...)
-    char buf[96];
-    if (label && label[0]) {
-        snprintf(buf, sizeof(buf), "%s\n%s", tag, label);
-    } else {
-        snprintf(buf, sizeof(buf), "%s", tag);
+    // Publish the last undo/redo action to the OLED variable registry so any
+    // live screen bound to {undo} updates automatically (no display required).
+    {
+        char undoVar[64];
+        if (label && label[0]) snprintf(undoVar, sizeof(undoVar), "%s %s", tag, label);
+        else                   snprintf(undoVar, sizeof(undoVar), "%s", tag);
+        OledVars::setStr("undo", undoVar);
     }
-    // Snapshot-aware hold: capture the pre-toast framebuffer FIRST,
-    // then paint+priority-flush the toast. oledHoldBegin saves the
-    // current live framebuffer (the background that was visible before
-    // this toast) into a shadow buffer and arms the post-flush latch.
-    // clearPrintShowSmall paints the toast over the live framebuffer,
-    // priority-flushes it to the panel, and then restores the shadow
-    // back into the live framebuffer. Any probe-mode / clearHighlighting
-    // / status writes that happen during the hold window therefore
-    // accumulate against the pre-toast background rather than smearing
-    // on top of toast pixels. When the hold expires (~1 s later),
-    // oledPeriodic() flushes the live framebuffer once - the panel
-    // transitions cleanly from the toast to the up-to-date underlying
-    // content with no toast residue.
-    oled.oledHoldBegin(800);
-    oled.clearPrintShowSmall(buf, true, true);
+
+    if (oled.isConnected()) {
+    // Parse the label into action + nodes; undoBuildToastScreen lays them out
+    // (with the tag) per the hardcoded layout-editor design, e.g.:
+    //   undo
+    //   connect              8-GP 2
+    char action[16];
+    char nodes[48];
+    undoSplitLabel(label, action, sizeof(action), nodes, sizeof(nodes));
+
+    // Build the toast as a retained oledgui scene graph (anchored Text
+    // elements) and render it into the framebuffer. A function-static
+    // OledScreen is reused across toasts so a hot undo/redo path pays no
+    // per-toast allocation; it is never registered with OledGui (we render it
+    // manually here), so the background render service never touches it.
+    static OledScreen toastScreen;
+    undoBuildToastScreen(toastScreen, tag, action, nodes);
+
+    // Snapshot-aware hold: capture the pre-toast framebuffer FIRST, then
+    // paint + priority-flush the toast. oledHoldBegin saves the current live
+    // framebuffer (the background that was visible before this toast) into a
+    // shadow buffer and arms the post-flush latch. render() repaints the
+    // framebuffer with the toast scene graph; priorityFlushHeldFrame() pushes
+    // it to the panel and restores the shadow back into the live framebuffer.
+    // Any probe-mode / clearHighlighting / status writes during the hold
+    // window therefore accumulate against the pre-toast background rather than
+    // smearing on top of toast pixels. When the hold expires, oledPeriodic()
+    // flushes the live framebuffer once - the panel transitions cleanly from
+    // the toast to the up-to-date underlying content with no toast residue.
+    //
+    // A persistent idle oledgui page steps aside while we own the panel.
+    OledGui::getInstance().notePanelTakenByOther();
+    oled.oledHoldBegin(1800);
+    toastScreen.resolveBindings();
+    toastScreen.render(oled);
+    oled.priorityFlushHeldFrame();
 }
 
     const int disColor = 202;

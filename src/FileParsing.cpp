@@ -27,8 +27,10 @@
 
 volatile bool netsUpdated = true;
 
-bool debugFP = EEPROM.read(DEBUG_FILEPARSINGADDRESS);
-bool debugFPtime = EEPROM.read(TIME_FILEPARSINGADDRESS);
+// Source of truth is config.txt; readSettingsFromConfig() syncs debugFP at boot.
+// (debugFPtime is a runtime-only timing flag toggled via the all-on/all-off menu.)
+bool debugFP = false;
+bool debugFPtime = false;
 
 // LEGACY: These SafeString buffers are kept for backward compatibility with old slot files
 // TODO: Eventually migrate all legacy file parsing to use States.cpp YAML format
@@ -38,8 +40,8 @@ createSafeString(currentColorSlotColorsString, 1500);
 createSafeString(specialFunctionsString, 2800);
 
 // General-purpose nodeFileString backup/restore system
-static char nodeFileStringBackup[1800];
-static bool nodeFileBackupStored = false;
+// // static char nodeFileStringBackup[1800];
+// static bool nodeFileBackupStored = false;
 
 // Track which slots have net colors assigned (bit mask for performance)
 uint32_t slotsWithNetColors = 0;
@@ -49,7 +51,7 @@ uint32_t slotsValidated = 0;
 
 int numConnsJson = 0;
 
-char inputBuffer[INPUTBUFFERLENGTH] = {0};
+// char inputBuffer[INPUTBUFFERLENGTH] = {0};
 
 // ArduinoJson::StaticJsonDocument<8000> wokwiJson;
 // ;

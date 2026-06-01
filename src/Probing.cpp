@@ -224,20 +224,28 @@ void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
         pressStartTime = 0;
 
         // Bounce filter: require the release to be sustained for
-        // minimumBlockMs before clearing the press-block. Anything
-        // shorter than that we treat as a contact bounce inside an
-        // ongoing press.
-        if ( isBlocked && releaseStartTime > 0 &&
-             ( now - releaseStartTime ) >= minimumBlockMs ) {
-            isBlocked = false;
-            blockStartTime = 0;
-            releaseStartTime = 0;
+        // releaseDebounceMs before clearing the press-block AND before
+        // marking the release "confirmed". A shorter float is treated as a
+        // contact bounce / mid-press glitch inside an ongoing press, so it
+        // doesn't clear the block early and doesn't confirm a release - which
+        // is what lets the double-tap detector distinguish a genuine second
+        // tap (preceded by a real release) from a mid-press glitch edge (see
+        // the releaseConfirmed/allowDoubleTap gate in press detection). Note
+        // isBlocked also clears unconditionally via the block timer in the
+        // pressed branch, so a noisy release can never wedge it permanently.
+        if ( releaseStartTime > 0 && ( now - releaseStartTime ) >= releaseDebounceMs ) {
+            releaseConfirmed = true;
+            if ( isBlocked ) {
+                isBlocked = false;
+                blockStartTime = 0;
+                releaseStartTime = 0;
+            }
         }
 
         return;
     } else {
         // We saw a pressed sample - any prior release was transient,
-        // so reset the release timer. This makes minimumBlockMs an
+        // so reset the release timer. This makes releaseDebounceMs an
         // honest "released for N ms continuously" gate.
         releaseStartTime = 0;
     }
@@ -291,6 +299,23 @@ void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
             // Per-button rolling 2-press timestamp ring. Double fires when
             // the previous press is within DOUBLE_WINDOW_MS of this one.
             //
+            // IMPORTANT: the double-tap (and only the double-tap) is gated on
+            // releaseConfirmed - i.e. a debounce-confirmed sustained release
+            // must have occurred between the two presses. A transient
+            // mid-press float momentarily reads as released (newState==0)
+            // then snaps back to the same button, creating a second press
+            // edge a few hundred ms after the first; without this gate that
+            // glitch pairs with the real press and fires a spurious undo
+            // (the exact symptom we're fixing). We deliberately do NOT gate
+            // basic press registration on releaseConfirmed - doing so would
+            // wedge press detection on a noisy line that never delivers a
+            // clean 50ms release window. Worst case on a noisy line we just
+            // skip double-tap detection, never single-press registration.
+            bool allowDoubleTap = releaseConfirmed;
+            // Consume the confirmed-release token: the NEXT press won't count
+            // as a double-tap until another sustained release is observed.
+            releaseConfirmed = false;
+            //
             // The actual undoUndo/undoRedo invocation runs in service()
             // main-loop context (not from IRQ) - we just stash the intent
             // in the pending-* flags + labels. service() drains them and
@@ -301,8 +326,8 @@ void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
             //     the double-tap is a real undo gesture
             // See probeMode's bail handling for the cutoff.
             //
-            // Click 2's buttonPress is suppressed here so the second tap
-            // doesn't trigger any in-probe action (mode switch, clear
+            // Click 2's buttonPress is suppressed (dbl branch) so the second
+            // tap doesn't trigger any in-probe action (mode switch, clear
             // nodesToConnect) - it's exclusively a double-tap gesture.
             static uint32_t connectClicks[ 2 ] = { 0, 0 };
             static uint32_t disconnectClicks[ 2 ] = { 0, 0 };
@@ -310,9 +335,18 @@ void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
             uint32_t* hist      = ( newState == 2 ) ? connectClicks    : disconnectClicks;
             uint32_t* otherHist = ( newState == 2 ) ? disconnectClicks : connectClicks;
             otherHist[ 0 ] = otherHist[ 1 ] = 0;
-            hist[ 0 ] = hist[ 1 ];
-            hist[ 1 ] = now;
-            bool dbl = ( hist[ 0 ] != 0 ) && ( ( hist[ 1 ] - hist[ 0 ] ) <= DOUBLE_WINDOW_MS );
+
+            bool dbl = false;
+            if ( allowDoubleTap ) {
+                hist[ 0 ] = hist[ 1 ];
+                hist[ 1 ] = now;
+                dbl = ( hist[ 0 ] != 0 ) && ( ( hist[ 1 ] - hist[ 0 ] ) <= DOUBLE_WINDOW_MS );
+            } else {
+                // No confirmed release since the last press - this edge is a
+                // glitch/bounce, not a genuine second tap. Drop the history
+                // so it can't later pair with a real press into a false double.
+                hist[ 0 ] = hist[ 1 ] = 0;
+            }
 
             if ( dbl ) {
                 // Defer the heavy work (undoUndo/undoRedo + undoToast)
@@ -337,11 +371,10 @@ void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
                 // window from triggering a stale match.
                 hist[ 0 ] = hist[ 1 ] = 0;
             } else {
-                // Single press (so far) - propagate to consumers. The
-                // press will sit in buttonPress until either click 2
-                // arrives (dbl branch above clears it) or some consumer
-                // (handleProbeButtonActions / readProbe::checkProbeButton)
-                // picks it up.
+                // Single press - propagate to consumers. The press will sit
+                // in buttonPress until either click 2 arrives (dbl branch
+                // above clears it) or some consumer (handleProbeButtonActions
+                // / readProbe::checkProbeButton) picks it up.
                 buttonPress = newState;
             }
 
@@ -479,6 +512,24 @@ uint                   g_pioProbeBtnPC   = 0;  // start of button polling progra
 uint                   g_pioProbeLedPC   = 0;  // start of WS2812 program
 int                    g_pioProbeIrqNum  = -1; // NVIC IRQ number for the PIO IRQ line
 
+// Concurrency model for the shared probe SM:
+//
+// The PIO IRQ is owned by core0 (initProbeButtonPIO runs from jOS.serviceAll
+// on core0), while the SM-mode swap runs on core1 (probeLEDhandler ->
+// core2stuff). The ORIGINAL bug was that probeButtonResumePolling re-enabled
+// the IRQ via irq_set_enabled, which is per-core on RP2350 - so it leaked the
+// IRQ enable onto core1 and let processSample() run on BOTH cores at once
+// (the source of the phantom presses / spurious undos / extra LED flicker).
+//
+// The fix is simply to keep the IRQ owned by core0 ONLY: pause/resumePolling
+// no longer touch the NVIC. We intentionally do NOT add a spinlock or a
+// showingProbeLEDs gate to the handler: probeLEDhandler() spins in a tight
+// loop on core1, so any "bail while a show owns the line" guard would bail on
+// nearly every sample and starve button events. The brief (microsecond) SM
+// swap can race a core0 FIFO read, but the handler's pio_sm_is_rx_fifo_empty()
+// check makes a stray read a no-op, and during an actual WS2812 show the
+// button program isn't running so flag 0 never fires.
+
 // Latest decoded state pushed by the PIO IRQ handler. Read by legacy
 // callers (checkProbeButtonHardware()) and the debug menu. Volatile +
 // uint8_t = atomic single-byte reads/writes on the M33, no lock needed.
@@ -520,6 +571,17 @@ static void __not_in_flash_func( probe_button_pio_irq_handler )( void ) {
         return; // race during teardown
     }
 
+    // NOTE: we deliberately do NOT gate this handler on showingProbeLEDs or
+    // a spinlock. probeLEDhandler() runs in a tight loop on core1 (the final
+    // else-if of core2stuff between scheduler ticks), so "bail while an LED
+    // show owns the line" would bail on essentially every sample and drop
+    // all button events. The shared SM is safe to read here anyway: during a
+    // WS2812 show the button program isn't running so flag 0 never fires, and
+    // the only overlap is core1's microsecond SM-mode swap - against which the
+    // pio_sm_is_rx_fifo_empty() guard below makes a stray read a no-op. The
+    // real concurrency fix is upstream: the IRQ is owned by core0 ONLY (we no
+    // longer let resumePolling re-enable it on core1), so processSample()
+    // never runs on two cores at once.
     extern struct config jumperlessConfig;
     int probeRev = jumperlessConfig.hardware.probe_revision;
     ProbeButton& self = ProbeButton::getInstance( );
@@ -557,12 +619,15 @@ void probeButtonPausePolling( void ) {
     PIO  pio = g_pioProbePIO;
     uint sm  = g_pioProbeSM;
 
-    // Disable the NVIC IRQ first so we don't take an IRQ in the
-    // middle of the SM-mode swap.
-    if ( g_pioProbeIrqNum >= 0 ) {
-        irq_set_enabled( (uint)g_pioProbeIrqNum, false );
-    }
-
+    // NOTE: do NOT toggle the NVIC IRQ here. This function runs on core1
+    // (probeLEDhandler -> core2stuff), but the PIO IRQ is owned by core0.
+    // irq_set_enabled is per-core, so disabling here would not mask the
+    // core0 handler anyway, and (the original bug) the matching enable in
+    // resumePolling would LEAK the IRQ enable onto core1, letting both cores
+    // run processSample concurrently. Keeping the IRQ owned solely by core0
+    // is the actual fix. The brief SM-mode swap below can race a core0 IRQ
+    // read, but the handler's pio_sm_is_rx_fifo_empty() guard makes that a
+    // no-op, so no lock is needed.
     pio_sm_set_enabled( pio, sm, false );
 
     // Drain any pending RX samples the IRQ handler hasn't processed
@@ -585,6 +650,8 @@ void probeButtonResumePolling( void ) {
     PIO  pio = g_pioProbePIO;
     uint sm  = g_pioProbeSM;
 
+    // See probeButtonPausePolling: the IRQ stays owned by core0 only; we do
+    // NOT re-enable it here (the original cross-core enable was the bug).
     pio_sm_set_enabled( pio, sm, false );
     pio_sm_clear_fifos( pio, sm );
     pio_sm_restart( pio, sm );
@@ -592,9 +659,6 @@ void probeButtonResumePolling( void ) {
     pio_sm_set_enabled( pio, sm, true );
 
     pio_interrupt_clear( pio, 0 );
-    if ( g_pioProbeIrqNum >= 0 ) {
-        irq_set_enabled( (uint)g_pioProbeIrqNum, true );
-    }
 }
 
 // Lazily set up the shared-SM button program + IRQ. Returns true if the
@@ -653,6 +717,10 @@ static bool initProbeButtonPIO( void ) {
     pio_sm_set_consecutive_pindirs( pio, (uint)sm, (uint)pin, 1, true );
 
     // Install the PIO IRQ handler and wire PIO IRQ flag 0 → NVIC line 0.
+    // This runs on core0 (initProbeButtonPIO is reached via jOS.serviceAll
+    // in loop()), making core0 the sole owner of the button PIO IRQ. We never
+    // enable this IRQ on core1 (resumePolling no longer touches it), so the
+    // handler / processSample can only ever run on one core.
     g_pioProbeIrqNum = pio_get_irq_num( pio, 0 );
     irq_set_exclusive_handler( (uint)g_pioProbeIrqNum, probe_button_pio_irq_handler );
     pio_set_irq0_source_enabled( pio, pis_interrupt0, true );
@@ -5266,7 +5334,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             }
         } else if ( probePowerDAC == 1 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {

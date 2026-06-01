@@ -5,28 +5,44 @@
             "path": "."
         },
         {
+            "name": "Jumperless-docs",
             "path": "../Jumperless-docs"
         },
         {
+            "name": "Jumperless-App",
             "path": "../Jumperless-App"
         },
         {
+            "name": "Socialz",
             "path": "../../../Desktop/JumperlessV5eratta/Socialz"
         },
         {
+            "name": "JumperVS",
             "path": "../JumperVS"
         },
         {
+            "name": "JumperlessBackport",
             "path": "../Jumperless/JumperlessBackport"
         },
         {
+            "name": "JumperIDE",
             "path": "../JumperIDE"
         },
         {
+            "name": "Large Breadboard Model",
             "path": "../Large Breadboard Model"
         },
         {
+            "name": "SPIFTL",
             "path": "../SPIFTL"
+        },
+        {
+            "name": "Temporal-Replay-26-Badge",
+            "path": "../Temporal-Replay-26-Badge"
+        },
+        {
+            "name": "JumperIDE-VSCode",
+            "path": "../JumperIDE-VSCode"
         }
     ]
 }

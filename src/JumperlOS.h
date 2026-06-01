@@ -434,6 +434,30 @@ private:
 };
 
 /**
+ * @brief OLED GUI render service - drives retained-screen rendering + live bindings
+ * NORMAL priority - re-renders the active OledScreen and re-resolves bound
+ * {token} values, dirty-driven with an internal ~30 Hz cap. Completely inert
+ * (no work, no display access) until a screen is activated via
+ * OledGui::activate(), so it never perturbs existing display behavior on its
+ * own. Connection maintenance stays in the LOW-priority OLEDService.
+ */
+class OledGuiService : public Service {
+public:
+    static OledGuiService& getInstance();
+    OledGuiService(const OledGuiService&) = delete;
+    OledGuiService& operator=(const OledGuiService&) = delete;
+
+    ServiceStatus service() override;
+    const char* getName() const override { return "OledGui"; }
+    ServicePriority getPriority() const override { return ServicePriority::NORMAL; }
+
+private:
+    OledGuiService() = default;
+    ~OledGuiService() = default;
+    static OledGuiService* instance;
+};
+
+/**
  * @brief Live Crossbar Display service - updates terminal display when enabled
  * LOW priority - display updates are not time-critical
  * Waits for colors to be assigned before updating to avoid rendering without colors
@@ -689,6 +713,7 @@ extern AsyncPassthroughService& asyncPassthroughService;
 extern TinyUSBService& tinyUSBService;
 extern USBPeriodicService& usbPeriodicService;
 extern OLEDService& oledService;
+extern OledGuiService& oledGuiService;
 extern LiveCrossbarService& liveCrossbarService;
 
 #endif // JUMPERLOS_H

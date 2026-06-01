@@ -138,7 +138,12 @@ String menuLines[] = {
    "--*0**1**2**3**4**5**6**7*>s",
 
    "History",
-
+  //  "Settings",
+  //      "-Encoder Probing",
+  //      "--*On**Off*",
+  //      "-Hilight Clear",
+  //      "--*On**Off*",
+            
 
 
        "Display\31Options",

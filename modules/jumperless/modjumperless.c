@@ -184,6 +184,8 @@ int jl_fs_stat_isdir( const char* path );
 int jl_fs_total_bytes( void );
 int jl_fs_used_bytes( void );
 int jl_nodes_clear( void );
+
+// OLED
 int jl_oled_print( const char* text, int size );
 int jl_oled_clear( int show );
 int jl_oled_show( void );
@@ -203,6 +205,24 @@ int jl_oled_set_framebuffer( const uint8_t* data, size_t len );
 void jl_oled_get_framebuffer_size( int* width, int* height, int* buffer_bytes );
 int jl_oled_set_pixel( int x, int y, int color );
 int jl_oled_get_pixel( int x, int y );
+
+// OLED GUI (retained screens)
+int  jl_oled_screen_new( void );
+void jl_oled_screen_free( int screen );
+void jl_oled_screen_clear( int screen );
+int  jl_oled_screen_show( int screen, int persist );
+void jl_oled_screen_hide( void );
+void jl_oled_screen_reset( void );
+int  jl_oled_add_text( int screen, const char* text, int x, int y, const char* font, int size, int halign, int valign, int z );
+int  jl_oled_add_shape( int screen, int kind, int x, int y, int w, int h, int filled, int z );
+int  jl_oled_elem_set_str( int elem, const char* prop, const char* value );
+int  jl_oled_elem_set_int( int elem, const char* prop, int value );
+int  jl_oled_set_var( const char* name, const char* value );
+int  jl_oled_set_var_num( const char* name, float value );
+int  jl_oled_screen_save( int screen, const char* name );
+int  jl_oled_screen_load( const char* name );
+
+
 void jl_arduino_reset( void );
 void jl_probe_tap( int node );
 int jl_probe_read_blocking( void );
@@ -3365,6 +3385,145 @@ static mp_obj_t jl_oled_get_pixel_func( size_t n_args, const mp_obj_t* args ) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_get_pixel_obj, 2, 2, jl_oled_get_pixel_func );
 
+// ---------------------------------------------------------------------------
+// OLED GUI (retained screens)
+// Flat handle-based API; the oledgui.py wrapper builds Screen/Text/Shape on top.
+//   s = oled_screen()                          -> screen handle (int)
+//   e = oled_add_text(s, "{adc:0} V", x=0, y=0, font="Pragmatism", size=12)
+//   e = oled_add_shape(s, kind, x=, y=, w=, h=, filled=, z=)
+//   oled_set(e, "text", "...")  /  oled_set(e, "x", 10)
+//   oled_set_var("name", value)                -> push a live value
+//   oled_screen_show(s) / oled_screen_hide()
+//   oled_screen_save(s, "name") / s = oled_screen_load("name")
+// ---------------------------------------------------------------------------
+
+static mp_obj_t jl_oled_screen_new_func( void ) {
+    return mp_obj_new_int( jl_oled_screen_new( ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_screen_new_obj, jl_oled_screen_new_func );
+
+static mp_obj_t jl_oled_screen_free_func( mp_obj_t screen_obj ) {
+    jl_oled_screen_free( mp_obj_get_int( screen_obj ) );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_screen_free_obj, jl_oled_screen_free_func );
+
+static mp_obj_t jl_oled_screen_clear_func( mp_obj_t screen_obj ) {
+    jl_oled_screen_clear( mp_obj_get_int( screen_obj ) );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_screen_clear_obj, jl_oled_screen_clear_func );
+
+// oled_screen_show(screen, persist=False) -> bool
+// persist registers the screen as the idle display (takes the logo's place and
+// survives the script). Defaults to a one-shot foreground show.
+static mp_obj_t jl_oled_screen_show_func( size_t n_args, const mp_obj_t* args ) {
+    int persist = ( n_args > 1 ) ? mp_obj_is_true( args[1] ) : 0;
+    return mp_obj_new_bool( jl_oled_screen_show( mp_obj_get_int( args[0] ), persist ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN( jl_oled_screen_show_obj, 1, 2, jl_oled_screen_show_func );
+
+static mp_obj_t jl_oled_screen_hide_func( void ) {
+    jl_oled_screen_hide( );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_screen_hide_obj, jl_oled_screen_hide_func );
+
+static mp_obj_t jl_oled_screen_reset_func( void ) {
+    jl_oled_screen_reset( );
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0( jl_oled_screen_reset_obj, jl_oled_screen_reset_func );
+
+static mp_obj_t jl_oled_add_text_func( size_t n_args, const mp_obj_t* pos_args, mp_map_t* kw_args ) {
+    enum { ARG_screen, ARG_text, ARG_x, ARG_y, ARG_font, ARG_size, ARG_halign, ARG_valign, ARG_z };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_screen, MP_ARG_REQUIRED | MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_text,   MP_ARG_REQUIRED | MP_ARG_OBJ, { .u_obj = MP_OBJ_NULL } },
+        { MP_QSTR_x,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_y,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_font,   MP_ARG_OBJ, { .u_rom_obj = MP_ROM_NONE } },
+        { MP_QSTR_size,   MP_ARG_INT, { .u_int = 8 } },
+        { MP_QSTR_halign, MP_ARG_INT, { .u_int = -1 } },
+        { MP_QSTR_valign, MP_ARG_INT, { .u_int = -1 } },
+        { MP_QSTR_z,      MP_ARG_INT, { .u_int = 0 } },
+    };
+    mp_arg_val_t args[ MP_ARRAY_SIZE( allowed_args ) ];
+    mp_arg_parse_all( n_args, pos_args, kw_args, MP_ARRAY_SIZE( allowed_args ), allowed_args, args );
+
+    int screen = args[ ARG_screen ].u_int;
+    const char* text = mp_obj_str_get_str( args[ ARG_text ].u_obj );
+    const char* font = "Pragmatism";
+    if ( args[ ARG_font ].u_obj != mp_const_none ) {
+        font = mp_obj_str_get_str( args[ ARG_font ].u_obj );
+    }
+    int elem = jl_oled_add_text( screen, text, args[ ARG_x ].u_int, args[ ARG_y ].u_int,
+                                 font, args[ ARG_size ].u_int, args[ ARG_halign ].u_int,
+                                 args[ ARG_valign ].u_int, args[ ARG_z ].u_int );
+    return mp_obj_new_int( elem );
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW( jl_oled_add_text_obj, 2, jl_oled_add_text_func );
+
+static mp_obj_t jl_oled_add_shape_func( size_t n_args, const mp_obj_t* pos_args, mp_map_t* kw_args ) {
+    enum { ARG_screen, ARG_kind, ARG_x, ARG_y, ARG_w, ARG_h, ARG_filled, ARG_z };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_screen, MP_ARG_REQUIRED | MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_kind,   MP_ARG_INT, { .u_int = 1 } },   // default RECT outline
+        { MP_QSTR_x,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_y,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_w,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_h,      MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_filled, MP_ARG_INT, { .u_int = 0 } },
+        { MP_QSTR_z,      MP_ARG_INT, { .u_int = 0 } },
+    };
+    mp_arg_val_t args[ MP_ARRAY_SIZE( allowed_args ) ];
+    mp_arg_parse_all( n_args, pos_args, kw_args, MP_ARRAY_SIZE( allowed_args ), allowed_args, args );
+
+    int elem = jl_oled_add_shape( args[ ARG_screen ].u_int, args[ ARG_kind ].u_int,
+                                  args[ ARG_x ].u_int, args[ ARG_y ].u_int,
+                                  args[ ARG_w ].u_int, args[ ARG_h ].u_int,
+                                  args[ ARG_filled ].u_int, args[ ARG_z ].u_int );
+    return mp_obj_new_int( elem );
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW( jl_oled_add_shape_obj, 1, jl_oled_add_shape_func );
+
+// oled_set(elem, prop, value) - value may be a string or an integer.
+static mp_obj_t jl_oled_set_func( mp_obj_t elem_obj, mp_obj_t prop_obj, mp_obj_t value_obj ) {
+    int elem = mp_obj_get_int( elem_obj );
+    const char* prop = mp_obj_str_get_str( prop_obj );
+    int ok;
+    if ( mp_obj_is_str( value_obj ) ) {
+        ok = jl_oled_elem_set_str( elem, prop, mp_obj_str_get_str( value_obj ) );
+    } else {
+        ok = jl_oled_elem_set_int( elem, prop, mp_obj_get_int( value_obj ) );
+    }
+    return mp_obj_new_bool( ok );
+}
+static MP_DEFINE_CONST_FUN_OBJ_3( jl_oled_set_obj, jl_oled_set_func );
+
+// oled_set_var(name, value) - push a live value; str stored verbatim, numbers formatted.
+static mp_obj_t jl_oled_set_var_func( mp_obj_t name_obj, mp_obj_t value_obj ) {
+    const char* name = mp_obj_str_get_str( name_obj );
+    if ( mp_obj_is_str( value_obj ) ) {
+        jl_oled_set_var( name, mp_obj_str_get_str( value_obj ) );
+    } else {
+        jl_oled_set_var_num( name, (float)mp_obj_get_float( value_obj ) );
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2( jl_oled_set_var_obj, jl_oled_set_var_func );
+
+static mp_obj_t jl_oled_screen_save_func( mp_obj_t screen_obj, mp_obj_t name_obj ) {
+    return mp_obj_new_bool( jl_oled_screen_save( mp_obj_get_int( screen_obj ),
+                                                 mp_obj_str_get_str( name_obj ) ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_2( jl_oled_screen_save_obj, jl_oled_screen_save_func );
+
+static mp_obj_t jl_oled_screen_load_func( mp_obj_t name_obj ) {
+    return mp_obj_new_int( jl_oled_screen_load( mp_obj_str_get_str( name_obj ) ) );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1( jl_oled_screen_load_obj, jl_oled_screen_load_func );
+
 // Arduino Functions
 static mp_obj_t jl_arduino_reset_func( void ) {
     jl_arduino_reset( );
@@ -4323,6 +4482,15 @@ void jl_help_section( const char* section ) {
         mp_printf( &mp_plat_print, "   oled_clear()                     - Clear display\n" );
         mp_printf( &mp_plat_print, "   oled_connect()                   - Connect OLED\n" );
         mp_printf( &mp_plat_print, "   oled_disconnect()                - Disconnect OLED\n\n" );
+        mp_printf( &mp_plat_print, "OLED Layout (retained screens, live-updating):\n\n" );
+        mp_printf( &mp_plat_print, "   from oledgui import Screen, Text, Rect, set_var\n" );
+        mp_printf( &mp_plat_print, "   s = Screen()\n" );
+        mp_printf( &mp_plat_print, "   s.add(Text(\"A0 {adc:0}V\", x=0, y=0, font=\"Pragmatism\", size=10))\n" );
+        mp_printf( &mp_plat_print, "   s.show()                         - make it the active display\n" );
+        mp_printf( &mp_plat_print, "   set_var(\"name\", value)           - push a live {name} value\n" );
+        mp_printf( &mp_plat_print, "   s.save(\"layout\")                 - save to /screens/layout.json\n\n" );
+        mp_printf( &mp_plat_print, "   Tokens: {adc:N} {gpio:N} {dac:N} {uptime} {freemem} {undo}\n" );
+        mp_printf( &mp_plat_print, "   Flat API: oled_screen/oled_add_text/oled_add_shape/oled_set\n\n" );
     }
 
     jl_cycle_term_color( false, 100.0, 1 );
@@ -6268,6 +6436,20 @@ static const mp_rom_map_elem_t jumperless_module_globals_table[] = {
     { MP_ROM_QSTR( MP_QSTR_oled_get_framebuffer_size ), MP_ROM_PTR( &jl_oled_get_framebuffer_size_obj ) },
     { MP_ROM_QSTR( MP_QSTR_oled_set_pixel ), MP_ROM_PTR( &jl_oled_set_pixel_obj ) },
     { MP_ROM_QSTR( MP_QSTR_oled_get_pixel ), MP_ROM_PTR( &jl_oled_get_pixel_obj ) },
+
+    // OLED GUI (retained screens)
+    { MP_ROM_QSTR( MP_QSTR_oled_screen ), MP_ROM_PTR( &jl_oled_screen_new_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_free ), MP_ROM_PTR( &jl_oled_screen_free_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_clear ), MP_ROM_PTR( &jl_oled_screen_clear_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_show ), MP_ROM_PTR( &jl_oled_screen_show_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_hide ), MP_ROM_PTR( &jl_oled_screen_hide_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_reset ), MP_ROM_PTR( &jl_oled_screen_reset_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_add_text ), MP_ROM_PTR( &jl_oled_add_text_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_add_shape ), MP_ROM_PTR( &jl_oled_add_shape_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_set ), MP_ROM_PTR( &jl_oled_set_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_set_var ), MP_ROM_PTR( &jl_oled_set_var_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_save ), MP_ROM_PTR( &jl_oled_screen_save_obj ) },
+    { MP_ROM_QSTR( MP_QSTR_oled_screen_load ), MP_ROM_PTR( &jl_oled_screen_load_obj ) },
 
     // Misc functions
     { MP_ROM_QSTR( MP_QSTR_arduino_reset ), MP_ROM_PTR( &jl_arduino_reset_obj ) },

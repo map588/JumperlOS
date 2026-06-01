@@ -613,6 +613,7 @@ bool JumperlessState::addConnection(int node1, int node2, String& errorMsg, int 
             // Connection exists - update duplicates based on parameter
             if (duplicates >= 0) {
                 // Specific duplicate count provided - replace the value
+                // Serial.println("Updating duplicate count for connection: " + String(node1) + " - " + String(node2) + " to " + String(duplicates));
                 connections.bridges[i][2] = duplicates;
             } else {
                 // No duplicate count specified - increment existing count
@@ -2948,6 +2949,12 @@ bool SlotManager::saveSlot(int slotNum, String& errorMsg, bool skipValidation) {
     activeSlotNumber = slotNum;
     netSlot = slotNum;  // Sync global slot tracker
     activeState.clearDirty();  // Mark as saved
+
+    // Persist undo history alongside the slot. This is an instant PSRAM
+    // memcpy into the write-back cache (coalesced to flash in the background),
+    // and a no-op when the history hasn't changed since the last save, so it's
+    // cheap to do on every save - including autosaves.
+    undoPersistHistory();
     return true;
 }
 

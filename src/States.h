@@ -107,11 +107,11 @@ struct EphemeralConnection {
  */
 struct ConnectionState {
     // STORED: Essential data (saved to YAML)
-    int bridges[MAX_BRIDGES][3];  // [bridge_index][node1, node2, duplicates]
-    int numBridges;
+    int16_t bridges[MAX_BRIDGES][3];  // [bridge_index][node1, node2, duplicates]
+    int16_t numBridges;
     
     netStruct nets[MAX_NETS];  // User-defined nets (optional, for colors/names/reference)
-    int numNets;  // Derived count
+    int16_t numNets;  // Derived count
     
     // Bridge color hints (NOT saved to YAML directly, but used to color nets)
     // Indexed by bridge index, stores RGB color
@@ -121,7 +121,7 @@ struct ConnectionState {
     
     // COMPUTED: Runtime caches (NOT saved to YAML, computed from bridges/nets)
     pathStruct paths[MAX_BRIDGES];
-    int numPaths;
+    int16_t numPaths;
     bool pathsCacheValid;  // Set to false when connections change
     
     chipStatus chipStates[12];  // Derived from paths

@@ -32,6 +32,12 @@
 #define CMD_BUFFER_SIZE 512        // Max command length
 #define UART_OUT_BUFFER_SIZE 1024  // Outgoing UART buffer
 
+// Depth of the pending-command ring queue. The Arduino can stream <j>/<p>
+// commands faster than the main loop executes them (a single oled_print is
+// ~15ms of I2C); a single slot dropped every command that arrived mid-execution.
+// A small queue absorbs those bursts and only drops when genuinely saturated.
+#define CMD_QUEUE_DEPTH 3
+
 /**
  * CommandBuffer - Singleton managing command injection and response routing
  */
@@ -66,17 +72,20 @@ public:
     /**
      * Check if there's a pending command to process
      */
-    bool hasPendingCommand() const { return has_pending_command; }
+    bool hasPendingCommand() const { return cmd_q_count > 0; }
     
     /**
-     * Check if the pending command is a Python (<p>) command
+     * Check if the command currently being consumed is a Python (<p>) command.
+     * Reflects the most recently consumed entry (latched at consume time).
      */
     bool isPythonCommand() const { return is_python_command; }
     
     /**
-     * Get the pending command (does NOT consume it)
+     * Get the head pending command (does NOT consume it). Returns "" if empty.
      */
-    const char* getPendingCommand() const { return pending_command; }
+    const char* getPendingCommand() const {
+        return cmd_q_count > 0 ? cmd_queue[cmd_q_head].cmd : "";
+    }
     
     /**
      * Consume the pending command (clears it after returning)
@@ -167,9 +176,20 @@ public:
 private:
     CommandBuffer();
     
-    // Pending command (incoming)
-    char pending_command[CMD_BUFFER_SIZE];
-    volatile bool has_pending_command;
+    // Pending command ring queue (incoming). Producer = AsyncPassthrough tag
+    // parser (Core 0 service context); consumer = main loop. Both run on Core 0
+    // cooperatively (no IRQ touches this), so plain volatile indices are safe.
+    struct PendingEntry {
+        char cmd[CMD_BUFFER_SIZE];
+        bool is_python;
+        bool respond_to_uart;
+    };
+    PendingEntry cmd_queue[CMD_QUEUE_DEPTH];
+    volatile uint8_t cmd_q_head;    // next entry to consume
+    volatile uint8_t cmd_q_tail;    // next entry to fill
+    volatile uint8_t cmd_q_count;   // entries currently queued
+
+    // Latched at consume time, describing the command currently being executed.
     bool is_python_command;
     bool respond_to_uart;
     

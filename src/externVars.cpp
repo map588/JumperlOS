@@ -1,6 +1,7 @@
 #include "externVars.h"
 #include <Arduino.h>    // millis()
 #include "pico/mutex.h"
+#include "hardware/structs/sio.h"  // sio_hw->cpuid for current-core checks
 #include "tusb.h"
 #include "LEDs.h"  // For LogoPalette enum
 #include "JumperlOS.h"  // ContextManager / ContextType for systemIdleForFlush
@@ -98,29 +99,57 @@ bool core_sync_acquire_timeout_ms(uint32_t timeout_ms) {
 // =============================================================================
 // Filesystem Mutex Functions
 // =============================================================================
+//
+// fs_mutex is made PER-CORE RECURSIVE on top of the plain pico mutex_t: a core
+// that already holds it can re-acquire without blocking (depth-counted), and
+// only the outermost release actually drops the lock. Cross-core exclusion is
+// unchanged (the other core still blocks). This kills the documented
+// self-deadlock footguns where a held-mutex path calls another safe* wrapper
+// that re-acquires fs_mutex on the same core.
+//
+// INVARIANT: fs_mutex is also what serializes the single inter-core
+// idleOtherCore() lockout. Only ONE core may be inside any idleOtherCore()
+// (SPIFTL flash op OR EEPROM.commit()) at a time; holding fs_mutex across the
+// flash op is what guarantees that. EEPROM commits now take fs_mutex too (see
+// eepromCommitSafe / the FileCache coalesced path) so they can't collide.
+static volatile int      fs_owner_core = -1;  // -1 = unheld; else owning core id
+static volatile uint32_t fs_recursion  = 0;
+
+static inline int currentCoreId(void) { return (int)(sio_hw->cpuid & 1); }
 
 void fs_mutex_acquire(void) {
-    if (sync_initialized) {
-        mutex_enter_blocking(&fs_mutex);
-        filesystemActive = true;  // Visual indicator for logo LEDs
-        // Don't set filesystemActiveUntil here - set it on release so the
-        // display window starts AFTER the operation (when Core2 is unpaused)
-    }
+    if (!sync_initialized) return;
+    int core = currentCoreId();
+    if (fs_owner_core == core) { fs_recursion++; filesystemActive = true; return; }
+    mutex_enter_blocking(&fs_mutex);
+    fs_owner_core = core;
+    fs_recursion = 1;
+    filesystemActive = true;  // Visual indicator for logo LEDs
+    // Don't set filesystemActiveUntil here - set it on release so the
+    // display window starts AFTER the operation (when Core2 is unpaused)
 }
 
 void fs_mutex_release(void) {
-    if (sync_initialized) {
-        filesystemActive = false;  // Clear the active flag
-        // Set the display window to start NOW (when operation ends and Core2 may be unpaused)
-        filesystemActiveUntil = millis() + FILESYSTEM_INDICATOR_MIN_MS;
-        mutex_exit(&fs_mutex);
-    }
+    if (!sync_initialized) return;
+    int core = currentCoreId();
+    if (fs_owner_core == core && fs_recursion > 1) { fs_recursion--; return; }
+    // Outermost release.
+    filesystemActive = false;  // Clear the active flag
+    // Set the display window to start NOW (when operation ends and Core2 may be unpaused)
+    filesystemActiveUntil = millis() + FILESYSTEM_INDICATOR_MIN_MS;
+    fs_owner_core = -1;
+    fs_recursion = 0;
+    mutex_exit(&fs_mutex);
 }
 
 bool fs_mutex_try_acquire(void) {
     if (!sync_initialized) return true;  // Not initialized, allow access
+    int core = currentCoreId();
+    if (fs_owner_core == core) { fs_recursion++; filesystemActive = true; return true; }
     bool acquired = mutex_try_enter(&fs_mutex, nullptr);
     if (acquired) {
+        fs_owner_core = core;
+        fs_recursion = 1;
         filesystemActive = true;  // Visual indicator for logo LEDs
     }
     return acquired;
@@ -128,11 +157,19 @@ bool fs_mutex_try_acquire(void) {
 
 bool fs_mutex_acquire_timeout_ms(uint32_t timeout_ms) {
     if (!sync_initialized) return true;
+    int core = currentCoreId();
+    if (fs_owner_core == core) { fs_recursion++; filesystemActive = true; return true; }
     bool acquired = mutex_enter_timeout_ms(&fs_mutex, timeout_ms);
     if (acquired) {
+        fs_owner_core = core;
+        fs_recursion = 1;
         filesystemActive = true;  // Visual indicator for logo LEDs
     }
     return acquired;
+}
+
+bool fs_mutex_held_by_this_core(void) {
+    return sync_initialized && fs_owner_core == currentCoreId();
 }
 
 // =============================================================================
@@ -143,9 +180,25 @@ bool pauseCore2ForFlash(uint32_t timeout_ms) {
     bool was_paused = pauseCore2;
     pauseCore2 = true;
     __dmb();  // Memory barrier to ensure Core2 sees the pause
-    
+
+    // Deadlock guard: if this is called from Core 1 itself, we must NOT wait on
+    // core2busy - Core 1 IS the core we'd be waiting to go idle, so the loop
+    // would spin forever. Flash ops are expected on Core 0; on Core 1 we just
+    // set the flag (harmless) and return. The nested-pause case is handled by
+    // the was_paused save/restore idiom (an inner pause sees pauseCore2 already
+    // true, so its matching unpause leaves it paused for the outer caller).
+    if ((sio_hw->cpuid & 1) == 1) {
+        return was_paused;
+    }
+
     // Wait for Core2 to actually pause (check core2busy)
-    // Also service USB during wait to prevent disconnect
+    // Also service USB during wait to prevent disconnect.
+    // NOTE: if this times out with core2busy still set we proceed anyway - that
+    // is SAFE because the actual flash op (EEPROM.commit() / SPIFTL) calls
+    // rp2040.idleOtherCore() internally, which is the HARD guarantee that Core 1
+    // is parked (it pushes GOTOSLEEP over the SIO FIFO and spins until Core 1
+    // acks). This pause flag is the soft, LED-stutter-reducing hint; idleOtherCore
+    // is what actually makes XIP-disable safe.
     uint32_t wait_start = millis();
     while (core2busy && (millis() - wait_start < timeout_ms)) {
         #ifdef USE_TINYUSB

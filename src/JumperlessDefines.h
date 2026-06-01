@@ -8,7 +8,7 @@
 // #define OG_JUMPERLESS 0
 
 // MicroPython heap sizes
-#define MICROPY_HEAP_SIZE       (128 * 1024)  // SRAM heap when no PSRAM
+#define MICROPY_HEAP_SIZE       (96 * 1024)  // SRAM heap when no PSRAM
 #define MICROPY_HEAP_SIZE_PSRAM  (96 * 1024)  // Smaller SRAM heap when PSRAM provides extra GC space
 
 #define TERM_SUPPORTS_RGB 0
@@ -72,6 +72,12 @@ extern int probeRev;
 
 #define FIRSTSTARTUPADDRESS 43
 
+// Packed identity+calibration store (see EepromStore in PersistentStuff.h).
+// Placed well clear of the legacy per-setting byte map above (which now exists
+// only so eepromStoreLoadAndApplyIdentity() can migrate the old revision /
+// probe-revision bytes). 256..~400 of the 512-byte EEPROM sector.
+#define EEPROM_STORE_ADDRESS 256
+
 #define TOP_RAIL_ADDRESS0 44
 #define BOTTOM_RAIL_ADDRESS0 52
 
@@ -114,15 +120,13 @@ extern int probeRev;
 #define USB_MODE_ADDRESS 165
 
 #define MAX_NETS 60
-#define MAX_BRIDGES 192
-#define MAX_NODES 48 //this is the max number of nodes that can be connected to a net
+#define MAX_BRIDGES 128
+#define MAX_NODES 40 //this is the max number of nodes that can be connected to a net
 #define MAX_DNI 8 // max number of doNotIntersect rules
-#define MAX_DUPLICATE 12 // max number of duplicates
+#define MAX_DUPLICATE 8 // max number of duplicates
 
 #define MAX_NETS_FOR_WIRES 18
 #define MAX_PATHS_FOR_WIRES 38
-#define LASTCOMMANDADDRESS 1
-#define CLEARBEFORECOMMANDADDRESS 4
 
 #define AIRCR_Register (*((volatile uint32_t *)(PPB_BASE + 0x0ED0C)))
 

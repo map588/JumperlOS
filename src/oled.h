@@ -112,6 +112,44 @@ enum OLEDMode {
     MODE_SMALL_TEXT     // File editing, terminal output (textSize == 1 or small fonts)
 };
 
+// Horizontal alignment for a rendered row in clearPrintShowRich().
+enum OledAlign {
+    OLED_ALIGN_LEFT = 0,    // flush left (small left pad)
+    OLED_ALIGN_CENTER = 1,  // horizontally centered
+    OLED_ALIGN_RIGHT = 2,   // flush right
+    // Segment-only: flow with the row's packed group using the row's align.
+    // (Not valid as a row alignment - rows always pick a concrete anchor.)
+    OLED_ALIGN_INHERIT = 3
+};
+
+// A single text segment within a row. Each segment carries its own font
+// (index into fontList[] in oled.cpp), so a single visual line can mix
+// font sizes - e.g. a tiny "connect" verb followed by larger node ids.
+//
+// `align` lets a segment break out of the row's left->right flow and anchor
+// itself independently on the panel. OLED_ALIGN_INHERIT (the default) keeps
+// the segment in the row's packed, flowing group; LEFT/CENTER/RIGHT pin the
+// segment to that panel edge regardless of the other segments - e.g. center
+// the verb but flush the node ids left.
+struct OledTextSeg {
+    const char* text;   // segment text (no '\n')
+    int16_t fontIndex;  // index into fontList[]
+    OledAlign align;    // per-segment anchor; INHERIT = flow with the row
+};
+
+// Max segments laid out horizontally on one row.
+#define OLED_RICH_MAX_SEGS 4
+
+// One rendered row: up to OLED_RICH_MAX_SEGS segments drawn left->right
+// sharing a common baseline, with `segGap` px between them. The whole row
+// is positioned horizontally per `align`.
+struct OledTextRow {
+    OledTextSeg segs[OLED_RICH_MAX_SEGS];
+    uint8_t     segCount;
+    OledAlign   align;
+    int8_t      segGap;     // px between adjacent segments
+};
+
 // Comprehensive text information structure
 struct TextInfo {
     uint8_t textSize;       // Current text size multiplier
@@ -195,6 +233,30 @@ public:
                              int botFontIndex = 18,   // Pragmatism 7pt
                              int line_gap = 4,
                              bool leftJustifyTop = true);
+
+    // Granular multi-row / multi-font renderer. Draws up to `rowCount`
+    // rows, vertically centered as a block with `rowGap` px between rows.
+    // Each row may contain several segments (see OledTextRow) that share a
+    // baseline so mixed font sizes line up, and each row is aligned
+    // independently. Shares the same priority-flush + hold-stash behavior
+    // as clearPrintShowSmall, so it is safe for back-to-back toasts.
+    // clearPrintShowSmall is implemented on top of this.
+    void clearPrintShowRich(const OledTextRow* rows,
+                            int rowCount,
+                            int rowGap = 2,
+                            bool clear = true,
+                            bool show = true);
+
+    // Priority-flush the CURRENT live framebuffer to the panel, bypassing the
+    // hold gate, then run the oledHoldBegin stash so any writes during the hold
+    // window accumulate against the pre-toast background (see oledHoldBegin).
+    // This is the same flush that clearPrintShowRich performs internally, split
+    // out so a caller that paints the framebuffer by another means (e.g. an
+    // OledScreen rendered via the retained oledgui scene graph) gets identical
+    // back-to-back-toast + probe-during-hold behavior. Call oledHoldBegin()
+    // before painting and this immediately after, exactly like the rich path.
+    void priorityFlushHeldFrame();
+
     bool clear(int waitToFinish = 0);
     bool show(int waitToFinish = 0);
     void moveToNextLine();
@@ -219,6 +281,7 @@ public:
     
     // Font management
     int cycleFont(void);
+    FontFamily getFontFamily(const char* fontName);   // allocation-free
     FontFamily getFontFamily(String fontName);
     int setFont(String fontName, int justGetIndex = 0);
     int setFont(char* fontName, int justGetIndex = 0);

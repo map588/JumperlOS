@@ -20,9 +20,9 @@ int16_t bridges[MAX_NODES][2]; //either store them here or in one long array tha
 
 int16_t specialFunction; // store #defined number for that special function -1 for regular net
 
-int16_t intersections[8]; //if this net shares a node with another net, store this here. If it's a regular net, we'll need a function to just merge them into one new net. special functions can intersect though (except Power and Ground), 0x7f is a reserved empty net that nothing and intersect
+// int16_t intersections[8]; //if this net shares a node with another net, store this here. If it's a regular net, we'll need a function to just merge them into one new net. special functions can intersect though (except Power and Ground), 0x7f is a reserved empty net that nothing and intersect
 
-int16_t doNotIntersectNodes[12]; //if the net tries to share a node with a net that contains any #defined nodes here, it won't connect and throw an error (SUPPLY to GND)
+int16_t doNotIntersectNodes[8]; //if the net tries to share a node with a net that contains any #defined nodes here, it won't connect and throw an error (SUPPLY to GND)
 
 int8_t visible; //this isn't implemented - priority = 1 means it will move connections to take the most direct path, priority = 2 means connections will be doubled up when possible, priority = 3 means both
 
@@ -34,7 +34,7 @@ uint32_t rawColor; //color of the net in hex (for the machine)
 
 char *colorName; //name of the color
 
-bool machine; //whether this net was created by the machine or by the user
+// bool machine; //whether this net was created by the machine or by the user
 
 int priority; //when duplicating paths, it will make this many copies every time it runs through
 

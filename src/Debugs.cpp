@@ -49,16 +49,18 @@ debugFlags:
   printSerial1Passthrough = 0;
   printSerial2Passthrough = 0;
 
-  // Interactive main debug menu: toggle by number, Enter to apply, 'l' to open LA submenu
-  bool temp_debugFP = debugFP;
-  bool temp_debugNM = debugNM;
-  bool temp_debugNTCC = debugNTCC;
-  bool temp_debugNTCC2 = debugNTCC2;
-  bool temp_debugLEDs = debugLEDs;
-  bool temp_debugLA = debugLA;
+  // Interactive main debug menu: toggle by number, Enter to apply, 'l' to open LA submenu.
+  // Seed from jumperlessConfig (the single source of truth) for the config-backed
+  // flags so the displayed state can never drift from what's persisted.
+  bool temp_debugFP = jumperlessConfig.debug.file_parsing;
+  bool temp_debugNM = jumperlessConfig.debug.net_manager;
+  bool temp_debugNTCC = jumperlessConfig.debug.nets_to_chips;
+  bool temp_debugNTCC2 = jumperlessConfig.debug.nets_to_chips_alt;
+  bool temp_debugLEDs = jumperlessConfig.debug.leds;
+  bool temp_debugLA = jumperlessConfig.debug.logic_analyzer;
   bool temp_debugWaitLoopTiming = debugWaitLoopTiming;
   bool temp_debugUSB = debugUSB;
-  int temp_showProbeCurrent = showProbeCurrent;
+  int temp_showProbeCurrent = jumperlessConfig.debug.show_probe_current;
   int temp_passthrough = jumperlessConfig.serial_1.print_passthrough;
   bool temp_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
   bool temp_debugFakeGpio = getDebugFakeGpio();
@@ -74,16 +76,16 @@ debugFlags:
   // verbose trace. Both toggled from this menu.
   bool temp_usePIOProbeButton = jumperlessConfig.hardware.use_pio_probe_button;
   bool temp_probeButtonTrace  = (probe_button_trace != 0);
-  // Track originals for diffing on commit
-  bool orig_debugFP = debugFP;
-  bool orig_debugNM = debugNM;
-  bool orig_debugNTCC = debugNTCC;
-  bool orig_debugNTCC2 = debugNTCC2;
-  bool orig_debugLEDs = debugLEDs;
-  bool orig_debugLA = debugLA;
+  // Track originals for diffing on commit (config-backed flags from config).
+  bool orig_debugFP = jumperlessConfig.debug.file_parsing;
+  bool orig_debugNM = jumperlessConfig.debug.net_manager;
+  bool orig_debugNTCC = jumperlessConfig.debug.nets_to_chips;
+  bool orig_debugNTCC2 = jumperlessConfig.debug.nets_to_chips_alt;
+  bool orig_debugLEDs = jumperlessConfig.debug.leds;
+  bool orig_debugLA = jumperlessConfig.debug.logic_analyzer;
   bool orig_debugWaitLoopTiming = debugWaitLoopTiming;
   bool orig_debugUSB = debugUSB;
-  int orig_showProbeCurrent = showProbeCurrent;
+  int orig_showProbeCurrent = jumperlessConfig.debug.show_probe_current;
   int orig_passthrough = jumperlessConfig.serial_1.print_passthrough;
   bool orig_asyncPassthrough = jumperlessConfig.serial_1.async_passthrough;
   bool orig_debugFakeGpio = getDebugFakeGpio();
@@ -250,7 +252,10 @@ debugFlags:
         if (temp_probeButtonTrace != orig_probeButtonTrace) {
           probe_button_trace = temp_probeButtonTrace ? 1 : 0;
         }
-        // Persist Arduino debug level if changed via menu
+        // Persist all config-backed debug flags in ONE write. debugFlagSet()
+        // above only updated jumperlessConfig + the runtime globals (no EEPROM,
+        // no per-flag save); this is the single source-of-truth commit so the
+        // menu and the persisted values can't drift out of sync.
         saveConfig();
       }
       printSerial1Passthrough = lastSerial1Passthrough;

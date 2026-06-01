@@ -1947,6 +1947,52 @@ void __not_in_flash_func(showLEDmeasurements)( void ) {
     __dmb();
 }
 
+// Lazily refresh the whole adcReadings[] cache from core1 so consumers like the
+// OLED GUI ({adc:N} tokens) get live-ish values without doing their own
+// blocking hardware read. Cycles one channel per tick to stay light: channels
+// 0-4 on the fast interval, 5-7 on the slow one. Self-throttled, so it's safe
+// to call every core1 loop iteration. Marked __not_in_flash_func + gated on
+// pauseCore2/core2busy to match the rest of the core1 hardware paths so it
+// can't run during a flash write.
+void __not_in_flash_func(updateLazyAdcReadings)( void ) {
+#if LAZY_ADC_READINGS
+    extern volatile bool pauseCore2;
+    extern volatile bool core2busy;
+    if ( pauseCore2 ) return;   // core0 wants core1 quiesced (e.g. flash write)
+
+    unsigned long nowUs = micros();
+    static unsigned long lastFastUs = 0;
+    static unsigned long lastSlowUs = 0;
+    static uint8_t fastIdx = 0;   // cycles channels 0..4
+    static uint8_t slowIdx = 0;   // cycles channels 5..7
+
+    bool didRead = false;
+    bool wasBusy = core2busy;
+
+    if ( (unsigned long)( nowUs - lastFastUs ) >= (unsigned long)LAZY_ADC_FAST_INTERVAL_US ) {
+        lastFastUs = nowUs;
+        core2busy = true;
+        adcReadings[ fastIdx ] = readAdcVoltage( fastIdx, LAZY_ADC_SAMPLES );
+        fastIdx = ( fastIdx + 1 ) % 5;
+        didRead = true;
+    }
+
+    if ( (unsigned long)( nowUs - lastSlowUs ) >= (unsigned long)LAZY_ADC_SLOW_INTERVAL_US ) {
+        lastSlowUs = nowUs;
+        core2busy = true;
+        uint8_t ch = 5 + slowIdx;
+        adcReadings[ ch ] = readAdcVoltage( ch, LAZY_ADC_SAMPLES );
+        slowIdx = ( slowIdx + 1 ) % 3;
+        didRead = true;
+    }
+
+    if ( didRead ) {
+        core2busy = wasBusy;
+        __dmb();   // publish the fresh reading to the other core
+    }
+#endif
+}
+
 /// @brief check if any measurements or gpio outputs are connected
 /// @return  0 = gpio output, 1 = gpio input, 2 = adc, -1 if no measurements or
 /// outputs are connected
@@ -2337,21 +2383,21 @@ float __not_in_flash_func(readAdcVoltage)( int channel, int samples ) {
 }
 
 int __not_in_flash_func(readAdc)( int channel, int samples ) {
-    // Wait if another core is using the ADC
-    // CRITICAL: Add timeout to prevent permanent hang if ADC is never released
+    // Claim the single ADC peripheral for this core. CRITICAL: the acquire must
+    // be ATOMIC - a plain "while(flag) flag=true" is a check-then-set race that
+    // lets both cores pass simultaneously, then both call adc_select_input() +
+    // adc_read() concurrently. That corrupts the ADC state machine and makes
+    // adc_read() busy-wait forever (it has no internal timeout), hanging the
+    // core - and if that core was holding core_sync, the other core deadlocks.
+    // __atomic_test_and_set serializes the two cores; the 100ms steal-timeout is
+    // only a safety net for a crashed/stalled holder.
     unsigned long adcWaitStart = micros();
-    while ( readingADC ) {
-        if (micros() - adcWaitStart > 100000) {  // 100ms timeout
-            // ADC held too long - force release and continue
-            // This prevents permanent hang if another core crashes while holding ADC
-            readingADC = false;
+    while ( __atomic_test_and_set( &readingADC, __ATOMIC_ACQUIRE ) ) {
+        if (micros() - adcWaitStart > 100000) {  // 100ms timeout - steal it
             break;
         }
         tight_loop_contents( );
     }
-    
-    // Claim the ADC for this core
-    readingADC = true;
     
     unsigned long adcReadingAverage = 0;
     // if (channel == 0) { // I have no fucking idea why this works //future me:
@@ -2362,7 +2408,7 @@ int __not_in_flash_func(readAdc)( int channel, int samples ) {
     // }
 
     if ( channel > 8 ) {
-        readingADC = false;  // Release ADC before early return
+        __atomic_clear( &readingADC, __ATOMIC_RELEASE );  // Release ADC before early return
         return 0;
     }
     unsigned long timeoutTimer = micros( );
@@ -2397,7 +2443,7 @@ int __not_in_flash_func(readAdc)( int channel, int samples ) {
     // Serial.flush();
     
     // Release the ADC for other cores
-    readingADC = false;
+    __atomic_clear( &readingADC, __ATOMIC_RELEASE );
     
     return adcReading;
 }

@@ -21,9 +21,16 @@
     "0x85135235"
   ],
   "jumperless.py": [
+    "0x211A88F7",
+    "0x7ED8BA57",
+    "0xAA5F9F89",
     "0x843D1F2A"
   ],
   "jumperless.pyi": [
+    "0xB35468E2",
+    "0x591678B8",
+    "0x05D64A8B",
+    "0x34AD1B61",
     "0x2E64EB37"
   ],
   "led_brightness_control.py": [
@@ -34,6 +41,27 @@
   ],
   "oled_demo.py": [
     "0xB1547810"
+  ],
+  "oled_layout_editor.py": [
+    "0xA9B7B1E3",
+    "0xABBB23E5",
+    "0x6634AF66",
+    "0x9DB9D3EA",
+    "0xE6C77EA2",
+    "0xBDE018FA",
+    "0xA8402742"
+  ],
+  "oled_stats_page.py": [
+    "0x93D2F737",
+    "0x6FAAF5CD",
+    "0x1568F456",
+    "0xBCAE120A",
+    "0x3CC090AF"
+  ],
+  "oledgui.py": [
+    "0xE919633C",
+    "0xC3CCF279",
+    "0xCA1A418F"
   ],
   "oscilloscope.py": [
     "0xD2CABB55"

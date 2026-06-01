@@ -233,8 +233,10 @@ int newBridgeLength = 0;
 int newBridgeIndex = 0;
 unsigned long timeToNM;
 
-bool debugNM = EEPROM.read(DEBUG_NETMANAGERADDRESS);
-bool debugNMtime = EEPROM.read(TIME_NETMANAGERADDRESS);
+// Source of truth is config.txt; readSettingsFromConfig() syncs debugNM at boot.
+// (debugNMtime is a runtime-only timing flag toggled via the all-on/all-off menu.)
+bool debugNM = false;
+bool debugNMtime = false;
 
 /// @brief Load bridges from globalState instead of from file
 /// This is the new way to populate connections - directly from the state system
@@ -697,7 +699,7 @@ int shiftNets(
   globalState.connections.nets[lastNet].specialFunction = -1;
 
   for (int i = 0; i < 6; i++) {
-    globalState.connections.nets[lastNet].intersections[i] = 0;
+    // globalState.connections.nets[lastNet].intersections[i] = 0;
     globalState.connections.nets[lastNet].doNotIntersectNodes[i] = 0;
     }
   for (int j = 0; j < MAX_NODES; j++) {

@@ -796,6 +796,13 @@ void deinitMicroPythonProper(void) {
     
     // Close any open files before deinitializing MicroPython
     closeAllOpenFiles();
+
+    // Tear down any transient OLED GUI screens a script left active so the
+    // background render service doesn't keep driving (or dangling on) freed
+    // state. A screen the script deliberately marked persistent (the idle/logo
+    // replacement) is kept alive and keeps rendering after Python goes away.
+    extern void oledGuiShutdownTransient(void);
+    oledGuiShutdownTransient();
     
     mp_embed_deinit();
     mp_initialized = false;

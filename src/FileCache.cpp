@@ -26,17 +26,23 @@ extern "C" {
 }
 
 // Trace macros - psram_debug works as a master, fc_debug for cache-only.
+// NOTE: no Serial.flush() in any of these. fc_lock_got() in particular prints
+// while core_sync is HELD; a blocking flush there waits for the USB CDC TX FIFO
+// to drain while the lock is held, which on an SRAM-only board (little USB/heap
+// headroom) can stall USB servicing long enough to wedge the device under a
+// trace flood. Letting the lines drain in the background avoids that; the only
+// cost is possibly losing the last few trace lines on a hard crash.
 #define FC_TRACE_ON()    (fc_debug || psram_debug)
-#define FCDBG(fmt, ...) do { if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); Serial.flush(); } } while(0)
-#define FCADBG(fmt, ...) do { if (fc_atomic_debug || fc_debug || psram_debug) { Serial.printf("[%lu c%d] FC.atomic> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); Serial.flush(); } } while(0)
+#define FCDBG(fmt, ...) do { if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); } } while(0)
+#define FCADBG(fmt, ...) do { if (fc_atomic_debug || fc_debug || psram_debug) { Serial.printf("[%lu c%d] FC.atomic> " fmt "\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), ##__VA_ARGS__); } } while(0)
 static inline void fc_lock_trace(const char* where) {
-    if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> core_sync acquire @%s\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), where); Serial.flush(); }
+    if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> core_sync acquire @%s\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), where); }
 }
 static inline void fc_lock_got(const char* where) {
-    if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> core_sync acquired @%s\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), where); Serial.flush(); }
+    if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> core_sync acquired @%s\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), where); }
 }
 static inline void fc_lock_rel(const char* where) {
-    if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> core_sync release @%s\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), where); Serial.flush(); }
+    if (FC_TRACE_ON()) { Serial.printf("[%lu c%d] FC> core_sync release @%s\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1), where); }
 }
 #define FC_LOCK(where)   do { fc_lock_trace(where); core_sync_acquire(); fc_lock_got(where); } while(0)
 #define FC_UNLOCK(where) do { core_sync_release(); fc_lock_rel(where); } while(0)
@@ -44,6 +50,16 @@ static inline void fc_lock_rel(const char* where) {
 // Forward decls so we don't have to include configManager.h here
 extern struct config jumperlessConfig;
 extern bool usbMountedByHost;
+
+// EEPROM deferred-commit hooks (PersistentStuff.cpp). EEPROM.commit() is a
+// flash erase+program that shares the single inter-core idleOtherCore() lockout
+// with SPIFTL, so committing it synchronously while Core 1 ran was the hardfault
+// path. Instead we coalesce a pending EEPROM commit into our Core-1 pause +
+// fs_mutex window (eepromCommitHeld), or commit it in its own safe envelope
+// from the idle flush tick (eepromCommitSafe) when there's no file work.
+extern bool eepromCommitPending(void);
+extern bool eepromCommitHeld(void);
+extern bool eepromCommitSafe(void);
 
 // Backing-store calls in FilesystemStuff.cpp that bypass the cache. We use
 // these to actually touch flash without recursing into the cache.
@@ -528,6 +544,15 @@ static bool flushEntryChunked(const char* path, const uint8_t* psramData, size_t
             }
         }
 
+        // Coalesce a pending EEPROM commit into this SAME Core-1 pause +
+        // fs_mutex window ("save EEPROM when we're also saving files"). Core 1
+        // is parked and fs_mutex is held, so EEPROM.commit()'s internal
+        // idleOtherCore() can't collide with a SPIFTL flash op.
+        if (eepromCommitPending()) {
+            FCADBG("coalescing pending EEPROM commit into this flush window");
+            eepromCommitHeld();
+        }
+
         fs_mutex_release();
     }
 
@@ -960,10 +985,15 @@ bool fileCacheWrite(const char* path, const uint8_t* data, size_t size) {
         strncpy(e->path, cp, FILE_CACHE_PATH_MAX - 1);
         e->path[FILE_CACHE_PATH_MAX - 1] = '\0';
     }
-    // Pin undo state files so eviction never silently drops them during
-    // bursts of slot/script writes. They are tiny (<10 KB combined) so
-    // the cost is negligible.
-    if (strcmp(cp, "/undo.snap") == 0 || strcmp(cp, "/undo.log") == 0) {
+    // Pin the undo history file so eviction never silently drops it during
+    // bursts of slot/script writes - losing it would forfeit cross-reboot
+    // undo. Bounded to UNDO_PERSIST_MAX_BYTES (~64 KB) by the serializer.
+    // The live name is /undo_history.txt (Undo.cpp UNDO_FILE_PATH); /undo.hist,
+    // /undo.snap and /undo.log are legacy names from earlier persistent-history
+    // implementations, kept here so any stragglers still pin cleanly.
+    if (strcmp(cp, "/undo_history.txt") == 0 ||
+        strcmp(cp, "/undo.hist") == 0 ||
+        strcmp(cp, "/undo.snap") == 0 || strcmp(cp, "/undo.log") == 0) {
         e->pinned = true;
     }
 
@@ -1059,6 +1089,9 @@ void fileCacheFlushNowAll(const char* reason) {
         // Drain it now so the caller's "be durable" guarantee actually
         // holds (e.g. before USB MSC hands the volume to the host).
         fileCacheSpiftlSync(reason ? reason : "flushNowAll-no-dirty");
+        // A pending EEPROM commit must also be durable before a USB-MSC /
+        // shutdown handoff.
+        if (eepromCommitPending()) eepromCommitSafe();
         return;
     }
     FCDBG("flushNowAll reason=%s dirty=%u",
@@ -1067,6 +1100,9 @@ void fileCacheFlushNowAll(const char* reason) {
     // After draining the per-file flushes, also drain SPIFTL metadata
     // so the entire write chain is durable on flash before we return.
     fileCacheSpiftlSync(reason ? reason : "flushNowAll");
+    // And commit any still-pending EEPROM (e.g. it wasn't coalesced because no
+    // entry happened to flush). No-op if a flushEntryChunked already took it.
+    if (eepromCommitPending()) eepromCommitSafe();
     FCDBG("flushNowAll reason=%s done", reason ? reason : "(null)");
 }
 
@@ -1216,7 +1252,8 @@ ServiceStatus FileCacheFlushService::service() {
         if (!e.dirty && e.flushedVersion != e.mirroredVersion) anyMirrorStale = true;
     }
     bool spiftlDebt = (g_metaDirtyBursts > 0);
-    if (!anyDirty && !anyMirrorStale && !spiftlDebt) {
+    bool eepromDebt = eepromCommitPending();
+    if (!anyDirty && !anyMirrorStale && !spiftlDebt && !eepromDebt) {
         lastStatus = ServiceStatus::IDLE;
         return lastStatus;
     }
@@ -1264,6 +1301,16 @@ ServiceStatus FileCacheFlushService::service() {
         FCDBG("flushService spiftl-meta-sync bursts=%u age=%ums",
               (unsigned)g_metaDirtyBursts, (unsigned)metaDebtAge);
         flushSpiftlMetaSync("idle-tick");
+        lastStatus = ServiceStatus::BUSY;
+        return lastStatus;
+    }
+
+    // Lone pending EEPROM commit (no file/mirror/metadata work). Commit it in
+    // its own safe envelope (pauseCore2 + fs_mutex) so identity / calibration /
+    // debug-flag persistence isn't starved when nothing else is dirty.
+    if (!anyDirty && !anyMirrorStale && !spiftlDebt && eepromDebt) {
+        FCDBG("flushService lone EEPROM commit");
+        eepromCommitSafe();
         lastStatus = ServiceStatus::BUSY;
         return lastStatus;
     }
@@ -1406,7 +1453,11 @@ void fileCacheDropAll() {}
 // coherent at coarse safe points even after direct writes.
 bool fileCacheFlushNow(const char*) { return true; }
 bool fileCacheFlushAll() { return true; }
-void fileCacheFlushNowAll(const char* reason) { (void)reason; fatFsForceSync(); }
+void fileCacheFlushNowAll(const char* reason) {
+    (void)reason;
+    fatFsForceSync();
+    if (eepromCommitPending()) eepromCommitSafe();
+}
 bool fileCacheSpiftlSync(const char* reason, bool force) { (void)reason; (void)force; return fatFsForceSync(); }
 
 // Existence/size "miss" so the wrapper consults flash directly; delete/rename

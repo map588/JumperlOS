@@ -30,7 +30,12 @@ extern "C" volatile int psram_debug = 0;
 // avoid the extra include and just compute it from sio_hw->cpuid bit 0.
 #include "hardware/structs/sio.h"
 static inline int dbg_core() { return (int)(sio_hw->cpuid & 1); }
-#define PSDBG(fmt, ...) do { if (psram_debug) { Serial.printf("[%lu c%d] " fmt "\n", (unsigned long)millis(), dbg_core(), ##__VA_ARGS__); Serial.flush(); } } while(0)
+// No Serial.flush() - psram_debug is the master that also turns on the FS / FC
+// / undo traces, so it produces the heaviest flood. A per-line blocking flush
+// (some of these fire while the arena lock is held) can stall USB CDC servicing
+// and wedge an SRAM-only board. Background drain is safe; we only risk losing
+// the last few trace lines on a hard crash.
+#define PSDBG(fmt, ...) do { if (psram_debug) { Serial.printf("[%lu c%d] " fmt "\n", (unsigned long)millis(), dbg_core(), ##__VA_ARGS__); } } while(0)
 
 // =============================================================================
 // Internal state
@@ -91,14 +96,14 @@ bool g_arenaMutexInited = false;
 
 inline void arenaLock() {
     if (!g_arenaMutexInited) return;
-    if (psram_debug) { Serial.printf("[%lu c%d] PSRAM> lock acquire\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1)); Serial.flush(); }
+    if (psram_debug) { Serial.printf("[%lu c%d] PSRAM> lock acquire\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1)); }
     mutex_enter_blocking(&g_arenaMutex);
-    if (psram_debug) { Serial.printf("[%lu c%d] PSRAM> lock acquired\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1)); Serial.flush(); }
+    if (psram_debug) { Serial.printf("[%lu c%d] PSRAM> lock acquired\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1)); }
 }
 inline void arenaUnlock() {
     if (!g_arenaMutexInited) return;
     mutex_exit(&g_arenaMutex);
-    if (psram_debug) { Serial.printf("[%lu c%d] PSRAM> lock release\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1)); Serial.flush(); }
+    if (psram_debug) { Serial.printf("[%lu c%d] PSRAM> lock release\n", (unsigned long)millis(), (int)(sio_hw->cpuid & 1)); }
 }
 
 inline size_t alignUp(size_t x, size_t a) {

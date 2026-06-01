@@ -223,6 +223,35 @@ int readAdc(int channel, int samples = 8);
 void chooseShownReadings(void);
 void showLEDmeasurements(void);
 
+// ---------------------------------------------------------------------------
+// Lazy background ADC refresh (for the OLED GUI / cached {adc:N} tokens)
+// ---------------------------------------------------------------------------
+// When enabled, core1 ("core2") keeps the whole adcReadings[] cache fresh in
+// the background - not just the channels currently shown on the LEDs - so
+// anything reading the cache (e.g. a retained OLED stats page) sees live-ish
+// values without doing its own blocking hardware read. Set to 0 to compile it
+// out entirely (updateLazyAdcReadings() then becomes a no-op).
+#ifndef LAZY_ADC_READINGS
+#define LAZY_ADC_READINGS 1
+#endif
+// Fast group = channels 0-4: advance one channel per cycle this often
+// (so each of 0-4 refreshes about every 5x this).
+#ifndef LAZY_ADC_FAST_INTERVAL_US
+#define LAZY_ADC_FAST_INTERVAL_US 30000   // ~30 ms
+#endif
+// Slow group = channels 5-7: advance one channel per cycle this often.
+#ifndef LAZY_ADC_SLOW_INTERVAL_US
+#define LAZY_ADC_SLOW_INTERVAL_US 200000  // ~200 ms
+#endif
+// Samples averaged per background read (kept low to stay light on core1).
+#ifndef LAZY_ADC_SAMPLES
+#define LAZY_ADC_SAMPLES 4
+#endif
+
+// Call frequently from core1's loop; self-throttled via the intervals above.
+// No-op when LAZY_ADC_READINGS == 0. Skips work while core2 is paused.
+void updateLazyAdcReadings(void);
+
 uint32_t measurementToColor(float measurement, float min = -8.0, float max = 8.0);
 
 const uint16_t DACLookup_FullSine_9Bit[512] =
