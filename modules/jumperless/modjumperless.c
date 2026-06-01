@@ -5706,9 +5706,15 @@ static mp_obj_t jl_vfs_statvfs_method( mp_obj_t self_in, mp_obj_t path_obj ) {
     int used = jl_fs_used_bytes( );
     int free = total - used;
 
+    // Report a 1-byte block so f_blocks/f_bfree count raw bytes directly. This
+    // keeps the standard MicroPython usage recipe correct:
+    //   size = f_frsize * f_blocks   (s[1] * s[2])
+    //   avail = f_bsize  * f_bfree   (s[0] * s[3])
+    // Returning 0 for f_bsize/f_frsize (as before) made both products 0, so
+    // tools like JumperIDE reported the filesystem as empty/0 bytes.
     mp_obj_t items[ 10 ] = {
-        MP_OBJ_NEW_SMALL_INT( 0 ),     // f_bsize
-        MP_OBJ_NEW_SMALL_INT( 0 ),     // f_frsize
+        MP_OBJ_NEW_SMALL_INT( 1 ),     // f_bsize
+        MP_OBJ_NEW_SMALL_INT( 1 ),     // f_frsize
         MP_OBJ_NEW_SMALL_INT( total ), // f_blocks
         MP_OBJ_NEW_SMALL_INT( free ),  // f_bfree
         MP_OBJ_NEW_SMALL_INT( free ),  // f_bavail

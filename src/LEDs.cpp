@@ -3174,14 +3174,14 @@ uint8_t eightSelectHues[LOGO_COLOR_LENGTH + 11] = {
 // HELPER: Generate a single-hue palette from a base hue value
 // Creates a symmetric gradient that shifts hue slightly across the palette
 // ============================================================================
-void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex) {
+void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex, float step) {
   rgbColor tempRGB;
   hsvColor hsv;
   hsv.s = 254;
   hsv.v = 254;
   
   for (int i = 0; i < (LOGO_COLOR_LENGTH / 2) + 1; i++) {
-    hsv.h = (i * 2 + baseHue) % 255;
+    hsv.h = ((int)(i * step) + baseHue) % 255;
     tempRGB = HsvToRgb(hsv);
     
     uint32_t color = packRgb(tempRGB.r / 8, tempRGB.g / 8, tempRGB.b / 8);
@@ -3194,6 +3194,27 @@ void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex) {
     }
   }
 }
+// void generateLogoPaletteYellow(uint32_t* dest, uint8_t baseHue, int paletteIndex) {
+//   rgbColor tempRGB;
+//   hsvColor hsv;
+//   hsv.s = 254;
+//   hsv.v = 254;
+  
+//   for (int i = 0; i < (LOGO_COLOR_LENGTH / 2) + 1; i++) {
+//     hsv.h = (i * 4 + baseHue) % 255;
+//     tempRGB = HsvToRgb(hsv);
+    
+//     uint32_t color = packRgb(tempRGB.r / 8, tempRGB.g / 8, tempRGB.b / 8);
+//     dest[i] = color;
+//     dest[LOGO_COLOR_LENGTH - i] = color;
+    
+//     if (paletteIndex >= 0 && paletteIndex < LOGO_PALETTE_COUNT) {
+//       logoColorsAll[paletteIndex][i] = color;
+//       logoColorsAll[paletteIndex][LOGO_COLOR_LENGTH - i] = color;
+//     }
+//   }
+// }
+
 
 // ============================================================================
 // HELPER: Generate white/neutral palette (special case - low saturation)

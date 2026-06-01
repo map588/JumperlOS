@@ -304,7 +304,7 @@ enum LogoPalette {
 #define HUE_COLD        130   // Cyan
 #define HUE_HOT         230   // Red-orange
 #define HUE_PINK        155   // Magenta-pink
-#define HUE_YELLOW      40    // Distinct gold-yellow (away from chartreuse 70 / green 85)
+#define HUE_YELLOW      28    // Distinct gold-yellow (away from chartreuse 70 / green 85)
 #define HUE_GREEN       85    // Green
 #define HUE_ORANGE      20    // Orange
 #define HUE_TURQUOISE   125   // Turquoise/teal
@@ -326,7 +326,7 @@ extern uint32_t logoColors8vSelect[LOGO_COLOR_LENGTH+11];
 extern uint32_t logoColorsAll[LOGO_PALETTE_COUNT][LOGO_COLOR_LENGTH + 11];
 
 // Helper to generate a single-hue palette at runtime
-void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex);
+void generateLogoPalette(uint32_t* dest, uint8_t baseHue, int paletteIndex, float step = 3.0f);
 
 
 const int bbPixelToNodesMap[120] = {

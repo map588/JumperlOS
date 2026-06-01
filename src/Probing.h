@@ -135,7 +135,7 @@ public:
     unsigned long checkIntervalMsSelect = 4;           // Rate limiting between hardware checks
     unsigned long checkIntervalMsMeasure = 4;          // Rate limiting between hardware checks
     unsigned long blockDurationMs = 200;        // Block duration after press detected
-    unsigned long minimumBlockMs = 30;          // Minimum block time before release can clear (debounce)
+    unsigned long minimumBlockMs = 20;          // Minimum block time before release can clear (debounce)
     // Sustained-float release debounce. A release (newState==0) must persist
     // for this long before we (a) clear the press-block and (b) mark the
     // release "confirmed" so the NEXT press is allowed to register and feed
@@ -143,7 +143,7 @@ public:
     // that otherwise turn one physical press into two presses (and a stray
     // undo). 50ms is well under any human inter-tap gap, so genuine fast
     // double-taps (kWindowMs = 350ms) still register.
-    unsigned long releaseDebounceMs = 50;
+    unsigned long releaseDebounceMs = 30;
     unsigned long connectHoldThresholdMs = 800;        // Threshold to set connectHeld
     unsigned long removeHoldThresholdMs = 1000;        // Threshold to set removeHeld
 

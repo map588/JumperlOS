@@ -15,6 +15,50 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# ---------------------------------------------------------------------------
+# QSTR snapshot / diff helpers
+# ---------------------------------------------------------------------------
+# The generated QSTR table, plus per-run snapshots of the PREVIOUS build's
+# QSTRs (captured before micropython_embed/ is wiped) and the new build's, so
+# the verify step can report what was added/removed and print the full table.
+QSTR_FILE="$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h"
+QSTR_PREV="$(mktemp "${TMPDIR:-/tmp}/jl_qstr_prev.XXXXXX")"
+QSTR_NEW="$(mktemp "${TMPDIR:-/tmp}/jl_qstr_new.XXXXXX")"
+trap 'rm -f "$QSTR_PREV" "$QSTR_NEW"' EXIT
+
+# Extract the human-readable QSTR strings (the quoted 4th field of each QDEF
+# line), sorted + de-duplicated. Empty output if the file does not exist.
+qstr_strings() {
+    [ -f "$1" ] || return 0
+    grep '^QDEF' "$1" 2>/dev/null | awk -F'"' '{ print $2 }' | LC_ALL=C sort -u
+}
+
+# Format stdin as a tight 4-column, row-major grid (blank lines stripped).
+# Each column is padded to its own max width + a 2-space gutter, using spaces
+# only (no tabs) so alignment is stable in any terminal/log.
+qstr_grid() {
+    grep -v '^[[:space:]]*$' | awk '
+        { items[NR] = $0 }
+        END {
+            cols = 4
+            for (i = 1; i <= NR; i++) {
+                c = (i - 1) % cols
+                if (length(items[i]) > cw[c]) cw[c] = length(items[i])
+            }
+            for (i = 1; i <= NR; i += cols) {
+                line = ""
+                for (j = 0; j < cols && i + j <= NR; j++) {
+                    cell = items[i + j]
+                    if (i + j == NR || j == cols - 1)
+                        line = line cell
+                    else
+                        line = line sprintf("%-" (cw[j] + 2) "s", cell)
+                }
+                print line
+            }
+        }'
+}
+
 echo -e "${GREEN}Building MicroPython embed port with built-in modules...${NC}"
 
 # Check if we already have a working micropython_embed with Jumperless integration
@@ -83,6 +127,9 @@ export MICROPYTHON_TOP="$MICROPYTHON_REPO_PATH"
 make -f embed.mk clean-micropython-embed-package V=1 CFLAGS_EXTRA="$MPY_RELAX_CFLAGS"
 
 cd "$MICROPYTHON_LOCAL_PATH"
+# Snapshot the PREVIOUS build's QSTRs before wiping micropython_embed/, so the
+# verify step can report which QSTRs this build added/removed.
+qstr_strings "$QSTR_FILE" > "$QSTR_PREV"
 if [ -d "micropython_embed" ]; then
     echo -e "${YELLOW}Cleaning previous micropython_embed...${NC}"
     rm -rf micropython_embed
@@ -391,6 +438,35 @@ if [ -f "$MICROPYTHON_LOCAL_PATH/micropython_embed/genhdr/qstrdefs.generated.h" 
     echo -e "${GREEN}   Asyncio QSTRs found: $ASYNCIO_QSTRS${NC}"
     echo -e "${GREEN}   Onewire QSTRs found: $ONEWIRE_QSTRS${NC}"
     echo -e "${GREEN}   JSON QSTRs found: $JSON_QSTRS${NC}"
+
+    # -----------------------------------------------------------------------
+    # QSTR diff vs previous build + full table
+    # -----------------------------------------------------------------------
+    qstr_strings "$QSTR_FILE" > "$QSTR_NEW"
+    NEW_TOTAL=$(grep -cv '^[[:space:]]*$' "$QSTR_NEW" || true)
+
+    if [ -s "$QSTR_PREV" ]; then
+        ADDED=$(comm -13 "$QSTR_PREV" "$QSTR_NEW" | grep -v '^[[:space:]]*$' || true)
+        REMOVED=$(comm -23 "$QSTR_PREV" "$QSTR_NEW" | grep -v '^[[:space:]]*$' || true)
+        ADDED_N=$(printf '%s\n' "$ADDED" | grep -c . || true)
+        REMOVED_N=$(printf '%s\n' "$REMOVED" | grep -c . || true)
+
+        echo -e "${GREEN}   QSTR changes vs previous build: +${ADDED_N} / -${REMOVED_N}${NC}"
+        if [ "$ADDED_N" -gt 0 ]; then
+            echo -e "${GREEN}   Added QSTRs (${ADDED_N}):${NC}"
+            printf '%s\n' "$ADDED" | qstr_grid | sed 's/^/     /'
+        fi
+        if [ "$REMOVED_N" -gt 0 ]; then
+            echo -e "${RED}   Removed QSTRs (${REMOVED_N}):${NC}"
+            printf '%s\n' "$REMOVED" | qstr_grid | sed 's/^/     /'
+        fi
+    else
+        echo -e "${YELLOW}   No previous QSTR snapshot (first build) — skipping diff${NC}"
+    fi
+
+    echo -e "${GREEN}   All ${NEW_TOTAL} QSTRs:${NC}"
+    qstr_grid < "$QSTR_NEW" | sed 's/^/     /'
+
     echo -e "${GREEN}   Files ready for PlatformIO integration with embed API${NC}"
     echo -e "${GREEN}   Available modules: time, machine, os, math, gc, array, select, asyncio, deflate, framebuf, etc.${NC}"
 else

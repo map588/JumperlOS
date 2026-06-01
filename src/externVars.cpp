@@ -24,7 +24,7 @@ volatile bool pauseCore2 = false;
 // Used by LEDs.cpp to show colored logo during saves
 volatile bool filesystemActive = false;
 volatile unsigned long filesystemActiveUntil = 0;  // Minimum display time tracking
-const unsigned long FILESYSTEM_INDICATOR_MIN_MS = 50;  // 1/4 second minimum display
+const unsigned long FILESYSTEM_INDICATOR_MIN_MS = 100;  // 1/4 second minimum display
 
 // Configurable palette for filesystem indicator - change this to any LogoPalette value:
 //   PALETTE_RAINBOW, PALETTE_COLD, PALETTE_HOT, PALETTE_PINK, PALETTE_YELLOW,

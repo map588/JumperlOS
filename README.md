@@ -4,7 +4,7 @@ This repo is currently the `develop` branch of the [Jumperless V5 firmware](http
 
 The idea is to finally refactor the code now that I have a sense of all the things it should do. The current firmware is a Ship of Theseus that can trace an unbroken line from [breadWare](https://github.com/Architeuthis-Flux/breadWare) > [OG Jumperless](https://github.com/Architeuthis-Flux/Jumperless) > [Jumperless V5](https://github.com/Architeuthis-Flux/JumperlessV5) and has picked up a lot of weird design patterns along the way. So hopefully we can get it to a place where how it works isn't just all in my head and someone else could look at the code and kinda understand what's going on and hopefully contribute.
 
-I won't push code that's *totally* broken, so if you want to help test stuff out, load this firmware and let me know what sucks about it on [Discord](https://discord.gg/bvacV7r3FP). I'm not gonna bother with doing releases for now so you can just download the last build that got spat out from PlatformIO here (put in link to firmware.uf2)
+I won't push code that's *totally* broken, so if you want to help test stuff out, load this firmware and let me know what sucks about it on [Discord](https://discord.gg/bvacV7r3FP). Every push to `main` now builds and publishes a release automatically, so you can grab the latest firmware here: [**`firmware.uf2`**](https://github.com/Architeuthis-Flux/JumperlOS/releases/latest/download/firmware.uf2) (or browse all builds on the [releases page](https://github.com/Architeuthis-Flux/JumperlOS/releases)).
 
 
 

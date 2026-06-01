@@ -1,8 +1,42 @@
 /*
  * MicroPython port configuration for Jumperless embedding
  * Based on the embed port with built-in modules enabled
+ *
+ * ORGANIZATION
+ * ------------
+ * This file is grouped into the same logical sections used by
+ * CodeDocs/mpExplain.md so the two can be read side by side:
+ *
+ *   0.  Port includes & typedefs
+ *   1.  Feature profile level
+ *   2.  Core runtime
+ *   3.  RAM / GC / PSRAM heap
+ *   4.  Flash & filesystem (VFS)
+ *   5.  Compiler, execution speed & runtime optimizations
+ *   6.  Native code generation (emitters / assemblers)
+ *   7.  Core data types & language representation
+ *   8.  REPL, shell interaction & debugging diagnostics
+ *   9.  Multicore threads & concurrency
+ *   10. Built-in standard Python modules (MICROPY_PY_*)
+ *   11. Hardware peripheral & driver integration (machine.*)
+ *   12. sys / os module configuration
+ *   13. Board identity & version banner
+ *   14. Port module table, state & VM hooks
+ *
+ * CONVENTION FOR COMMENTED FLAGS
+ * ------------------------------
+ * Lines marked `// [avail]` are flags listed in CodeDocs/mpExplain.md that
+ * we do NOT currently override. They are left commented so the full menu of
+ * tunables is visible in one place. After each is the default source it
+ * inherits from when left unset (mpconfig.h global default, ROM-level group,
+ * or "doc-only" when the doc name does not exist in this MicroPython tree).
+ * Uncomment + set a value to override. Do not assume a `// [avail]` line is
+ * active — it is documentation, not configuration.
  */
 
+// =============================================================================
+// 0. Port includes & typedefs
+// =============================================================================
 #include <stdint.h>
 #include <alloca.h>
 #include <stddef.h>
@@ -25,29 +59,23 @@ typedef uint32_t mp_hal_pin_obj_t;
 // typedef struct _mp_obj_base_t mp_obj_base_t;
 // typedef struct _mp_obj_t *mp_obj_t;
 
-// Memory allocation - minimal for microcontroller
 #ifndef PATH_MAX
 #define PATH_MAX 256
 #endif
 #define MICROPY_ALLOC_PATH_MAX      (256)
-#define MICROPY_ENABLE_GC           (1)
 
-
-
-// GC register scanning configuration for ARM Cortex-M33 (RP2350)
-// Use setjmp-based fallback for safer, more portable GC register scanning.
-// This captures all callee-saved registers reliably via setjmp() instead of
-// relying on architecture-specific inline assembly which can be fragile.
-#define MICROPY_GCREGS_SETJMP       (1)
-
-#define MICROPY_HELPER_REPL         (1)
-#define MICROPY_HELPER_LEXER_UNIX   (0)  
-#define MICROPY_MEM_STATS           (1)  
-#define MICROPY_KBD_EXCEPTION      (1)
-
-#define MICROPY_ENABLE_VM_ABORT (1)
-
+// =============================================================================
+// 1. Feature profile level
+// =============================================================================
+// Sets the baseline feature group. FULL_FEATURES unlocks most of the standard
+// library surface; bump to MICROPY_CONFIG_ROM_LEVEL_EVERYTHING to also pull in
+// the EXTRA/EVERYTHING-gated builtins flagged below.
 #define MICROPY_CONFIG_ROM_LEVEL  MICROPY_CONFIG_ROM_LEVEL_FULL_FEATURES
+
+// =============================================================================
+// 2. Core runtime
+// =============================================================================
+#define MICROPY_ENABLE_GC           (1)
 
 // Enable compiler and event-driven REPL for pyexec_event_repl_process_char()
 #define MICROPY_ENABLE_COMPILER     (1)
@@ -56,35 +84,40 @@ typedef uint32_t mp_hal_pin_obj_t;
 // CRITICAL: Enable finalizers for proper cleanup of file handles and other resources
 // This allows __del__ methods to be called during garbage collection
 #define MICROPY_ENABLE_FINALISER    (1)
+// NOTE: historical mis-spelled alias kept for any local code that references it.
+#define MICROPY_ENABLE_FINALIZER    (1)
 
-// REPL configuration - basic only
-#define MICROPY_REPL_AUTO_INDENT    (1)  
-#define MICROPY_REPL_EMACS_KEYS     (1)  
+#define MICROPY_KBD_EXCEPTION      (1)
+#define MICROPY_ENABLE_VM_ABORT (1)
 
-// Float support - enable single-precision floating point
-#define MICROPY_FLOAT_IMPL          (MICROPY_FLOAT_IMPL_FLOAT)
-#define MICROPY_PY_BUILTINS_FLOAT   (1)
+// Pre-allocate a small static buffer used to raise exceptions when the GC heap
+// is exhausted or from a scheduled/soft-IRQ context. Without it, a Ctrl-C
+// (KeyboardInterrupt via MICROPY_VM_HOOK_LOOP below) or any exception that
+// arrives while the heap is full can fail to allocate and wedge the VM. ~256B
+// of static RAM buys reliable interrupt/OOM recovery on an interactive board.
+#define MICROPY_ENABLE_EMERGENCY_EXCEPTION_BUF (1)
+#define MICROPY_EMERGENCY_EXCEPTION_BUF_SIZE   (256)
 
-// Enable arbitrary-precision long integers (fixes small int overflow for e.g., 1 << 30 in rp2.py)
-#define MICROPY_LONGINT_IMPL        (MICROPY_LONGINT_IMPL_MPZ)
+// GC register scanning configuration for ARM Cortex-M33 (RP2350)
+// Use setjmp-based fallback for safer, more portable GC register scanning.
+// This captures all callee-saved registers reliably via setjmp() instead of
+// relying on architecture-specific inline assembly which can be fragile.
+#define MICROPY_GCREGS_SETJMP       (1)
 
-// Python builtins - minimal set
-#define MICROPY_PY_BUILTINS_COMPILE (1)  
-#define MICROPY_PY_BUILTINS_EVAL_EXEC (1)
-#define MICROPY_PY_BUILTINS_HELP    (1)
-#define MICROPY_PY___FILE__         (0)  // Disable to avoid import path issues
-#define MICROPY_PY_SYS_PLATFORM     "jumperless-rp2350"
-#define MICROPY_PY_SYS_EXIT         (1)
-#define MICROPY_PY_SYS_PATH         (1)  
-#define MICROPY_PY_SYS_PS1_PS2      (1)  // Enable for REPL
-#define MICROPY_PY_SYS_STDIO_BUFFER (1)  
-#define MICROPY_PY_SYS_ATTR_DELEGATION (1)  
+// C call-stack bounds checking — raises RuntimeError instead of a hard crash.
+#define MICROPY_STACK_CHECK (1)
+#define MICROPY_STACK_CHECK_MARGIN (1024)  // 1KB margin for embedded systems
 
-#define MICROPY_PY_BUILTINS_INPUT   (1)
-#define MICROPY_PY_FSTRINGS         (1)
+// Cooperative scheduler (micropython.schedule() + soft IRQ callbacks).
+#define MICROPY_ENABLE_SCHEDULER    (1)
+#define MICROPY_SCHEDULER_DEPTH     (8)
+
+#define MICROPY_HELPER_LEXER_UNIX   (0)
+// [avail] MICROPY_STACKLESS                  (0)  // default mpconfig.h: heap-allocated Py->Py calls
+// [avail] MICROPY_STACKLESS_STRICT           (0)  // default mpconfig.h: only with MICROPY_STACKLESS
 
 // =============================================================================
-// PSRAM Configuration - Optional External PSRAM Support
+// 3. RAM / GC / PSRAM heap
 // =============================================================================
 // Jumperless v5 can optionally have 8MB PSRAM installed on GPIO 19 (QSPI CS1).
 // PSRAM detection is done at runtime - the same firmware works with or without PSRAM.
@@ -97,39 +130,244 @@ typedef uint32_t mp_hal_pin_obj_t;
 // Larger GC stack to avoid slowdowns during full sweeps of PSRAM-backed heap
 #define MICROPY_ALLOC_GC_STACK_SIZE (1024)
 
+// Raw memory diagnostics — backs micropython.mem_info() / mem_total().
+#define MICROPY_MEM_STATS           (1)
+// Pass sizes straight to free/realloc (matches our allocator).
+#define MICROPY_MALLOC_USES_ALLOCATED_SIZE (1)
 
-#define MICROPY_STACK_CHECK (1)
-#define MICROPY_STACK_CHECK_MARGIN (1024)  // 1KB margin for embedded systems
+// [avail] MICROPY_GC_SPLIT_HEAP_AUTO         (0)  // default mpconfig.h: auto-grow split heap (esp32 uses 1)
+// [avail] MICROPY_TRACK_ALLOCATED_BYTES           // doc-only name; gc.mem_alloc() is always available here
 
-// Basic modules - minimal set
+// =============================================================================
+// 4. Flash & filesystem (VFS)
+// =============================================================================
+// Enable standard MicroPython VFS so tools (e.g. mpremote/ViperIDE) behave normally
+#define MICROPY_VFS                 (1)
+#define MICROPY_VFS_FAT             (0)  // Use custom JFS VFS driver, not FatFs blockdev
+#define MICROPY_VFS_LFS2            (0)
+#define MICROPY_VFS_POSIX           (0)
+// Allow the lexer/reader to pull files via VFS (required for imports/open)
+#define MICROPY_READER_VFS          (1)
+// Disable legacy hand-written os bridge now that VFS+standard os are available
+#define MICROPY_JL_CUSTOM_OS_BRIDGE (0)
+
+// External import (sys.path lookups) + open()/io for file objects.
+#define MICROPY_ENABLE_EXTERNAL_IMPORT (1)
+#define MICROPY_PY_IO_FILEIO        (1)
+#define MICROPY_PY_IO               (1)
+
+// NOTE on filesystem usage reporting (JumperIDE shows used/free on FAT-backed
+// boards but not here): we ship a custom JFS VFS whose statvfs() lives in
+// modules/jumperless/modjumperless.c. os.statvfs() must return non-zero
+// f_bsize / f_frsize for the standard `s[1]*s[2]` / `s[0]*s[3]` usage recipe
+// to produce a real number — see that file's jl_vfs_statvfs_method().
+
+// =============================================================================
+// 5. Compiler, execution speed & runtime optimizations
+// =============================================================================
+#define MICROPY_OPT_COMPUTED_GOTO   (1)
+#define MICROPY_MODULE_WEAK_LINKS   (1)
+
+// Parser allocation tuning. The parse tree is built from the GC heap, which on
+// a PSRAM board may be PSRAM-backed (slower realloc). Larger initial chunks
+// mean fewer grow-and-copy cycles when compiling big pasted scripts. Matches
+// the sizing the Temporal badge uses.
+#define MICROPY_ALLOC_PARSE_RULE_INIT       (128)
+#define MICROPY_ALLOC_PARSE_RULE_INC        (32)
+#define MICROPY_ALLOC_PARSE_RESULT_INIT     (64)
+#define MICROPY_ALLOC_PARSE_RESULT_INC      (32)
+#define MICROPY_ALLOC_PARSE_CHUNK_INIT      (256)
+
+// NOTE on "already on (FULL >= EXTRA)": MICROPY_CONFIG_ROM_LEVEL is
+// FULL_FEATURES (40), and FULL >= EXTRA_FEATURES (30) >= CORE_FEATURES (10),
+// so every flag tagged "already on" below is ALREADY ACTIVE by inheritance
+// from the ROM level — it does not need an override here. The tag documents
+// where the value comes from; it is not a TODO.
+// [avail] MICROPY_OPT_LOAD_ATTR_FAST_PATH         // already on (FULL >= EXTRA)
+// [avail] MICROPY_OPT_MAP_LOOKUP_CACHE            // already on (FULL >= EXTRA): per-bytecode attr cache
+// [avail] MICROPY_COMP_CONST                      // already on (FULL >= CORE)
+// [avail] MICROPY_COMP_CONST_FOLDING              // already on (FULL >= CORE)
+// [avail] MICROPY_COMP_MODULE_CONST               // already on (FULL >= EXTRA): cross-module const folding
+// [avail] MICROPY_COMP_DOUBLE_TUPLE_ASSIGN        // already on (FULL >= CORE)
+// [avail] MICROPY_COMP_TRIPLE_TUPLE_ASSIGN        // already on (FULL >= EXTRA)
+// [avail] MICROPY_COMP_RETURN_IF_EXPR             // already on (FULL >= EXTRA)
+// [avail] MICROPY_PERSISTENT_CODE_LOAD       (0)  // default mpconfig.h: load .mpy files
+// [avail] MICROPY_PERSISTENT_CODE_SAVE       (0)  // default mpconfig.h: save .mpy files
+// [avail] MICROPY_ENABLE_DYNRUNTIME          (0)  // default mpconfig.h: native dynamic .mpy modules
+// doc-only names (not present in this MicroPython tree):
+//   MICROPY_OPT_CACHE_MAP_LOOKUP_IN_BYTECODE, MICROPY_OPT_STORE_ATTR_FAST_PATH,
+//   MICROPY_PREV_ALLOC_TYPES, MICROPY_FREE_UNUSED_PARENTS_BEFORE_REALLOC,
+//   MICROPY_REUSE_AS_OBJ_IDS
+
+// =============================================================================
+// 6. Native code generation (emitters / assemblers)
+// =============================================================================
+// Enables @micropython.native / @micropython.viper (MICROPY_EMIT_THUMB) and
+// @micropython.asm_thumb (MICROPY_EMIT_INLINE_THUMB). The emitter sources
+// (emitnative.c / asmthumb.c / emitinlinethumb.c) are compiled in, and the
+// RP2350 is a Cortex-M33 that runs the ARMv7-M Thumb-2 these emitters produce.
+//
+// THE PSRAM HAZARD AND WHY IT IS NOT A "FLAG":
+// There is NO MicroPython flag that pins native code to internal SRAM.
+// (MICROPY_ALLOC_NATIVE_CHUNK_INIT does not exist; gc_add() ordering only
+// creates a *preference*, not a guarantee.) Native code is allocated by
+// MP_PLAT_ALLOC_EXEC, whose default is `m_new` (the GC heap). With the optional
+// PSRAM mod the heap is a split heap, and py/gc.c gc_alloc() first-fits across
+// areas starting from a rolling cursor (MP_STATE_MEM(gc_last_free_area)) — so a
+// code block CAN land in the XIP-mapped PSRAM window (0x11000000). Code freshly
+// written there via the data path may sit dirty in the XIP cache; executing it
+// without cache maintenance can fetch stale bytes and hard-fault (the slowness
+// the internet warns about is secondary — the real issue is correctness).
+//
+// THE FIX (see jl_mp_commit_exec in src/JumperlessMicroPythonAPI.cpp): keep the
+// default GC-heap allocator and
+// add an MP_PLAT_COMMIT_EXEC hook. mp_asm_base_get_code() calls it once per
+// emitted function, right before the code pointer is used (asmbase.h). For
+// PSRAM-resident code it cleans+invalidates the XIP cache and issues DSB/ISB;
+// for SRAM it is just the barrier. We deliberately do NOT use a custom
+// SRAM-pinned MP_PLAT_ALLOC_EXEC: the emitter calls mp_asm_base_deinit(...,
+// free_code=false) and nothing else calls MP_PLAT_FREE_EXEC, so only the GC
+// reclaims code buffers — a non-GC allocator would leak every redefined
+// native function. The commit hook is correct AND leak-free.
+//
+// Flip JL_ENABLE_NATIVE_CODEGEN to 0 (e.g. -DJL_ENABLE_NATIVE_CODEGEN=0) to
+// disable everything here. NOTE: changing this requires re-running
+// scripts/build_micropython.sh (it regenerates micropython_embed/ from this
+// file and the emitter TUs are config-gated). HARDWARE-TEST the PSRAM path.
+#ifndef JL_ENABLE_NATIVE_CODEGEN
+#define JL_ENABLE_NATIVE_CODEGEN (1)
+#endif
+
+#if JL_ENABLE_NATIVE_CODEGEN
+#define MICROPY_EMIT_THUMB              (1)  // @micropython.native / .viper
+#define MICROPY_EMIT_INLINE_THUMB       (1)  // @micropython.asm_thumb
+// MICROPY_EMIT_THUMB_ARMV7M (1) and MICROPY_EMIT_INLINE_THUMB_FLOAT (1) inherit
+// their mpconfig.h defaults, which suit the M33 (ARMv7-M Thumb-2 + FPU).
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Implemented in src/JumperlessMicroPythonAPI.cpp. Returns buf unchanged after making
+// freshly-emitted code at [buf, buf+len) safe to execute (XIP cache maintenance
+// for PSRAM-resident code + DSB/ISB barrier).
+void *jl_mp_commit_exec(void *buf, size_t len);
+#ifdef __cplusplus
+}
+#endif
+#define MP_PLAT_COMMIT_EXEC(buf, len, opt) jl_mp_commit_exec((buf), (len))
+#endif // JL_ENABLE_NATIVE_CODEGEN
+
+// =============================================================================
+// 7. Core data types & language representation
+// =============================================================================
+// Float support - enable single-precision floating point
+#define MICROPY_FLOAT_IMPL          (MICROPY_FLOAT_IMPL_FLOAT)
+#define MICROPY_PY_BUILTINS_FLOAT   (1)
+
+// Enable arbitrary-precision long integers (fixes small int overflow for e.g., 1 << 30 in rp2.py)
+#define MICROPY_LONGINT_IMPL        (MICROPY_LONGINT_IMPL_MPZ)
+
+// [avail] MICROPY_OBJ_REPR              (MICROPY_OBJ_REPR_A)  // default mpconfig.h: 32-bit packed repr
+// [avail] MICROPY_STREAMS_NON_BLOCK                           // already on (FULL >= EXTRA)
+// [avail] MICROPY_MODULE_BUILTIN_INIT                         // already on (FULL >= EXTRA)
+
+// =============================================================================
+// 8. REPL, shell interaction & debugging diagnostics
+// =============================================================================
+#define MICROPY_HELPER_REPL         (1)
+#define MICROPY_REPL_AUTO_INDENT    (1)
+#define MICROPY_REPL_EMACS_KEYS     (1)
+
+// Enable error reporting features
+#define MICROPY_ERROR_REPORTING     (MICROPY_ERROR_REPORTING_DETAILED)
+#define MICROPY_ENABLE_SOURCE_LINE  (1)
+
+// [avail] MICROPY_WARNINGS                    // already on (FULL >= EXTRA): sys.warnoptions
+// [avail] MICROPY_DEBUG_PRINTERS         (0)  // default mpconfig.h: verbose internal dump printers
+// doc-only debug names (not in this tree): MICROPY_DEBUG_VM_EXEC,
+//   MICROPY_DEBUG_PARSE, MICROPY_DEBUG_COMPILER, MICROPY_DEBUG_GC
+
+// =============================================================================
+// 9. Multicore threads & concurrency
+// =============================================================================
+// Threading is OFF: the embed port shares the host (Arduino) core and has no
+// mpthreadport backend. Asyncio (cooperative, single-core) covers concurrency.
+// [avail] MICROPY_PY_THREAD              (0)  // default mpconfig.h: _thread module
+// [avail] MICROPY_PY_THREAD_GIL          (0)  // default mpconfig.h: GIL (requires PY_THREAD)
+
+// =============================================================================
+// 10. Built-in standard Python modules (MICROPY_PY_*)
+// =============================================================================
 #define MICROPY_PY_ARRAY            (1)
-#define MICROPY_PY_COLLECTIONS      (1)  
-
+#define MICROPY_PY_COLLECTIONS      (1)
 #define MICROPY_PY_STRUCT           (1)
 #define MICROPY_PY_MATH             (1)
 #define MICROPY_PY_GC               (1)
-#define MICROPY_PY_BINASCII         (1)  
-#define MICROPY_PY_ERRNO            (1)  
+#define MICROPY_PY_BINASCII         (1)
+#define MICROPY_PY_ERRNO            (1)
 #define MICROPY_PY_JSON             (1)
 #define MICROPY_PY_RE               (1)
 #define MICROPY_PY_HEAPQ            (1)
 #define MICROPY_PY_HASHLIB          (1)
 #define MICROPY_PY_RANDOM           (1)
 
-// Standard library modules - disable most to save memory
-#define MICROPY_PY_TIME             (1)  // Keep disabled to avoid import issues
-#define MICROPY_PY_TIME_TIME_TIME_NS (0)
-#define MICROPY_PY_TIME_GMTIME_LOCALTIME_MKTIME (0)
+// Builtins / language helpers
+#define MICROPY_PY_BUILTINS_COMPILE (1)
+#define MICROPY_PY_BUILTINS_EVAL_EXEC (1)
+#define MICROPY_PY_BUILTINS_HELP    (1)
+#define MICROPY_PY_BUILTINS_INPUT   (1)
+#define MICROPY_PY_FSTRINGS         (1)
 
-// OS module - keep disabled to avoid port-specific requirements
-#define MICROPY_PY_OS               (1)  // Enable now that we include extmod
-#define MICROPY_PY_OS_DUPTERM       (0)
-#define MICROPY_PY_OS_DUPTERM_NOTIFY (0)
-#define MICROPY_PY_OS_SYNC          (0)
-#define MICROPY_PY_OS_UNAME         (1)  // Enable uname function
-#define MICROPY_PY_OS_URANDOM       (0)
+// Select module - required for asyncio and poll-based I/O
+#define MICROPY_PY_SELECT           (1)
+#define MICROPY_PY_SELECT_POSIX_OPTIMISATIONS (0)  // No POSIX poll on baremetal
+#define MICROPY_PY_SELECT_SELECT    (1)            // Enable select.select() baremetal impl
 
-// Machine module - enable with rp2 implementations
+// Asyncio module (C acceleration: _asyncio provides TaskQueue/Task types)
+// Note: Full 'import asyncio' also requires the Python package from
+// micropython/extmod/asyncio/ to be available on the filesystem
+#define MICROPY_PY_ASYNCIO          (1)
+
+// Framebuffer module for display/pixel manipulation
+#define MICROPY_PY_FRAMEBUF         (1)
+
+// 1-Wire bus bit-banging helper
+#define MICROPY_PY_ONEWIRE          (1)
+
+// micropython introspection module (mem_info / qstr_info)
+#define MICROPY_PY_MICROPYTHON_MEM_INFO (1)
+
+// CRC32 over binascii — cheap, and handy for zip/PNG/protocol checksums in
+// Python. Off by default in mpconfig.h regardless of ROM level, so opt in.
+#define MICROPY_PY_BINASCII_CRC32   (1)
+
+// Additional module surface available in this tree (not currently overridden):
+// [avail] MICROPY_PY_CMATH                    (0)  // default mpconfig.h: complex math
+// [avail] MICROPY_PY_MATH_SPECIAL_FUNCTIONS        // already on (FULL >= EXTRA): erf/gamma/...
+// [avail] MICROPY_PY_RE_SUB                        // already on (FULL >= EXTRA) (doc says URE_SUB)
+// [avail] MICROPY_PY_HASHLIB_SHA256          (1)  // default mpconfig.h (doc says UHASHLIB_SHA256)
+// [avail] MICROPY_PY_HASHLIB_SHA1            (0)  // default mpconfig.h
+// [avail] MICROPY_PY_HASHLIB_MD5             (0)  // default mpconfig.h
+// [avail] MICROPY_PY_CRYPTOLIB               (0)  // default mpconfig.h: AES (doc says UCRYPTOLIB)
+// [avail] MICROPY_PY_DEFLATE                      // build advertises `deflate`. moddeflate.c
+//         #includes lz77.c which #includes defl_static.c, so de/compression both
+//         link; library.json excludes those two as standalone TUs precisely
+//         because they are #included (avoids double-compile), NOT because they
+//         are missing. Toggle MICROPY_PY_DEFLATE_COMPRESS for the compressor.
+// [avail] MICROPY_PY_BUILTINS_SET                 // already on (FULL >= CORE)
+// [avail] MICROPY_PY_BUILTINS_FROZENSET           // already on (FULL >= EXTRA)
+// [avail] MICROPY_PY_BUILTINS_SLICE               // already on (FULL >= CORE)
+// [avail] MICROPY_PY_BUILTINS_PROPERTY            // already on (FULL >= CORE)
+// [avail] MICROPY_PY_BUILTINS_MIN_MAX             // already on (FULL >= CORE)
+// [avail] MICROPY_PY_BUILTINS_STR_COUNT           // already on (FULL >= CORE)
+// [avail] MICROPY_PY_BUILTINS_STR_OP_MODULO       // already on (FULL >= CORE)
+// [avail] MICROPY_PY_BUILTINS_EXECFILE            // already on (FULL >= EXTRA)
+// [avail] MICROPY_PY_DELATTR_SETATTR              // already on (FULL >= EXTRA)
+// [avail] MICROPY_PY_BUILTINS_HELP_MODULES   (0)  // default mpconfig.h: help('modules')
+// [avail] MICROPY_PY_SYS_MAXSIZE                  // already on (FULL >= EXTRA)
+
+// =============================================================================
+// 11. Hardware peripheral & driver integration (machine.*)
+// =============================================================================
 #define MICROPY_PY_MACHINE                      (1)
 #define MICROPY_PY_MACHINE_RESET                (1)  // Enable machine.reset()
 #define MICROPY_PY_MACHINE_BARE_METAL_FUNCS     (1)  // Enable unique_id(), freq()
@@ -171,66 +409,46 @@ typedef uint32_t mp_hal_pin_obj_t;
 // Allow port to extend machine module (e.g., expose Pin, Timer, RTC, etc.)
 #define MICROPY_PY_MACHINE_INCLUDEFILE          "../../lib/micropython/port/modmachine_jl.inc"
 
-// Select module - required for asyncio and poll-based I/O
-#define MICROPY_PY_SELECT           (1)
-#define MICROPY_PY_SELECT_POSIX_OPTIMISATIONS (0)  // No POSIX poll on baremetal
-#define MICROPY_PY_SELECT_SELECT    (1)            // Enable select.select() baremetal impl
-
-// Asyncio module (C acceleration: _asyncio provides TaskQueue/Task types)
-// Note: Full 'import asyncio' also requires the Python package from
-// micropython/extmod/asyncio/ to be available on the filesystem
-#define MICROPY_PY_ASYNCIO          (1)
-
-// Framebuffer module for display/pixel manipulation
-#define MICROPY_PY_FRAMEBUF         (1)
-
-// Additional useful modules
-#define MICROPY_PY_ONEWIRE          (1)
-
-// Optimize for size but keep features
-#define MICROPY_OPT_COMPUTED_GOTO   (1)
-#define MICROPY_MODULE_WEAK_LINKS   (1)
-
-// Enable error reporting features
-#define MICROPY_ERROR_REPORTING     (MICROPY_ERROR_REPORTING_DETAILED)
-#define MICROPY_ENABLE_SOURCE_LINE  (1)
-
-#define MICROPY_ENABLE_EXTERNAL_IMPORT (1)  // Disable to avoid sys.path dependency
-#define MICROPY_MALLOC_USES_ALLOCATED_SIZE (1)
-
-// Additional features for embedded use
-#define MICROPY_PY_MICROPYTHON_MEM_INFO (1)
-#define MICROPY_ENABLE_SCHEDULER    (1)
-#define MICROPY_SCHEDULER_DEPTH     (8)
-
-// Enable standard MicroPython VFS so tools (e.g. mpremote/ViperIDE) behave normally
-#define MICROPY_VFS                 (1)
-#define MICROPY_VFS_FAT             (0)  // Use custom JFS VFS driver, not FatFs blockdev
-#define MICROPY_VFS_LFS2            (0)
-#define MICROPY_VFS_POSIX           (0)
-// Allow the lexer/reader to pull files via VFS (required for imports/open)
-#define MICROPY_READER_VFS          (1)
-// Disable legacy hand-written os bridge now that VFS+standard os are available
-#define MICROPY_JL_CUSTOM_OS_BRIDGE (0)
-
-#define MICROPY_ENABLE_FINALIZER    (1)
-
-// IO needs to be on for standard file objects when using VFS
-#define MICROPY_PY_IO_FILEIO        (1)
-#define MICROPY_PY_IO               (1)
+// =============================================================================
+// 12. sys / os module configuration
+// =============================================================================
+#define MICROPY_PY___FILE__         (1)
+#define MICROPY_PY_SYS_PLATFORM     "jumperless-rp2350"
+#define MICROPY_PY_SYS_EXIT         (1)
+#define MICROPY_PY_SYS_PATH         (1)
+#define MICROPY_PY_SYS_PS1_PS2      (1)  // Enable for REPL
+#define MICROPY_PY_SYS_STDIO_BUFFER (1)
+#define MICROPY_PY_SYS_ATTR_DELEGATION (1)
+// Expose sys.stdin, sys.stdout, sys.stderr as Python file objects
+// These wrap mp_hal_stdin_rx_chr / mp_hal_stdout_tx_strn from mphalport.c
+#define MICROPY_PY_SYS_STDFILES     (1)
+// sys.getsizeof() — per-object RAM size. Cheap, and useful for profiling the
+// PSRAM-backed heap. Default mpconfig.h only enables it at EVERYTHING (50),
+// and we sit at FULL (40), so opt in explicitly.
+#define MICROPY_PY_SYS_GETSIZEOF    (1)
 
 // Time module configuration
+#define MICROPY_PY_TIME             (1)
+#define MICROPY_PY_TIME_TIME_TIME_NS (0)
+#define MICROPY_PY_TIME_GMTIME_LOCALTIME_MKTIME (0)
 #define MICROPY_PY_TIME_INCLUDEFILE "shared/timeutils/timeutils.h"
+
+// OS module — backed by VFS; provides listdir/stat/statvfs/uname.
+#define MICROPY_PY_OS               (1)
+#define MICROPY_PY_OS_DUPTERM       (0)
+#define MICROPY_PY_OS_DUPTERM_NOTIFY (0)
+#define MICROPY_PY_OS_SYNC          (0)
+#define MICROPY_PY_OS_UNAME         (1)  // Enable uname function
+#define MICROPY_PY_OS_URANDOM       (0)
 
 // Platform module for os.uname()
 #define MICROPY_PY_PLATFORM         (1)
 
+// =============================================================================
+// 13. Board identity & version banner
+// =============================================================================
 // User C modules (Jumperless module will be added here)
 #define MODULE_JUMPERLESS_ENABLED   (1)
-
-// Expose sys.stdin, sys.stdout, sys.stderr as Python file objects
-// These wrap mp_hal_stdin_rx_chr / mp_hal_stdout_tx_strn from mphalport.c
-#define MICROPY_PY_SYS_STDFILES     (1)
 
 // Board name for sys.platform
 #define MICROPY_HW_BOARD_NAME "jumperless-v5"
@@ -258,6 +476,9 @@ typedef uint32_t mp_hal_pin_obj_t;
 #define MICROPY_BANNER_MACHINE \
     MICROPY_HW_BOARD_NAME " v" FIRMWARE_VERSION " with " MICROPY_HW_MCU_NAME
 
+// =============================================================================
+// 14. Port module table, state & VM hooks
+// =============================================================================
 // Built-in modules - minimal set (most modules disabled to save memory)
 // Only the jumperless module will be available via MP_REGISTER_MODULE
 

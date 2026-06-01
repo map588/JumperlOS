@@ -1,0 +1,83 @@
+name: Release firmware
+
+# Every push to main builds the firmware fresh and publishes a GitHub Release
+# tagged with the contents of the VERSION file. If VERSION was not bumped
+# (i.e. a tag with that exact version already exists), scripts/bump_version_if_needed.py
+# increments the last component, the build bakes the new version in, and the
+# bump is committed back to main with [skip ci] so it doesn't loop.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Forks can't (and shouldn't) push tags / create releases on this repo.
+    if: github.repository == 'Architeuthis-Flux/JumperlOS'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history, tags and submodules)
+        uses: actions/checkout@v4
+        with:
+          # Full history + tags so the bump script can see existing releases.
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Resolve release version (auto-bump if VERSION was not bumped)
+        id: version
+        run: python scripts/bump_version_if_needed.py
+
+      - name: Build firmware
+        # version_from_file.py (pre-build) bakes steps.version.outputs.version
+        # into FirmwareVersion.generated.h, so the binary matches the tag.
+        run: pio run -e jumperless_v5
+
+      - name: Commit version bump back to main
+        if: steps.version.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "Auto-bump firmware version to ${VERSION} [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          gh release create "$VERSION" \
+            ".pio/build/jumperless_v5/firmware.uf2#Jumperless V5 firmware (${VERSION})" \
+            --target "$SHA" \
+            --title "$VERSION" \
+            --generate-notes

@@ -160,7 +160,7 @@ void setup( ) {
     if ( !FatFS.begin( ) ) {
         Serial.println( "Failed to initialize FatFS" );
     } else {
-        Serial.println( "FatFS initialized successfully" );
+        // Serial.println( "FatFS initialized successfully" );
         // SPIFTL now runs in delta-journal mode (enabled at construction via
         // FATFS_SPIFTL_JOURNAL). persist() on every disk_ioctl(CTRL_SYNC) /
         // f_close appends ONE already-erased flash page with just the changed
@@ -171,8 +171,9 @@ void setup( ) {
         // append already persisted the metadata). See FatFS_LazyPersist.h.
         fatFsSetJournal( true );
         fatFsSetLazyPersist( false );
-        Serial.printf( "SPIFTL delta-journal: %s\n",
-                       fatFsIsJournal() ? "ON (fast durable saves)" : "OFF (full-snapshot persist)" );
+        
+        // Serial.printf( "SPIFTL delta-journal: %s\n",
+                    //    fatFsIsJournal() ? "ON (fast durable saves)" : "OFF (full-snapshot persist)" );
     }
 
     // Initialize multicore synchronization primitives BEFORE Core 2 starts

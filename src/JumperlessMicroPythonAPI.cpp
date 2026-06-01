@@ -41,6 +41,70 @@ extern SafeString nodeFileString;
 // extern void refreshConnections( int ledShowOption = -1, int fillUnused = 1, int clean = 0 );
 // lastChipXY is now declared in CH446Q.h as chipXYBitfield[12]
 
+// =============================================================================
+// Native-codegen exec commit hook (MP_PLAT_COMMIT_EXEC)
+// =============================================================================
+// Makes MicroPython runtime-emitted native code (@micropython.native /
+// .viper / .asm_thumb) safe to execute when MICROPY_EMIT_THUMB is enabled.
+//
+// The native emitter writes machine code into a GC-heap buffer via the data
+// path, then executes it. With the optional 8MB PSRAM mod the GC heap is a
+// split heap (internal SRAM + PSRAM via gc_add), and py/gc.c gc_alloc() can
+// place a code block in the XIP-mapped PSRAM window (0x11000000) — there is no
+// flag to pin native code to SRAM. Code freshly written into the XIP window can
+// sit dirty in the RP2350 XIP cache; before the instruction side fetches it we
+// must clean (write back to PSRAM) + invalidate (force re-fetch) the covered
+// lines, then DSB/ISB. Internal SRAM has no such cache on the Cortex-M33, so it
+// only needs the barrier (run unconditionally — required for self-modifying
+// code on Cortex-M regardless).
+//
+// MicroPython calls this from mp_asm_base_get_code() once per emitted function,
+// right before the code pointer is first used (see lib/micropython/port/
+// mpconfigport.h section 6, which maps MP_PLAT_COMMIT_EXEC here). We keep the
+// default GC-heap MP_PLAT_ALLOC_EXEC so the GC still reclaims code buffers; a
+// custom non-GC allocator would leak every redefined native function because
+// the emitter calls mp_asm_base_deinit(..., free_code=false) and nothing else
+// calls MP_PLAT_FREE_EXEC.
+#if defined(__has_include)
+#  if __has_include("hardware/xip_cache.h")
+#    include "hardware/xip_cache.h"
+#    define JL_HAVE_XIP_CACHE 1
+#  endif
+#endif
+
+extern "C" void *jl_mp_commit_exec( void *buf, size_t len ) {
+    if ( buf == nullptr || len == 0 ) {
+        return buf;
+    }
+
+#if JL_HAVE_XIP_CACHE
+    // XIP_BASE / XIP_END / XIP_CACHE_LINE_SIZE come from the SDK headers pulled
+    // in by hardware/xip_cache.h. The window covers flash (CS0, 0x10000000) and
+    // PSRAM (CS1, 0x11000000); only addresses inside it need cache maintenance.
+    const uintptr_t addr = (uintptr_t)buf;
+    if ( addr >= XIP_BASE && addr < XIP_END ) {
+        // Offsets passed to the cache API are relative to XIP_BASE and must be
+        // cache-line aligned; round start down and end up.
+        const uintptr_t line = (uintptr_t)XIP_CACHE_LINE_SIZE;
+        uintptr_t start = ( addr - XIP_BASE ) & ~( line - 1 );
+        uintptr_t end = ( ( addr - XIP_BASE ) + len + line - 1 ) & ~( line - 1 );
+        uintptr_t span = end - start;
+        // Clean first (commit dirty write data to PSRAM), then invalidate so the
+        // instruction fetch re-reads the freshly written bytes from the backing
+        // store. Order matters: invalidate-before-clean could discard our writes.
+        xip_cache_clean_range( start, span );
+        xip_cache_invalidate_range( start, span );
+    }
+#endif
+
+    // Always: drain the store buffer (DSB) and flush the instruction pipeline
+    // (ISB) so subsequent fetches see the new code.
+    __asm volatile( "dsb 0xf" ::: "memory" );
+    __asm volatile( "isb 0xf" ::: "memory" );
+
+    return buf;
+}
+
 #include "Apps.h"
 #include "CH446Q.h"
 #include "FatFS.h"

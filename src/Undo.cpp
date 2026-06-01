@@ -31,6 +31,7 @@ extern int netSlot;
 #include <Arduino.h>
 #include <FatFS.h>
 #include <string.h>
+#include <stdarg.h>
 #include <algorithm>
 #include "hardware/structs/sio.h"
 
@@ -59,6 +60,11 @@ extern JumperlessState globalState;
 extern bool safeFileWriteAllRaw(const char* path, const char* content,
                                 size_t content_len, uint32_t timeout_ms);
 extern bool fileCacheInvalidate(const char* path);
+
+// Node-name <-> integer-id helpers (defined in States.cpp / NetManager.cpp).
+// parseNodeName is the inverse of definesToChar and also parses raw integer
+// ids, so the text format can store friendly node names that round-trip.
+extern int parseNodeName(const String& nodeName);
 
 // =============================================================================
 // Op / txn record formats
@@ -653,21 +659,44 @@ void takeSnapshot(const char* reason) {
 //
 // Now that the SPIFTL delta-journal makes flash writes cheap, the undo
 // history survives reboots. On every slot save we serialize the most-recent
-// slice of the shared ring into /undo.hist (through the write-back cache, so
-// it's an instant PSRAM memcpy that the background flush coalesces to flash).
-// On boot undoInit() reads it back so undo/redo continue across power cycles.
+// slice of the shared ring into /undo_history.txt (through the write-back
+// cache, so it's an instant PSRAM memcpy that the background flush coalesces
+// to flash). On boot undoInit() reads it back so undo/redo continue across
+// power cycles.
 //
 // The file is itself a *bounded* ring: we only persist the newest
 // UNDO_PERSIST_MAX_TXNS transactions (capped further at UNDO_PERSIST_MAX_BYTES
 // of body), dropping the oldest history so the file never grows without
 // bound. Obsolete (orphaned redo-tail) and empty transactions are skipped.
 //
-// Layout (all little-endian, packed):
-//   [UndoFileHeader]
-//   [uint32_t slotCursor[numSlots]]   - per-slot cursor as a linear txn index
-//   [UndoTxn  txns[txnCount]]         - oldest-first; firstOp rewritten linear
-//   [UndoOp   ops[opCount]]           - blob ops' blobOffset rewritten
-//   [uint8_t  blobs[blobBytes]]       - compacted clear-all/blob arena
+// Format: a human- and machine-readable line-oriented text file. Each op is a
+// terse mnemonic + args so a quick `cat` reveals the history, e.g.:
+//
+//   JLUNDO 3                         <- magic + format version
+//   gid 42                           <- monotonic global txn id at write time
+//   slots 8 5 0 0 0 0 0 0 0          <- per-slot cursor (linear kept-txn index)
+//   t 0 p                            <- txn header: slot, source (p=probe)
+//     c 4-8                          <-   connect node 4 to node 8
+//   t 0 p
+//     tr 0 3.3                       <-   top rail prev=0 -> next=3.3 V
+//   t 0 p
+//     x @0                           <-   clear-all, restores blob pool entry 0
+//   @0 412                           <- blob pool: index 0, 412-byte YAML body
+//   <412 bytes of board-state YAML>
+//
+// The txn's display label (e.g. "connect 4-8") is NOT stored - it's redundant
+// with the op line(s) and is rebuilt from them on restore. Source tags are
+// single chars: p=probe m=menu y=python k=mcp f=file i=internal ?=unknown.
+//
+// Op mnemonics: c/d = connect/disconnect (node names round-trip through
+// definesToChar/parseNodeName, falling back to the raw integer when a name is
+// ambiguous); dac0/dac1/tr/br = DAC0/DAC1/top-rail/bottom-rail set
+// "<prev> <next>"; gs/gd = GPIO value/direction; ss = slot switch;
+// x/r = clear-all / blob-replace, each referencing a "@<idx>" pool entry that
+// holds the full board state as YAML. Blob bodies are length-prefixed so they
+// can contain newlines safely. There is intentionally no CRC: the file is
+// meant to be hand-readable (and hand-editable); a corrupt/garbled file is
+// rejected structurally and the device just starts with empty history.
 //
 // We do NOT persist the PSRAM snapshot ring: snapshots are purely capture-side
 // resync anchors and OP_CLEAR_ALL carries its own blob ref (a full board YAML,
@@ -681,9 +710,9 @@ void takeSnapshot(const char* reason) {
 
 namespace {
 
-constexpr uint32_t  UNDO_FILE_MAGIC   = 0x4F44554Au;  // 'JUDO'
-constexpr uint16_t  UNDO_FILE_VERSION = 2;             // v2: YAML clear-all blobs
 constexpr const char* UNDO_FILE_PATH  = "/undo_history.txt";
+constexpr const char* UNDO_FILE_MAGIC = "JLUNDO";
+constexpr int         UNDO_FILE_VERSION = 3;   // v3: human-readable text format
 
 // Compile-time ceilings the static scratch arrays are sized to. The *actual*
 // run-time limits are g_persistMaxTxns / g_persistMaxBytes (set in undoInit
@@ -694,64 +723,257 @@ constexpr const char* UNDO_FILE_PATH  = "/undo_history.txt";
 constexpr size_t UNDO_PERSIST_MAX_TXNS  = 256;
 constexpr size_t UNDO_PERSIST_MAX_BYTES = 64u * 1024u;
 
-#pragma pack(push, 1)
-struct UndoFileHeader {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t numSlots;     // NUM_SLOTS at write time
-    uint32_t bodyCrc;      // crc32 over the body (everything after this header)
-    uint32_t bodySize;     // body byte count
-    uint32_t opCount;
-    uint32_t txnCount;
-    uint32_t blobBytes;
-    uint32_t globalTxnId;
-    uint32_t opCap;        // ring caps at write time (sanity / future migration)
-    uint32_t txnCap;
-    uint32_t reserved0;
-    uint32_t reserved1;
-};
-#pragma pack(pop)
+// Text header allowance (magic + gid + slots/cursor lines). Small and fixed.
+constexpr size_t UNDO_TEXT_HEADER_BYTES = 128u + (size_t)NUM_SLOTS * 12u;
 
-// Serialization scratch buffer size: header + cursors + body budget + slack
-// so a single oversized newest txn (or blob) still fits without overflow.
+// Per-blob framing overhead in the text pool: "@<idx> <len>\n" plus the
+// trailing "\n" after the body. Counted once per unique blob during budgeting.
+constexpr size_t UNDO_BLOB_FRAME_BYTES = 24u;
+
+// Fallback serialization scratch buffer size used when g_persistBufBytes is 0:
+// header + body budget + slack so a single oversized newest txn (or blob)
+// still fits without overflow.
 constexpr size_t UNDO_PERSIST_BUF_BYTES =
-    sizeof(UndoFileHeader) + NUM_SLOTS * sizeof(uint32_t) +
-    UNDO_PERSIST_MAX_BYTES + 8192u;
+    UNDO_TEXT_HEADER_BYTES + UNDO_PERSIST_MAX_BYTES + 8192u;
 
-// Copy the blob living at `oldOff` in the live arena into the output blob
-// region (buf + blobsBase ..), de-duplicating by old offset. Validates the
-// blob's magic + CRC first; a stale/clobbered ref returns false so the caller
-// can neutralize the referencing op. On success *newOff gets the arena-
-// relative offset the blob will occupy after restore.
-bool persistBlob(uint32_t oldOff, uint32_t oldSize, uint8_t* buf, size_t blobsBase,
-                 size_t cap, size_t* outBlobUsed,
-                 uint32_t* mapOld, uint32_t* mapNew, size_t* nMap, size_t mapMax,
-                 uint32_t* newOff) {
-    if (!g_blobs || oldSize == 0) return false;
-    for (size_t k = 0; k < *nMap; k++) {
-        if (mapOld[k] == oldOff) { *newOff = mapNew[k]; return true; }
+// ---- Bounded text writer ---------------------------------------------------
+// One emit path serves two roles: measuring (buf == nullptr, just counts the
+// bytes that *would* be written) and writing (buf != nullptr, bounded by cap).
+// That keeps the byte budget used during txn selection exactly in sync with
+// what we later emit, so the scratch buffer never overflows in practice.
+struct TextWriter {
+    char*  buf;       // nullptr => measure only
+    size_t cap;
+    size_t len;
+    bool   overflow;
+};
+
+void twPrintf(TextWriter& w, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    if (!w.buf) {
+        int n = vsnprintf(nullptr, 0, fmt, ap);
+        if (n > 0) w.len += (size_t)n;
+    } else {
+        size_t avail = (w.len < w.cap) ? (w.cap - w.len) : 0;
+        int n = vsnprintf(w.buf + w.len, avail, fmt, ap);
+        if (n < 0)                       { w.overflow = true; }
+        else if ((size_t)n >= avail)     { w.overflow = true; w.len = w.cap; }
+        else                             { w.len += (size_t)n; }
     }
-    // Validate the source blob in the live arena.
-    if ((size_t)oldOff + sizeof(BlobHeader) > g_blobCap) return false;
-    const BlobHeader* hdr = (const BlobHeader*)(g_blobs + oldOff);
-    if (hdr->magic != BLOB_MAGIC) return false;
-    if ((size_t)oldOff + sizeof(BlobHeader) + hdr->size > g_blobCap) return false;
-    if (blobCrc32(g_blobs + oldOff + sizeof(BlobHeader), hdr->size) != hdr->crc32)
-        return false;
-    if (blobsBase + *outBlobUsed + oldSize > cap) return false;  // no room
-    memcpy(buf + blobsBase + *outBlobUsed, g_blobs + oldOff, oldSize);
-    *newOff = (uint32_t)*outBlobUsed;
-    *outBlobUsed += oldSize;
-    if (*nMap < mapMax) { mapOld[*nMap] = oldOff; mapNew[*nMap] = *newOff; (*nMap)++; }
-    return true;
+    va_end(ap);
 }
 
-// Serialize the live committed ring into `buf` (size `cap`). Returns the total
-// byte count (header + body) written, or 0 if there's nothing to persist / the
-// buffer is too small.
+void twPutBytes(TextWriter& w, const char* data, size_t n) {
+    if (!w.buf) { w.len += n; return; }
+    if (w.len + n > w.cap) {
+        size_t room = (w.len < w.cap) ? (w.cap - w.len) : 0;
+        if (room) memcpy(w.buf + w.len, data, room);
+        w.len = w.cap;
+        w.overflow = true;
+        return;
+    }
+    memcpy(w.buf + w.len, data, n);
+    w.len += n;
+}
+
+// ---- UndoSource <-> single-char tag ----------------------------------------
+// p=probe m=menu y=python k=mcp f=file i=internal ?=unknown. The parser also
+// accepts the older long forms ("probe"/"py"/...) so pre-existing files load.
+const char* undoSrcTag(uint8_t src) {
+    switch (src) {
+        case UNDO_SRC_PROBE:    return "p";
+        case UNDO_SRC_MENU:     return "m";
+        case UNDO_SRC_PYTHON:   return "y";
+        case UNDO_SRC_MCP:      return "k";
+        case UNDO_SRC_FILE:     return "f";
+        case UNDO_SRC_INTERNAL: return "i";
+        default:                return "?";
+    }
+}
+uint8_t undoParseSrcTag(const char* s) {
+    if (!strcmp(s, "p") || !strcmp(s, "probe"))           return UNDO_SRC_PROBE;
+    if (!strcmp(s, "m") || !strcmp(s, "menu"))            return UNDO_SRC_MENU;
+    if (!strcmp(s, "y") || !strcmp(s, "py") || !strcmp(s, "python")) return UNDO_SRC_PYTHON;
+    if (!strcmp(s, "k") || !strcmp(s, "mcp"))             return UNDO_SRC_MCP;
+    if (!strcmp(s, "f") || !strcmp(s, "file"))            return UNDO_SRC_FILE;
+    if (!strcmp(s, "i") || !strcmp(s, "int") || !strcmp(s, "internal")) return UNDO_SRC_INTERNAL;
+    return UNDO_SRC_UNKNOWN;
+}
+
+// Render a node as its friendly short name (GND / ADC_0 / 12 / ...). We only
+// emit the name when it round-trips cleanly back through parseNodeName; for the
+// handful of ambiguous names (duplicate short names across the nano/special
+// tables) we fall back to the raw integer, which parseNodeName always parses
+// exactly. The result is copied out of definesToChar's shared static buffer so
+// a second call in the same expression can't clobber it.
+void undoNodeName(int node, char* out, size_t outSize) {
+    const char* p = definesToChar(node, 0);
+    if (p && p[0] && parseNodeName(String(p)) == node) {
+        strncpy(out, p, outSize - 1);
+        out[outSize - 1] = '\0';
+    } else {
+        snprintf(out, outSize, "%d", node);
+    }
+}
+
+// Validate the blob at arena offset `off`; on success return its YAML body
+// pointer and length. A stale / clobbered ref returns nullptr so the caller
+// neutralizes the referencing op (matching the live revert's best effort).
+const uint8_t* undoBlobBody(uint32_t off, uint32_t* outBodyLen) {
+    if (!g_blobs) return nullptr;
+    if ((size_t)off + sizeof(BlobHeader) > g_blobCap) return nullptr;
+    const BlobHeader* h = (const BlobHeader*)(g_blobs + off);
+    if (h->magic != BLOB_MAGIC) return nullptr;
+    if ((size_t)off + sizeof(BlobHeader) + h->size > g_blobCap) return nullptr;
+    const uint8_t* body = g_blobs + off + sizeof(BlobHeader);
+    if (blobCrc32(body, h->size) != h->crc32) return nullptr;
+    if (outBodyLen) *outBodyLen = h->size;
+    return body;
+}
+
+inline bool undoOpIsBlob(const UndoOp& op) {
+    return op.type == UNDO_OP_CLEAR_ALL || op.type == UNDO_OP_BLOB_REPLACE;
+}
+
+// Emit one op line. poolIdx >= 0 substitutes a blob-pool reference for
+// CLEAR_ALL / BLOB_REPLACE; poolIdx < 0 emits the op with no blob (neutralized).
+void undoEmitOp(TextWriter& w, const UndoOp& op, int poolIdx) {
+    switch (op.type) {
+        case UNDO_OP_CONNECT:
+        case UNDO_OP_DISCONNECT: {
+            char a[20], b[20];
+            undoNodeName(op.bridge.n1, a, sizeof(a));
+            undoNodeName(op.bridge.n2, b, sizeof(b));
+            twPrintf(w, "  %s %s-%s\n",
+                     op.type == UNDO_OP_CONNECT ? "c" : "d", a, b);
+            break;
+        }
+        case UNDO_OP_DAC_SET: {
+            const char* m = nullptr;
+            switch (op.dac.ch) {
+                case 0: m = "dac0"; break;
+                case 1: m = "dac1"; break;
+                case 2: m = "tr";   break;
+                case 3: m = "br";   break;
+                default: break;
+            }
+            if (m) twPrintf(w, "  %s %g %g\n", m,
+                            (double)op.dac.prev, (double)op.dac.next);
+            else   twPrintf(w, "  dac %u %g %g\n", (unsigned)op.dac.ch,
+                            (double)op.dac.prev, (double)op.dac.next);
+            break;
+        }
+        case UNDO_OP_GPIO_SET:
+            twPrintf(w, "  gs %u %u %u\n", (unsigned)op.gpio.pin,
+                     (unsigned)op.gpio.prevVal, (unsigned)op.gpio.nextVal);
+            break;
+        case UNDO_OP_GPIO_DIR:
+            twPrintf(w, "  gd %u %u %u\n", (unsigned)op.gpio.pin,
+                     (unsigned)op.gpio.prevDir, (unsigned)op.gpio.nextVal);
+            break;
+        case UNDO_OP_SLOT_SWITCH:
+            twPrintf(w, "  ss %u %u\n", (unsigned)op.slot.prev,
+                     (unsigned)op.slot.next);
+            break;
+        case UNDO_OP_CLEAR_ALL:
+            if (poolIdx >= 0) twPrintf(w, "  x @%d\n", poolIdx);
+            else              twPrintf(w, "  x\n");
+            break;
+        case UNDO_OP_BLOB_REPLACE:
+            if (poolIdx >= 0) twPrintf(w, "  r @%d\n", poolIdx);
+            else              twPrintf(w, "  r\n");
+            break;
+        default:
+            twPrintf(w, "  ?\n");
+            break;
+    }
+}
+
+// The txn label (e.g. "connect 6-13") is intentionally NOT written - it's fully
+// redundant with the op line(s) below it. We rebuild it on restore from the ops.
+void undoEmitTxnHeader(TextWriter& w, const UndoTxn& t) {
+    twPrintf(w, "t %u %s\n", (unsigned)t.slot, undoSrcTag(t.source));
+}
+
+// Rebuild a txn's display label from its first op, mirroring the formatting the
+// undoRecord* helpers use at capture time. Used on restore since the label is
+// no longer stored in the file. Single-op txns (the norm) reproduce exactly.
+void undoRebuildLabel(UndoTxn& t) {
+    t.label[0] = '\0';
+    if (t.opCount == 0) return;
+    const UndoOp& op = g_ops[t.firstOp % g_opCap];
+    switch (op.type) {
+        case UNDO_OP_CONNECT:
+        case UNDO_OP_DISCONNECT: {
+            // definesToChar returns a pointer into a shared static buffer for
+            // numeric nodes, so copy the first name out before fetching the 2nd.
+            char a[20], b[20];
+            const char* p1 = definesToChar(op.bridge.n1, 0);
+            strncpy(a, (p1 && p1[0]) ? p1 : "?", sizeof(a) - 1); a[sizeof(a) - 1] = '\0';
+            const char* p2 = definesToChar(op.bridge.n2, 0);
+            strncpy(b, (p2 && p2[0]) ? p2 : "?", sizeof(b) - 1); b[sizeof(b) - 1] = '\0';
+            snprintf(t.label, sizeof(t.label), "%s %s-%s",
+                     op.type == UNDO_OP_CONNECT ? "connect" : "disconnect", a, b);
+            break;
+        }
+        case UNDO_OP_DAC_SET: {
+            const char* name;
+            switch (op.dac.ch) {
+                case 0:  name = "DAC0"; break;
+                case 1:  name = "DAC1"; break;
+                case 2:  name = "top";  break;
+                case 3:  name = "bot";  break;
+                default: name = "DAC";  break;
+            }
+            snprintf(t.label, sizeof(t.label), "%s %.2fV", name, (double)op.dac.next);
+            break;
+        }
+        case UNDO_OP_GPIO_SET:
+            snprintf(t.label, sizeof(t.label), "GPIO%u=%u",
+                     (unsigned)op.gpio.pin, (unsigned)op.gpio.nextVal);
+            break;
+        case UNDO_OP_GPIO_DIR:
+            snprintf(t.label, sizeof(t.label), "GPIO%u dir=%u",
+                     (unsigned)op.gpio.pin, (unsigned)op.gpio.nextVal);
+            break;
+        case UNDO_OP_SLOT_SWITCH:
+            snprintf(t.label, sizeof(t.label), "slot %u->%u",
+                     (unsigned)op.slot.prev, (unsigned)op.slot.next);
+            break;
+        case UNDO_OP_CLEAR_ALL:
+            strncpy(t.label, "clear all", sizeof(t.label) - 1);
+            t.label[sizeof(t.label) - 1] = '\0';
+            break;
+        case UNDO_OP_BLOB_REPLACE:
+            strncpy(t.label, "replace", sizeof(t.label) - 1);
+            t.label[sizeof(t.label) - 1] = '\0';
+            break;
+        default:
+            break;
+    }
+}
+
+// Are there any committed, non-obsolete txns we'd want to persist? Used by
+// the persist path to tell "nothing to save" (delete the stale file) apart
+// from "serialize produced 0 bytes despite live history" (keep the old file).
+bool undoHasPersistableTxns(void) {
+    if (!g_ops || !g_txns) return false;
+    size_t pos = g_txnTail;
+    while (pos != g_txnHead) {
+        const UndoTxn& t = g_txns[pos];
+        if (t.opCount != 0 && !(t.flags & UNDO_TXN_OBSOLETE)) return true;
+        pos = (pos + 1) % g_txnCap;
+    }
+    return false;
+}
+
+// Serialize the live committed ring into `buf` (size `cap`) as the text format
+// documented above. Returns the byte count written, or 0 if there's nothing to
+// persist / the buffer overflowed.
 size_t undoSerialize(uint8_t* buf, size_t cap) {
     if (!g_ops || !g_txns) return 0;
-    if (cap < sizeof(UndoFileHeader) + NUM_SLOTS * sizeof(uint32_t)) return 0;
+    if (cap < UNDO_TEXT_HEADER_BYTES) return 0;
 
     // Ring distance from the global tail (monotonic ordering helper).
     auto dist = [](size_t x) -> size_t {
@@ -759,7 +981,8 @@ size_t undoSerialize(uint8_t* buf, size_t cap) {
     };
 
     // --- Select the newest reachable txns within the count + byte budget,
-    //     walking backward from head. keptIdx[] holds them newest-first.
+    //     walking backward from head. keptIdx[] holds them newest-first. The
+    //     byte budget is measured in *text* bytes so it matches the file 1:1.
     static size_t keptIdx[UNDO_PERSIST_MAX_TXNS];
     static uint32_t budgetBlobOff[UNDO_PERSIST_MAX_TXNS];
     size_t nKept = 0;
@@ -774,21 +997,29 @@ size_t undoSerialize(uint8_t* buf, size_t cap) {
             pos = (pos + g_txnCap - 1) % g_txnCap;
             const UndoTxn& t = g_txns[pos];
             if (t.opCount != 0 && !(t.flags & UNDO_TXN_OBSOLETE)) {
-                size_t add = sizeof(UndoTxn) + (size_t)t.opCount * sizeof(UndoOp);
+                // Measure this txn's text (header + op lines, no blob bodies).
+                TextWriter mw{nullptr, 0, 0, false};
+                undoEmitTxnHeader(mw, t);
+                for (uint16_t i = 0; i < t.opCount; i++) {
+                    const UndoOp& op = g_ops[(t.firstOp + i) % g_opCap];
+                    undoEmitOp(mw, op, undoOpIsBlob(op) ? 0 : -1);
+                }
+                size_t add = mw.len;
+                // Blob bodies new to this txn are counted once per unique offset.
                 size_t blobAdd = 0;
                 for (uint16_t i = 0; i < t.opCount; i++) {
                     const UndoOp& op = g_ops[(t.firstOp + i) % g_opCap];
-                    if (op.type == UNDO_OP_CLEAR_ALL || op.type == UNDO_OP_BLOB_REPLACE) {
-                        uint32_t off = op.blob.blobOffset;
-                        bool seen = false;
-                        for (size_t k = 0; k < nBudgetBlob; k++)
-                            if (budgetBlobOff[k] == off) { seen = true; break; }
-                        if (!seen && op.blob.blobSize > 0 &&
-                            nBudgetBlob < UNDO_PERSIST_MAX_TXNS) {
-                            budgetBlobOff[nBudgetBlob++] = off;
-                            blobAdd += op.blob.blobSize;
-                        }
-                    }
+                    if (!undoOpIsBlob(op) || op.blob.blobSize == 0) continue;
+                    uint32_t off = op.blob.blobOffset;
+                    bool seen = false;
+                    for (size_t k = 0; k < nBudgetBlob; k++)
+                        if (budgetBlobOff[k] == off) { seen = true; break; }
+                    if (seen) continue;
+                    if (nBudgetBlob < UNDO_PERSIST_MAX_TXNS)
+                        budgetBlobOff[nBudgetBlob++] = off;
+                    uint32_t bodyLen = 0;
+                    if (undoBlobBody(off, &bodyLen))
+                        blobAdd += UNDO_BLOB_FRAME_BYTES + bodyLen;
                 }
                 if (nKept > 0 && bytes + add + blobAdd > maxBytes) break;
                 keptIdx[nKept++] = pos;
@@ -798,157 +1029,328 @@ size_t undoSerialize(uint8_t* buf, size_t cap) {
         }
     }
 
-    // Total ops across the kept txns -> fixes the ops region size + blob base.
-    size_t opCount = 0;
-    for (size_t k = 0; k < nKept; k++) opCount += g_txns[keptIdx[k]].opCount;
+    if (nKept == 0) return 0;  // nothing reachable to persist
 
-    size_t hdrSize    = sizeof(UndoFileHeader);
-    size_t cursorsOff = hdrSize;
-    size_t txnsOff    = cursorsOff + (size_t)NUM_SLOTS * sizeof(uint32_t);
-    size_t opsOff     = txnsOff + nKept * sizeof(UndoTxn);
-    size_t blobsBase  = opsOff + opCount * sizeof(UndoOp);
-    if (blobsBase > cap) return 0;  // committed txns/ops alone overflow buffer
+    // --- Emit. Header first, then txns oldest-first, then the blob pool. ----
+    TextWriter w{(char*)buf, cap, 0, false};
+    twPrintf(w, "%s %d\n", UNDO_FILE_MAGIC, UNDO_FILE_VERSION);
+    twPrintf(w, "gid %u\n", (unsigned)g_globalTxnId);
 
-    // --- Per-slot cursors as linear txn indices (count of kept txns strictly
-    //     older than the cursor). cursor==head therefore maps to nKept (live).
-    uint32_t* cur = (uint32_t*)(buf + cursorsOff);
+    // Per-slot cursors as linear txn indices (count of kept txns strictly older
+    // than the cursor; cursor==head therefore maps to nKept, i.e. "live").
+    twPrintf(w, "slots %d", NUM_SLOTS);
     for (int s = 0; s < NUM_SLOTS; s++) {
         size_t dC = dist(g_slotCursor[s]);
         size_t cnt = 0;
         for (size_t k = 0; k < nKept; k++)
             if (dist(keptIdx[k]) < dC) cnt++;
-        cur[s] = (uint32_t)cnt;
+        twPrintf(w, " %u", (unsigned)cnt);
     }
+    twPrintf(w, "\n");
 
-    // --- Emit txns oldest-first, linearizing ops and compacting blobs.
-    UndoTxn* outTxns = (UndoTxn*)(buf + txnsOff);
-    UndoOp*  outOps  = (UndoOp*)(buf + opsOff);
-    static uint32_t mapOld[UNDO_PERSIST_MAX_TXNS];
-    static uint32_t mapNew[UNDO_PERSIST_MAX_TXNS];
-    size_t nMap = 0;
-    size_t outBlobUsed = 0;
-    size_t opOut = 0;
-    size_t outTxnIdx = 0;
+    // Emit txns oldest-first, assigning blob-pool indices on first sight.
+    static uint32_t poolOff[UNDO_PERSIST_MAX_TXNS];
+    size_t nPool = 0;
     for (int k = (int)nKept - 1; k >= 0; k--) {
         const UndoTxn& t = g_txns[keptIdx[k]];
-        UndoTxn nt = t;
-        nt.firstOp = (uint32_t)opOut;
+        undoEmitTxnHeader(w, t);
         for (uint16_t i = 0; i < t.opCount; i++) {
-            UndoOp op = g_ops[(t.firstOp + i) % g_opCap];
-            if (op.type == UNDO_OP_CLEAR_ALL || op.type == UNDO_OP_BLOB_REPLACE) {
-                uint32_t newOff = 0;
-                if (persistBlob(op.blob.blobOffset, op.blob.blobSize, buf, blobsBase,
-                                cap, &outBlobUsed, mapOld, mapNew, &nMap,
-                                UNDO_PERSIST_MAX_TXNS, &newOff)) {
-                    op.blob.blobOffset = newOff;
-                } else {
-                    // Stale/missing blob - neutralize so restore leaves state
-                    // alone (matches the live revert's best-effort behavior).
-                    op.blob.blobOffset = 0;
-                    op.blob.blobSize = 0;
+            const UndoOp& op = g_ops[(t.firstOp + i) % g_opCap];
+            int poolIdx = -1;
+            if (undoOpIsBlob(op) && op.blob.blobSize != 0 &&
+                undoBlobBody(op.blob.blobOffset, nullptr)) {
+                for (size_t pi = 0; pi < nPool; pi++)
+                    if (poolOff[pi] == op.blob.blobOffset) { poolIdx = (int)pi; break; }
+                if (poolIdx < 0 && nPool < UNDO_PERSIST_MAX_TXNS) {
+                    poolOff[nPool] = op.blob.blobOffset;
+                    poolIdx = (int)nPool++;
                 }
             }
-            op.txnIdx = (uint16_t)(outTxnIdx & 0xFFFF);
-            outOps[opOut++] = op;
+            undoEmitOp(w, op, poolIdx);
         }
-        outTxns[outTxnIdx++] = nt;
     }
 
-    size_t bodySize = (blobsBase - hdrSize) + outBlobUsed;
+    // Emit the blob pool (idx order == assignment order). Each body is length-
+    // prefixed so it can contain newlines without ambiguity.
+    for (size_t pi = 0; pi < nPool; pi++) {
+        uint32_t bodyLen = 0;
+        const uint8_t* body = undoBlobBody(poolOff[pi], &bodyLen);
+        if (!body) { twPrintf(w, "@%u 0\n\n", (unsigned)pi); continue; }
+        twPrintf(w, "@%u %u\n", (unsigned)pi, (unsigned)bodyLen);
+        twPutBytes(w, (const char*)body, bodyLen);
+        twPrintf(w, "\n");
+    }
 
-    UndoFileHeader* hdr = (UndoFileHeader*)buf;
-    memset(hdr, 0, sizeof(*hdr));
-    hdr->magic       = UNDO_FILE_MAGIC;
-    hdr->version     = UNDO_FILE_VERSION;
-    hdr->numSlots    = (uint16_t)NUM_SLOTS;
-    hdr->bodySize    = (uint32_t)bodySize;
-    hdr->opCount     = (uint32_t)opCount;
-    hdr->txnCount    = (uint32_t)nKept;
-    hdr->blobBytes   = (uint32_t)outBlobUsed;
-    hdr->globalTxnId = g_globalTxnId;
-    hdr->opCap       = (uint32_t)g_opCap;
-    hdr->txnCap      = (uint32_t)g_txnCap;
-    hdr->bodyCrc     = blobCrc32(buf + hdrSize, bodySize);
+    if (w.overflow) {
+        // Buffer too small (e.g. a pathological newest txn). Don't truncate the
+        // file; report 0 and let the persist path keep the previous good file.
+        Serial.printf("[Undo] serialize OVERFLOW len=%u cap=%u - not saving\n",
+                      (unsigned)w.len, (unsigned)cap);
+        return 0;
+    }
 
-    UNDBG("serialize txns=%u ops=%u blob=%u body=%u total=%u",
-          (unsigned)nKept, (unsigned)opCount, (unsigned)outBlobUsed,
-          (unsigned)bodySize, (unsigned)(hdrSize + bodySize));
-    return hdrSize + bodySize;
+    UNDBG("serialize txns=%u pool=%u bytes=%u",
+          (unsigned)nKept, (unsigned)nPool, (unsigned)w.len);
+    return w.len;
 }
 
-// Rebuild the live ring from a serialized image. Returns true if any history
-// was restored (txnCount > 0).
+// Rebuild the live ring from a serialized (text) image. Returns true if any
+// history was restored (txnCount > 0). Parsing is deliberately tolerant: a
+// malformed line is skipped rather than aborting the whole restore, and a
+// missing blob just neutralizes its op (state left alone on that step).
 bool undoDeserialize(const uint8_t* buf, size_t len) {
     if (!g_ops || !g_txns) return false;
-    if (len < sizeof(UndoFileHeader)) return false;
+    if (len < 8) return false;
 
-    UndoFileHeader hdr;
-    memcpy(&hdr, buf, sizeof(hdr));
-    if (hdr.magic != UNDO_FILE_MAGIC || hdr.version != UNDO_FILE_VERSION) {
-        Serial.printf("[Undo] restore REJECT: bad magic/version (0x%08X v%u, "
-                      "want 0x%08X v%u)\n", (unsigned)hdr.magic,
-                      (unsigned)hdr.version, (unsigned)UNDO_FILE_MAGIC,
-                      (unsigned)UNDO_FILE_VERSION);
+    const char* p   = (const char*)buf;
+    const char* end = p + len;
+
+    // Copy the next line (sans newline / CR) into `out`; advance `p`. After a
+    // header line `p` is left at the first byte of any length-prefixed body so
+    // blob bodies can be read directly by byte count.
+    auto nextLine = [&](char* out, size_t outCap) -> bool {
+        if (p >= end) return false;
+        const char* nl = (const char*)memchr(p, '\n', (size_t)(end - p));
+        size_t lineLen = nl ? (size_t)(nl - p) : (size_t)(end - p);
+        size_t copy = (lineLen < outCap - 1) ? lineLen : (outCap - 1);
+        memcpy(out, p, copy);
+        out[copy] = '\0';
+        if (copy > 0 && out[copy - 1] == '\r') out[copy - 1] = '\0';
+        p = nl ? (nl + 1) : end;
+        return true;
+    };
+
+    char line[192];
+
+    // ---- header: "JLUNDO <version>" ----
+    if (!nextLine(line, sizeof(line))) return false;
+    {
+        char magic[16] = {0};
+        int ver = 0;
+        if (sscanf(line, "%15s %d", magic, &ver) != 2 ||
+            strcmp(magic, UNDO_FILE_MAGIC) != 0 || ver != UNDO_FILE_VERSION) {
+            Serial.printf("[Undo] restore REJECT: bad header '%s' (want %s %d)\n",
+                          line, UNDO_FILE_MAGIC, UNDO_FILE_VERSION);
+            return false;
+        }
+    }
+
+    // ---- "gid <n>" ----
+    uint32_t gid = 0;
+    if (!nextLine(line, sizeof(line)) || sscanf(line, "gid %u", &gid) != 1) {
+        Serial.printf("[Undo] restore REJECT: expected gid line, got '%s'\n", line);
         return false;
     }
 
-    size_t hdrSize = sizeof(UndoFileHeader);
-    if (hdrSize + hdr.bodySize > len) {
-        Serial.printf("[Undo] restore REJECT: truncated (need %u have %u)\n",
-              (unsigned)(hdrSize + hdr.bodySize), (unsigned)len);
+    // ---- "slots <N> <c0> <c1> ..." ----
+    uint32_t fileCursors[NUM_SLOTS];
+    for (int s = 0; s < NUM_SLOTS; s++) fileCursors[s] = 0;
+    int fileNumSlots = 0;
+    if (!nextLine(line, sizeof(line)) || strncmp(line, "slots", 5) != 0) {
+        Serial.printf("[Undo] restore REJECT: expected slots line, got '%s'\n", line);
         return false;
     }
-    if (blobCrc32(buf + hdrSize, hdr.bodySize) != hdr.bodyCrc) {
-        Serial.printf("[Undo] restore REJECT: body CRC mismatch (body=%u)\n",
-              (unsigned)hdr.bodySize);
-        return false;
+    {
+        char* eptr = nullptr;
+        fileNumSlots = (int)strtol(line + 5, &eptr, 10);
+        for (int i = 0; i < fileNumSlots && i < NUM_SLOTS; i++) {
+            char* s = eptr;
+            long c = strtol(s, &eptr, 10);
+            if (eptr == s) break;
+            fileCursors[i] = (uint32_t)(c < 0 ? 0 : c);
+        }
     }
 
-    // Sanity-bound against this build's ring capacities.
-    if (hdr.txnCount >= g_txnCap || hdr.opCount >= g_opCap ||
-        hdr.blobBytes > g_blobCap) {
-        Serial.printf("[Undo] restore REJECT: counts exceed ring caps "
-              "(txn=%u/%u op=%u/%u blob=%u/%u)\n",
-              (unsigned)hdr.txnCount, (unsigned)g_txnCap,
-              (unsigned)hdr.opCount, (unsigned)g_opCap,
-              (unsigned)hdr.blobBytes, (unsigned)g_blobCap);
-        return false;
+    // ---- body ----
+    size_t txnCount = 0, opCount = 0;
+    g_blobUsed = 0;
+
+    struct BlobRef { uint32_t opIdx; int poolIdx; };
+    static BlobRef  refs[UNDO_PERSIST_MAX_TXNS];
+    size_t nRefs = 0;
+    static uint32_t poolArenaOff[UNDO_PERSIST_MAX_TXNS];
+    static uint32_t poolArenaSize[UNDO_PERSIST_MAX_TXNS];
+    static bool     poolSet[UNDO_PERSIST_MAX_TXNS];
+    for (size_t i = 0; i < UNDO_PERSIST_MAX_TXNS; i++) poolSet[i] = false;
+
+    bool haveTxn = false;  // a txn header has been seen but not yet finalized
+    auto finalizeTxn = [&]() {
+        if (haveTxn) {
+            undoRebuildLabel(g_txns[txnCount]);  // label isn't stored; derive it
+            txnCount++;
+            haveTxn = false;
+        }
+    };
+
+    while (nextLine(line, sizeof(line))) {
+        char* s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '\0') continue;  // blank line
+
+        // ---- transaction header ----
+        if (s[0] == 't' && s[1] == ' ') {
+            finalizeTxn();
+            if (txnCount >= g_txnCap - 1) break;  // ring full; keep what we have
+            UndoTxn& t = g_txns[txnCount];
+            memset(&t, 0, sizeof(t));
+            t.firstOp = (uint32_t)opCount;
+            // "t <slot> <src>"; any trailing tokens (e.g. a legacy quoted label)
+            // are ignored - the label is rebuilt from the ops on finalize.
+            unsigned slot = 0;
+            char src[12] = {0};
+            sscanf(s + 1, " %u %11s", &slot, src);
+            t.slot   = (uint8_t)(slot < (unsigned)NUM_SLOTS ? slot : 0);
+            t.source = undoParseSrcTag(src);
+            t.flags  = UNDO_TXN_COMMITTED;
+            if (t.source != UNDO_SRC_INTERNAL) t.flags |= UNDO_TXN_USER_INITIATED;
+            haveTxn = true;
+            continue;
+        }
+
+        // ---- blob pool entry: "@<idx> <len>" then <len> raw body bytes ----
+        if (s[0] == '@') {
+            finalizeTxn();
+            unsigned idx = 0, blen = 0;
+            if (sscanf(s + 1, "%u %u", &idx, &blen) != 2) continue;
+            if (p + blen > end) break;  // truncated body
+            const uint8_t* body = (const uint8_t*)p;
+            p += blen;
+            if (p < end && *p == '\r') p++;
+            if (p < end && *p == '\n') p++;
+            if (idx >= UNDO_PERSIST_MAX_TXNS) continue;
+            if (blen == 0) {
+                poolSet[idx] = true; poolArenaOff[idx] = 0; poolArenaSize[idx] = 0;
+                continue;
+            }
+            size_t total   = sizeof(BlobHeader) + blen;
+            size_t aligned  = (total + 3u) & ~size_t(3u);
+            if (g_blobUsed + aligned > g_blobCap) continue;  // no room; leave unset
+            uint8_t* dst = g_blobs + g_blobUsed;
+            BlobHeader* h = (BlobHeader*)dst;
+            h->magic = BLOB_MAGIC; h->size = blen; h->reserved = 0;
+            memcpy(dst + sizeof(BlobHeader), body, blen);
+            h->crc32 = blobCrc32(dst + sizeof(BlobHeader), blen);
+            poolArenaOff[idx]  = (uint32_t)g_blobUsed;
+            poolArenaSize[idx] = (uint32_t)aligned;
+            poolSet[idx]       = true;
+            g_blobUsed += aligned;
+            continue;
+        }
+
+        // ---- op line (within the current txn) ----
+        if (!haveTxn) continue;
+        if (opCount >= g_opCap - 1) continue;  // op ring full; skip extra ops
+        UndoOp op;
+        memset(&op, 0, sizeof(op));
+        op.txnIdx = (uint16_t)(txnCount & 0xFFFF);
+
+        char mnem[8] = {0};
+        const char* rest = s;
+        int mi = 0;
+        while (*rest && *rest != ' ' && mi < (int)sizeof(mnem) - 1) mnem[mi++] = *rest++;
+        mnem[mi] = '\0';
+        while (*rest == ' ') rest++;
+
+        bool ok = true;
+        if (!strcmp(mnem, "c") || !strcmp(mnem, "d")) {
+            op.type = (mnem[0] == 'c') ? UNDO_OP_CONNECT : UNDO_OP_DISCONNECT;
+            const char* dash = strchr(rest, '-');
+            if (!dash) { ok = false; }
+            else {
+                char a[24], b[24];
+                size_t al = (size_t)(dash - rest);
+                if (al > sizeof(a) - 1) al = sizeof(a) - 1;
+                memcpy(a, rest, al); a[al] = '\0';
+                strncpy(b, dash + 1, sizeof(b) - 1); b[sizeof(b) - 1] = '\0';
+                for (int bi = (int)strlen(b) - 1; bi >= 0 && b[bi] == ' '; bi--) b[bi] = '\0';
+                op.bridge.n1 = (int16_t)parseNodeName(String(a));
+                op.bridge.n2 = (int16_t)parseNodeName(String(b));
+                op.bridge.color = 0;
+            }
+        } else if (!strcmp(mnem, "dac0") || !strcmp(mnem, "dac1") ||
+                   !strcmp(mnem, "tr")   || !strcmp(mnem, "br")) {
+            op.type = UNDO_OP_DAC_SET;
+            op.dac.ch = !strcmp(mnem, "dac0") ? 0 :
+                        !strcmp(mnem, "dac1") ? 1 :
+                        !strcmp(mnem, "tr")   ? 2 : 3;
+            float pv = 0, nv = 0;
+            sscanf(rest, "%f %f", &pv, &nv);
+            op.dac.prev = pv; op.dac.next = nv;
+        } else if (!strcmp(mnem, "dac")) {
+            op.type = UNDO_OP_DAC_SET;
+            unsigned ch = 0; float pv = 0, nv = 0;
+            sscanf(rest, "%u %f %f", &ch, &pv, &nv);
+            op.dac.ch = (uint8_t)ch; op.dac.prev = pv; op.dac.next = nv;
+        } else if (!strcmp(mnem, "gs")) {
+            op.type = UNDO_OP_GPIO_SET;
+            unsigned pin = 0, pv = 0, nv = 0;
+            sscanf(rest, "%u %u %u", &pin, &pv, &nv);
+            op.gpio.pin = (uint8_t)pin; op.gpio.prevVal = (uint8_t)pv; op.gpio.nextVal = (uint8_t)nv;
+        } else if (!strcmp(mnem, "gd")) {
+            op.type = UNDO_OP_GPIO_DIR;
+            unsigned pin = 0, pd = 0, nd = 0;
+            sscanf(rest, "%u %u %u", &pin, &pd, &nd);
+            op.gpio.pin = (uint8_t)pin; op.gpio.prevDir = (uint8_t)pd; op.gpio.nextVal = (uint8_t)nd;
+        } else if (!strcmp(mnem, "ss")) {
+            op.type = UNDO_OP_SLOT_SWITCH;
+            unsigned pv = 0, nv = 0;
+            sscanf(rest, "%u %u", &pv, &nv);
+            op.slot.prev = (uint8_t)pv; op.slot.next = (uint8_t)nv;
+        } else if (!strcmp(mnem, "x") || !strcmp(mnem, "r")) {
+            op.type = (mnem[0] == 'x') ? UNDO_OP_CLEAR_ALL : UNDO_OP_BLOB_REPLACE;
+            const char* at = strchr(rest, '@');
+            if (at && nRefs < UNDO_PERSIST_MAX_TXNS) {
+                int pidx = atoi(at + 1);
+                if (pidx >= 0 && pidx < (int)UNDO_PERSIST_MAX_TXNS) {
+                    refs[nRefs].opIdx   = (uint32_t)opCount;
+                    refs[nRefs].poolIdx = pidx;
+                    nRefs++;
+                }
+            }
+            // blobOffset/Size stay 0 until resolved (or remain neutralized)
+        } else {
+            ok = false;
+        }
+
+        if (!ok) continue;
+        g_ops[opCount] = op;
+        opCount++;
+        g_txns[txnCount].opCount++;
+    }
+    finalizeTxn();
+
+    // Resolve deferred blob references now that the pool is fully parsed.
+    for (size_t i = 0; i < nRefs; i++) {
+        int pidx = refs[i].poolIdx;
+        uint32_t oi = refs[i].opIdx;
+        if (oi >= opCount) continue;
+        if (pidx >= 0 && pidx < (int)UNDO_PERSIST_MAX_TXNS && poolSet[pidx]) {
+            g_ops[oi].blob.blobOffset = poolArenaOff[pidx];
+            g_ops[oi].blob.blobSize   = poolArenaSize[pidx];
+        }
+        // else: missing blob -> op stays neutralized (offset/size 0)
     }
 
-    size_t cursorsOff = hdrSize;
-    size_t txnsOff    = cursorsOff + (size_t)hdr.numSlots * sizeof(uint32_t);
-    size_t opsOff     = txnsOff + (size_t)hdr.txnCount * sizeof(UndoTxn);
-    size_t blobsOff   = opsOff + (size_t)hdr.opCount * sizeof(UndoOp);
-    if (blobsOff + hdr.blobBytes != hdrSize + hdr.bodySize) {
-        Serial.printf("[Undo] restore REJECT: section layout mismatch "
-              "(numSlots=%u txn=%u op=%u blob=%u body=%u)\n",
-              (unsigned)hdr.numSlots, (unsigned)hdr.txnCount,
-              (unsigned)hdr.opCount, (unsigned)hdr.blobBytes,
-              (unsigned)hdr.bodySize);
-        return false;
-    }
-
-    if (hdr.txnCount > 0)
-        memcpy(g_txns, buf + txnsOff, (size_t)hdr.txnCount * sizeof(UndoTxn));
-    if (hdr.opCount > 0)
-        memcpy(g_ops, buf + opsOff, (size_t)hdr.opCount * sizeof(UndoOp));
-    if (hdr.blobBytes > 0)
-        memcpy(g_blobs, buf + blobsOff, hdr.blobBytes);
-
+    if (txnCount >= g_txnCap) txnCount = g_txnCap - 1;
     g_txnTail = 0;
-    g_txnHead = hdr.txnCount;   // < g_txnCap, never the full sentinel
+    g_txnHead = txnCount;   // < g_txnCap, never the full sentinel
     g_opTail = 0;
-    g_opHead = hdr.opCount;
-    g_blobUsed = hdr.blobBytes;
-    g_globalTxnId = hdr.globalTxnId;
+    g_opHead = opCount;
+    g_globalTxnId = gid;
 
-    // Cursors were stored as linear txn indices; with tail==0 that's also the
-    // ring index. Clamp defensively into [0, txnHead].
-    const uint32_t* cur = (const uint32_t*)(buf + cursorsOff);
+    // Reconstruct a plausible per-txn globalId sequence (newest == gid). These
+    // are informational; the live counter (g_globalTxnId) drives new ids.
+    for (size_t i = 0; i < txnCount; i++) {
+        g_txns[i].startMs  = 0;
+        g_txns[i].globalId = (gid >= txnCount) ? (uint32_t)(gid - txnCount + 1 + i)
+                                               : (uint32_t)(i + 1);
+    }
+
+    // Cursors are linear txn indices; with tail==0 that's also the ring index.
     for (int s = 0; s < NUM_SLOTS; s++) {
-        if (s < (int)hdr.numSlots) {
-            uint32_t v = cur[s];
-            if (v > hdr.txnCount) v = hdr.txnCount;
+        if (s < fileNumSlots) {
+            uint32_t v = fileCursors[s];
+            if (v > (uint32_t)txnCount) v = (uint32_t)txnCount;
             g_slotCursor[s] = v;
         } else {
             g_slotCursor[s] = g_txnHead;
@@ -958,9 +1360,8 @@ bool undoDeserialize(const uint8_t* buf, size_t len) {
     g_waypointsDirty = true;
     g_historyDirty = false;
     UNDBG("restore OK txns=%u ops=%u blob=%u gid=%u",
-          (unsigned)hdr.txnCount, (unsigned)hdr.opCount,
-          (unsigned)hdr.blobBytes, (unsigned)hdr.globalTxnId);
-    return hdr.txnCount > 0;
+          (unsigned)txnCount, (unsigned)opCount, (unsigned)g_blobUsed, (unsigned)gid);
+    return txnCount > 0;
 }
 
 }  // namespace
@@ -1102,8 +1503,7 @@ void undoInit(void) {
     // clear-all blob is a full-board YAML capture (<2 KB), so 2 KB is plenty on
     // the no-PSRAM path while keeping the total scratch buffer ~5 KB.
     size_t persistSlack = havePsram ? 4096u : 2048u;
-    g_persistBufBytes = sizeof(UndoFileHeader) + (size_t)NUM_SLOTS * sizeof(uint32_t)
-                      + g_persistMaxBytes + persistSlack;
+    g_persistBufBytes = UNDO_TEXT_HEADER_BYTES + g_persistMaxBytes + persistSlack;
 
     auto isPow2 = [](size_t n) { return n != 0 && (n & (n - 1)) == 0; };
     if (!isPow2(g_opCap) || !isPow2(g_txnCap)) {
@@ -1231,11 +1631,19 @@ void undoPersistHistory(void) {
 
     size_t total = undoSerialize(buf, bufBytes);
     if (total == 0) {
-        // Nothing reachable to persist. Drop any stale file so a future boot
-        // doesn't restore history that no longer exists.
         undoFree(buf);
-        if (safeFileExists(UNDO_FILE_PATH)) safeFileDelete(UNDO_FILE_PATH);
-        g_historyDirty = false;
+        if (!undoHasPersistableTxns()) {
+            // Genuinely nothing reachable: drop any stale file so a future boot
+            // doesn't restore history that no longer exists.
+            if (safeFileExists(UNDO_FILE_PATH)) safeFileDelete(UNDO_FILE_PATH);
+            g_historyDirty = false;
+        } else {
+            // Serialize failed (e.g. scratch overflow on a pathological txn) but
+            // live history exists - keep the previous good file and leave the
+            // dirty flag set so the next save retries instead of nuking history.
+            Serial.printf("[Undo] persist: serialize produced 0 bytes with live "
+                          "history present - keeping previous file\n");
+        }
         return;
     }
 
@@ -1282,10 +1690,9 @@ bool undoRestore(void) {
     size_t bufBytes = g_persistBufBytes ? g_persistBufBytes : UNDO_PERSIST_BUF_BYTES;
 
     int32_t sz = safeFileSize(UNDO_FILE_PATH);
-    if (sz <= (int32_t)sizeof(UndoFileHeader) || (size_t)sz > bufBytes) {
-        Serial.printf("[Undo] restore REJECT: size %ld out of range "
-                      "(hdr=%u max=%u)\n", (long)sz,
-                      (unsigned)sizeof(UndoFileHeader), (unsigned)bufBytes);
+    if (sz < 8 || (size_t)sz > bufBytes) {
+        Serial.printf("[Undo] restore REJECT: size %ld out of range (max=%u)\n",
+                      (long)sz, (unsigned)bufBytes);
         return false;
     }
 
@@ -1297,7 +1704,7 @@ bool undoRestore(void) {
     size_t readBytes = 0;
     bool ok = safeFileReadAll(UNDO_FILE_PATH, (char*)buf, (size_t)sz + 1, &readBytes);
     bool restored = false;
-    if (ok && readBytes >= sizeof(UndoFileHeader)) {
+    if (ok && readBytes >= 8) {
         restored = undoDeserialize(buf, readBytes);
     }
     undoFree(buf);
