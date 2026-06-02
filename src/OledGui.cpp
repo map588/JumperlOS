@@ -454,8 +454,16 @@ void OledScreen::render( class oled& display ) {
             if ( left + x1 < 0 ) left = -x1;
             if ( top < 0 ) top = 0;
 
-            // Match clearPrintShowRich: baseline cursor = top + measured height.
-            display.setCursor( left, top + th, POS_BASELINE );
+            // Baseline = top + ASCENT (not top + full height). getTextBounds'
+            // height includes the descender, and glyphs are drawn from
+            // (baseline - ascent) down to (baseline + descent). Using top + th
+            // as the baseline pushes the whole glyph down by `descent`, so any
+            // text with a descender (g/j/p/q/y - e.g. the "p" in "Top Rail")
+            // renders ~2-3 px too low and clips at the bottom edge. Anchoring on
+            // the ascent puts the ink top exactly at `top` and the descender
+            // bottom at top + th, keeping the glyph inside its measured box.
+            int ascent = tb.ascent > 0 ? tb.ascent : th;
+            display.setCursor( left, top + ascent, POS_BASELINE );
             display.print( str );
 
             // Optional selection highlight: small L-shaped corner marks around

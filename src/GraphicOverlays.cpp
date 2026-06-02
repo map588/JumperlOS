@@ -529,8 +529,7 @@ void runSnakeGame(void) {
     long lastEncoderPosition = encoderPosition;  // raw position for left/right
     int lastRotaryDivider = rotaryDivider;
     // rotaryDivider = 2;
-    Jerial.write(0x0E);
-    Jerial.flush();
+    setTerminalLineBuffering(true); // game needs raw input
 
     while (true) {
         // rotaryEncoderStuff();  // updates encoderPosition and button
@@ -670,8 +669,7 @@ rotaryEncoderStuff();
     }
 snake_exit:
     rotaryDivider = lastRotaryDivider;
-    Jerial.write(0x0F);
-    Jerial.flush();
+    pushLineBufferingToApp(); // resync app to the user's config on exit
     if (encoderButtonState == HELD) encoderButtonState = IDLE;
     graphicOverlayState.clearAll();
     Jerial.println( "✓ Snake ended" );
@@ -700,8 +698,7 @@ void GraphicOverlayState::debugMenu(void) {
     Jerial.println( "│ c - Clear all    s - Status        │" );
     Jerial.println( "│ q - Quit                           │" );
     Jerial.println( "╰────────────────────────────────────╯\n\r" );
-    Jerial.write( 0x0E );
-    Jerial.flush();
+    setTerminalLineBuffering( true ); // needs raw input
     
     // Track currently selected overlay for arrow key movement
     int selectedOverlay = -1;
@@ -980,7 +977,6 @@ void GraphicOverlayState::debugMenu(void) {
         }
         delay(10);
     }
-    Jerial.write( 0x0F );
-    Jerial.flush();
+    pushLineBufferingToApp( ); // resync app to the user's config on exit
     
 }

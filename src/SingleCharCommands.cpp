@@ -173,20 +173,9 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
     // Jerial.print("clearHighlighting");
     // Jerial.flush();
 
-    if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
-        Jerial.write( 0x0E ); // Turn ON interactive mode
-        // Jerial.print( "Turning on interactive mode\n\r" );
-        Jerial.flush( );
-        termInInteractiveMode = 1;
-    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
-        Jerial.write( 0x0F ); // Turn OFF interactive mode
-        // Jerial.print( "Turning off interactive mode\n\r" );
-        Jerial.flush( );
-        termInInteractiveMode = 0;
-    }
-    // Jerial.print("termInInteractiveMode = ");
-    // Jerial.println(termInInteractiveMode);
-    // Jerial.flush();
+    // Keep the app's mode in sync with the config (idempotent; only emits SO/SI
+    // when the state actually changed).
+    pushLineBufferingToApp( );
 
     int shownMenuItems = 0;
     int menuItemCount[ 4 ] = { 0, 0, 0, 0 };
@@ -668,6 +657,21 @@ void SingleCharCommands::initializeCommands( ) {
                      "Toggle line buffering on/off. For raw terminals without line buffering.",
                      cmd_toggleLineBuffering, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
 
+    // Line-buffering sync (single-char protocol, symmetric with what the
+    // firmware sends the app): SO (0x0E) enables, SI (0x0F) disables. The legacy
+    // DC3 (0x13) trigger is kept as a quiet toggle for backward compatibility.
+    registerCommand( '\x0E', "line buffering on (quiet)",
+                     "Enable line buffering. Sent by the app to sync state.",
+                     cmd_toggleLineBufferingQuiet, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
+
+    registerCommand( '\x0F', "line buffering off (quiet)",
+                     "Disable line buffering. Sent by the app to sync state.",
+                     cmd_toggleLineBufferingQuiet, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
+
+    registerCommand( '\x13', "toggle line buffering quietly",
+                     "Toggle line buffering on/off. For raw terminals without line buffering.",
+                     cmd_toggleLineBufferingQuiet, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
+
     registerCommand( 'E', "don't show this menu",
                      "Toggle automatic menu display.",
                      cmd_dontShowMenu, MENU_DEBUG, CAT_SETTINGS, true, SER3_IRRELEVANT );
@@ -791,7 +795,9 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
         Jerial.println( "  Use '.' command to connect OLED first" );
         return CMD_DONT_SHOW_MENU;
     }
-    Serial.write(0x0E); // interactive mode on
+    // Force line buffering ON so we receive raw keystrokes, remembering the
+    // previous state so we can restore it on exit (instead of forcing it OFF).
+    bool prevLineBuffering = setTerminalLineBuffering( true );
     delay(10);
 
     // Clear OLED and prepare for text
@@ -874,7 +880,8 @@ CommandResult cmd_printTextFromTerminal( char c, const String& line ) {
         // Small delay to prevent busy-waiting
         delay(1);
     }
-    Serial.write(0x0F); // interactive mode off
+    // Restore whatever line-buffering state we had before entering OLED mode.
+    setTerminalLineBuffering( prevLineBuffering );
     delay(10);
     return CMD_SHOW_MENU;
 }
@@ -1573,17 +1580,40 @@ CommandResult cmd_queryActiveSlot( char c, const String& line ) {
 
 
 CommandResult cmd_toggleLineBuffering( char c, const String& line ) {
+    // Firmware-side toggle (the visible 'B' command). Notify the app of the
+    // change through the single control path.
     String arg = getCommandArgs( line, 50 );
+    bool target;
     if ( arg.length( ) > 0 && ( arg[ 0 ] == '0' || arg[ 0 ] == '1' ) ) {
-        jumperlessConfig.display.terminal_line_buffering = ( arg[ 0 ] == '1' ) ? 1 : 0;
+        target = ( arg[ 0 ] == '1' );
     } else {
-        jumperlessConfig.display.terminal_line_buffering = !jumperlessConfig.display.terminal_line_buffering;
+        target = ( jumperlessConfig.display.terminal_line_buffering == 0 );
     }
-    Jerial.print( "Line buffering " );
-    Jerial.println( jumperlessConfig.display.terminal_line_buffering ? "enabled" : "disabled" );
-    configChanged = true;
-    return CMD_SHOW_MENU;
+    setTerminalLineBuffering( target );
+    if (millis() > 10000) {
+        Jerial.print( "Line buffering " );
+        Jerial.println( jumperlessConfig.display.terminal_line_buffering ? "enabled" : "disabled" );
+        configChanged = true;
+        
+    }
+    return CMD_DONT_SHOW_MENU;
 }
+
+CommandResult cmd_toggleLineBufferingQuiet( char c, const String& line ) {
+    // Line-buffering sync (raw / unbuffered input path). The trigger char itself
+    // is the directive, matching the bytes the firmware sends the app:
+    //   SO (0x0E) -> ON, SI (0x0F) -> OFF — app-initiated, so adopt silently
+    //   (no echo back). Any other trigger (legacy DC3 0x13) toggles and notifies.
+    if ( c == '\x0E' ) {
+        acknowledgeAppLineBuffering( true );
+    } else if ( c == '\x0F' ) {
+        acknowledgeAppLineBuffering( false );
+    } else {
+        setTerminalLineBuffering( jumperlessConfig.display.terminal_line_buffering == 0 );
+    }
+    return CMD_DONT_SHOW_MENU;
+}
+
 
 // Python commands
 CommandResult cmd_pythonREPL( char c, const String& line ) {
@@ -1607,10 +1637,9 @@ CommandResult cmd_pythonREPL( char c, const String& line ) {
 
     enterMicroPythonREPL( );
     refreshConnections( -1, 1, 1 );
-    Jerial.write( 0x0F );
-    extern int termInInteractiveMode;
-    termInInteractiveMode = 0;
-    Jerial.flush( );
+    // Returning to the menu: resync the app to the user's line-buffering config
+    // (don't force a specific mode here).
+    pushLineBufferingToApp( );
     return CMD_SHOW_MENU;
 }
 
@@ -2014,9 +2043,8 @@ CommandResult cmd_showFilesystem( char c, const String& line ) {
 
     // No argument — open the file manager as before
     runApp( -1, (char*)"File Manager" );
-    Jerial.write( 0x0F );
-    termInInteractiveMode = 0;
-    Jerial.flush( );
+    // Returning to the menu: resync the app to the user's line-buffering config.
+    pushLineBufferingToApp( );
     return CMD_SHOW_MENU;
 }
 
@@ -2477,15 +2505,17 @@ CommandResult cmd_undo( char c, const String& line ) {
     // Capture label BEFORE the step so OLED + serial show the same thing.
     char lblBuf[ 32 ];
     lblBuf[ 0 ] = '\0';
+    int lblSplit = -1;
     if ( undoCanUndo( ) ) {
         strncpy( lblBuf, undoPeekUndoLabel( ), sizeof( lblBuf ) - 1 );
         lblBuf[ sizeof( lblBuf ) - 1 ] = '\0';
+        lblSplit = undoLabelSplitAt( 0 );
     }
     if ( undoUndo( ) ) {
         target->printf( "\r[Undo] reverted: %s  (position %d / %d)\n",
                         lblBuf[ 0 ] ? lblBuf : "(unlabeled)",
                         undoPosition( ), undoTotalTxns( ) );
-        undoToast( false, lblBuf );
+        undoToast( false, lblBuf, lblSplit );
     } else {
         target->println( "\r[Undo] nothing to undo" );
     }
@@ -2497,15 +2527,17 @@ CommandResult cmd_redo( char c, const String& line ) {
     if ( target == nullptr ) target = &Jerial;
     char lblBuf[ 32 ];
     lblBuf[ 0 ] = '\0';
+    int lblSplit = -1;
     if ( undoCanRedo( ) ) {
         strncpy( lblBuf, undoPeekRedoLabel( ), sizeof( lblBuf ) - 1 );
         lblBuf[ sizeof( lblBuf ) - 1 ] = '\0';
+        lblSplit = undoLabelSplitAt( +1 );
     }
     if ( undoRedo( ) ) {
         target->printf( "\r[Redo] reapplied: %s  (position %d / %d)\n",
                         lblBuf[ 0 ] ? lblBuf : "(unlabeled)",
                         undoPosition( ), undoTotalTxns( ) );
-        undoToast( true, lblBuf );
+        undoToast( true, lblBuf, lblSplit );
     } else {
         target->println( "\r[Redo] nothing to redo" );
     }

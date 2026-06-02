@@ -3773,18 +3773,11 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
     }
     printSettingChange(section, key, oldValue, value);
     
-    // If we changed terminal_line_buffering, send command to app to switch interactive mode
+    // If we changed terminal_line_buffering, notify the app (the config value is
+    // already updated above; push it through the single control path so the app
+    // is told once, only when the state actually changed).
     if (strcmp(section, "display") == 0 && strcmp(key, "terminal_line_buffering") == 0) {
-        if (jumperlessConfig.display.terminal_line_buffering == 1) {
-            Serial.write(0x0E);  // Turn ON interactive mode
-            termInInteractiveMode = 1;
-           // Serial.println("Interactive mode enabled (app will echo characters)");
-        } else {
-            Serial.write(0x0F);  // Turn OFF interactive mode
-            termInInteractiveMode = 0;
-         //   Serial.println("Interactive mode disabled (app won't echo characters)");
-        }
-        Serial.flush();
+        pushLineBufferingToApp();
     }
 }
 

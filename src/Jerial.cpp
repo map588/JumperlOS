@@ -22,6 +22,36 @@ extern class oled oled;
 // Global variable for interactive mode tracking
 int termInInteractiveMode = 0;
 
+// --- Line-buffering / interactive-mode control (single source of truth) ------
+// See Jerial.h for the contract. All SO/SI (0x0E/0x0F) emission and every
+// mutation of termInInteractiveMode lives here so the app can never be forced
+// on/off redundantly and drift out of sync.
+
+void pushLineBufferingToApp( ) {
+    extern struct config jumperlessConfig;
+    int target = ( jumperlessConfig.display.terminal_line_buffering == 1 ) ? 1 : 0;
+    if ( termInInteractiveMode != target ) {
+        Serial.write( target ? 0x0E : 0x0F );
+        Serial.flush( );
+        termInInteractiveMode = target;
+    }
+}
+
+bool setTerminalLineBuffering( bool enabled ) {
+    extern struct config jumperlessConfig;
+    bool previous = ( jumperlessConfig.display.terminal_line_buffering == 1 );
+    jumperlessConfig.display.terminal_line_buffering = enabled ? 1 : 0;
+    pushLineBufferingToApp( );
+    return previous;
+}
+
+void acknowledgeAppLineBuffering( bool enabled ) {
+    extern struct config jumperlessConfig;
+    int target = enabled ? 1 : 0;
+    jumperlessConfig.display.terminal_line_buffering = target;
+    termInInteractiveMode = target; // app already knows; do not echo SO/SI back
+}
+
 // ============================================================================
 // TermControl Implementation (Internal Class for USB Serial Endpoints)
 // ============================================================================
@@ -143,7 +173,25 @@ bool TermControl::service( ) {
         #endif
         // Note: Tag filtering now happens in InjectionBufferStream
         // User-typed input doesn't have tags, so no filtering needed here
-        
+
+        // Line-buffering sync protocol: a bare SO (0x0E) enables / SI (0x0F)
+        // disables line buffering — the same single characters the firmware
+        // sends the app to announce the state, so the protocol is symmetric.
+        // Handled here (before the ANSI/normal-char path) so the app can switch
+        // buffering OFF even while it is currently ON — handleNormalChar drops
+        // bare control chars, which would otherwise make this a no-op in buffered
+        // mode. The raw (unbuffered) input path handles these via registered
+        // single-char commands (cmd_toggleLineBufferingQuiet). This is app-
+        // initiated, so adopt the state silently (no echo back).
+        if ( c == 0x0E ) {
+            acknowledgeAppLineBuffering( true );
+            continue;
+        }
+        if ( c == 0x0F ) {
+            acknowledgeAppLineBuffering( false );
+            continue;
+        }
+
         // Handle ANSI escape sequences
         switch ( ansi_state ) {
         case ANSI_NORMAL:
@@ -192,18 +240,6 @@ bool TermControl::service( ) {
         if ( !line_was_ready_before && line_ready ) {
             return true;
         }
-    }
-
-            if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
-        Serial.write( 0x0E ); // Turn ON interactive mode
-        Serial.print( "Turning on interactive mode\n\r" );
-        Serial.flush( );
-        termInInteractiveMode = 1;
-    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
-        Serial.write( 0x0F ); // Turn OFF interactive mode
-        Serial.print( "Turning off interactive mode\n\r" );
-        Serial.flush( );
-        termInInteractiveMode = 0;
     }
 
     return false; // No line ready
@@ -371,10 +407,15 @@ void TermControl::handleNormalChar( char c ) {
 
             insertCharAtCursor( c );
             if ( echo_enabled ) {
-                if ( brace_depth == 0 ) {
+                // Re-render on every keystroke. The single-line redraw model
+                // (\r ... \x1b[K) only breaks when the buffer actually spans
+                // multiple lines (the multi-line JSON entry path that inserts
+                // a literal '\n' in handleEnter). An open bracket on a single
+                // line is fine to echo normally — suppressing echo there froze
+                // the display until the bracket closed.
+                if ( !currentLineIsMultiline( ) ) {
                     renderCurrentLine( );
                 }
-                // No rerender while inside braces/brackets/parens to avoid spam
             }
         }
         break;
@@ -384,6 +425,19 @@ void TermControl::handleNormalChar( char c ) {
 void TermControl::handleBackspace( ) {
     if ( cursor_position > 0 ) {
         cursor_position--;
+
+        // Keep brace_depth in sync with the buffer contents so the multi-line
+        // submit heuristic in handleEnter doesn't get stuck if a bracket is
+        // edited out of the line.
+        char removed = current_line[ cursor_position ];
+        if ( removed == '{' || removed == '[' || removed == '(' ) {
+            if ( brace_depth > 0 ) {
+                brace_depth--;
+            }
+        } else if ( removed == '}' || removed == ']' || removed == ')' ) {
+            brace_depth++;
+        }
+
         if ( cursor_position < line_length ) {
             memmove( &current_line[ cursor_position ],
                      &current_line[ cursor_position + 1 ],
@@ -393,7 +447,7 @@ void TermControl::handleBackspace( ) {
         display_length--;
         current_line[ line_length ] = '\0';
 
-        if ( echo_enabled ) {
+        if ( echo_enabled && !currentLineIsMultiline( ) ) {
             renderCurrentLine( );
         }
     }
@@ -409,11 +463,41 @@ void TermControl::handleEnter( ) {
     Serial.flush();
     #endif
     
-    if ( echo_enabled && stream ) {
-        if ( brace_depth == 0 ) {
-            stream->print( JERIAL_NEWLINE_OUT );
-            stream->flush( );
+    // Decide whether this Enter should HOLD the current line for multi-line
+    // continuation instead of submitting it. This only applies to raw,
+    // non-command input that still has an unclosed bracket while line buffering
+    // is enabled (e.g. pasting a multi-line JSON object). Lines that start with
+    // a command letter (like "W{...}" or Python "print(") always submit, even
+    // with an open bracket, so they are processed / reported rather than
+    // silently swallowed.
+    extern struct config jumperlessConfig;
+    bool holdForContinuation = false;
+    if ( pending_target == nullptr &&
+         jumperlessConfig.display.terminal_line_buffering == 1 &&
+         brace_depth > 0 && line_length > 0 &&
+         line_length < JERIAL_MAX_LINE_LENGTH - 1 ) {
+        // Only hold for multi-line continuation when the line is a raw
+        // bracketed structure being typed/pasted (a JSON object/array), e.g.
+        // pasting a diagram.json that begins with '{'. EVERY command-prefixed
+        // line submits on Enter instead — both letter commands ("W{...}") and
+        // the Python prefix (">print("). Previously the test was "first char
+        // is not a letter", which wrongly swept ">"-prefixed Python into the
+        // multi-line buffer, so an unbalanced "print(" was never executed.
+        char firstChar = current_line[0];
+        if ( firstChar == '{' || firstChar == '[' ) {
+            holdForContinuation = true;
         }
+    }
+
+    // Echo the line break that moves the cursor off the input line before any
+    // command output (or the next prompt) is printed. Suppress it only while
+    // holding the line for multi-line continuation, since the user is still
+    // composing the same logical input. Previously this was gated on
+    // brace_depth == 0, so a submitted-but-unbalanced command line (e.g.
+    // "print(") printed its output glued to the end of the input line.
+    if ( echo_enabled && stream && !holdForContinuation ) {
+        stream->print( JERIAL_NEWLINE_OUT );
+        stream->flush( );
     }
 
     // Add to history if we have a history manager and non-empty line
@@ -452,21 +536,10 @@ void TermControl::handleEnter( ) {
         return;
     }
 
-    // If terminal line buffering is enabled and we're inside braces,
-    // only submit if the line doesn't start with a command character
-    // (This allows "W{...}" to submit immediately on newline)
-    extern struct config jumperlessConfig;
-    if ( jumperlessConfig.display.terminal_line_buffering == 1 && brace_depth > 0 ) {
-        // Simple heuristic: if the first character is a letter, it's likely a command, not a raw JSON object
-        char firstChar = current_line[0];
-        bool isCommand = (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z');
-
-        if ( !isCommand && line_length < JERIAL_MAX_LINE_LENGTH - 1 ) {
-            insertCharAtCursor( '\n' );
-            // Don't echo the newline if we're suppressing echo inside braces,
-            // but we might want a visual indicator that we're still collecting
-            return;
-        }
+    // Hold the line for multi-line continuation (raw bracketed input).
+    if ( holdForContinuation ) {
+        insertCharAtCursor( '\n' );
+        return;
     }
 
     // Make line available for parsing (normal user input)
@@ -620,6 +693,15 @@ void TermControl::moveCursorTo( int position ) {
         stream->print( 'G' );
     }
     stream->flush( );
+}
+
+bool TermControl::currentLineIsMultiline( ) const {
+    for ( int i = 0; i < line_length; i++ ) {
+        if ( current_line[ i ] == '\n' ) {
+            return true;
+        }
+    }
+    return false;
 }
 
 int TermControl::calculateVisualLength( const String& text ) {
@@ -909,17 +991,6 @@ bool JerialClass::service() {
     // 1. InjectionBufferStream (priority) - for AsyncPassthrough commands
     // 2. Real input stream (Serial) - for user input
     // No manual switching needed!
-        if ( termInInteractiveMode == 0 && jumperlessConfig.display.terminal_line_buffering == 1 ) {
-        Serial.write( 0x0E ); // Turn ON interactive mode
-        Serial.print( "Turning on interactive mode\n\r" );
-        Serial.flush( );
-        termInInteractiveMode = 1;
-    } else if ( termInInteractiveMode == 1 && jumperlessConfig.display.terminal_line_buffering == 0 ) {
-        Serial.write( 0x0F ); // Turn OFF interactive mode
-        Serial.print( "Turning off interactive mode\n\r" );
-        Serial.flush( );
-        termInInteractiveMode = 0;
-    }
 
     static uint32_t last_debug = 0;
     #if DEBUG_JERIAL == 1

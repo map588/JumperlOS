@@ -87,6 +87,8 @@ extern volatile bool          g_pendingUndo;
 extern volatile bool          g_pendingRedo;
 extern volatile const char*   g_pendingUndoLabel;
 extern volatile const char*   g_pendingRedoLabel;
+extern volatile int           g_pendingUndoSplit;
+extern volatile int           g_pendingRedoSplit;
 
 ServiceStatus ProbeButton::service( ) {
     lastStatus = ServiceStatus::IDLE;
@@ -121,9 +123,11 @@ ServiceStatus ProbeButton::service( ) {
     if ( g_pendingUndo ) {
         g_pendingUndo = false;
         const char* lbl = (const char*)g_pendingUndoLabel;
+        int lblSplit = g_pendingUndoSplit;
         g_pendingUndoLabel = nullptr;
+        g_pendingUndoSplit = -1;
         if ( undoCanUndo( ) && undoUndo( ) ) {
-            undoToast( false, lbl );
+            undoToast( false, lbl, lblSplit );
             // Signal probeMode (if it just started) to fast-return so
             // we don't paint "clear nodes" / "connect nodes" on top of
             // the undo toast. probeMode's bail-check is gated on its
@@ -137,9 +141,11 @@ ServiceStatus ProbeButton::service( ) {
     if ( g_pendingRedo ) {
         g_pendingRedo = false;
         const char* lbl = (const char*)g_pendingRedoLabel;
+        int lblSplit = g_pendingRedoSplit;
         g_pendingRedoLabel = nullptr;
+        g_pendingRedoSplit = -1;
         if ( undoCanRedo( ) && undoRedo( ) ) {
-            undoToast( true, lbl );
+            undoToast( true, lbl, lblSplit );
             g_probeDoubleTapBail = true;
         }
         lastStatus = ServiceStatus::BUSY;
@@ -355,11 +361,13 @@ void __not_in_flash_func( ProbeButton::processSample )( uint8_t newStateRaw ) {
                 if ( newState == 2 ) {
                     if ( undoCanRedo( ) ) {
                         g_pendingRedoLabel = undoPeekRedoLabel( );
+                        g_pendingRedoSplit = undoLabelSplitAt( +1 );
                         g_pendingRedo = true;
                     }
                 } else if ( newState == 1 ) {
                     if ( undoCanUndo( ) ) {
                         g_pendingUndoLabel = undoPeekUndoLabel( );
+                        g_pendingUndoSplit = undoLabelSplitAt( 0 );
                         g_pendingUndo = true;
                     }
                 }
@@ -556,6 +564,8 @@ volatile bool        g_pendingUndo       = false;
 volatile bool        g_pendingRedo       = false;
 volatile const char* g_pendingUndoLabel  = nullptr;
 volatile const char* g_pendingRedoLabel  = nullptr;
+volatile int         g_pendingUndoSplit  = -1;
+volatile int         g_pendingRedoSplit  = -1;
 
 // =====================================================================
 // PIO IRQ handler: drains the RX FIFO, decodes each 2-bit sample into
@@ -5300,7 +5310,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac0voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 1, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC1 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false; // Already refreshed by state functions
             }
@@ -5308,7 +5318,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             setDac1voltage( jumperlessConfig.calibration.measure_mode_output_voltage, 1, 0 );
             if ( probePowerDACChanged == true ) {
                 removeBridgeFromState( ROUTABLE_BUFFER_IN, DAC0 );
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
                 // State functions already call refresh, no need to set needToRefresh
                 needToRefresh = false; // Already refreshed by state functions
             }
@@ -5322,7 +5332,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
         // No need to distinguish flash vs local - state system handles it
         if ( probePowerDAC == 0 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -5334,7 +5344,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             }
         } else if ( probePowerDAC == 1 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {

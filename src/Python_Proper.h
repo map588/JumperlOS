@@ -184,7 +184,6 @@ void deinitMicroPythonProper(void);
 
 
 // Single command execution for main.cpp
-void getMicroPythonCommandFromStream(Stream *stream = &Serial);
 bool initMicroPythonQuiet(bool preserve_interrupt_char = false);
 bool executeSinglePythonCommand(const char* command, char* result_buffer = nullptr, size_t buffer_size = 0);
 bool executePythonFileContent(const char* src);

@@ -128,6 +128,11 @@ bool undoRedo(void);   // step forward one transaction
 int  undoPosition(void);
 int  undoTotalTxns(void);   // total txns in the ring (excluding redo tail)
 const char* undoLabelAt(int relativeOffset);  // 0 = current, -1 = previous, etc.
+// Action length (split index) of the label at `relativeOffset` - the byte
+// offset where the detail begins (action = label[0..N), detail = label[N+1..]).
+// -1 if there's no txn. Used by undoToast() to separate the small "action" from
+// the large "detail" since the action itself may contain spaces ("Top Rail").
+int  undoLabelSplitAt(int relativeOffset);
 
 // History menu / scrubbing helpers - move to a specific waypoint position.
 // Walks deltas as needed. Returns true on success.
@@ -154,7 +159,10 @@ extern volatile int undo_debug;
 // undoPeekUndoLabel() / undoPeekRedoLabel() return the label of the txn
 // that the NEXT undoUndo() / undoRedo() would consume, so callers can
 // capture the label before invoking the action.
-void        undoToast(bool isRedo, const char* label);
+// `actionLen` is the label's action/detail split index (see undoLabelSplitAt);
+// pass -1 if unknown and the toast will fall back to splitting on the first
+// space. Capture it alongside the peeked label, before stepping undo/redo.
+void        undoToast(bool isRedo, const char* label, int actionLen);
 const char* undoPeekUndoLabel(void);
 const char* undoPeekRedoLabel(void);
 

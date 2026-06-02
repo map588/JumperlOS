@@ -309,6 +309,7 @@ CommandResult cmd_ledBrightness(char c, const String& line);
 CommandResult cmd_toggleOLED(char c, const String& line);
 CommandResult cmd_toggleTerminalColors(char c, const String& line);
 CommandResult cmd_toggleLineBuffering(char c, const String& line);
+CommandResult cmd_toggleLineBufferingQuiet(char c, const String& line);
 CommandResult cmd_dontShowMenu(char c, const String& line);
 CommandResult cmd_oledInTerminal(char c, const String& line);
 CommandResult cmd_cycleFont(char c, const String& line);

@@ -145,6 +145,13 @@ namespace {
 
 constexpr uint32_t TXN_AUTOCLOSE_MS = 200;
 
+// A probe DAC "slide" fires many setDac() calls in quick succession as the user
+// scrolls the voltage. Consecutive same-channel DAC sets made within this
+// window collapse into a single undo step (the final value), so one undo
+// reverts the whole slide instead of stepping back through every intermediate
+// voltage. Wider than TXN_AUTOCLOSE_MS so a slow scroll still coalesces.
+constexpr uint32_t DAC_SLIDE_COALESCE_MS = 1200;
+
 // Forward decl for SnapshotEntry; defined later with the snapshot helpers.
 struct SnapshotEntry;
 
@@ -405,6 +412,7 @@ inline size_t opRingDelta(size_t a, size_t b) {
     return (b + g_opCap - a) % g_opCap;
 }
 inline size_t txnRingNext(size_t i) { return (i + 1) % g_txnCap; }
+inline size_t txnRingPrev(size_t i) { return (i + g_txnCap - 1) % g_txnCap; }
 
 inline bool ringEmpty(size_t head, size_t tail) { return head == tail; }
 inline size_t ringCount(size_t head, size_t tail, size_t cap) {
@@ -907,16 +915,34 @@ void undoEmitTxnHeader(TextWriter& w, const UndoTxn& t) {
     twPrintf(w, "t %u %s\n", (unsigned)t.slot, undoSrcTag(t.source));
 }
 
-// Rebuild a txn's display label from its first op, mirroring the formatting the
-// undoRecord* helpers use at capture time. Used on restore since the label is
-// no longer stored in the file. Single-op txns (the norm) reproduce exactly.
-void undoRebuildLabel(UndoTxn& t) {
-    t.label[0] = '\0';
-    if (t.opCount == 0) return;
-    const UndoOp& op = g_ops[t.firstOp % g_opCap];
+// Single source of truth for a txn's display label, used by BOTH the live
+// record path (recordOneAction) and the restore-time rebuild path
+// (undoRebuildLabel) so the two formats can never drift apart - previously they
+// did (e.g. record wrote "top 5.00V" while restore rebuilt "TOP RAIL 5.00V"),
+// which broke the OLED toast's action/detail split.
+//
+// Structure: a txn label is an ACTION (the verb/source - "connect", "Top Rail",
+// "GPIO 1", "Clear All", ...) plus an optional DETAIL (the value/target -
+// "8-GP 2", "5.00V", "HIGH", ...). Either half may contain spaces, so the two
+// can't be recovered by splitting on a space. The combined string is stored as
+// "action detail" (or just "action" when there's no detail) and the ACTION
+// LENGTH is returned so callers (the OLED toast) know exactly where the action
+// ends without re-parsing - the split point is authored here, not guessed.
+uint8_t undoFormatOpLabel(const UndoOp& op, char* out, size_t outSize) {
+    if (!out || outSize == 0) return 0;
+    out[0] = '\0';
+
+    char action[16];
+    char detail[28];
+    action[0] = '\0';
+    detail[0] = '\0';
+
     switch (op.type) {
         case UNDO_OP_CONNECT:
         case UNDO_OP_DISCONNECT: {
+            strncpy(action, op.type == UNDO_OP_CONNECT ? "connect" : "disconnect",
+                    sizeof(action) - 1);
+            action[sizeof(action) - 1] = '\0';
             // definesToChar returns a pointer into a shared static buffer for
             // numeric nodes, so copy the first name out before fetching the 2nd.
             char a[20], b[20];
@@ -924,45 +950,69 @@ void undoRebuildLabel(UndoTxn& t) {
             strncpy(a, (p1 && p1[0]) ? p1 : "?", sizeof(a) - 1); a[sizeof(a) - 1] = '\0';
             const char* p2 = definesToChar(op.bridge.n2, 0);
             strncpy(b, (p2 && p2[0]) ? p2 : "?", sizeof(b) - 1); b[sizeof(b) - 1] = '\0';
-            snprintf(t.label, sizeof(t.label), "%s %s-%s",
-                     op.type == UNDO_OP_CONNECT ? "connect" : "disconnect", a, b);
+            snprintf(detail, sizeof(detail), "%s-%s", a, b);
             break;
         }
         case UNDO_OP_DAC_SET: {
             const char* name;
             switch (op.dac.ch) {
-                case 0:  name = "DAC0"; break;
-                case 1:  name = "DAC1"; break;
-                case 2:  name = "top";  break;
-                case 3:  name = "bot";  break;
-                default: name = "DAC";  break;
+                case 0:  name = "DAC 0";    break;
+                case 1:  name = "DAC 1";    break;
+                case 2:  name = "Top Rail"; break;
+                case 3:  name = "Bot Rail"; break;
+                default: name = "DAC";      break;
             }
-            snprintf(t.label, sizeof(t.label), "%s %.2fV", name, (double)op.dac.next);
+            strncpy(action, name, sizeof(action) - 1);
+            action[sizeof(action) - 1] = '\0';
+            snprintf(detail, sizeof(detail), "%.2fV", (double)op.dac.next);
             break;
         }
         case UNDO_OP_GPIO_SET:
-            snprintf(t.label, sizeof(t.label), "GPIO%u=%u",
-                     (unsigned)op.gpio.pin, (unsigned)op.gpio.nextVal);
+            snprintf(action, sizeof(action), "GPIO %u", (unsigned)op.gpio.pin);
+            strncpy(detail, op.gpio.nextVal ? "HIGH" : "LOW", sizeof(detail) - 1);
+            detail[sizeof(detail) - 1] = '\0';
             break;
         case UNDO_OP_GPIO_DIR:
-            snprintf(t.label, sizeof(t.label), "GPIO%u dir=%u",
-                     (unsigned)op.gpio.pin, (unsigned)op.gpio.nextVal);
+            snprintf(action, sizeof(action), "GPIO %u", (unsigned)op.gpio.pin);
+            strncpy(detail, op.gpio.nextVal ? "OUTPUT" : "INPUT", sizeof(detail) - 1);
+            detail[sizeof(detail) - 1] = '\0';
             break;
         case UNDO_OP_SLOT_SWITCH:
-            snprintf(t.label, sizeof(t.label), "slot %u->%u",
+            strncpy(action, "slot", sizeof(action) - 1);
+            action[sizeof(action) - 1] = '\0';
+            snprintf(detail, sizeof(detail), "%u->%u",
                      (unsigned)op.slot.prev, (unsigned)op.slot.next);
             break;
         case UNDO_OP_CLEAR_ALL:
-            strncpy(t.label, "clear all", sizeof(t.label) - 1);
-            t.label[sizeof(t.label) - 1] = '\0';
+            // Whole phrase lives in the action; no detail half.
+            strncpy(action, "Clear All", sizeof(action) - 1);
+            action[sizeof(action) - 1] = '\0';
             break;
         case UNDO_OP_BLOB_REPLACE:
-            strncpy(t.label, "replace", sizeof(t.label) - 1);
-            t.label[sizeof(t.label) - 1] = '\0';
+            strncpy(action, "replace", sizeof(action) - 1);
+            action[sizeof(action) - 1] = '\0';
             break;
         default:
             break;
     }
+
+    // Compose "action detail" (or just "action") and report where the action
+    // ends so the toast can split without re-parsing.
+    if (detail[0]) snprintf(out, outSize, "%s %s", action, detail);
+    else           { strncpy(out, action, outSize - 1); out[outSize - 1] = '\0'; }
+
+    size_t alen = strlen(action);
+    if (alen > outSize - 1) alen = outSize - 1;   // clamp if action got cut
+    return (uint8_t)alen;
+}
+
+// Rebuild a txn's display label from its first op. Used on restore since the
+// label is no longer stored in the file. Single-op txns (the norm) reproduce
+// exactly. Delegates to undoFormatOpLabel so record + restore stay in lockstep.
+void undoRebuildLabel(UndoTxn& t) {
+    t.label[0] = '\0';
+    if (t.opCount == 0) return;
+    undoFormatOpLabel(g_ops[t.firstOp % g_opCap], t.label, sizeof(t.label));
 }
 
 // Are there any committed, non-obsolete txns we'd want to persist? Used by
@@ -1940,12 +1990,19 @@ static void appendOp(const UndoOp& op) {
 // actions and must not enter the history. The slot loader brackets
 // its region with undoBeginIngest()/undoEndIngest(); we short-circuit
 // here while that's active.
-static void recordOneAction(const UndoOp& op, const char* label) {
+static void recordOneAction(const UndoOp& op) {
     if (!g_ops) return;
     if (g_ingestDepth > 0) return;
     slotSwapIfNeeded();
     bool weOpened = !g_inTxn;
-    if (weOpened) undoBeginTxn(label, UNDO_SRC_PROBE);
+    if (weOpened) {
+        // Derive the label straight from the op - one source of truth, so we
+        // never write a string just to parse it back. External (multi-op)
+        // transactions keep the label their opener passed to undoBeginTxn.
+        char lbl[sizeof(g_openTxnLabel)];
+        undoFormatOpLabel(op, lbl, sizeof(lbl));
+        undoBeginTxn(lbl, UNDO_SRC_PROBE);
+    }
     appendOp(op);
     if (weOpened) undoEndTxn();
 }
@@ -1962,21 +2019,6 @@ static inline bool isAutoManagedBridge(int n1, int n2) {
     return isBufferPair(n1, n2) || isBufferPair(n2, n1);
 }
 
-// definesToChar() returns a const char* that, for numeric fallback (raw
-// breadboard rows etc.), points into a SHARED static buffer. Calling it
-// twice in one expression clobbers the first result. Always copy the
-// first name out before fetching the second.
-static void undoNodePairLabel(char* out, size_t outSize, const char* prefix,
-                              int node1, int node2) {
-    char n1[12];
-    const char* p1 = definesToChar(node1, 0);
-    strncpy(n1, p1 ? p1 : "?", sizeof(n1) - 1);
-    n1[sizeof(n1) - 1] = '\0';
-    const char* p2 = definesToChar(node2, 0);
-    const char* n2 = (p2 && p2[0]) ? p2 : "?";
-    snprintf(out, outSize, "%s %s-%s", prefix, n1, n2);
-}
-
 void undoRecordConnect(int node1, int node2, uint32_t color) {
     UNDBG("recordConnect %d-%d color=0x%08X", node1, node2, (unsigned)color);
     if (isAutoManagedBridge(node1, node2)) {
@@ -1988,9 +2030,7 @@ void undoRecordConnect(int node1, int node2, uint32_t color) {
     op.bridge.n1 = (int16_t)node1;
     op.bridge.n2 = (int16_t)node2;
     op.bridge.color = color;
-    char lbl[24];
-    undoNodePairLabel(lbl, sizeof(lbl), "connect", node1, node2);
-    recordOneAction(op, lbl);
+    recordOneAction(op);
 }
 
 void undoRecordDisconnect(int node1, int node2, uint32_t color) {
@@ -2004,9 +2044,7 @@ void undoRecordDisconnect(int node1, int node2, uint32_t color) {
     op.bridge.n1 = (int16_t)node1;
     op.bridge.n2 = (int16_t)node2;
     op.bridge.color = color;
-    char lbl[24];
-    undoNodePairLabel(lbl, sizeof(lbl), "disconnect", node1, node2);
-    recordOneAction(op, lbl);
+    recordOneAction(op);
 }
 
 void undoRecordClearAll(void) {
@@ -2043,27 +2081,49 @@ void undoRecordClearAll(void) {
             UNDBG("recordClearAll: no snapshot AND blob alloc failed");
         }
     }
-    recordOneAction(op, "clear all");
+    recordOneAction(op);
 }
 
 void undoRecordDacSet(int channel, float prevVolts, float nextVolts) {
+    if (!g_ops) return;
+    if (g_ingestDepth > 0) return;
+    if (g_undoApplying) return;
+    slotSwapIfNeeded();
+
     UndoOp op = {};
     op.type = UNDO_OP_DAC_SET;
     op.dac.ch = (uint8_t)channel;
     op.dac.prev = prevVolts;
     op.dac.next = nextVolts;
-    char lbl[24];
-    // Channel encoding: 0=DAC0, 1=DAC1, 2=top rail, 3=bottom rail.
-    const char* name;
-    switch (channel) {
-        case 0:  name = "DAC0";  break;
-        case 1:  name = "DAC1";  break;
-        case 2:  name = "top";   break;
-        case 3:  name = "bot";   break;
-        default: name = "?";     break;
+
+    // Slide coalescing: if the most-recent committed txn on this slot is a DAC
+    // set on the SAME channel made moments ago (and there's no redo pending),
+    // retarget its voltage in place instead of recording another undo step.
+    // The op keeps its ORIGINAL `prev` (the value before the slide began), so a
+    // single undo reverts the whole slide rather than one voltage at a time.
+    if (!g_inTxn && !ringEmpty(g_txnHead, g_txnTail) &&
+        (millis() - g_lastOpMs) <= DAC_SLIDE_COALESCE_MS) {
+        uint8_t slot = (uint8_t)((g_activeSlot >= 0) ? g_activeSlot : 0);
+        size_t prevIdx = txnRingPrev(g_txnHead);
+        UndoTxn& pt = g_txns[prevIdx];
+        if ((pt.flags & UNDO_TXN_COMMITTED) && !(pt.flags & UNDO_TXN_OBSOLETE) &&
+            pt.slot == slot && pt.opCount == 1 &&
+            g_slotCursor[slot] == g_txnHead) {
+            UndoOp& po = g_ops[(size_t)pt.firstOp % g_opCap];
+            if (po.type == UNDO_OP_DAC_SET && po.dac.ch == (uint8_t)channel) {
+                po.dac.next = nextVolts;     // keep the pre-slide `prev`
+                undoRebuildLabel(pt);        // refresh "<name> X.XXV"
+                pt.startMs = millis();
+                g_lastOpMs = millis();
+                g_historyDirty = true;
+                UNDBG("recordDacSet COALESCE ch=%d -> %.2fV",
+                      channel, (double)nextVolts);
+                return;
+            }
+        }
     }
-    snprintf(lbl, sizeof(lbl), "%s %.2fV", name, nextVolts);
-    recordOneAction(op, lbl);
+
+    recordOneAction(op);
 }
 
 void undoRecordGpioSet(int pin, int prevVal, int nextVal) {
@@ -2072,9 +2132,7 @@ void undoRecordGpioSet(int pin, int prevVal, int nextVal) {
     op.gpio.pin = (uint8_t)pin;
     op.gpio.prevVal = (uint8_t)prevVal;
     op.gpio.nextVal = (uint8_t)nextVal;
-    char lbl[24];
-    snprintf(lbl, sizeof(lbl), "GPIO%d=%d", pin, nextVal);
-    recordOneAction(op, lbl);
+    recordOneAction(op);
 }
 
 void undoRecordGpioDir(int pin, int prevDir, int nextDir) {
@@ -2083,9 +2141,7 @@ void undoRecordGpioDir(int pin, int prevDir, int nextDir) {
     op.gpio.pin = (uint8_t)pin;
     op.gpio.prevDir = (uint8_t)prevDir;
     op.gpio.nextVal = (uint8_t)nextDir;
-    char lbl[24];
-    snprintf(lbl, sizeof(lbl), "GPIO%d dir=%d", pin, nextDir);
-    recordOneAction(op, lbl);
+    recordOneAction(op);
 }
 
 void undoRecordSlotSwitch(int prevSlot, int nextSlot) {
@@ -2093,9 +2149,7 @@ void undoRecordSlotSwitch(int prevSlot, int nextSlot) {
     op.type = UNDO_OP_SLOT_SWITCH;
     op.slot.prev = (uint8_t)prevSlot;
     op.slot.next = (uint8_t)nextSlot;
-    char lbl[24];
-    snprintf(lbl, sizeof(lbl), "slot %d->%d", prevSlot, nextSlot);
-    recordOneAction(op, lbl);
+    recordOneAction(op);
 }
 
 // =============================================================================
@@ -2218,40 +2272,59 @@ int undoTotalTxns(void) {
     return countSlotTxns(g_activeSlot);
 }
 
-const char* undoLabelAt(int relativeOffset) {
-    if (!g_ops || g_activeSlot < 0) return "";
-    // relativeOffset: 0 means the txn the next undo would consume
-    //                (i.e. the most recent same-slot txn before cursor).
-    // -1 means one before that. +1 means the txn the next redo would
-    // apply (== same-slot txn at cursor, if any).
+// Resolve a cursor-relative offset to a same-slot txn ring index, or SIZE_MAX.
+// relativeOffset: 0 = the txn the next undo would consume (most recent same-slot
+// txn before the cursor); -1 = one before that; +1 = the txn the next redo would
+// apply (== same-slot txn at the cursor, if any). Shared by undoLabelAt and
+// undoLabelSplitAt so the label and its split index always come from one txn.
+static size_t undoResolveRelTxn(int relativeOffset) {
+    if (!g_ops || g_activeSlot < 0) return SIZE_MAX;
     clampSlotCursor(g_activeSlot);
     size_t cursor = g_slotCursor[g_activeSlot];
     if (relativeOffset >= 1) {
-        // walk forward `relativeOffset` same-slot txns starting from cursor
         size_t pos = cursor;
         for (int i = 0; i < relativeOffset; i++) {
             size_t found = findNextSlotTxn(g_activeSlot, pos);
-            if (found == SIZE_MAX) return "";
+            if (found == SIZE_MAX) return SIZE_MAX;
             pos = (found + 1) % g_txnCap;
-            if (i == relativeOffset - 1) {
-                return g_txns[found].label[0] ? g_txns[found].label : "(unlabeled)";
-            }
+            if (i == relativeOffset - 1) return found;
         }
-        return "";
-    } else {
-        // walk backward (1 - relativeOffset) same-slot txns
-        int steps = 1 - relativeOffset;  // relativeOffset=0 -> 1 step back
-        size_t pos = cursor;
-        for (int i = 0; i < steps; i++) {
-            size_t found = findPrevSlotTxn(g_activeSlot, pos);
-            if (found == SIZE_MAX) return "";
-            pos = found;
-            if (i == steps - 1) {
-                return g_txns[found].label[0] ? g_txns[found].label : "(unlabeled)";
-            }
-        }
-        return "";
+        return SIZE_MAX;
     }
+    int steps = 1 - relativeOffset;  // relativeOffset=0 -> 1 step back
+    size_t pos = cursor;
+    for (int i = 0; i < steps; i++) {
+        size_t found = findPrevSlotTxn(g_activeSlot, pos);
+        if (found == SIZE_MAX) return SIZE_MAX;
+        pos = found;
+        if (i == steps - 1) return found;
+    }
+    return SIZE_MAX;
+}
+
+const char* undoLabelAt(int relativeOffset) {
+    size_t idx = undoResolveRelTxn(relativeOffset);
+    if (idx == SIZE_MAX) return "";
+    return g_txns[idx].label[0] ? g_txns[idx].label : "(unlabeled)";
+}
+
+// Action length (split index) of the label at `relativeOffset`, recomputed from
+// the txn's first op via undoFormatOpLabel so it matches exactly what's stored.
+// Falls back to the first space for custom (externally-labelled) txns, or -1 if
+// there's no txn. The toast uses this to separate the small action from the
+// large detail without guessing where the boundary is.
+int undoLabelSplitAt(int relativeOffset) {
+    size_t idx = undoResolveRelTxn(relativeOffset);
+    if (idx == SIZE_MAX) return -1;
+    UndoTxn& t = g_txns[idx];
+    if (t.opCount > 0) {
+        char scratch[sizeof(t.label)];
+        uint8_t split = undoFormatOpLabel(g_ops[t.firstOp % g_opCap],
+                                          scratch, sizeof(scratch));
+        if (strcmp(scratch, t.label) == 0) return (int)split;
+    }
+    const char* sp = strchr(t.label, ' ');
+    return sp ? (int)(sp - t.label) : -1;
 }
 
 bool undoScrubTo(int targetPosition) {
@@ -2382,57 +2455,41 @@ void undoFlashLogo(uint32_t durationMs) {
 // --- OLED undo/redo toast layout ---------------------------------------------
 // The toast is built from up to three logical pieces:
 //   tag    = "undo" / "redo"
-//   action = "connect" / "disconnect" / "top" / "slot" / ... (the verb/source)
-//   nodes  = "4-8" / "5.00V" / "2->3" / ...                  (the detail/value)
+//   action = "connect" / "Top Rail" / "GPIO 1" / "Clear All" / ... (verb/source)
+//   nodes  = "8-GP 2" / "5.00V" / "2->3" / ...                     (detail/value)
 // The layout below is hardcoded to match the design exported from the OLED
 // layout editor (device/screens/layout.json) - see undoBuildToastScreen.
 
-// Split a recorder label into action (first token) + nodes (the detail/value)
-// so the toast can render the verb/source small and the detail large. Covers
-// every label the undoRecord* helpers emit:
-//   "connect 4-8"    -> "connect"    / "4-8"
-//   "disconnect 5-9" -> "disconnect" / "5-9"
-//   "top 5.00V"      -> "top"        / "5.00V"   (rail / DAC voltage)
-//   "bot 3.30V"      -> "bot"        / "3.30V"
-//   "DAC0 1.50V"     -> "DAC0"       / "1.50V"
-//   "slot 2->3"      -> "slot"       / "2->3"
-//   "GPIO5 dir=1"    -> "GPIO5"      / "dir=1"
-//   "GPIO5=1"        -> "GPIO5"      / "1"        (no space: split on '=')
-//   "clear all"      -> ""           / "clear all" (kept whole - no value)
-// Anything with no separator (or unlabeled) is kept whole as the detail so it
-// still renders as a single segment.
-static void undoSplitLabel(const char* label, char* action, size_t actionSize,
+// Split a label into action + detail using the authored split index
+// `actionLen` (from undoLabelSplitAt / undoFormatOpLabel). Because the action
+// can contain spaces ("Top Rail", "GPIO 1", "Clear All"), the boundary cannot
+// be found by scanning for a space - it is carried explicitly:
+//   "Top Rail 5.00V" (len 8) -> "Top Rail" / "5.00V"
+//   "GPIO 1 HIGH"    (len 6) -> "GPIO 1"   / "HIGH"
+//   "Clear All"      (len 9) -> "Clear All"/ ""
+//   "connect 8-GP 2" (len 7) -> "connect"  / "8-GP 2"
+// actionLen < 0 (unknown / custom label) falls back to the first space.
+static void undoSplitLabel(const char* label, int actionLen,
+                           char* action, size_t actionSize,
                            char* nodes, size_t nodesSize) {
     action[0] = '\0';
     nodes[0] = '\0';
     if (!label || !label[0]) return;
 
-    // "clear all" (and similar bare commands) have no value half - the whole
-    // label is the detail, with no separable action.
-    if (strcmp(label, "clear all") == 0) {
-        strncpy(nodes, label, nodesSize - 1);
-        nodes[nodesSize - 1] = '\0';
-        return;
+    size_t len = strlen(label);
+    if (actionLen < 0 || (size_t)actionLen > len) {
+        const char* sp = strchr(label, ' ');
+        actionLen = sp ? (int)(sp - label) : (int)len;
     }
 
-    // Action = first token; detail = the remainder. Prefer a space separator;
-    // if there's none, fall back to '=' (e.g. "GPIO5=1") so the pin/source is
-    // still split out from its value.
-    const char* sep = strchr(label, ' ');
-    if (!sep) sep = strchr(label, '=');
+    size_t a = (size_t)actionLen;
+    if (a >= actionSize) a = actionSize - 1;
+    memcpy(action, label, a);
+    action[a] = '\0';
 
-    if (sep && sep != label) {
-        size_t verbLen = (size_t)(sep - label);
-        if (verbLen >= actionSize) verbLen = actionSize - 1;
-        memcpy(action, label, verbLen);
-        action[verbLen] = '\0';
-        strncpy(nodes, sep + 1, nodesSize - 1);   // skip the single separator
-        nodes[nodesSize - 1] = '\0';
-        return;
-    }
-
-    // No separator - keep the whole label as the detail.
-    strncpy(nodes, label, nodesSize - 1);
+    const char* d = label + actionLen;
+    if (*d == ' ') d++;   // skip the single separator between action and detail
+    strncpy(nodes, d, nodesSize - 1);
     nodes[nodesSize - 1] = '\0';
 }
 
@@ -2466,7 +2523,7 @@ static void undoBuildToastScreen(OledScreen& screen, const char* tag,
     }
 }
 
-void undoToast(bool isRedo, const char* label) {
+void undoToast(bool isRedo, const char* label, int actionLen) {
     const char* tag = isRedo ? "redo" : "undo";
 
 // return;
@@ -2485,13 +2542,14 @@ void undoToast(bool isRedo, const char* label) {
     }
 
     if (oled.isConnected()) {
-    // Parse the label into action + nodes; undoBuildToastScreen lays them out
-    // (with the tag) per the hardcoded layout-editor design, e.g.:
+    // Split the label into action + nodes at the authored boundary;
+    // undoBuildToastScreen lays them out (with the tag) per the hardcoded
+    // layout-editor design, e.g.:
     //   undo
     //   connect              8-GP 2
     char action[16];
     char nodes[48];
-    undoSplitLabel(label, action, sizeof(action), nodes, sizeof(nodes));
+    undoSplitLabel(label, actionLen, action, sizeof(action), nodes, sizeof(nodes));
 
     // Build the toast as a retained oledgui scene graph (anchored Text
     // elements) and render it into the framebuffer. A function-static

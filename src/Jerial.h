@@ -16,6 +16,31 @@ class MultiSourceStream;
 // Global variable for interactive mode tracking
 extern int termInInteractiveMode;
 
+// ---------------------------------------------------------------------------
+// Line-buffering / interactive-mode control (single source of truth)
+//
+// Line buffering ON  == app interactive (raw passthrough) mode ON: the firmware
+//                       owns the line editor and the app forwards keystrokes raw.
+// Line buffering OFF == app processes single chars; the app owns line input.
+//
+// These three functions are the ONLY places that should emit the SO/SI sync
+// bytes (0x0E / 0x0F) or mutate termInInteractiveMode. Routing every change
+// through them keeps the app in sync and avoids redundantly forcing it on/off.
+// ---------------------------------------------------------------------------
+
+// Notify the app of the current config state, but only if it changed since we
+// last told it (idempotent reconciliation; safe to call every loop).
+void pushLineBufferingToApp();
+
+// Firmware-initiated change: set the config and push it to the app. Returns the
+// PREVIOUS enabled state so callers that change the mode temporarily (e.g. the
+// OLED terminal) can restore it with another call.
+bool setTerminalLineBuffering(bool enabled);
+
+// App-initiated change: the app already moved to this state (it sent us SO/SI),
+// so adopt it silently — update tracking WITHOUT echoing the control char back.
+void acknowledgeAppLineBuffering(bool enabled);
+
 /**
  * Jerial - Unified Serial Communications System
  * 
@@ -692,7 +717,7 @@ private:
     } ansi_state;
 
     int brace_depth; // Nesting level of curly braces
-    
+
     // Internal methods
     void handleNormalChar(char c);
     void handleBackspace();
@@ -712,6 +737,7 @@ private:
     void insertCharAtCursor(char c);
     void deleteCharAtCursor();
     int calculateVisualLength(const String& text);
+    bool currentLineIsMultiline() const; // True if the edit buffer contains an embedded newline
 };
 
 

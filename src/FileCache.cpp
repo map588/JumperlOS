@@ -80,11 +80,11 @@ extern bool safeFileRenameRaw(const char* pathFrom, const char* pathTo, uint32_t
 namespace {
 
 // Debounce: a dirty entry waits this long before being flushed unless it
-// gets force-flushed. ~6s gives time for follow-up writes to coalesce.
-constexpr uint32_t FLUSH_DEBOUNCE_MS = 1000;
+// gets force-flushed. ~1s gives time for follow-up writes to coalesce.
+constexpr uint32_t FLUSH_DEBOUNCE_MS = 600;
 
 // Service tick rate - we run roughly every 250ms even when nothing is dirty.
-constexpr uint32_t SERVICE_TICK_MS = 350;
+constexpr uint32_t SERVICE_TICK_MS = 250;
 
 // bodyHeap discriminator for free()/psram_free() pairing. Stored per-entry
 // because on a non-PSRAM build (or when PSRAM is exhausted) we fall back to

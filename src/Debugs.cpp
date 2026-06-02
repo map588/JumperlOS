@@ -575,11 +575,14 @@ bool statusDiagnosticsMenu() {
     Serial.print("\033[2J\033[H");
     Serial.flush();
 
-        // Enable raw input mode indicator
-        Serial.write(0x0E);  // Interactive mode on
+        // Enable raw input mode for the status menu (navigation keys).
+        bool wasInteractive = ( termInInteractiveMode == 1 );
+        setTerminalLineBuffering(true);
         delay(10);
-            
-    
+
+    // The "press enter to start" prompt/wait only exists to break the app's cooked
+    // line-input loop. If the app is already interactive, start the menu immediately.
+    if (!wasInteractive) {
     // Prompt user to press Enter to start interactive mode
     cycleTerminalColor(true, 3.0, false, &Serial, 0, 1);
     Serial.println("\n\r");
@@ -622,6 +625,7 @@ bool statusDiagnosticsMenu() {
             }
         }
         delay(10);
+    }
     }
     
 
@@ -761,8 +765,8 @@ bool statusDiagnosticsMenu() {
         delay(10);
     }
     
-    // Clean up
-    Serial.write(0x0F);  // Interactive mode off
+    // Clean up: resync the app to the user's line-buffering config.
+    pushLineBufferingToApp();
     delay(10);
     Serial.print("\033[2J\033[H");  // Clear screen
     Serial.flush();

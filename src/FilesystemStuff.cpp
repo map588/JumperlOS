@@ -1176,13 +1176,11 @@ bool runPythonScriptByPath( const String& fullPath ) {
         return false;
     }
     Serial.println( "\r\nRunning " + fullPath + " ..." );
-    Serial.write(0x0E);
-    Serial.flush();
-
+    setTerminalLineBuffering( true ); // script needs raw/interactive input
 
     bool ok = executePythonFileContent( content.c_str( ) );
 
-    Serial.write(0x0F);
+    pushLineBufferingToApp( ); // resync app to the user's config afterward
     Serial.println( "\r\n--- script finished ---" );
     Serial.flush();
     return ok;
@@ -1777,10 +1775,8 @@ void FileManager::run( ) {
 
     // Only exit interactive mode if we're NOT returning to main menu after REPL launch
     if ( !shouldExitForREPL ) {
-        // Exit Jumperless interactive mode (normal file manager exit)
-        Serial.write( 0x0F );
-        termInInteractiveMode = 0;
-        Serial.flush( );
+        // Normal file manager exit: resync the app to the user's config.
+        pushLineBufferingToApp( );
         delay( 10 ); // Give system time to switch modes
     }
     // If shouldExitForREPL is true, we're returning to main menu and want to keep interactive mode on
@@ -1798,10 +1794,8 @@ void FileManager::run( ) {
 
 // Interactive mode implementation
 void FileManager::initInteractiveMode( ) {
-    // Enter Jumperless interactive mode
-    Serial.write( 0x0E );
-    termInInteractiveMode = 1;
-    Serial.flush( );
+    // Enter Jumperless interactive mode (raw input for navigation keys)
+    setTerminalLineBuffering( true );
     delay( 10 ); // Give system time to switch modes
 
     // Show cursor by default - only hide during drawing
@@ -2386,13 +2380,18 @@ void filesystemApp( bool waitForEnter ) {
     Serial.println( "   Navigate files and directories with colorful interface" );
     Serial.println( "   Create, edit, and manage files using eKilo editor\n\n\r" );
     changeTerminalColor( FileColors::STATUS, true );
-    Serial.println( "   Press Enter to launch File Manager..." );
+    // The "press enter" handshake only exists to break the app's cooked line-input
+    // loop; skip it (and the prompt) when the app is already forwarding raw keys.
+    bool wasInteractive = ( termInInteractiveMode == 1 );
+    if ( waitForEnter && !wasInteractive ) {
+        Serial.println( "   Press Enter to launch File Manager..." );
+    }
     changeTerminalColor( 8, true );
     FileManager manager;
     manager.initInteractiveMode( );
 
     // Wait for user to press enter to break the input loop
-    if ( waitForEnter ) {
+    if ( waitForEnter && !wasInteractive ) {
         while ( Serial.available( ) == 0 && encoderButtonState == IDLE ) {
             delayMicroseconds( 100 );
         }
@@ -2728,10 +2727,8 @@ String launchEkilo( const char* filename, bool replMode ) {
     // Clear screen one more time to ensure clean return
     Serial.print( "\x1b[2J\x1b[H" );
 
-    // Restore interactive mode if using Serial
-    Serial.write( 0x0E ); // turn on interactive mode
-    termInInteractiveMode = 1;
-    Serial.flush( );
+    // Restore interactive mode after the editor (raw input).
+    setTerminalLineBuffering( true );
 
     // Pop EKILO_EDITOR context - cleanup callback will be called
     ContextManager::getInstance( ).popContext( );
@@ -2848,10 +2845,8 @@ String filesystemAppPythonScriptsREPL( ) {
         // Clear screen completely for clean return to main menu
         Serial.print( "\x1b[2J\x1b[H" );
         Serial.flush( );
-        // Ensure interactive mode is enabled for main menu
-        Serial.write( 0x0E );
-        termInInteractiveMode = 1;
-        Serial.flush( );
+        // Resync the app to the user's line-buffering config for the main menu.
+        pushLineBufferingToApp( );
     } else {
         // Normal exit - restore screen state
         restoreScreenState( );
@@ -3472,6 +3467,21 @@ void initializeMicroPythonExamples( bool forceInitialization ) {
         }
 
         // Canonical has a hash that doesn't match any known firmware version - user edited it.
+        // Files in a /lib/ folder are always overwritten in place; we never keep an
+        // _original* copy for library modules (they must match the firmware).
+        if ( strstr( canonicalPath, "/lib/" ) != nullptr ) {
+            String progressMsg = "Updating " + String( logicalName );
+            if ( useOutputArea ) {
+                globalFileManager->outputToArea( progressMsg, 155 );
+            } else {
+                addFilesystemMessage( progressMsg, 155 );
+            }
+            writeStringToFile( canonicalPath, examples[ i ].content );
+            filesCreated++;
+            delay( 10 );
+            continue;
+        }
+
         // Check if any _original* variant already stores the current default before writing another.
         bool alreadyHaveDefault = false;
         const int maxVariants = 5;

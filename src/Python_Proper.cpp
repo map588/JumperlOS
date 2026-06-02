@@ -1037,36 +1037,36 @@ void enterMicroPythonREPLWithFile(Stream *stream, const String& filepath) {
   //! This is to break the Python App's input loop
   repl_stream->println();
 
+  bool wasInteractive = false;
   if (repl_stream == &Serial || repl_stream == &Jerial) {
-    repl_stream->write(0x0E); // turn on interactive mode
-    termInInteractiveMode = 1;
-    repl_stream->flush();
+    wasInteractive = ( termInInteractiveMode == 1 );
+    setTerminalLineBuffering( true ); // turn on interactive mode for the REPL
   }
-
-  // Wait for user to press enter
-  changeTerminalColor(replColors[4], true, repl_stream);
-  repl_stream->print("\n\rPress enter to start REPL");
-  repl_stream->println();
-  repl_stream->flush();
 
   Serial.write("\x1b[0 q");
 
+  // The "press enter to start" prompt/wait only exists to break the app's cooked
+  // line-input loop. If the app is already interactive (forwarding raw keys),
+  // start the REPL immediately instead of waiting for (and consuming) an Enter.
+  if (!wasInteractive) {
+    changeTerminalColor(replColors[4], true, repl_stream);
+    repl_stream->print("\n\rPress enter to start REPL");
+    repl_stream->println();
+    repl_stream->flush();
 
-  extern void jl_service_python(void);
-  unsigned long lastWaitServiceTime = millis();
-  while (repl_stream->available() == 0) {
-    // Run services while waiting for user input (including MpRemoteService)
-    if (millis() - lastWaitServiceTime >= 50) {
-      jl_service_python();
-      
-      
-      lastWaitServiceTime = millis();
+    extern void jl_service_python(void);
+    unsigned long lastWaitServiceTime = millis();
+    while (repl_stream->available() == 0) {
+      // Run services while waiting for user input (including MpRemoteService)
+      if (millis() - lastWaitServiceTime >= 50) {
+        jl_service_python();
+        lastWaitServiceTime = millis();
+      }
+      delayMicroseconds(1);
     }
-    delayMicroseconds(1);
+
+    repl_stream->read(); // consume the enter keypress
   }
-
-
-  repl_stream->read(); // consume the enter keypress
 
   // Start the REPL with colors
   changeTerminalColor(replColors[1], true, repl_stream);
@@ -1696,11 +1696,9 @@ void processMicroPythonInput(Stream *stream) {
           // Launch main eKilo editor with temporary file
           String savedContent = launchEkiloREPL(tempFile.c_str());
           
-          // Restore interactive mode after returning from eKilo
+          // Restore interactive mode after returning from eKilo (raw input).
           if (global_mp_stream == &Serial) {
-            global_mp_stream->write(0x0E); // turn on interactive mode
-            termInInteractiveMode = 1;
-            global_mp_stream->flush();
+            setTerminalLineBuffering( true );
           }
           
           // Handle the return from eKilo
@@ -1767,11 +1765,9 @@ void processMicroPythonInput(Stream *stream) {
           // Launch eKilo editor in REPL mode
           String savedContent = launchEkiloREPL(nullptr);
           
-          // Restore interactive mode after returning from eKilo
+          // Restore interactive mode after returning from eKilo (raw input).
           if (global_mp_stream == &Serial) {
-            global_mp_stream->write(0x0E); // turn on interactive mode
-            termInInteractiveMode = 1;
-            global_mp_stream->flush();
+            setTerminalLineBuffering( true );
           }
           
           // If content was saved, load it into the editor
@@ -1817,11 +1813,9 @@ void processMicroPythonInput(Stream *stream) {
           // Launch main eKilo editor with temporary file
           String savedContent = launchEkiloREPL(tempFile.c_str());
           
-          // Restore interactive mode after returning from eKilo
+          // Restore interactive mode after returning from eKilo (raw input).
           if (global_mp_stream == &Serial) {
-            global_mp_stream->write(0x0E); // turn on interactive mode
-            termInInteractiveMode = 1;
-            global_mp_stream->flush();
+            setTerminalLineBuffering( true );
           }
           
           // Handle the return from eKilo
@@ -2003,11 +1997,9 @@ void processMicroPythonInput(Stream *stream) {
           // Launch file manager in REPL mode
           String savedContent = filesystemAppPythonScriptsREPL();
           
-          // Restore interactive mode after returning from file manager
+          // Restore interactive mode after returning from file manager (raw input).
           if (global_mp_stream == &Serial) {
-            global_mp_stream->write(0x0E); // turn on interactive mode
-            termInInteractiveMode = 1;
-            global_mp_stream->flush();
+            setTerminalLineBuffering( true );
           }
 
           // PRIORITY 1: Check SharedBuffer first (fastest - already in memory)
@@ -2399,11 +2391,9 @@ void processMicroPythonInput(Stream *stream) {
         // Launch main eKilo editor with temporary file
         String savedContent = launchEkiloREPL(tempFile.c_str());
         
-        // Restore interactive mode after returning from eKilo
+        // Restore interactive mode after returning from eKilo (raw input).
         if (global_mp_stream == &Serial) {
-          global_mp_stream->write(0x0E); // turn on interactive mode
-          termInInteractiveMode = 1;
-            global_mp_stream->flush();
+          setTerminalLineBuffering( true );
         }
         
         // Handle the return from eKilo
@@ -4297,50 +4287,7 @@ void REPLEditor::fullReset() {
 // New functions for single command execution from main.cpp
 
 
-// moved to SyntaxHighlighting.cpp
 
-void getMicroPythonCommandFromStream(Stream *stream) {
-  // stream->print("Python> ");
-  // stream->flush();
-  
-  String command = "";
-  while (stream->available() == 0) {
-    tight_loop_contents();
-    //delay(1); // Wait for input
-  }
-  
-  // Read input character by character with syntax highlighting
-  while (stream->available() > 0) {
-    char c = stream->read();
-    if (c == '\r' || c == '\n') {
-      break;
-    }
-    if (c == '\b' || c == 127) { // Backspace
-      if (command.length() > 0) {
-        command = command.substring(0, command.length() - 1);
-        stream->print("\b \b"); // Erase character
-      }
-    } else if (c >= 32 && c <= 126) { // Printable characters
-      command += c;
-      // Real-time syntax highlighting - redraw the visible part
-      // stream->print("\rPython> ");
-      displayStringWithSyntaxHighlighting(command, stream);
-      stream->flush();
-    }
-  }
-  
-  stream->println(); // New line after input
-  command.trim();
-  
-  if (command.length() > 0) {
-    char result_buffer[128];
-    bool success = executeSinglePythonCommandFormatted(command.c_str(), result_buffer, sizeof(result_buffer));
-    (void)success;
-    changeTerminalColor(replColors[2], true, stream);
-    stream->printf(result_buffer);
-    changeTerminalColor(replColors[0], true, stream);
-  }
-}
 
 /**
  * Initialize MicroPython quietly without any output

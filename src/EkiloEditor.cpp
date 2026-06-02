@@ -243,8 +243,7 @@ void ekilo_init() {
     E.should_launch_repl = false;  // CRITICAL: Reset between sessions to prevent stale Ctrl+P state
     strcpy(E.statusmsg, "");
     E.statusmsg_time = 0;
-    Jerial.write(0x0E);
-    Jerial.flush();
+    setTerminalLineBuffering(true); // editor needs raw keystrokes
     
     // Clear any pending input that might be CPR garbage from TUI or other sources
     // Do this FIRST before anything else
