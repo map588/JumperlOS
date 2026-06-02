@@ -70,6 +70,9 @@ extern int32_t safeFileSizeRaw(const char* path, uint32_t timeout_ms);
 extern bool safeFileDeleteRaw(const char* path, uint32_t timeout_ms);
 extern bool safeFileRenameRaw(const char* pathFrom, const char* pathTo, uint32_t timeout_ms);
 
+
+#define USE_FILE_CACHE 0
+
 #if USE_FILE_CACHE
 // ===========================================================================
 // Full write-back PSRAM file cache. Compiled in only when USE_FILE_CACHE != 0.

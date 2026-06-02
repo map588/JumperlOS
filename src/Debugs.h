@@ -17,6 +17,7 @@ void action_bridgeArray();
 void action_crossbar();
 void action_pioStatus();
 void action_memoryUsage();
+void action_memoryMap();
 void action_i2cScan();
 void action_speedTest();
 void action_colorSpectrum();

@@ -20,6 +20,12 @@
 #include "oled.h"
 #include "CH446Q.h"
 #include "NetsToChipConnections.h"
+#include "States.h"          // globalState — the single largest static buffer (memory map)
+#include "GraphicOverlays.h" // graphicOverlayState — large overlay state buffer (memory map)
+#include "SharedBuffer.h"    // borrowed as scratch for the memory-map renderer
+#include "FatFS.h"      // FatFS.info() for the flash partition usage map
+#include <malloc.h>     // mallinfo() for the SRAM heap usage map
+#include <math.h>       // lroundf() for the color ramp
 
 #include "SingleCharCommands.h"
 
@@ -152,6 +158,8 @@ debugFlags:
     Serial.print("\n\ri. atomic write commit trace  =    "); Serial.print(temp_fcAtomicDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
 
     Serial.print("\n\rd. undo system trace          =    "); Serial.print(temp_undoDebug ? 1 : 0); lines_printed++; cycleTerminalColor();
+
+    Serial.print("\n\ro. wipe undo history          >    (one-shot)"); lines_printed++; cycleTerminalColor();
 
     Serial.print("\n\rq. SPIFTL persist timing      =    "); Serial.print(temp_spiftlTiming ? 1 : 0); lines_printed++; cycleTerminalColor();
 
@@ -315,6 +323,22 @@ debugFlags:
       continue;
     }
 
+    // One-shot action (not a toggle): wipe the persisted + in-RAM undo/redo
+    // history. Clear the current menu, run the wipe, show a brief confirmation,
+    // then redraw the menu beneath it.
+    if (sel == 'o' || sel == 'O') {
+      Serial.printf("\033[%dA", lines);
+      for (int i = 0; i < lines; i++) { Serial.print("\033[2K\r\n\r"); }
+      Serial.printf("\033[%dA", lines);
+      Serial.flush();
+      undoWipeHistory();
+      Serial.print("\n\r\033[1;33mUndo history wiped.\033[0m\n\r");
+      Serial.flush();
+      delay(700);
+      print_main_debug_menu(lines);
+      continue;
+    }
+
     // Toggle items and redraw, but do not persist yet
     if (sel == 'x' || sel == 'X') {
       temp_debugFP = false;
@@ -444,6 +468,7 @@ void action_bridgeArray();
 void action_crossbar();
 void action_pioStatus();
 void action_memoryUsage();
+void action_memoryMap();
 void action_i2cScan();
 void action_speedTest();
 void action_colorSpectrum();
@@ -458,6 +483,7 @@ const StatusMenuItem statusMenuItems[] = {
     { "Crossbar View",      "Compact crossbar chip visualization",    action_crossbar },
     { "PIO Status",         "Detailed PIO state machine status",      action_pioStatus },
     { "Memory Usage",       "Detailed heap and stack analysis",       action_memoryUsage },
+    { "Memory Map",         "Granular RAM/PSRAM/flash block map",     action_memoryMap },
     { "I2C Scan",           "Scan I2C bus for devices",               action_i2cScan },
     { "Speed Test",         "Raw crossbar switch speed test",         action_speedTest },
     { "Color Spectrum",     "Display terminal color palette",         action_colorSpectrum },
@@ -1112,6 +1138,551 @@ void action_memoryUsage() {
         Serial.println("Heap Free:       " + String(rp2040.getFreePSRAMHeap()) + " bytes");
     }
     
+    Serial.flush();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Granular Memory Map Viewer
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Renders SRAM, PSRAM and flash as colored grids of box-drawing blocks. Each
+// cell covers a fixed power-of-two number of bytes and is colored on a
+// green→yellow→red "used" ramp for dynamically-managed regions, or with a fixed
+// hue for fixed-purpose segments (firmware, static globals, stacks, EEPROM,
+// MicroPython GC heap, reserved metadata, vacant space).
+//
+// The PSRAM app arena is walked block-by-block (true per-allocation detail);
+// the SRAM heap is summarized via mallinfo(); the FatFS partition via
+// FatFS.info(); fixed segment boundaries come from linker symbols.
+
+// Linker symbols describing the on-chip layout (see the arduino-pico
+// memmap_default.ld). Taking their *address* gives the boundary; the declared
+// type is irrelevant since we never dereference them.
+extern "C" {
+    extern char __data_start__;        // start of .data (static globals) in SRAM
+    extern char __end__;               // start of the SRAM heap (after .bss)
+    extern char __StackLimit;          // top of the SRAM heap / 0x20080000
+    extern char __flash_binary_start;  // 0x10000000
+    extern char __flash_binary_end;    // end of the firmware image in flash
+    extern uint8_t _FS_start;          // start of the FatFS partition
+    extern uint8_t _FS_end;            // end of the FatFS partition (EEPROM follows)
+}
+
+// Two big static buffers we want to mark on the SRAM map but that lack a usable
+// public declaration: both are defined at global scope in their .cpp but the
+// header decl is either commented out (newBridges) or namespaced (uartReceived).
+extern int     newBridges[MAX_NETS][MAX_DUPLICATE][2];  // NetsToChipConnections.cpp
+extern uint8_t uartReceived[8192];                      // AsyncPassthrough.cpp (DMA RX ring)
+
+namespace {
+
+// Segment categories. MC_GRADIENT cells are colored by their per-cell used
+// fraction; every other category is a solid fixed hue.
+enum MemCat : uint8_t {
+    MC_GRADIENT = 0,
+    MC_CODE,
+    MC_STATIC,
+    MC_STACK,
+    MC_EEPROM,
+    MC_MPHEAP,
+    MC_RESERVED,
+    MC_VACANT,
+    MC_NAMED,     // big named static buffer; color comes from the seg, not kCat
+    MC_COUNT
+};
+
+struct MemSeg {
+    uint64_t start;   // byte offset from the region base
+    uint64_t size;    // length in bytes
+    uint8_t  cat;     // MemCat
+    float    frac;    // MC_GRADIENT: used fraction. MC_NAMED: xterm color (cast to int).
+};
+
+// xterm-256 color cube helper: r,g,b each 0..5.
+inline uint8_t cube256(int r, int g, int b) {
+    return (uint8_t)(16 + 36 * r + 6 * g + b);
+}
+
+// Fixed colors + legend names for the non-gradient categories.
+struct CatStyle { uint8_t color; const char* name; };
+const CatStyle kCat[MC_COUNT] = {
+    { 0,              "used"     },  // MC_GRADIENT (color computed per cell)
+    { cube256(1,2,5), "firmware" },  // blue
+    { cube256(0,4,5), "static"   },  // cyan
+    { cube256(5,0,4), "stack"    },  // magenta
+    { cube256(5,4,0), "eeprom"   },  // gold
+    { cube256(3,1,5), "mpython"  },  // violet
+    { cube256(2,2,2), "reserved" },  // grey
+    { 236,            "vacant"   },  // near-black grey
+    { cube256(5,5,5), "marked"   },  // MC_NAMED fallback (per-seg color normally)
+};
+
+// Map a 0..1 used fraction onto green → yellow → red.
+uint8_t usedRamp256(float f) {
+    if (f < 0.0f) f = 0.0f;
+    if (f > 1.0f) f = 1.0f;
+    int r, g;
+    if (f <= 0.5f) { r = (int)lroundf(f * 2.0f * 5.0f); g = 5; }   // green→yellow
+    else           { r = 5; g = (int)lroundf((1.0f - f) * 2.0f * 5.0f); } // yellow→red
+    return cube256(r, g, 0);
+}
+
+uint64_t nextPow2_u64(uint64_t v) {
+    uint64_t p = 1;
+    while (p < v && p < (1ULL << 62)) p <<= 1;
+    return p;
+}
+
+const char* fmtBytes(uint64_t b, char* buf, size_t n) {
+    if (b >= 1024ULL * 1024 * 1024) snprintf(buf, n, "%.2f GB", b / (1024.0 * 1024 * 1024));
+    else if (b >= 1024ULL * 1024)   snprintf(buf, n, "%.2f MB", b / (1024.0 * 1024));
+    else if (b >= 1024ULL)          snprintf(buf, n, "%.1f KB", b / 1024.0);
+    else                            snprintf(buf, n, "%lu B", (unsigned long)b);
+    return buf;
+}
+
+// Context used while walking a block allocator (PSRAM arena or SRAM heap)
+// into a segment list. Adjacent same-state blocks are merged so a heavily
+// fragmented heap still fits the cap; the used↔free boundaries (the granular
+// signal we care about) are preserved.
+struct BlockRunCtx {
+    MemSeg*  segs;
+    int      n;
+    int      cap;
+    uintptr_t base;
+    int      lastUsed;   // -1 = no run seg started yet
+    uint64_t usedSum;
+};
+
+void blockRunCb(void* vctx, uintptr_t addr, size_t size, int used) {
+    BlockRunCtx* c = (BlockRunCtx*)vctx;
+    if (used) c->usedSum += size;
+    if (c->n > 0 && c->lastUsed == used && c->segs[c->n - 1].cat == MC_GRADIENT) {
+        c->segs[c->n - 1].size += size;
+        return;
+    }
+    if (c->n < c->cap) {
+        c->segs[c->n].start = (uint64_t)(addr - c->base);
+        c->segs[c->n].size  = size;
+        c->segs[c->n].cat   = MC_GRADIENT;
+        c->segs[c->n].frac  = used ? 1.0f : 0.0f;
+        c->n++;
+        c->lastUsed = used;
+    } else if (c->n > 0) {
+        c->segs[c->n - 1].size += size;  // cap hit: absorb the tail
+    }
+}
+
+typedef void (*block_visitor)(void* ctx, uintptr_t addr, size_t size, int used);
+
+// ── SRAM heap walk (newlib full dlmalloc) ────────────────────────────────────
+//
+// arduino-pico links Newlib's full malloc (mallocr.c, a Doug Lea v2.6.x
+// derivative). The heap is one contiguous sbrk arena starting at
+// __malloc_sbrk_base; the "top"/wilderness free chunk is __malloc_av_[2]
+// (= bin_at(0)->fd). Each chunk header is { prev_size, size }; chunksize masks
+// off the low flag bits, and chunk p is in use iff the *next* chunk's size has
+// PREV_INUSE(0x1) set. We mirror that model exactly, walking address-ordered
+// blocks from the first chunk to top, then emit top itself as free.
+extern "C" {
+    extern char* __malloc_sbrk_base;   // base of the sbrk heap arena (char*)
+    extern void* __malloc_av_[];       // dlmalloc bin array; [2] == top chunk
+}
+
+struct DlChunk { size_t prev_size; size_t size; DlChunk* fd; DlChunk* bk; };
+
+// Returns the number of blocks visited (0 if the heap is uninitialized or the
+// structures look inconsistent, so the caller can fall back to a coarse view).
+size_t sram_heap_walk(block_visitor cb, void* ctx, uintptr_t* outTopEnd) {
+    char* sb = __malloc_sbrk_base;
+    if (sb == nullptr || sb == (char*)~(uintptr_t)0) return 0;
+
+    DlChunk* top = (DlChunk*)__malloc_av_[2];
+    uintptr_t first = ((uintptr_t)sb + 7) & ~(uintptr_t)7;
+    uintptr_t topAddr = (uintptr_t)top;
+
+    // Sanity: top must live in main SRAM, at or above the first chunk.
+    if (topAddr < first || topAddr < 0x20000000u || topAddr >= 0x20080000u) return 0;
+
+    size_t count = 0;
+    DlChunk* p = (DlChunk*)first;
+    int guard = 0;
+    while ((uintptr_t)p < topAddr && guard++ < 8000) {
+        size_t sz = p->size & ~(size_t)0x3;            // chunksize: strip flag bits
+        if (sz < sizeof(DlChunk) || (sz & 0x7) != 0) return count;   // desync guard
+        uintptr_t pa = (uintptr_t)p;
+        if (pa + sz > topAddr) return count;           // would overrun top: bail
+        DlChunk* nxt = (DlChunk*)(pa + sz);
+        int used = (int)(nxt->size & 0x1);             // PREV_INUSE of next == inuse(p)
+        if (cb) cb(ctx, pa, sz, used);
+        count++;
+        p = nxt;
+    }
+    // The top/wilderness chunk is always free.
+    size_t topSz = top->size & ~(size_t)0x3;
+    if (topSz >= sizeof(DlChunk)) {
+        if (cb) cb(ctx, topAddr, topSz, 0);
+        count++;
+        if (outTopEnd) *outTopEnd = topAddr + topSz;
+    } else if (outTopEnd) {
+        *outTopEnd = topAddr;
+    }
+    return count;
+}
+
+// Max segments in the scratch list. SRAM / PSRAM / flash are rendered one at a
+// time, so a single buffer is reused for each region (run-merging keeps the
+// count well under the cap even on a heavily fragmented heap). Rather than park
+// ~12 KB in .bss, the renderer borrows the existing 24 KB shared transfer buffer
+// while the map is on screen (see action_memoryMap).
+constexpr int kMaxSegs = 512;
+static_assert(sizeof(MemSeg) * kMaxSegs <= SHARED_BUFFER_SIZE,
+              "memory-map segment scratch must fit within the shared buffer");
+
+// Draw one labeled, colored grid for a memory region.
+void drawMemRegion(const char* title, const char* info,
+                   uintptr_t base, uint64_t total,
+                   const MemSeg* segs, int nSegs) {
+    if (total == 0) return;
+
+    const int cols = 64;
+    const int targetRows = 24;
+
+    uint64_t bpc = (total + (uint64_t)cols * targetRows - 1) / ((uint64_t)cols * targetRows);
+    if (bpc < 1) bpc = 1;
+    bpc = nextPow2_u64(bpc);
+    uint64_t rowBytes = bpc * (uint64_t)cols;
+    int rows = (int)((total + rowBytes - 1) / rowBytes);
+
+    char cbuf[24], rbuf[24];
+    Serial.println();
+    Serial.printf("\033[1;97m  %s\033[0m  \033[90m[0x%08lX]\033[0m\n\r",
+                  title, (unsigned long)base);
+    if (info && *info) Serial.printf("  %s\n\r", info);
+    Serial.printf("  \033[90mscale: each \033[0m\033[38;5;%dm█\033[0m\033[90m = %s    row = %s\033[0m\n\r",
+                  usedRamp256(1.0f), fmtBytes(bpc, cbuf, sizeof(cbuf)),
+                  fmtBytes(rowBytes, rbuf, sizeof(rbuf)));
+
+    for (int r = 0; r < rows; r++) {
+        uint64_t rowStart = (uint64_t)r * rowBytes;
+        Serial.printf("  \033[90m0x%08lX\033[0m ", (unsigned long)(base + rowStart));
+        int curColor = -1;
+        for (int c = 0; c < cols; c++) {
+            uint64_t cs = rowStart + (uint64_t)c * bpc;
+            if (cs >= total) {
+                if (curColor != -1) { Serial.print("\033[0m"); curColor = -1; }
+                Serial.print(" ");
+                continue;
+            }
+            uint64_t ce = cs + bpc;
+            if (ce > total) ce = total;
+
+            uint64_t gradOv = 0;
+            double   gradUsed = 0.0;
+            uint64_t bestSolidOv = 0;
+            int      bestSolidCat = -1;
+            uint64_t namedOv = 0;          // marked buffers override the cell entirely
+            uint8_t  namedColor = 0;
+            for (int s = 0; s < nSegs; s++) {
+                uint64_t a = segs[s].start;
+                uint64_t b = a + segs[s].size;
+                uint64_t lo = cs > a ? cs : a;
+                uint64_t hi = ce < b ? ce : b;
+                if (lo >= hi) continue;
+                uint64_t ov = hi - lo;
+                if (segs[s].cat == MC_GRADIENT) {
+                    gradOv += ov;
+                    gradUsed += (double)segs[s].frac * (double)ov;
+                } else if (segs[s].cat == MC_NAMED) {
+                    // MC_NAMED carries its xterm color in 'frac' (see MemSeg).
+                    if (ov > namedOv) { namedOv = ov; namedColor = (uint8_t)segs[s].frac; }
+                } else if (ov > bestSolidOv) {
+                    bestSolidOv = ov;
+                    bestSolidCat = segs[s].cat;
+                }
+            }
+
+            int color;
+            if (namedOv > 0) {
+                color = namedColor;        // a marked buffer touches this cell → highlight it
+            } else if (gradOv > 0 && gradOv >= bestSolidOv) {
+                color = usedRamp256((float)(gradUsed / (double)gradOv));
+            } else if (bestSolidCat >= 0) {
+                color = kCat[bestSolidCat].color;
+            } else {
+                color = kCat[MC_VACANT].color;
+            }
+
+            if (color != curColor) { Serial.printf("\033[38;5;%dm", color); curColor = color; }
+            Serial.print("█");
+        }
+        if (curColor != -1) Serial.print("\033[0m");
+        Serial.print("\n\r");
+        if ((r & 3) == 3) Serial.flush();
+    }
+    Serial.flush();
+}
+
+void printMemLegend() {
+    Serial.print("  \033[90mfree \033[0m");
+    for (int i = 0; i <= 5; i++) Serial.printf("\033[38;5;%dm█", usedRamp256(i / 5.0f));
+    Serial.print("\033[0m\033[90m used    \033[0m");
+    Serial.printf("\033[38;5;%dm█\033[0m firmware  ", kCat[MC_CODE].color);
+    Serial.printf("\033[38;5;%dm█\033[0m static  ",   kCat[MC_STATIC].color);
+    Serial.printf("\033[38;5;%dm█\033[0m stack\n\r",  kCat[MC_STACK].color);
+    Serial.printf("  \033[38;5;%dm█\033[0m eeprom    ",   kCat[MC_EEPROM].color);
+    Serial.printf("\033[38;5;%dm█\033[0m \u00b5python  ", kCat[MC_MPHEAP].color);
+    Serial.printf("\033[38;5;%dm█\033[0m reserved  ", kCat[MC_RESERVED].color);
+    Serial.printf("\033[38;5;%dm█\033[0m vacant\n\r", kCat[MC_VACANT].color);
+    Serial.flush();
+}
+
+// ── Big named static buffers ─────────────────────────────────────────────────
+//
+// The static region (.data + .bss) is ~240 KB and otherwise renders as one flat
+// block. These are the largest individual buffers the firmware reserves there;
+// addresses + sizes come straight from the real symbols so they always track the
+// current build. Each is painted in a distinct hue on top of the static block so
+// you can see where the big memory hogs actually live.
+struct NamedAlloc { const char* label; uintptr_t addr; uint64_t size; uint8_t color; };
+
+// Distinct hues kept clear of the category colors so a marked buffer pops out of
+// the cyan static background.
+const uint8_t kNamedPalette[] = {
+    cube256(5,2,0),  // orange
+    cube256(5,0,2),  // rose
+    cube256(4,0,5),  // purple
+    cube256(2,3,5),  // sky blue
+    cube256(5,5,5),  // white
+    cube256(5,3,5),  // pink
+    cube256(3,5,0),  // lime
+    cube256(4,3,2),  // tan
+    cube256(0,5,3),  // aqua-green
+    cube256(5,5,2),  // pale yellow
+};
+constexpr int kNamedPaletteN = (int)(sizeof(kNamedPalette) / sizeof(kNamedPalette[0]));
+
+// Fill 'out' with the tracked big static buffers, sorted largest-first, each
+// assigned a palette color. Returns the count written.
+int collectNamedStatics(NamedAlloc* out, int cap) {
+    NamedAlloc all[] = {
+        { "globalState",      (uintptr_t)&globalState,         sizeof(globalState),         0 },
+        { "graphicOverlay",   (uintptr_t)&graphicOverlayState, sizeof(graphicOverlayState), 0 },
+        { "uart RX ring",     (uintptr_t)&uartReceived,        sizeof(uartReceived),        0 },
+        { "rowAnimations",    (uintptr_t)&rowAnimations,       sizeof(rowAnimations),       0 },
+        { "newBridges",       (uintptr_t)&newBridges,          sizeof(newBridges),          0 },
+        { "logoColors",       (uintptr_t)&logoColorsAll,       sizeof(logoColorsAll),       0 },
+        { "newBridge",        (uintptr_t)&newBridge,           sizeof(newBridge),           0 },
+        { "changedNetColors", (uintptr_t)&changedNetColors,    sizeof(changedNetColors),    0 },
+        { "customBitmap",     (uintptr_t)&customBitmapBuffer,  sizeof(customBitmapBuffer),  0 },
+    };
+    int total = (int)(sizeof(all) / sizeof(all[0]));
+    // Selection sort by size, largest first (tiny list — simplicity over speed).
+    for (int i = 0; i < total; i++)
+        for (int j = i + 1; j < total; j++)
+            if (all[j].size > all[i].size) { NamedAlloc t = all[i]; all[i] = all[j]; all[j] = t; }
+    int n = 0;
+    for (int i = 0; i < total && n < cap; i++) {
+        all[i].color = kNamedPalette[n % kNamedPaletteN];
+        out[n++] = all[i];
+    }
+    return n;
+}
+
+}  // namespace
+
+void action_memoryMap() {
+    char b1[24], b2[24], b3[24], b4[24], info[200];
+
+    // Borrow the existing 24 KB shared transfer buffer for the segment scratch
+    // instead of reserving a dedicated one. On PSRAM units it lives in PSRAM (so
+    // the SRAM map stays clean); otherwise it's already on the SRAM heap. We
+    // clear() it on the way out since we scribble binary into its body.
+    SharedBuffer& shared = SharedBuffer::getInstance();
+    MemSeg* segScratch = (MemSeg*)shared.rawBuffer();
+    if (!segScratch) {
+        Serial.println("\n\r\033[91mmemory map: shared buffer unavailable\033[0m");
+        Serial.flush();
+        return;
+    }
+
+    Serial.println("\n\r\033[1m╭──────────────────────────────────────────────────────────────────╮\033[0m");
+    Serial.println(    "\033[1m│                       GRANULAR MEMORY MAP                        │\033[0m");
+    Serial.println(    "\033[1m╰──────────────────────────────────────────────────────────────────╯\033[0m\n\r");
+    printMemLegend();
+
+    // ── SRAM ────────────────────────────────────────────────────────────────
+    {
+        uintptr_t base       = 0x20000000u;
+        uintptr_t heapStart  = (uintptr_t)&__end__;
+        uintptr_t stackLimit = (uintptr_t)&__StackLimit;   // top of heap = 0x20080000
+        uintptr_t sramEnd    = 0x20082000u;                // + 8 KB scratch (core stacks)
+        uint64_t  total      = sramEnd - base;
+
+        struct mallinfo mi = mallinfo();
+        uint64_t heapTotal = (heapStart < stackLimit) ? (stackLimit - heapStart) : 0;
+
+        MemSeg* segs = segScratch;
+        int n = 0;
+        // Everything below the heap is static / startup data (.data + .bss + vectors).
+        segs[n++] = { 0, (uint64_t)(heapStart - base), MC_STATIC, 0.0f };
+
+        // Walk newlib's heap block-by-block for a true per-allocation map.
+        // Pause core 1 so the chunk chain can't shift mid-walk.
+        extern volatile bool pauseCore2;
+        bool wasPaused = pauseCore2;
+        pauseCore2 = true;
+        delay(2);
+        uintptr_t topEnd = 0;
+        BlockRunCtx ctx{ segs, n, kMaxSegs, base, -1, 0 };
+        size_t blocks = sram_heap_walk(blockRunCb, &ctx, &topEnd);
+        pauseCore2 = wasPaused;
+        n = ctx.n;
+
+        uint64_t heapUsed, heapFree;
+        if (blocks > 0 && topEnd > base) {
+            // True walk succeeded: used = sum of in-use chunks; the gap from the
+            // sbrk top up to __StackLimit has never been touched.
+            heapUsed = ctx.usedSum;
+            heapFree = (heapTotal > heapUsed) ? (heapTotal - heapUsed) : 0;
+            if (topEnd < stackLimit)
+                segs[n++] = { (uint64_t)(topEnd - base), (uint64_t)(stackLimit - topEnd),
+                              MC_VACANT, 0.0f };
+        } else {
+            // Fallback: no per-block detail — show the sbrk arena as one heatmap.
+            uint64_t arena = (uint64_t)(unsigned)mi.arena;
+            if (arena > heapTotal) arena = heapTotal;
+            heapUsed = (uint64_t)(unsigned)mi.uordblks;
+            if (heapUsed > arena) heapUsed = arena;
+            heapFree = (heapTotal > heapUsed) ? (heapTotal - heapUsed) : 0;
+            float arenaFrac = arena > 0 ? (float)((double)heapUsed / (double)arena) : 0.0f;
+            n = 1;  // keep the static seg only
+            if (arena > 0)
+                segs[n++] = { (uint64_t)(heapStart - base), arena, MC_GRADIENT, arenaFrac };
+            if (heapTotal > arena)
+                segs[n++] = { (uint64_t)(heapStart - base) + arena, heapTotal - arena,
+                              MC_VACANT, 0.0f };
+        }
+        // 2x 4 KB scratch banks at the top hold the per-core stacks.
+        segs[n++] = { (uint64_t)(stackLimit - base), 8192, MC_STACK, 0.0f };
+
+        // Mark the biggest named static buffers on top of the generic static
+        // block so the memory hogs are visible by location.
+        NamedAlloc named[16];
+        int nNamed = collectNamedStatics(named, 16);
+        // The borrowed shared buffer (24 KB). On no-PSRAM units it sits on the
+        // SRAM heap, so mark it here; on PSRAM units its address is out of the
+        // SRAM range and the guard below simply skips it.
+        if (nNamed < 16)
+            named[nNamed++] = { "sharedBuffer", (uintptr_t)segScratch,
+                                (uint64_t)SHARED_BUFFER_SIZE, (uint8_t)cube256(1,1,5) };
+        for (int i = 0; i < nNamed && n < kMaxSegs; i++) {
+            if (named[i].addr < base) continue;
+            uint64_t off = (uint64_t)(named[i].addr - base);
+            if (off + named[i].size > total) continue;  // must fall within the rendered SRAM range
+            segs[n++] = { off, named[i].size, MC_NAMED, (float)named[i].color };  // color in frac
+        }
+
+        snprintf(info, sizeof(info),
+                 "\033[97mheap\033[0m used %s / %s (%d%%)   \033[90mfree\033[0m %s   \033[90mstatic\033[0m %s   \033[90mblocks\033[0m %u",
+                 fmtBytes(heapUsed, b1, sizeof(b1)),
+                 fmtBytes(heapTotal, b2, sizeof(b2)),
+                 heapTotal ? (int)((heapUsed * 100) / heapTotal) : 0,
+                 fmtBytes(heapFree, b3, sizeof(b3)),
+                 fmtBytes((uint64_t)(heapStart - base), b4, sizeof(b4)),
+                 (unsigned)blocks);
+        drawMemRegion("SRAM  (520 KB)", info, base, total, segs, n);
+
+        // Key for the marked buffers (matches the colors painted above).
+        if (nNamed > 0) {
+            Serial.println("  \033[90mmarked buffers (biggest static + shared buffer):\033[0m");
+            for (int i = 0; i < nNamed; i++) {
+                char sb[24];
+                Serial.printf("  \033[38;5;%dm█\033[0m %-16s %8s  \033[90m0x%08lX\033[0m\n\r",
+                              named[i].color, named[i].label,
+                              fmtBytes(named[i].size, sb, sizeof(sb)),
+                              (unsigned long)named[i].addr);
+            }
+            Serial.flush();
+        }
+    }
+
+    // ── PSRAM ─────────────────────────────────────────────────────────────────
+    if (psram_available()) {
+        uintptr_t base     = 0x11000000u;
+        uintptr_t poolBase = psram_pool_base();
+        uint64_t  poolSize = psram_pool_size();
+        uint64_t  arenaTot = psram_app_total();
+        uintptr_t mpBase   = psram_mp_base();
+        uint64_t  mpSize   = psram_mp_size();
+        uint64_t  total    = arenaTot + mpSize;
+        uint64_t  headerSz = (poolBase > base) ? (poolBase - base) : 0;
+
+        MemSeg* psegs = segScratch;
+        int n = 0;
+        // ArenaState + reserved journal/undo header.
+        if (headerSz > 0) psegs[n++] = { 0, headerSz, MC_RESERVED, 0.0f };
+
+        // Walk the pool block-by-block for a true per-allocation map.
+        BlockRunCtx ctx{ psegs, n, kMaxSegs, base, -1, 0 };
+        psram_arena_walk(blockRunCb, &ctx);
+        n = ctx.n;
+
+        // MicroPython GC heap occupies the remainder of the chip.
+        if (mpSize > 0 && n < kMaxSegs)
+            psegs[n++] = { (uint64_t)(mpBase - base), mpSize, MC_MPHEAP, 0.0f };
+
+        uint64_t poolFree = psram_app_free();
+        uint64_t poolUsed = (poolSize > poolFree) ? (poolSize - poolFree) : 0;
+        snprintf(info, sizeof(info),
+                 "\033[97mapp arena\033[0m used %s / %s (%d%%)   \033[90mreserved\033[0m %s   \033[90m\u00b5python GC\033[0m %s",
+                 fmtBytes(poolUsed, b1, sizeof(b1)),
+                 fmtBytes(poolSize, b2, sizeof(b2)),
+                 poolSize ? (int)((poolUsed * 100) / poolSize) : 0,
+                 fmtBytes(headerSz, b3, sizeof(b3)),
+                 fmtBytes(mpSize, b4, sizeof(b4)));
+        drawMemRegion("PSRAM  (8 MB)", info, base, total, psegs, n);
+    } else {
+        Serial.println("\n\r\033[1;97m  PSRAM\033[0m  \033[90m[0x11000000]\033[0m");
+        Serial.printf("  \033[90mnot present / app arena disabled (psram_installed=%d)\033[0m\n\r",
+                      jumperlessConfig.hardware.psram_installed);
+        Serial.flush();
+    }
+
+    // ── FLASH ───────────────────────────────────────────────────────────────
+    {
+        uintptr_t base    = (uintptr_t)&__flash_binary_start;  // 0x10000000
+        uintptr_t fwEnd   = (uintptr_t)&__flash_binary_end;
+        uintptr_t fsStart = (uintptr_t)&_FS_start;
+        uintptr_t fsEnd   = (uintptr_t)&_FS_end;
+        uintptr_t eeEnd   = fsEnd + 4096;                      // 4 KB EEPROM above FatFS
+        uint64_t  total   = eeEnd - base;
+
+        uint64_t fsTotal = 0, fsUsed = 0;
+        FSInfo fsinfo;
+        if (FatFS.info(fsinfo)) { fsTotal = fsinfo.totalBytes; fsUsed = fsinfo.usedBytes; }
+        float fsFrac = fsTotal > 0 ? (float)((double)fsUsed / (double)fsTotal) : 0.0f;
+
+        MemSeg segs[6];
+        int n = 0;
+        segs[n++] = { 0, (uint64_t)(fwEnd - base), MC_CODE, 0.0f };
+        if (fsStart > fwEnd)
+            segs[n++] = { (uint64_t)(fwEnd - base), (uint64_t)(fsStart - fwEnd), MC_VACANT, 0.0f };
+        segs[n++] = { (uint64_t)(fsStart - base), (uint64_t)(fsEnd - fsStart), MC_GRADIENT, fsFrac };
+        segs[n++] = { (uint64_t)(fsEnd - base), 4096, MC_EEPROM, 0.0f };
+
+        snprintf(info, sizeof(info),
+                 "\033[97mfirmware\033[0m %s   \033[90mfree sketch\033[0m %s   \033[97mFatFS\033[0m %s / %s (%d%%)   \033[90meeprom\033[0m 4.0 KB",
+                 fmtBytes((uint64_t)(fwEnd - base), b1, sizeof(b1)),
+                 fmtBytes((uint64_t)(fsStart - fwEnd), b2, sizeof(b2)),
+                 fmtBytes(fsUsed, b3, sizeof(b3)),
+                 fmtBytes(fsTotal, b4, sizeof(b4)),
+                 fsTotal ? (int)((fsUsed * 100) / fsTotal) : 0);
+        drawMemRegion("FLASH  (16 MB)", info, base, total, segs, n);
+    }
+
+    shared.clear();   // leave the borrowed buffer empty (we wrote binary into it)
+    Serial.println();
     Serial.flush();
 }
 

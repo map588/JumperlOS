@@ -37,6 +37,7 @@
 // This is the primary working buffer for eKilo editor file content
 // Files are loaded here, parsed into line pointers, and serialized back on save
 constexpr size_t SHARED_BUFFER_SIZE = 24 * 1024;
+constexpr size_t SHARED_BUFFER_SIZE_PSRAM = 48 * 1024;
 
 // Maximum filename length
 constexpr size_t SHARED_BUFFER_FILENAME_SIZE = 128;
@@ -67,6 +68,8 @@ public:
      * @brief Get the singleton instance
      */
     static SharedBuffer& getInstance();
+
+    int sharedBufferSize; // the size of the shared buffer actually allocated (PSRAM or SRAM)
     
     // =========================================================================
     // Writing to the buffer
@@ -169,7 +172,7 @@ public:
      */
     void setLength(size_t len) {
         if (!buffer) return;
-        if (len >= SHARED_BUFFER_SIZE) len = SHARED_BUFFER_SIZE - 1;
+        if (len >= sharedBufferSize) len = sharedBufferSize - 1;
         contentLen = len;
         buffer[contentLen] = '\0';
     }
@@ -187,7 +190,7 @@ public:
     /**
      * @brief Get remaining space in buffer
      */
-    size_t remaining() const { return SHARED_BUFFER_SIZE - contentLen - 1; }  // -1 for null terminator
+    size_t remaining() const { return sharedBufferSize - contentLen - 1; }  // -1 for null terminator
     
     // =========================================================================
     // Metadata

@@ -20,6 +20,7 @@
 #include "Python_Proper.h"
 #include "RotaryEncoder.h"
 #include "States.h"
+#include "Undo.h"
 #include "config.h"
 #include "configManager.h"
 #include "oled.h"
@@ -2180,6 +2181,12 @@ if ( yesNo == 1 ) {
         initializeMicroPythonExamples( false );
         calibrateProbeSwitchThresholds( );
         probeCalibApp( );
+
+        // Start the device with a clean undo/redo history: the calibration
+        // connects/disconnects above are internal setup, not user actions, and
+        // any history carried over from a factory/test image shouldn't ship to
+        // the user. Wipe it before the reboot that ends first-start.
+        undoWipeHistory( );
 
         delay( 1300 );
         rp2040.restart( );

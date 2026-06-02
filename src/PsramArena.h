@@ -80,6 +80,28 @@ void* psram_header_ptr(void);
 // Print arena status to Serial - used by the `psram_status` debug command.
 void psram_arena_dump_status(void);
 
+// ---------------------------------------------------------------------------
+// Introspection for the granular memory-map viewer (Debugs.cpp).
+// ---------------------------------------------------------------------------
+
+// Absolute base address of the allocator pool (after the ArenaState + reserved
+// header). 0 if PSRAM unavailable.
+uintptr_t psram_pool_base(void);
+
+// Size in bytes of the allocator pool (excludes ArenaState + reserved header).
+size_t psram_pool_size(void);
+
+// Per-block visitor callback. `addr` is the absolute address of the block
+// header, `size` includes the header, `used` is 1 for an allocated block and
+// 0 for a free block.
+typedef void (*psram_block_visitor)(void* ctx, uintptr_t addr, size_t size, int used);
+
+// Walk every block in the pool in address order, invoking `cb` for each.
+// Returns the number of blocks visited. Takes the arena lock, so the callback
+// MUST NOT call psram_alloc / psram_free / psram_realloc (it would deadlock).
+// No-op (returns 0) if PSRAM is unavailable.
+size_t psram_arena_walk(psram_block_visitor cb, void* ctx);
+
 // Debug-trace flag. When non-zero, PsramArena / FileCache / Undo emit
 // per-step Serial prints so deadlocks/hangs can be diagnosed. Defaults
 // on while the new code is bedding in; flip to 0 once stable.

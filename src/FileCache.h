@@ -36,8 +36,14 @@
 // #else block in FileCache.cpp). That removes the PSRAM/SRAM body buffers but
 // makes every save a synchronous ~70 ms flash write, so only do it on builds
 // that don't care about UI latency.
+//
+// ! Currently DISABLED (0): the write-back cache made PSRAM boards diverge from
+// ! SRAM boards in subtle, hard-to-debug ways (e.g. the undo-history file coming
+// ! back with zeroed ops only on PSRAM). Routing every board straight to FatFS
+// ! makes PSRAM and SRAM behave identically and keeps flash the single source of
+// ! truth. Re-enable only after the cache's PSRAM path is proven coherent.
 #ifndef USE_FILE_CACHE
-#define USE_FILE_CACHE 1
+#define USE_FILE_CACHE 0
 #endif
 
 #include "JumperlOS.h"  // Service base class

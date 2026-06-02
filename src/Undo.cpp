@@ -1006,13 +1006,42 @@ uint8_t undoFormatOpLabel(const UndoOp& op, char* out, size_t outSize) {
     return (uint8_t)alen;
 }
 
-// Rebuild a txn's display label from its first op. Used on restore since the
-// label is no longer stored in the file. Single-op txns (the norm) reproduce
-// exactly. Delegates to undoFormatOpLabel so record + restore stay in lockstep.
+// Txn-level label, layered over undoFormatOpLabel. Most txns are a single op
+// and just defer to it, but some user gestures bundle several ops under one
+// undo step and deserve a combined label that the per-op formatter can't see:
+//   - A "Rails" menu change moves the top AND bottom rail in one txn (two DAC
+//     ops on channels 2 and 3). Label it "Rails <v>" instead of the first op's
+//     "Top Rail <v>". Because this is reconstructed from the op pair, the live
+//     label and the post-reboot rebuilt label match (the bug this fixes: live
+//     showed the menu's "rails 3.3V" while restore rebuilt "Top Rail 3.3V").
+// Returns the action length (split index), same contract as undoFormatOpLabel.
+uint8_t undoFormatTxnLabel(const UndoTxn& t, char* out, size_t outSize) {
+    if (!out || outSize == 0) return 0;
+    out[0] = '\0';
+    if (t.opCount == 0) return 0;
+
+    if (t.opCount >= 2) {
+        const UndoOp& o0 = g_ops[t.firstOp % g_opCap];
+        const UndoOp& o1 = g_ops[(t.firstOp + 1) % g_opCap];
+        if (o0.type == UNDO_OP_DAC_SET && o1.type == UNDO_OP_DAC_SET &&
+            ((o0.dac.ch == 2 && o1.dac.ch == 3) ||
+             (o0.dac.ch == 3 && o1.dac.ch == 2))) {
+            snprintf(out, outSize, "Rails %.2fV", (double)o0.dac.next);
+            size_t alen = 5;   // "Rails"
+            if (alen > outSize - 1) alen = outSize - 1;
+            return (uint8_t)alen;
+        }
+    }
+    return undoFormatOpLabel(g_ops[t.firstOp % g_opCap], out, outSize);
+}
+
+// Rebuild a txn's display label from its ops. Used on restore since the label
+// is no longer stored in the file. Delegates to undoFormatTxnLabel so record +
+// restore stay in lockstep.
 void undoRebuildLabel(UndoTxn& t) {
     t.label[0] = '\0';
     if (t.opCount == 0) return;
-    undoFormatOpLabel(g_ops[t.firstOp % g_opCap], t.label, sizeof(t.label));
+    undoFormatTxnLabel(t, t.label, sizeof(t.label));
 }
 
 // Are there any committed, non-obsolete txns we'd want to persist? Used by
@@ -1733,25 +1762,16 @@ void undoPersistHistory(void) {
         return;
     }
 
-    // Durability is board-type dependent:
-    //  - PSRAM: the write-back file cache lives in a large PSRAM arena, so the
-    //    normal cache write (instant memcpy, content-dedup, coalesced flush in
-    //    the background) is both cheap and safe - the entry is pinned so it
-    //    can't be evicted before the idle flush carries it to flash.
-    //  - No PSRAM: the cache is a hard 16 KB SRAM budget, and its lazy flush
-    //    first CLONES the body (a 2nd SRAM copy) before writing. Under SRAM
-    //    pressure that clone - or the cached body itself - can fail, which
-    //    leaves the ONLY copy of undo history stuck dirty-in-RAM, never reaching
-    //    flash. That's the "opens an old file, new saves never stick" symptom.
-    //    There's no deferred-PSRAM-memcpy win to chase here anyway, so write
-    //    straight to flash at this natural save point and make it durable now.
-    bool ok;
-    if (psram_available()) {
-        ok = safeFileWriteAll(UNDO_FILE_PATH, (const char*)buf, total);
-    } else {
-        fileCacheInvalidate(UNDO_FILE_PATH);  // no stale cached copy shadows flash
-        ok = safeFileWriteAllRaw(UNDO_FILE_PATH, (const char*)buf, total, 3000);
-    }
+    // Write straight to flash at this natural save point, identically on every
+    // board (PSRAM and SRAM alike). The write-back file cache is compiled out
+    // (USE_FILE_CACHE=0) because its PSRAM path diverged from SRAM in subtle
+    // ways - undo history could come back with zeroed ops only on PSRAM. A
+    // direct raw write keeps flash the single source of truth, and there's no
+    // deferred-memcpy win to chase here anyway. fileCacheInvalidate() is a
+    // no-op in pass-through mode but is kept so re-enabling the cache later
+    // still drops any stale cached copy that would shadow flash.
+    fileCacheInvalidate(UNDO_FILE_PATH);
+    bool ok = safeFileWriteAllRaw(UNDO_FILE_PATH, (const char*)buf, total, 3000);
     if (ownBuf) undoFree(buf);
     if (ok) {
         g_historyDirty = false;
@@ -1761,6 +1781,47 @@ void undoPersistHistory(void) {
     }
     UNDBG("persist %s -> %u bytes (%s)", UNDO_FILE_PATH,
           (unsigned)total, ok ? "ok" : "FAILED");
+}
+
+// Wipe all undo/redo history - on flash AND in RAM. Deletes the history
+// file(s), empties the shared ring, invalidates the snapshot ring, and clears
+// the dirty flag so the next save doesn't immediately re-persist anything.
+// Safe to call before undoInit() (the ring globals are zero-initialized, so the
+// resets are no-ops and we just delete the on-flash file).
+void undoWipeHistory(void) {
+    // Drop any open transaction WITHOUT recording it (don't call undoEndTxn -
+    // that would commit a stray txn into the ring we're about to clear).
+    g_inTxn = false;
+
+    // Empty the shared ring + per-slot cursors.
+    g_opHead = g_opTail = 0;
+    g_txnHead = g_txnTail = 0;
+    for (int s = 0; s < NUM_SLOTS; s++) g_slotCursor[s] = 0;
+    g_globalTxnId = 0;
+    g_blobUsed = 0;
+    g_waypointsDirty = true;
+    g_historyDirty = false;  // ring is empty - nothing to persist
+
+    // Invalidate the snapshot ring (its blob offsets point into the arena we
+    // just reset to 0; leaving them "valid" would let a clear-all restore read
+    // stale bytes).
+    if (g_snapshots && g_snapshotCap > 0) {
+        memset(g_snapshots, 0, g_snapshotCap * sizeof(SnapshotEntry));
+    }
+    g_snapshotHead = 0;
+    g_lastSnapshotTxnId = 0;
+    g_lastSnapshotMs = 0;
+
+    // Delete the persisted file(s). UNDO_FILE_PATH is the live name; /undo.hist
+    // is a legacy name from earlier persistent-history builds - nuke it too so a
+    // stale copy can't shadow a clean start. Invalidate any cached entry first
+    // (no-op in pass-through mode, but correct if the cache is ever re-enabled).
+    fileCacheInvalidate(UNDO_FILE_PATH);
+    if (safeFileExists(UNDO_FILE_PATH)) safeFileDelete(UNDO_FILE_PATH);
+    fileCacheInvalidate("/undo.hist");
+    if (safeFileExists("/undo.hist")) safeFileDelete("/undo.hist");
+
+    Serial.println("[Undo] history wiped (flash + RAM)");
 }
 
 // Load /undo.hist (if present + valid) into the freshly-allocated ring.
@@ -1912,8 +1973,20 @@ void undoEndTxn(void) {
     if (g_openTxnSource != UNDO_SRC_INTERNAL) t.flags |= UNDO_TXN_USER_INITIATED;
     t.source = g_openTxnSource;
     t.slot = g_openTxnSlot;
-    strncpy(t.label, g_openTxnLabel, sizeof(t.label) - 1);
-    t.label[sizeof(t.label) - 1] = '\0';
+    // Derive the committed label from the ops so the live label matches what
+    // restore rebuilds (also op-driven). Otherwise a caller-supplied label like
+    // the rails menu's "rails 3.3V" shows in RAM but is replaced by the
+    // op-rebuilt "Rails 3.30V" after a reboot. Scripted bundles (Python/MCP)
+    // keep their explicit label - it carries intent that can't be reconstructed
+    // from the raw ops (e.g. "import wokwi sketch").
+    bool scripted = (g_openTxnSource == UNDO_SRC_PYTHON ||
+                     g_openTxnSource == UNDO_SRC_MCP);
+    if (t.opCount > 0 && !scripted) {
+        undoFormatTxnLabel(t, t.label, sizeof(t.label));
+    } else {
+        strncpy(t.label, g_openTxnLabel, sizeof(t.label) - 1);
+        t.label[sizeof(t.label) - 1] = '\0';
+    }
 
     UNDBG("endTxn opCount=%u", (unsigned)t.opCount);
     if (t.opCount > 0) {
@@ -2190,11 +2263,21 @@ bool undoCanRedo(void) {
 // rails / DACs (cheap: 4 small I2C writes). In-memory mutation alone
 // doesn't reroute switches, refresh LEDs, or re-issue DAC voltages.
 static void undoCommitToHardware(void) {
+    // Everything here just pushes the ALREADY-decided state to hardware
+    // (re-route, LED repaint, re-issue rails/DACs). None of it is a new user
+    // action, so keep g_undoApplying asserted for the whole commit. Otherwise a
+    // DAC/rail nudge inside refreshConnections() or setRailsAndDACs() - e.g. the
+    // probe buffer power DAC snapping back to measure_mode_output_voltage after
+    // a DAC undo - would call undoRecordDacSet(), open a fresh transaction, and
+    // mark the redo tail obsolete: traversing a DAC op would silently wipe redo.
+    bool wasApplying = g_undoApplying;
+    g_undoApplying = true;
     // clean=1 forces a full re-route + LED repaint. Needed because a clear-all
     // undo now replaces the entire board state (via YAML restore), not just a
     // single bridge, so a partial commit could leave stale crosspoints/LEDs.
     refreshConnections(-1, 1, 1);
     setRailsAndDACs(0);
+    g_undoApplying = wasApplying;
 }
 
 bool undoUndo(void) {
@@ -2319,8 +2402,7 @@ int undoLabelSplitAt(int relativeOffset) {
     UndoTxn& t = g_txns[idx];
     if (t.opCount > 0) {
         char scratch[sizeof(t.label)];
-        uint8_t split = undoFormatOpLabel(g_ops[t.firstOp % g_opCap],
-                                          scratch, sizeof(scratch));
+        uint8_t split = undoFormatTxnLabel(t, scratch, sizeof(scratch));
         if (strcmp(scratch, t.label) == 0) return (int)split;
     }
     const char* sp = strchr(t.label, ' ');

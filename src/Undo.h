@@ -71,6 +71,13 @@ void undoShutdown(void);
 void undoPersistHistory(void);
 bool undoRestore(void);
 
+// Wipe all persisted + in-RAM undo/redo history. Deletes the history file(s)
+// from flash, clears the shared ring (ops/txns/cursors), invalidates the
+// snapshot ring, and resets the dirty flag so nothing is re-persisted. Safe to
+// call before undoInit() (it still deletes the on-flash file). Used by the
+// debug menu and the first-start calibration flow to start from clean history.
+void undoWipeHistory(void);
+
 // Notify the undo system that the active slot has changed. The system
 // keeps a separate ring (lazily allocated) per slot, so undo/redo only
 // ever walks the history of the currently-active slot - you can't redo
@@ -177,6 +184,18 @@ extern volatile bool g_undoApplying;
 
 #ifdef __cplusplus
 }
+
+// RAII helper: suppress undo/redo recording for the lifetime of the guard.
+// Wraps undoBeginIngest()/undoEndIngest() so a function with multiple return
+// paths (e.g. routableBufferPower) can suppress recording of its internal,
+// system-managed state changes without threading undoEndIngest() through every
+// exit. Nesting-safe - ingest depth is a counter, so guards can stack.
+struct UndoIngestGuard {
+    UndoIngestGuard()  { undoBeginIngest(); }
+    ~UndoIngestGuard() { undoEndIngest(); }
+    UndoIngestGuard(const UndoIngestGuard&) = delete;
+    UndoIngestGuard& operator=(const UndoIngestGuard&) = delete;
+};
 #endif
 
 #endif  // UNDO_H

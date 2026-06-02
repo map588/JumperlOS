@@ -43,6 +43,9 @@
         {
             "name": "JumperIDE-VSCode",
             "path": "../JumperIDE-VSCode"
+        },
+        {
+            "path": "../JumperlessV5"
         }
     ]
 }

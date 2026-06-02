@@ -139,7 +139,7 @@ struct config {
         int net_color_mode = 0;
         int dump_leds = -1;
         int dump_format = 0;
-        int terminal_line_buffering = 0;
+        int terminal_line_buffering = 1;
     } display;
 
     

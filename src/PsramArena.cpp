@@ -410,6 +410,39 @@ void* psram_header_ptr(void) {
     return reinterpret_cast<uint8_t*>(PSRAM_BASE) + g_state->headerOffset;
 }
 
+uintptr_t psram_pool_base(void) {
+    return g_available ? reinterpret_cast<uintptr_t>(g_pool) : 0;
+}
+
+size_t psram_pool_size(void) {
+    return g_available ? g_poolSize : 0;
+}
+
+size_t psram_arena_walk(psram_block_visitor cb, void* ctx) {
+    if (!g_available || !g_pool) return 0;
+
+    arenaLock();
+    size_t count = 0;
+    uint8_t* p = g_pool;
+    uint8_t* endp = g_pool + g_poolSize;
+    // Linear walk: every byte of the pool is covered by exactly one block
+    // header chain (alloc/free keep blocks contiguous), so advancing by
+    // h->size visits both used and free blocks in address order.
+    while (p + sizeof(BlockHeader) <= endp) {
+        BlockHeader* h = reinterpret_cast<BlockHeader*>(p);
+        // Bail on corruption rather than spin forever.
+        if (h->magic != BLOCK_MAGIC_USED && h->magic != BLOCK_MAGIC_FREE) break;
+        if (h->size < sizeof(BlockHeader)) break;
+        if (p + h->size > endp) break;
+        int used = (h->magic == BLOCK_MAGIC_USED) ? 1 : 0;
+        if (cb) cb(ctx, reinterpret_cast<uintptr_t>(p), h->size, used);
+        count++;
+        p += h->size;
+    }
+    arenaUnlock();
+    return count;
+}
+
 void psram_arena_dump_status(void) {
     if (!g_available) {
         Serial.println("[PSRAM] arena not available (no PSRAM detected)");

@@ -2559,19 +2559,13 @@ float getActionFloat( int menuPosition, int rail ) {
         bool changedBot = ( rail == 0 || rail == 2 ) &&
                           undoInitialBotRail != globalState.power.bottomRail;
         if ( !changedTop && !changedBot ) return;
-        // Bundle both rail changes into a single transaction so the
-        // user gets ONE undo step for "rails to 2.7V" rather than two
-        // (one per rail) when rail==0. Label format matches the DAC
-        // record helper's "%s %.2fV" so [UNDO]/[REDO] toasts read
-        // consistently across all voltage actions.
-        char lbl[23];
-        float voltage = changedTop ? globalState.power.topRail
-                                   : globalState.power.bottomRail;
-        const char* prefix = ( rail == 0 ) ? "rails"
-                           : ( rail == 1 ) ? "top"
-                                           : "bot";
-        snprintf( lbl, sizeof( lbl ), "%s %.2fV", prefix, voltage );
-        undoBeginTxn( lbl, UNDO_SRC_MENU );
+        // Bundle both rail changes into a single transaction so the user gets
+        // ONE undo step for "rails to 2.7V" rather than two (one per rail) when
+        // rail==0. The label is derived from the recorded ops by undoEndTxn (a
+        // top+bottom pair becomes "Rails <v>", a single rail "Top Rail <v>" /
+        // "Bot Rail <v>"), so it's identical live and after a reboot - no
+        // hand-built label here, which previously drifted from the rebuilt one.
+        undoBeginTxn( nullptr, UNDO_SRC_MENU );
         if ( changedTop ) {
             undoRecordDacSet( 2, undoInitialTopRail, globalState.power.topRail );
         }

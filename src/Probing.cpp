@@ -5234,9 +5234,12 @@ float Probing::checkProbeCurrentZero( void ) {
     if ( hadConnections && savedCount > 0 ) {
         for ( int i = 0; i < savedCount; i++ ) {
             int otherNode = savedNodes[i];
-            if ( otherNode > 0 ) {
+            if (otherNode == ROUTABLE_BUFFER_IN) {
+                addBridgeToState( DAC0, otherNode, 0, true );
+            } else if ( otherNode > 0 ) {
                 addBridgeToState( DAC0, otherNode, -1, true );
             }
+         
         }
     }
 
@@ -5244,7 +5247,16 @@ float Probing::checkProbeCurrentZero( void ) {
     return current;
 }
 
+int dontSwitchPowerDac = 1;
+
 void Probing::routableBufferPower( int offOn, int flash, int force ) {
+    // The probe buffer power rail (DAC0/DAC1 <-> BUFFER_IN bridge + its
+    // measure-mode output voltage) is auto-managed by the system, not a user
+    // action. Suppress undo recording for the whole function so neither the
+    // bridge add/remove nor the DAC voltage set pollutes the undo history.
+    // RAII so every early return below is covered.
+    UndoIngestGuard _undoGuard;
+
     if ( jumperlessConfig.dacs.auto_connect_probe <= 0 && offOn == 1 ) {
         bufferPowerConnected = false;
         return;
@@ -5332,7 +5344,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
         // No need to distinguish flash vs local - state system handles it
         if ( probePowerDAC == 0 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC0, 0 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {
@@ -5344,7 +5356,7 @@ void Probing::routableBufferPower( int offOn, int flash, int force ) {
             }
         } else if ( probePowerDAC == 1 ) {
             if ( bufferPowerConnected == false ) {
-                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 1 );
+                addBridgeToState( ROUTABLE_BUFFER_IN, DAC1, 0 );
                 // State function already refreshes, but force if needed
                 if ( force == 1 ) {
                     if ( flash == 1 ) {

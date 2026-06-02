@@ -75,15 +75,17 @@ bool SharedBuffer::ensureBuffer() {
 
     // Prefer PSRAM to keep 24KB off the SRAM heap, but only if it's real,
     // working memory. Otherwise give the block back and use the SRAM heap.
-    char* psbuf = (char*)psram_alloc(SHARED_BUFFER_SIZE);
+    char* psbuf = (char*)psram_alloc(SHARED_BUFFER_SIZE_PSRAM);
     if (psbuf && sharedBufferRoundtripOk(psbuf, SHARED_BUFFER_SIZE)) {
         buffer = psbuf;
+        sharedBufferSize = SHARED_BUFFER_SIZE_PSRAM;
     } else {
         if (psbuf) {
             psram_free(psbuf);
             Serial.println("SharedBuffer: PSRAM block failed verification - using SRAM");
         }
         buffer = (char*)malloc(SHARED_BUFFER_SIZE);
+        sharedBufferSize = SHARED_BUFFER_SIZE;
     }
 
     if (buffer) {
@@ -143,11 +145,11 @@ bool SharedBuffer::write(const uint8_t* data, size_t len) {
     }
     
     // Check if it fits (leave room for null terminator)
-    if (len >= SHARED_BUFFER_SIZE) {
+    if (len >= sharedBufferSize) {
         Serial.print("SharedBuffer: Data too large (");
         Serial.print(len);
         Serial.print(" > ");
-        Serial.print(SHARED_BUFFER_SIZE - 1);
+        Serial.print(sharedBufferSize - 1);
         Serial.println(")");
         return false;
     }
@@ -184,13 +186,13 @@ bool SharedBuffer::append(const uint8_t* data, size_t len) {
     if (!ensureBuffer()) return false;
     
     // Check if it fits
-    if (contentLen + len >= SHARED_BUFFER_SIZE) {
+    if (contentLen + len >= sharedBufferSize) {
         Serial.print("SharedBuffer: Append would overflow (");
         Serial.print(contentLen);
         Serial.print(" + ");
         Serial.print(len);
         Serial.print(" >= ");
-        Serial.print(SHARED_BUFFER_SIZE);
+        Serial.print(sharedBufferSize);
         Serial.println(")");
         return false;
     }
@@ -223,7 +225,7 @@ bool SharedBuffer::append(const char* data, size_t len) {
 bool SharedBuffer::appendLine(const char* line, size_t len) {
     if (!ensureBuffer()) return false;
     // Check if line + newline fits
-    if (contentLen + len + 1 >= SHARED_BUFFER_SIZE) {
+    if (contentLen + len + 1 >= sharedBufferSize) {
         Serial.print("SharedBuffer: Line would overflow (");
         Serial.print(contentLen);
         Serial.print(" + ");
@@ -262,7 +264,7 @@ bool SharedBuffer::appendLine(const char* line) {
  */
 bool SharedBuffer::appendChar(char c) {
     if (!ensureBuffer()) return false;
-    if (contentLen + 1 >= SHARED_BUFFER_SIZE) {
+    if (contentLen + 1 >= sharedBufferSize) {
         return false;
     }
     
@@ -311,9 +313,9 @@ void SharedBuffer::printStatus() const {
     Serial.print("Content length: ");
     Serial.print(contentLen);
     Serial.print(" / ");
-    Serial.print(SHARED_BUFFER_SIZE);
+    Serial.print(sharedBufferSize);
     Serial.print(" (");
-    Serial.print((contentLen * 100) / SHARED_BUFFER_SIZE);
+    Serial.print((contentLen * 100) / sharedBufferSize);
     Serial.println("% used)");
     
     Serial.print("Remaining: ");
