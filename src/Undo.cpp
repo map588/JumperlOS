@@ -225,6 +225,17 @@ size_t g_persistMaxTxns  = 0;   // most-recent txns to keep in the file
 size_t g_persistMaxBytes = 0;   // body byte budget (drops oldest past this)
 size_t g_persistBufBytes = 0;   // serialization scratch buffer size
 
+// Persistence scratch buffer, reserved ONCE in undoInit() while the heap is at
+// its emptiest and reused for the life of the power cycle. On SRAM-only boards
+// the runtime heap routinely drops below g_persistBufBytes as connections
+// accumulate, so the old per-save malloc() of this buffer would start failing
+// and history would silently stop reaching flash (every reboot restored the
+// same stale file). Owning it up front makes persistence independent of later
+// heap pressure. nullptr if the boot reservation itself failed, in which case
+// undoPersistHistory()/undoRestore() fall back to a per-call alloc (best
+// effort, same as the old behavior).
+uint8_t* g_persistBuf = nullptr;
+
 // Snapshot ring (single, not per-slot - clear-all snapshots are tagged
 // with the slot they were taken on via the SnapshotEntry.slot field).
 SnapshotEntry* g_snapshots = nullptr;
@@ -1528,6 +1539,19 @@ void undoInit(void) {
     memset(g_txns, 0, g_txnCap * sizeof(UndoTxn));
     memset(g_blobs, 0, g_blobCap);
 
+    // Reserve the persistence scratch buffer now, while the heap is emptiest.
+    // See g_persistBuf's declaration: a per-save malloc of this ~5 KB on an
+    // SRAM-only board fails once enough connections have eaten the heap, and a
+    // failed persist silently leaves the old file on flash (the "always
+    // restores the same state" bug). Grabbing it up front makes saves
+    // heap-pressure-proof; if even this fails we leave it null and fall back to
+    // a per-call alloc below.
+    g_persistBuf = (uint8_t*)undoAlloc(g_persistBufBytes);
+    if (!g_persistBuf)
+        Serial.printf("[Undo] WARN: persist scratch reserve of %u bytes failed "
+                      "- will retry per-save (history may not persist under "
+                      "heap pressure)\n", (unsigned)g_persistBufBytes);
+
     g_opHead = g_opTail = 0;
     g_txnHead = g_txnTail = 0;
     for (int i = 0; i < NUM_SLOTS; i++) g_slotCursor[i] = 0;
@@ -1540,6 +1564,10 @@ void undoInit(void) {
     Serial.printf("[Undo] init: %u ops + %u txns + %u KB blob shared across %d slots (%s, active=%d)\n",
         (unsigned)g_opCap, (unsigned)g_txnCap, (unsigned)(g_blobCap / 1024),
         NUM_SLOTS, havePsram ? "PSRAM" : "SRAM-only", g_activeSlot);
+    Serial.printf("[Undo] persist budget: %u txns / %u B body, %u B scratch %s\n",
+        (unsigned)g_persistMaxTxns, (unsigned)g_persistMaxBytes,
+        (unsigned)g_persistBufBytes,
+        g_persistBuf ? "reserved" : "RESERVE FAILED (per-save alloc)");
 
     snapshotInit();
     if (g_snapshots)
@@ -1618,10 +1646,18 @@ void undoPersistHistory(void) {
     if (!g_historyDirty) return;        // nothing new to write
     size_t bufBytes = g_persistBufBytes ? g_persistBufBytes : UNDO_PERSIST_BUF_BYTES;
 
-    uint8_t* buf = (uint8_t*)undoAlloc(bufBytes);
+    // Prefer the buffer reserved at boot (g_persistBuf) so a save never depends
+    // on a large runtime malloc that fails under SRAM pressure. Only fall back
+    // to a per-call alloc if the boot reservation itself failed.
+    uint8_t* buf = g_persistBuf;
+    bool ownBuf = false;
+    if (!buf) {
+        buf = (uint8_t*)undoAlloc(bufBytes);
+        ownBuf = true;
+    }
     if (!buf) {
         // Real durability failure (NOT debug-gated): on an SRAM-only board this
-        // ~12 KB scratch comes from the small heap, and if it can't be had the
+        // ~5 KB scratch comes from the small heap, and if it can't be had the
         // history never reaches flash - the previous (stale) file is what the
         // next boot restores. Leave g_historyDirty set so the next save retries.
         Serial.printf("[Undo] persist FAIL: scratch alloc of %u bytes failed "
@@ -1631,7 +1667,7 @@ void undoPersistHistory(void) {
 
     size_t total = undoSerialize(buf, bufBytes);
     if (total == 0) {
-        undoFree(buf);
+        if (ownBuf) undoFree(buf);
         if (!undoHasPersistableTxns()) {
             // Genuinely nothing reachable: drop any stale file so a future boot
             // doesn't restore history that no longer exists.
@@ -1666,7 +1702,7 @@ void undoPersistHistory(void) {
         fileCacheInvalidate(UNDO_FILE_PATH);  // no stale cached copy shadows flash
         ok = safeFileWriteAllRaw(UNDO_FILE_PATH, (const char*)buf, total, 3000);
     }
-    undoFree(buf);
+    if (ownBuf) undoFree(buf);
     if (ok) {
         g_historyDirty = false;
     } else {
@@ -1697,8 +1733,15 @@ bool undoRestore(void) {
     }
 
     // fileCacheReadInto (under safeFileReadAll) reserves one byte for a NUL
-    // terminator, so size the buffer at file size + 1.
-    uint8_t* buf = (uint8_t*)undoAlloc((size_t)sz + 1);
+    // terminator, so size the buffer at file size + 1. Reuse the boot-reserved
+    // scratch when it's big enough (it almost always is - the writer caps the
+    // file at g_persistBufBytes) so restore doesn't need its own heap alloc.
+    uint8_t* buf = (g_persistBuf && (size_t)sz + 1 <= bufBytes) ? g_persistBuf : nullptr;
+    bool ownBuf = false;
+    if (!buf) {
+        buf = (uint8_t*)undoAlloc((size_t)sz + 1);
+        ownBuf = true;
+    }
     if (!buf) return false;
 
     size_t readBytes = 0;
@@ -1707,7 +1750,7 @@ bool undoRestore(void) {
     if (ok && readBytes >= 8) {
         restored = undoDeserialize(buf, readBytes);
     }
-    undoFree(buf);
+    if (ownBuf) undoFree(buf);
 
     if (restored) {
         Serial.printf("[Undo] restored history from %s (%u bytes)\n",
