@@ -5,6 +5,14 @@ name: Release firmware
 # (i.e. a tag with that exact version already exists), scripts/bump_version_if_needed.py
 # increments the last component, the build bakes the new version in, and the
 # bump is committed back to main with [skip ci] so it doesn't loop.
+#
+# It then ALSO mirrors the freshly built firmware.uf2 onto the latest release of
+# Architeuthis-Flux/JumperlessV5 (the public repo the app pulls firmware from):
+# the existing release's title/notes are left untouched, its tag is bumped to
+# this version, and its firmware.uf2 asset is replaced. That step needs a PAT
+# (secret JUMPERLESSV5_TOKEN) with write access to JumperlessV5, and is skipped
+# if the secret is absent or if VERSION isn't strictly newer than JumperlessV5's
+# current release.
 
 on:
   push:
@@ -23,6 +31,14 @@ jobs:
     # Forks can't (and shouldn't) push tags / create releases on this repo.
     if: github.repository == 'Architeuthis-Flux/JumperlOS'
     runs-on: ubuntu-latest
+
+    env:
+      # PAT with write access to Architeuthis-Flux/JumperlessV5 (classic token with
+      # `repo` scope, or a fine-grained token with Contents: read/write on that
+      # repo). Required because the default GITHUB_TOKEN is scoped to THIS repo
+      # only. When unset (e.g. on a fork or before the secret is added), the
+      # JumperlessV5 mirror step below is skipped instead of failing the build.
+      JUMPERLESSV5_TOKEN: ${{ secrets.JUMPERLESSV5_TOKEN }}
 
     steps:
       - name: Checkout (full history, tags and submodules)
@@ -81,3 +97,36 @@ jobs:
             --target "$SHA" \
             --title "$VERSION" \
             --generate-notes
+
+      - name: Mirror firmware onto the JumperlessV5 latest release
+        # Skip gracefully when the cross-repo PAT secret isn't configured.
+        if: ${{ env.JUMPERLESSV5_TOKEN != '' }}
+        env:
+          # gh authenticates against JumperlessV5 with the cross-repo PAT here.
+          GH_TOKEN: ${{ env.JUMPERLESSV5_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          REPO="Architeuthis-Flux/JumperlessV5"
+
+          CUR_TAG="$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null || true)"
+          echo "JumperlessV5 latest tag: '${CUR_TAG:-<none>}'  |  JumperlOS version: '$VERSION'"
+
+          if [ -z "$CUR_TAG" ]; then
+            echo "::warning::No existing JumperlessV5 release found; nothing to update. Create one there first."
+            exit 0
+          fi
+
+          # Only proceed if our version is STRICTLY newer than JumperlessV5's current
+          # release, so a stale VERSION can never downgrade the public release tag.
+          HIGHEST="$(printf '%s\n%s\n' "$CUR_TAG" "$VERSION" | sort -V | tail -n1)"
+          if [ "$VERSION" = "$CUR_TAG" ] || [ "$HIGHEST" != "$VERSION" ]; then
+            echo "::warning::JumperlOS version ($VERSION) is not newer than JumperlessV5 ($CUR_TAG); skipping mirror."
+            exit 0
+          fi
+
+          # Bump the tag in place (keeps the existing title + release notes) and keep
+          # it marked latest, then replace just the firmware.uf2 asset.
+          gh release edit "$CUR_TAG" --repo "$REPO" --tag "$VERSION" --latest
+          gh release upload "$VERSION" ".pio/build/jumperless_v5/firmware.uf2" --repo "$REPO" --clobber
+          echo "Updated $REPO: tag $CUR_TAG -> $VERSION, firmware.uf2 replaced (notes left untouched)."
