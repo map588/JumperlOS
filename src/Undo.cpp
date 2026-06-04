@@ -1699,7 +1699,7 @@ void undoInit(void) {
         takeSnapshot("boot");
 
     // One-shot cleanup of artifacts from the old persistent-history
-    // implementation (replaced by /undo.hist). Best-effort.
+    // implementation (replaced by /undo_history.txt). Best-effort.
     FatFS.remove("/undo.log");
     FatFS.remove("/undo.snap");
 }
@@ -1707,7 +1707,7 @@ void undoInit(void) {
 void undoShutdown(void) {
     if (g_inTxn) undoEndTxn();
     // Capture history one last time before the lights go out, then drain the
-    // write-back cache so /undo.hist actually reaches flash.
+    // write-back cache so /undo_history.txt actually reaches flash.
     undoPersistHistory();
     extern void fileCacheFlushNowAll(const char* reason);
     fileCacheFlushNowAll("shutdown");

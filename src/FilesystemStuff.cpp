@@ -3834,7 +3834,39 @@ bool safeFileWriteAllRaw( const char* path, const char* content, size_t content_
     }
 
     FSDBG("WriteAllRaw file.write");
-    size_t written = file.write( (const uint8_t*)content, content_len );
+    size_t written;
+    {
+        // Flash erase/program monopolizes the RP2350 QMI controller, so any
+        // read from PSRAM (CS1) during the flash-write window stalls/faults.
+        // FatFS hands full-sector transfers straight to the flash driver from
+        // the caller's buffer, so a PSRAM source pointer (e.g. undo's
+        // g_persistBuf, which undoAlloc() places in PSRAM) would be read mid
+        // flash op and crash. When the source lives in PSRAM, stream it through
+        // a small SRAM stack bounce buffer: the PSRAM read happens before the
+        // flash op, and FatFS only ever sees an SRAM source. (The file cache's
+        // flushEntryChunked solves the same hazard the same way.) The fs_mutex
+        // is held here, so we don't share any static buffer across cores.
+        uintptr_t srcAddr = reinterpret_cast<uintptr_t>( content );
+        bool srcInPsram = ( srcAddr >= 0x11000000u && srcAddr < 0x12000000u );
+        if ( srcInPsram ) {
+            FSDBG("WriteAllRaw PSRAM source - bouncing through SRAM");
+            uint8_t bounce[512];
+            const uint8_t* p = (const uint8_t*)content;
+            size_t remaining = content_len;
+            written = 0;
+            while ( remaining > 0 ) {
+                size_t cn = remaining < sizeof( bounce ) ? remaining : sizeof( bounce );
+                memcpy( bounce, p, cn );  // PSRAM read while flash is idle
+                size_t w = file.write( bounce, cn );
+                written += w;
+                if ( w != cn ) break;     // short write - stop and report
+                p += cn;
+                remaining -= cn;
+            }
+        } else {
+            written = file.write( (const uint8_t*)content, content_len );
+        }
+    }
     FSDBG("WriteAllRaw file.close");
     file.close( );
 
