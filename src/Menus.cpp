@@ -5253,19 +5253,22 @@ void runHistoryScrubMenu( void ) {
         return;
     }
 
-    // Don't change rotaryDivider here. rotaryDivider only affects
-    // encoderRaw / encoderDirectionState. encoderPosition is the raw,
-    // undivided quadrature count, so we decimate ourselves (one txn
-    // step per TICKS_PER_STEP raw counts ≈ 3 detents on the V5 encoder
-    // which yields ~4 quad counts per detent).
-    constexpr int TICKS_PER_STEP = 12;
+    // Route the clickwheel through the shared menu encoder path
+    // (encoderDirectionState UP/DOWN) so this screen gets the same
+    // phase-independent detent hysteresis as the top-level menu instead of
+    // re-deriving steps from the raw count. rotaryDivider sets sensitivity:
+    // ~12 raw counts per step ≈ 3 detents on the V5 encoder (which yields
+    // ~4 quad counts per detent). Restored on exit in the cleanup below.
+    int lastDivider = rotaryDivider;
+    rotaryDivider = 12;
 
     Menus::getInstance( ).inClickMenu = 1;
     g_historyScrubActive = true;     // tell Core 2 to keep painting nets
     encoderButtonState = IDLE;
     lastButtonEncoderState = IDLE;
+    encoderDirectionState = NONE;    // drop any step left over from the opening click
+    encoderDirectionConsumed = true;
 
-    long lastTick = encoderPosition / TICKS_PER_STEP;
     int scrub = entryPos;
 
     // Repaint OLED ONLY - we deliberately do NOT paint text onto the
@@ -5313,12 +5316,18 @@ void runHistoryScrubMenu( void ) {
             break;
         }
 
-        long currentTick = encoderPosition / TICKS_PER_STEP;
-        long delta = currentTick - lastTick;
-        if ( delta != 0 ) {
-            lastTick = currentTick;
-            // CW (increasing raw counts) = step OLDER (more negative pos).
-            int step = ( delta > 0 ) ? -1 : +1;
+        // Consume one logical detent step from the shared menu path.
+        // UP = step NEWER (toward redo), DOWN = step OLDER (toward undo) —
+        // matches the previous CW = older mapping.
+        int step = 0;
+        if ( encoderDirectionState == UP ) {
+            step = +1;
+            encoderDirectionState = NONE;
+        } else if ( encoderDirectionState == DOWN ) {
+            step = -1;
+            encoderDirectionState = NONE;
+        }
+        if ( step != 0 ) {
             int next = scrub + step;
             if ( next > 0 ) next = 0;
             if ( next < -total ) next = -total;
@@ -5331,6 +5340,7 @@ void runHistoryScrubMenu( void ) {
     }
 
     g_historyScrubActive = false;
+    rotaryDivider = lastDivider;
     Menus::getInstance( ).inClickMenu = 0;
     // Repaint the final reverted/replayed state on the breadboard so the
     // user sees the connections (not the menu's previous text overlay).
