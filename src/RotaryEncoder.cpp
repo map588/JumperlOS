@@ -242,6 +242,47 @@ static int holdAnimStep = 0;
 static bool holdAnimActive = false;
 static bool holdAnimLongHeldFlashed = false;
 
+// Encoder click/rotation interlock: pushing the button mechanically torques the
+// shaft, so rotary pulses around the press moment are spurious. We suppress
+// rotation within a window on either side of the button press ("click"):
+//   - AFTER window:  rotation is frozen for CLICK_SUPPRESS_AFTER_US following the
+//                    press; the baselines are kept resynced so motion resumes
+//                    smoothly (no jump) once the window expires.
+//   - BEFORE window: on the press we roll the logical encoder state back to a
+//                    snapshot taken ~CLICK_SUPPRESS_BEFORE_US earlier, discarding
+//                    the jiggle that starts as the finger begins to push. Because
+//                    encoderPosition is consumed as a delta by the numeric editors,
+//                    rolling it back makes the editor reverse the spurious change.
+// NOTE: the BEFORE window also reverts a deliberate "turn-then-click" gesture, so
+// keep it modest. The two windows are tuned independently below.
+const unsigned long CLICK_SUPPRESS_BEFORE_US = 100000; // 100ms before the press
+const unsigned long CLICK_SUPPRESS_AFTER_US  = 100000; // 100ms after the press
+static unsigned long lastEncoderClickUs = 0;
+static volatile bool encoderClickPending = false; // set on the press edge, handled in rotaryEncoderStuff
+
+// Rolling history of the logical encoder state so a press can restore how things
+// looked before the BEFORE window. Sized to span comfortably more than the window.
+struct EncoderSnapshot {
+  unsigned long t;
+  long encoderPos;   // value of encoderPosition (raw - offset)
+  long menuPosition; // value of the menu position counter
+};
+#define ENCODER_SNAPSHOT_COUNT 32
+static const unsigned long ENCODER_SNAPSHOT_INTERVAL_US = 8000; // ~8ms -> ~256ms of history
+static EncoderSnapshot encoderSnapshots[ENCODER_SNAPSHOT_COUNT] = {0};
+static int encoderSnapshotHead = 0;
+static bool encoderSnapshotSeeded = false;
+static long heldEncoderPos = 0; // encoderPosition value held frozen during the AFTER window
+
+// Hysteresis baseline for menu navigation: the raw encoder count at the last
+// committed detent step. A new step is only emitted once the shaft has moved a
+// full rotaryDivider counts from here, so the trip points are always a full
+// divider away from where the shaft currently rests. This makes the menu step
+// boundary phase-independent: when you settle into a detent the count can chatter
+// by a count or two without ever crossing a trip point. rotaryDivider sets the
+// sensitivity (counts per step), not the absolute bin phase.
+static long lastDetentRaw = 0;
+
 // ── Press animation state ──
 // White flash on press, rainbow transition during second half of buttonHoldLength.
 static bool pressAnimActive = false;
@@ -337,6 +378,11 @@ void rotaryEncoderButtonStuff( void ) {
         pio_sm_restart( pioEnc, smEnc );
         // encoderRaw = quadrature_encoder_get_count(pioEnc, smEnc);
         // lastPositionEncoder = encoderRaw;
+
+        // Click/rotation interlock: mark the press moment so rotaryEncoderStuff can
+        // suppress the jiggle on either side of it (see CLICK_SUPPRESS_* notes).
+        lastEncoderClickUs = micros( );
+        encoderClickPending = true;
 
         if ( millis( ) - doubleClickTimer < doubleClickLength ) {
             encoderButtonState = DOUBLECLICKED;
@@ -670,17 +716,6 @@ void rotaryEncoderStuff( void ) {
     // Drive the hold animation + LONG_HELD transition
     holdAnimationStuff( );
 
-    if ( lastRotaryDivider != rotaryDivider ) {
-        pio_sm_restart( pioEnc, smEnc );
-        lastRotaryDivider = rotaryDivider;
-        encoderRaw = quadrature_encoder_get_count( pioEnc, smEnc );
-        // encoderRaw -= positionOffset;
-        encoderRaw = encoderRaw / rotaryDivider;
-        lastPositionEncoder = encoderRaw;
-
-        // quadrature_program_init(pioEnc, smEnc, offsetEnc, QUADRATURE_A_PIN,
-        // QUADRATURE_B_PIN);
-    }
     // if (resetPosition == true) {
     //  // quadrature_encoder_program_init(pioEnc, smEnc, PIN_AB, 0);
     //   //pio_sm_restart(pioEnc, smEnc);
@@ -700,28 +735,96 @@ void rotaryEncoderStuff( void ) {
     //   resetPosition = false;
     // }
 
-    encoderRaw = quadrature_encoder_get_count( pioEnc, smEnc );
+    long rawCount = quadrature_encoder_get_count( pioEnc, smEnc );
 
-    encoderPosition = quadrature_encoder_get_count( pioEnc, smEnc ) - encoderPositionOffset;
+    encoderPosition = rawCount - encoderPositionOffset;
     if ( resetEncoderPosition == true ) {
-        encoderPositionOffset = quadrature_encoder_get_count( pioEnc, smEnc );
+        encoderPositionOffset = rawCount;
+        encoderPosition = 0;
         resetEncoderPosition = false;
     }
 
-    encoderRaw = encoderRaw / rotaryDivider;
-    // encoderRaw -= positionOffset;
-    numberOfSteps = abs( lastPositionEncoder - encoderRaw );
+    if ( lastRotaryDivider != rotaryDivider ) {
+        pio_sm_restart( pioEnc, smEnc );
+        lastRotaryDivider = rotaryDivider;
+        // Changing the divider only changes sensitivity; reseed the hysteresis
+        // baseline to the current raw count so the logical position doesn't jump.
+        lastDetentRaw = quadrature_encoder_get_count( pioEnc, smEnc );
+        rawCount = lastDetentRaw;
+    }
 
-    if ( ( lastPositionEncoder - encoderRaw > 1 || lastPositionEncoder - encoderRaw < -1 ) || ( lastPositionEncoder != encoderRaw && rotaryDivider < 4 ) ) {
+    // ---- Click/rotation interlock --------------------------------------------
+    unsigned long nowClickUs = micros( );
+
+    // Keep a throttled rolling history of the logical state for BEFORE-window undo.
+    if ( !encoderSnapshotSeeded ||
+         ( nowClickUs - encoderSnapshots[ encoderSnapshotHead ].t ) >= ENCODER_SNAPSHOT_INTERVAL_US ) {
+        encoderSnapshotHead = ( encoderSnapshotHead + 1 ) % ENCODER_SNAPSHOT_COUNT;
+        encoderSnapshots[ encoderSnapshotHead ].t = nowClickUs;
+        encoderSnapshots[ encoderSnapshotHead ].encoderPos = (long)encoderPosition;
+        encoderSnapshots[ encoderSnapshotHead ].menuPosition = (long)position;
+        encoderSnapshotSeeded = true;
+    }
+
+    // On the press edge, roll the logical state back to the start of the BEFORE
+    // window, discarding the jiggle that the push induced. encoderPosition is then
+    // held frozen through the AFTER window below.
+    if ( encoderClickPending ) {
+        encoderClickPending = false;
+        EncoderSnapshot* snap = &encoderSnapshots[ encoderSnapshotHead ];
+        unsigned long beforeTarget = lastEncoderClickUs - CLICK_SUPPRESS_BEFORE_US;
+        for ( int i = 0; i < ENCODER_SNAPSHOT_COUNT; i++ ) {
+            int idx = ( encoderSnapshotHead - i + ENCODER_SNAPSHOT_COUNT ) % ENCODER_SNAPSHOT_COUNT;
+            snap = &encoderSnapshots[ idx ]; // newest first; falls through to oldest available
+            // wrap-safe "snapshot is at least BEFORE_US old": (signed)(t - target) <= 0
+            if ( (long)( encoderSnapshots[ idx ].t - beforeTarget ) <= 0 ) break;
+        }
+        heldEncoderPos = snap->encoderPos;
+        position = (int)snap->menuPosition;
+        encoderDirectionState = NONE;
+        encoderDirectionConsumed = true;
+    }
+
+    // While the button is physically held, suppress all rotation outright. Keep the
+    // AFTER window anchored to "now" through the hold so suppression also continues
+    // for CLICK_SUPPRESS_AFTER_US past the release (covers release jiggle on long holds).
+    if ( isEncoderButtonPhysicallyPressed( ) ) {
+        lastEncoderClickUs = nowClickUs;
+    }
+
+    // AFTER window: freeze both consumer paths so the click itself cannot register
+    // as rotation. Baselines track the shaft so motion resumes without a jump.
+    if ( ( nowClickUs - lastEncoderClickUs ) < CLICK_SUPPRESS_AFTER_US ) {
+        encoderPositionOffset = rawCount - heldEncoderPos;
+        encoderPosition = heldEncoderPos;
+        lastDetentRaw = rawCount; // keep the hysteresis baseline under the shaft, no catch-up
+        if ( encoderDirectionConsumed ) encoderDirectionState = NONE;
+        numberOfSteps = 0;
+        return;
+    }
+    // ---- end click/rotation interlock ----------------------------------------
+
+    // Hysteresis: only step once the shaft has moved a full rotaryDivider of raw
+    // counts past the last committed detent. Each crossing is exactly one logical
+    // step, so the divider sets sensitivity (counts per step) without placing any
+    // fixed bin boundary the resting detent could chatter across.
+    long detentDelta = rawCount - lastDetentRaw;
+    int steps = 0;
+    if ( detentDelta >= rotaryDivider || detentDelta <= -rotaryDivider ) {
+        steps = (int)( detentDelta / rotaryDivider ); // truncates toward zero; |steps| >= 1 here
+        lastDetentRaw += (long)steps * rotaryDivider;
+        encoderRaw += steps; // encoderRaw is the persistent logical position; lastPositionEncoder catches up below
+    }
+
+    numberOfSteps = abs( steps );
+
+    if ( lastPositionEncoder != encoderRaw ) {
 
         if ( lastPositionEncoder > encoderRaw && encoderDirectionState != DOWN ) {
             position++;
             encoderDirectionState = UP;
             encoderDirectionConsumed = false; // Mark as unconsumed
-            // numberOfSteps = abs(lastPositionEncoder - encoderRaw);
-            numberOfSteps = abs( lastPositionEncoder - encoderRaw );
             noteUserInput( );  // gate background flash writes - user is turning
-
             lastPositionEncoder = encoderRaw;
 
         } else if ( lastPositionEncoder < encoderRaw &&
@@ -729,7 +832,6 @@ void rotaryEncoderStuff( void ) {
             position--;
             encoderDirectionState = DOWN;
             encoderDirectionConsumed = false; // Mark as unconsumed
-            numberOfSteps = lastPositionEncoder - encoderRaw;
             noteUserInput( );
             lastPositionEncoder = encoderRaw;
 
@@ -737,8 +839,6 @@ void rotaryEncoderStuff( void ) {
             // Only clear to NONE if already consumed
             encoderDirectionState = NONE;
         }
-
-        //}
 
     } else if ( encoderDirectionConsumed ) {
         // Only clear to NONE if already consumed

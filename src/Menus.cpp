@@ -2762,7 +2762,13 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
                 continue;
             }
 
-            if ( !firstTime) {
+            // Remember where we were before applying this poll's delta, so the
+            // zero-snap below only engages when we ARRIVE at 0 from outside the
+            // window (not while resting in it). Otherwise slow steps get snapped
+            // back to 0.0 every poll and the value is trapped at zero.
+            float choiceBeforeDelta = currentChoice;
+
+            if ( !firstTime ) {
                 // Determine current direction
                 int currentDirection = ( encoderDelta > 0 ) ? 1 : ( ( encoderDelta < 0 ) ? -1 : 0 );
 
@@ -2870,7 +2876,13 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
 
             // Exact special values (tight ranges for snap points)
             if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
-               
+                // Only hard-snap to exactly 0.0 when we entered the window from
+                // outside (or on first draw). While already inside it, let the
+                // value accumulate so slow steps can climb back out of zero.
+                bool wasInZeroWindow = ( choiceBeforeDelta > -0.05 && choiceBeforeDelta < 0.05 );
+                if ( firstTime || !wasInZeroWindow ) {
+                    currentChoice = 0.0;
+                }
                 numberColor = zeroColor;
             } else if ( currentChoice > 3.25 && currentChoice < 3.35 ) {
                 numberColor = threeColor;
@@ -2882,11 +2894,14 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
                 numberColor = negColor;
             }
 
-            // Format display string
-            if ( currentChoice < 0.00 ) {
-                snprintf( floatString, 8, "%0.1f V", roundedCurrentChoice );
+            // Format display string. Values that round to zero at 0.1 V
+            // resolution are shown as 0.0 (never "-0.0"), even when the
+            // underlying value is a tiny negative resting inside the zero window.
+            float displayChoice = ( currentChoice > -0.05 && currentChoice < 0.05 ) ? 0.0f : roundedCurrentChoice;
+            if ( displayChoice < 0.00 ) {
+                snprintf( floatString, 8, "%0.1f V", displayChoice );
             } else {
-                snprintf( floatString, 8, " %0.1f V", roundedCurrentChoice );
+                snprintf( floatString, 8, " %0.1f V", displayChoice );
             }
 
             // Update LED display
@@ -5238,19 +5253,22 @@ void runHistoryScrubMenu( void ) {
         return;
     }
 
-    // Don't change rotaryDivider here. rotaryDivider only affects
-    // encoderRaw / encoderDirectionState. encoderPosition is the raw,
-    // undivided quadrature count, so we decimate ourselves (one txn
-    // step per TICKS_PER_STEP raw counts ≈ 3 detents on the V5 encoder
-    // which yields ~4 quad counts per detent).
-    constexpr int TICKS_PER_STEP = 12;
+    // Route the clickwheel through the shared menu encoder path
+    // (encoderDirectionState UP/DOWN) so this screen gets the same
+    // phase-independent detent hysteresis as the top-level menu instead of
+    // re-deriving steps from the raw count. rotaryDivider sets sensitivity:
+    // ~12 raw counts per step ≈ 3 detents on the V5 encoder (which yields
+    // ~4 quad counts per detent). Restored on exit in the cleanup below.
+    int lastDivider = rotaryDivider;
+    rotaryDivider = 12;
 
     Menus::getInstance( ).inClickMenu = 1;
     g_historyScrubActive = true;     // tell Core 2 to keep painting nets
     encoderButtonState = IDLE;
     lastButtonEncoderState = IDLE;
+    encoderDirectionState = NONE;    // drop any step left over from the opening click
+    encoderDirectionConsumed = true;
 
-    long lastTick = encoderPosition / TICKS_PER_STEP;
     int scrub = entryPos;
 
     // Repaint OLED ONLY - we deliberately do NOT paint text onto the
@@ -5298,12 +5316,18 @@ void runHistoryScrubMenu( void ) {
             break;
         }
 
-        long currentTick = encoderPosition / TICKS_PER_STEP;
-        long delta = currentTick - lastTick;
-        if ( delta != 0 ) {
-            lastTick = currentTick;
-            // CW (increasing raw counts) = step OLDER (more negative pos).
-            int step = ( delta > 0 ) ? -1 : +1;
+        // Consume one logical detent step from the shared menu path.
+        // UP = step NEWER (toward redo), DOWN = step OLDER (toward undo) —
+        // matches the previous CW = older mapping.
+        int step = 0;
+        if ( encoderDirectionState == UP ) {
+            step = +1;
+            encoderDirectionState = NONE;
+        } else if ( encoderDirectionState == DOWN ) {
+            step = -1;
+            encoderDirectionState = NONE;
+        }
+        if ( step != 0 ) {
             int next = scrub + step;
             if ( next > 0 ) next = 0;
             if ( next < -total ) next = -total;
@@ -5316,6 +5340,7 @@ void runHistoryScrubMenu( void ) {
     }
 
     g_historyScrubActive = false;
+    rotaryDivider = lastDivider;
     Menus::getInstance( ).inClickMenu = 0;
     // Repaint the final reverted/replayed state on the breadboard so the
     // user sees the connections (not the menu's previous text overlay).
