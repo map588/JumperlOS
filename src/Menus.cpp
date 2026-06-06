@@ -2762,7 +2762,13 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
                 continue;
             }
 
-            if ( !firstTime) {
+            // Remember where we were before applying this poll's delta, so the
+            // zero-snap below only engages when we ARRIVE at 0 from outside the
+            // window (not while resting in it). Otherwise slow steps get snapped
+            // back to 0.0 every poll and the value is trapped at zero.
+            float choiceBeforeDelta = currentChoice;
+
+            if ( !firstTime ) {
                 // Determine current direction
                 int currentDirection = ( encoderDelta > 0 ) ? 1 : ( ( encoderDelta < 0 ) ? -1 : 0 );
 
@@ -2870,7 +2876,13 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
 
             // Exact special values (tight ranges for snap points)
             if ( currentChoice > -0.05 && currentChoice < 0.05 ) {
-               
+                // Only hard-snap to exactly 0.0 when we entered the window from
+                // outside (or on first draw). While already inside it, let the
+                // value accumulate so slow steps can climb back out of zero.
+                bool wasInZeroWindow = ( choiceBeforeDelta > -0.05 && choiceBeforeDelta < 0.05 );
+                if ( firstTime || !wasInZeroWindow ) {
+                    currentChoice = 0.0;
+                }
                 numberColor = zeroColor;
             } else if ( currentChoice > 3.25 && currentChoice < 3.35 ) {
                 numberColor = threeColor;
@@ -2882,11 +2894,14 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
                 numberColor = negColor;
             }
 
-            // Format display string
-            if ( currentChoice < 0.00 ) {
-                snprintf( floatString, 8, "%0.1f V", roundedCurrentChoice );
+            // Format display string. Values that round to zero at 0.1 V
+            // resolution are shown as 0.0 (never "-0.0"), even when the
+            // underlying value is a tiny negative resting inside the zero window.
+            float displayChoice = ( currentChoice > -0.05 && currentChoice < 0.05 ) ? 0.0f : roundedCurrentChoice;
+            if ( displayChoice < 0.00 ) {
+                snprintf( floatString, 8, "%0.1f V", displayChoice );
             } else {
-                snprintf( floatString, 8, " %0.1f V", roundedCurrentChoice );
+                snprintf( floatString, 8, " %0.1f V", displayChoice );
             }
 
             // Update LED display

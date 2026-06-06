@@ -242,6 +242,15 @@ static int holdAnimStep = 0;
 static bool holdAnimActive = false;
 static bool holdAnimLongHeldFlashed = false;
 
+// Hysteresis baseline for menu navigation: the raw encoder count at the last
+// committed detent step. A new step is only emitted once the shaft has moved a
+// full rotaryDivider counts from here, so the trip points are always a full
+// divider away from where the shaft currently rests. This makes the menu step
+// boundary phase-independent: when you settle into a detent the count can chatter
+// by a count or two without ever crossing a trip point. rotaryDivider sets the
+// sensitivity (counts per step), not the absolute bin phase.
+static long lastDetentRaw = 0;
+
 // ── Press animation state ──
 // White flash on press, rainbow transition during second half of buttonHoldLength.
 static bool pressAnimActive = false;
@@ -670,17 +679,6 @@ void rotaryEncoderStuff( void ) {
     // Drive the hold animation + LONG_HELD transition
     holdAnimationStuff( );
 
-    if ( lastRotaryDivider != rotaryDivider ) {
-        pio_sm_restart( pioEnc, smEnc );
-        lastRotaryDivider = rotaryDivider;
-        encoderRaw = quadrature_encoder_get_count( pioEnc, smEnc );
-        // encoderRaw -= positionOffset;
-        encoderRaw = encoderRaw / rotaryDivider;
-        lastPositionEncoder = encoderRaw;
-
-        // quadrature_program_init(pioEnc, smEnc, offsetEnc, QUADRATURE_A_PIN,
-        // QUADRATURE_B_PIN);
-    }
     // if (resetPosition == true) {
     //  // quadrature_encoder_program_init(pioEnc, smEnc, PIN_AB, 0);
     //   //pio_sm_restart(pioEnc, smEnc);
@@ -700,28 +698,45 @@ void rotaryEncoderStuff( void ) {
     //   resetPosition = false;
     // }
 
-    encoderRaw = quadrature_encoder_get_count( pioEnc, smEnc );
+    long rawCount = quadrature_encoder_get_count( pioEnc, smEnc );
 
-    encoderPosition = quadrature_encoder_get_count( pioEnc, smEnc ) - encoderPositionOffset;
+    encoderPosition = rawCount - encoderPositionOffset;
     if ( resetEncoderPosition == true ) {
-        encoderPositionOffset = quadrature_encoder_get_count( pioEnc, smEnc );
+        encoderPositionOffset = rawCount;
+        encoderPosition = 0;
         resetEncoderPosition = false;
     }
 
-    encoderRaw = encoderRaw / rotaryDivider;
-    // encoderRaw -= positionOffset;
-    numberOfSteps = abs( lastPositionEncoder - encoderRaw );
+    if ( lastRotaryDivider != rotaryDivider ) {
+        pio_sm_restart( pioEnc, smEnc );
+        lastRotaryDivider = rotaryDivider;
+        // Changing the divider only changes sensitivity; reseed the hysteresis
+        // baseline to the current raw count so the logical position doesn't jump.
+        lastDetentRaw = quadrature_encoder_get_count( pioEnc, smEnc );
+        rawCount = lastDetentRaw;
+    }
 
-    if ( ( lastPositionEncoder - encoderRaw > 1 || lastPositionEncoder - encoderRaw < -1 ) || ( lastPositionEncoder != encoderRaw && rotaryDivider < 4 ) ) {
+    // Hysteresis: only step once the shaft has moved a full rotaryDivider of raw
+    // counts past the last committed detent. Each crossing is exactly one logical
+    // step, so the divider sets sensitivity (counts per step) without placing any
+    // fixed bin boundary the resting detent could chatter across.
+    long detentDelta = rawCount - lastDetentRaw;
+    int steps = 0;
+    if ( detentDelta >= rotaryDivider || detentDelta <= -rotaryDivider ) {
+        steps = (int)( detentDelta / rotaryDivider ); // truncates toward zero; |steps| >= 1 here
+        lastDetentRaw += (long)steps * rotaryDivider;
+        encoderRaw += steps; // encoderRaw is the persistent logical position; lastPositionEncoder catches up below
+    }
+
+    numberOfSteps = abs( steps );
+
+    if ( lastPositionEncoder != encoderRaw ) {
 
         if ( lastPositionEncoder > encoderRaw && encoderDirectionState != DOWN ) {
             position++;
             encoderDirectionState = UP;
             encoderDirectionConsumed = false; // Mark as unconsumed
-            // numberOfSteps = abs(lastPositionEncoder - encoderRaw);
-            numberOfSteps = abs( lastPositionEncoder - encoderRaw );
             noteUserInput( );  // gate background flash writes - user is turning
-
             lastPositionEncoder = encoderRaw;
 
         } else if ( lastPositionEncoder < encoderRaw &&
@@ -729,7 +744,6 @@ void rotaryEncoderStuff( void ) {
             position--;
             encoderDirectionState = DOWN;
             encoderDirectionConsumed = false; // Mark as unconsumed
-            numberOfSteps = lastPositionEncoder - encoderRaw;
             noteUserInput( );
             lastPositionEncoder = encoderRaw;
 
@@ -737,8 +751,6 @@ void rotaryEncoderStuff( void ) {
             // Only clear to NONE if already consumed
             encoderDirectionState = NONE;
         }
-
-        //}
 
     } else if ( encoderDirectionConsumed ) {
         // Only clear to NONE if already consumed
