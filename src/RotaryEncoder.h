@@ -68,6 +68,11 @@ extern volatile bool encoderDirectionConsumed;
 extern volatile bool buttonPressAnimActive;
 extern volatile uint32_t pressAnimLogoColors[8];
 
+// Press timing — buttonHoldStart is set to millis() at press start; the state
+// machine flips PRESSED -> HELD once (millis()-buttonHoldStart) > buttonHoldLength.
+extern unsigned long buttonHoldStart;
+extern unsigned long buttonHoldLength;
+
 void initRotaryEncoder(void);
 void unInitRotaryEncoder(void);
 void printRotaryEncoderHelp(void);
@@ -75,6 +80,17 @@ void rotaryEncoderStuff(void);
 void rotaryEncoderButtonStuff(void);
 bool isRotaryEncoderInitialized(void);
 void printRotaryEncoderStatus(void);
+
+/**
+ * @brief Read the raw quadrature count directly from the PIO.
+ *
+ * Bypasses the encoderPosition/offset/hysteresis bookkeeping that Core 2
+ * maintains in rotaryEncoderStuff(). Intended for screens that suspend the
+ * normal encoder polling (encoderOverride) and want to track rotation
+ * themselves while taking over the button pin. Returns 0 if the encoder PIO
+ * is not initialized.
+ */
+long getEncoderRawCount(void);
 
 /**
  * @brief Check if encoder button is physically pressed (hardware state)

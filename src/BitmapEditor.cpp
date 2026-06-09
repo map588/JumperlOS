@@ -1010,7 +1010,11 @@ void BitmapEditor::handleInput(int ch) {
         moveCursor(1, 0);
         return;
     }
-    
+if (encoderButtonState == LONG_HELD) {
+    save();
+    running = false;
+    return;
+}
     switch (ch) {
         
         // Toggle pixel

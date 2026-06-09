@@ -146,6 +146,13 @@ int bbDirtyCount = 0;
 unsigned long lastShowTime = 0;
 #define SHOW_INTERVAL 100
 
+// FOLLOW-UP (deep refactor): the per-strip dirty flags (bbDirty/topDirty and the
+// unused markBBDirty/markTopDirty/markAllDirty) are written on every setPixelColor
+// but ignored here (the `if (bbDirty)` guards are commented out), so both strips are
+// pushed unconditionally. Either re-enable per-strip skipping or delete the flags +
+// mark* helpers outright. Also consolidate the overlapping clear mechanisms
+// (clearBeforeSend / clearLEDsExceptRails / hideNets / leds.clear / bread::clear)
+// into one path. See the showLEDsCore2 typed-request note in Commands.cpp.
 void __not_in_flash_func(ledClass::show)(void) {
   // OPTIMIZATION: Only refresh LED strips that have actually changed
   // This can reduce 13ms LED refresh time to 0ms when idle, or ~6.5ms if only one strip changed
@@ -3335,6 +3342,136 @@ static inline void setLogoBottom(uint32_t color) {
   leds.setPixelColor(LOGO_LED_START + 5, color);
 }
 
+// ============================================================================
+// LogoRing — reusable ring indicator (6 ring LEDs + center button LED)
+// ============================================================================
+LogoRing logoRing;
+
+void setLogoRing(int itemCount, int selectedIndex, int hueOffset) {
+  logoRing.itemCount = itemCount;
+  logoRing.selectedIndex = selectedIndex;
+  logoRing.hueOffset = hueOffset;
+}
+
+// Per-hue brightness compensation for the yellowish PCB: warm hues (red->green)
+// transmit brighter, cool hues (cyan->violet) get filtered down, so we trim the
+// warm slots and boost the cool ones to balance perceived ring brightness.
+static inline int pcbHueBrightnessScale(uint8_t hue) {
+  switch (hue) {
+    case 0 ... 15:    return 100; // red
+    case 16 ... 30:   return 78;  // orange
+    case 31 ... 50:   return 52;  // yellow
+    case 51 ... 75:   return 58;  // chartreuse
+    case 76 ... 100:  return 66;  // green
+    case 101 ... 125: return 92;  // aqua/cyan
+    case 126 ... 160: return 145; // blue
+    case 161 ... 185: return 138; // indigo
+    case 186 ... 215: return 118; // violet/purple
+    default:          return 100; // magenta/pink
+  }
+}
+
+// Pick the color for a ring slot (0..5). Hue is sampled from the full-spectrum
+// rainbow (or a caller-supplied palette) so the 6 slots span the whole circle,
+// shifted by the granular hueOffset. Brightness depends on selection and is
+// PCB-corrected per hue.
+static inline uint32_t ringSlotColor(int slot, bool selected) {
+  int bright = selected ? logoRing.selectedBrightness : logoRing.baseBrightness;
+  const uint32_t* palette =
+      (logoRing.colorMode == RING_PALETTE && logoRing.palette != nullptr)
+          ? logoRing.palette
+          : logoColorsAll[PALETTE_RAINBOW];
+  int idx = ((slot * (LOGO_COLOR_LENGTH / 6)) + logoRing.hueOffset) % LOGO_COLOR_LENGTH;
+  if (idx < 0) idx += LOGO_COLOR_LENGTH;
+  uint32_t base = palette[idx];
+  // Balance perceived brightness across the ring for the PCB tint.
+  uint8_t hue = RgbToHsv(unpackRgb(base)).h;
+  int corrected = (bright * pcbHueBrightnessScale(hue)) / 100;
+  if (corrected < 1) corrected = 1;
+  if (corrected > 254) corrected = 254;
+  return dimLogoColor(base, corrected);
+}
+
+// Center LED: bright white -> red while the encoder button is held in the
+// PRESSED window (0..buttonHoldLength). Off when idle. Once HELD fires the ring
+// hands off, so this only ever runs during the pre-HELD press.
+//
+// Uses an ease-in (frac^2) on saturation so it stays clearly white through most
+// of the press then snaps decisively to a saturated red right before the hold
+// fires — high contrast both frame-to-frame and against the colored ring. The
+// value runs at full centerBrightness; near the trigger the red also pulses for
+// extra visibility.
+static inline uint32_t ringCenterColor(void) {
+  if (encoderButtonState == PRESSED) {
+    long elapsed = (long)(millis() - buttonHoldStart);
+    float frac = (buttonHoldLength > 0) ? ((float)elapsed / (float)buttonHoldLength) : 1.0f;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+
+    float eased = frac * frac; // stay white, then redden fast near the hold
+    uint8_t sat = (uint8_t)(eased * 254.0f);
+
+    // Fast brightness pulse that deepens as the press approaches the hold, so
+    // the indicator visibly "charges" instead of a flat gradient.
+    int val = (int)logoRing.centerBrightness;
+    float pulse = 0.5f + 0.5f * sinf((float)millis() * 0.045f);
+    val -= (int)(eased * 90.0f * pulse);
+    if (val < 40) val = 40;
+    if (val > 254) val = 254;
+
+    hsvColor hsv = { 0, sat, (uint8_t)val };
+    return HsvToRaw(hsv);
+  }
+  return 0;
+}
+
+bool renderLogoRing(void) {
+  if (!logoRing.enabled) {
+    return false;
+  }
+
+  // While the encoder is held past the press window, hand the logo back to the
+  // existing hold/reboot sweep so its countdown stays visible.
+  if (encoderButtonState == HELD || encoderButtonState == MEDIUM_HELD ||
+      encoderButtonState == LONG_HELD) {
+    return false;
+  }
+
+  int itemCount = logoRing.itemCount;
+  int selectedIndex = logoRing.selectedIndex;
+
+  bool slotAvail[6] = { false, false, false, false, false, false };
+  int selectedSlot = -1;
+
+  if (itemCount <= 0) {
+    // nothing to lay out — ring stays dark, only the center indicator shows
+  } else if (itemCount <= 6) {
+    // Even angular spread: round(k * 6 / itemCount).
+    for (int k = 0; k < itemCount; k++) {
+      int slot = ((k * 6) + (itemCount / 2)) / itemCount;
+      slot %= 6;
+      slotAvail[slot] = true;
+    }
+    selectedSlot = (((selectedIndex * 6) + (itemCount / 2)) / itemCount) % 6;
+    if (selectedSlot >= 0 && selectedSlot < 6) slotAvail[selectedSlot] = true;
+  } else {
+    // More items than slots: light all 6, selection rotates/wraps (relative).
+    for (int s = 0; s < 6; s++) slotAvail[s] = true;
+    selectedSlot = ((selectedIndex % 6) + 6) % 6;
+  }
+
+  for (int slot = 0; slot < 6; slot++) {
+    if (slotAvail[slot]) {
+      leds.setPixelColor(LOGO_LED_START + slot, ringSlotColor(slot, slot == selectedSlot));
+    } else {
+      leds.setPixelColor(LOGO_LED_START + slot, (uint32_t)0);
+    }
+  }
+
+  leds.setPixelColor(LOGO_LED_START + 6, ringCenterColor());
+  return true;
+}
+
 // Mark to run from RAM to avoid flash contention during saves
 void __not_in_flash_func(logoSwirl)(int start, int spread, int probe) {
 
@@ -3345,6 +3482,20 @@ if (logoLedAccess == true) {
   return;
 }
 logoLedAccess = true;
+
+  // ========================================================================
+  // MENU RING INDICATOR - Highest precedence while a click-menu owns the logo.
+  // Paints the 6 ring LEDs (item layout + selection) and the center button
+  // fade. Suppresses the undo/filesystem/measure indicators below. When the
+  // encoder is held past the press window renderLogoRing() returns false and we
+  // fall through to the hold/reboot sweep (button press animation) for handoff.
+  // ========================================================================
+  if (logoRing.enabled) {
+    if (renderLogoRing()) {
+      logoLedAccess = false;
+      return;
+    }
+  }
 
   // ========================================================================
   // BUTTON PRESS ANIMATION - White flash / rainbow during press-to-hold

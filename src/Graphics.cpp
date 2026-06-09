@@ -3322,29 +3322,30 @@ void printString(const char *s, uint32_t color, uint32_t bg, int position,
 }
 
 void bread::clear(int topBottom) {
-  // CRITICAL: Use setPixelColorDirect to write to buffer WITHOUT marking dirty
-  // This prevents Core 2 from showing partial clears before new content is drawn
+  // Use setPixelColorDirect to write to the buffer WITHOUT marking it dirty, so
+  // Core 2 never shows a partial clear before the new content is drawn. (Matches
+  // clearLEDsExceptRails(); the code previously used setPixelColor, contradicting
+  // this comment.) Trigger the actual display with showLEDsCore2 (e.g. = 2, or 12
+  // for a blocking flush).
   if (topBottom == -1) {
     for (int i = 0; i < 60; i++) {
       for (int j = 0; j < 5; j++) {
-        leds.setPixelColor((i * 5) + j, 0x00);
+        leds.setPixelColorDirect((i * 5) + j, 0x00);
       }
     }
   } else if (topBottom == 0) {
     for (int i = 0; i < 30; i++) {
       for (int j = 0; j < 5; j++) {
-        leds.setPixelColor((i * 5) + j, 0x00);
+        leds.setPixelColorDirect((i * 5) + j, 0x00);
       }
     }
   } else if (topBottom == 1) {
     for (int i = 30; i < 60; i++) {
       for (int j = 0; j < 5; j++) {
-        leds.setPixelColor((i * 5) + j, 0x00);
+        leds.setPixelColorDirect((i * 5) + j, 0x00);
       }
     }
   }
-  // Note: Buffer is cleared but NOT marked dirty
-  // Call showLEDsCore2 = 12 (or similar) to actually display
 }
 
 void scrollFont() {

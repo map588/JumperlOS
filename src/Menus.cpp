@@ -461,6 +461,7 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
 
         encoderButtonState = IDLE;
         inClickMenu = 1;
+        logoRing.enabled = true; // ring owns the logo LEDs for this menu session
         // if (menuRead == 0) {
         //   readMenuFile();
         // }
@@ -479,6 +480,8 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
             // Use state-based check in loop (doesn't consume event)
             if ( checkProbeButtonState( ) == 1 ) {
                 Serial.println( "Probe button pressed" );
+                logoRing.enabled = false;
+                clearColorOverrides( false, true, false ); // restore depth pads
                 return -3;
             }
             // oled.showJogo32h();
@@ -494,6 +497,8 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
 
             showLEDsCore2 = 1;
             inClickMenu = 0;
+            logoRing.enabled = false;
+            clearColorOverrides( false, true, false ); // restore depth pads
 
             oled.showJogo32h( );
 
@@ -520,6 +525,8 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
         // getMenuSelection();
     }
     inClickMenu = 0;
+    logoRing.enabled = false;
+    clearColorOverrides( false, true, false ); // restore depth pads
 
     // oled.showJogo32h();
 
@@ -652,6 +659,126 @@ void printActionStruct( void ) {
     Serial.println( "\n\r" );
 }
 
+// Per-ring-slot hue spacing in PALETTE_RAINBOW indices (6 slots span the wheel).
+#define MENU_RING_SLOT_STEP ( LOGO_COLOR_LENGTH / 6 )
+
+// Accumulated ring hue offset per menu level. Level 0 starts at 0; each child
+// level inherits its parent's offset plus the slot of the item that was
+// selected to descend into it, so a submenu's colors are anchored to the color
+// of the item you picked (each branch gets its own hue lineage).
+static int menuRingLevelOffset[ 12 ] = { 0 };
+
+// Show menu depth on the connector pad LEDs via the color overrides: one pad
+// pair lights per level (GPIO -> DAC -> ADC), tinted with the current branch
+// hue. Capped at 3 — deeper levels just keep all three lit. Top level (depth 0)
+// blanks them so the ladder reads cleanly.
+static void setMenuDepthLEDs( int depth, int offset ) {
+    if ( depth < 0 )
+        depth = 0;
+    if ( depth > 3 )
+        depth = 3;
+    static const logoOverrideNames depthPairs[ 3 ][ 2 ] = {
+        { GPIO_0, GPIO_1 },
+        { DAC_0, DAC_1 },
+        { ADC_0, ADC_1 },
+    };
+    int idx = ( ( offset % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH;
+    uint32_t depthColor = dimLogoColor( logoColorsAll[ PALETTE_RAINBOW ][ idx ], 70 );
+    for ( int p = 0; p < 3; p++ ) {
+        uint32_t c = ( p < depth ) ? depthColor : (uint32_t)0;
+        setLogoOverride( depthPairs[ p ][ 0 ], c );
+        setLogoOverride( depthPairs[ p ][ 1 ], c );
+    }
+}
+
+// Map a selected sibling index onto its ring slot (must match renderLogoRing).
+static int menuRingSelectedSlot( int count, int sel ) {
+    if ( count <= 0 )
+        return 0;
+    if ( count <= 6 )
+        return ( ( ( sel * 6 ) + ( count / 2 ) ) / count ) % 6;
+    return ( ( sel % 6 ) + 6 ) % 6;
+}
+
+// Drive the reusable logo ring from the current menu cursor. Siblings at the
+// active level are the contiguous run around menuPosition bounded by entries of
+// a lower level (deeper children are skipped in the count but stay inside the
+// run). itemCount/selectedIndex feed the ring layout; the hue offset is
+// inherited from the parent's selected item.
+static void updateMenuLogoRing( int menuPosition, int menuLevel ) {
+    if ( menuLevel < 0 )
+        menuLevel = 0;
+    int maxLevel = (int)( sizeof( menuRingLevelOffset ) / sizeof( menuRingLevelOffset[ 0 ] ) ) - 1;
+    if ( menuLevel > maxLevel )
+        menuLevel = maxLevel;
+
+    int offset = ( menuLevel == 0 ) ? 0 : menuRingLevelOffset[ menuLevel ];
+
+    setMenuDepthLEDs( menuLevel, offset );
+
+    if ( menuPosition < 0 || menuPosition > menuLineIndex ) {
+        setLogoRing( 0, 0, ( ( offset % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH );
+        return;
+    }
+    int lo = menuPosition;
+    while ( lo > 0 && menuLevels[ lo - 1 ] >= menuLevel )
+        lo--;
+    int hi = menuPosition;
+    while ( hi < menuLineIndex && menuLevels[ hi + 1 ] >= menuLevel )
+        hi++;
+
+    int count = 0;
+    int sel = 0;
+    for ( int i = lo; i <= hi; i++ ) {
+        if ( menuLevels[ i ] == menuLevel ) {
+            if ( i == menuPosition )
+                sel = count;
+            count++;
+        }
+    }
+
+    // Seed the next level's offset from the currently-selected item so a later
+    // descent inherits the picked item's hue.
+    if ( menuLevel < maxLevel ) {
+        int selectedSlot = menuRingSelectedSlot( count, sel );
+        menuRingLevelOffset[ menuLevel + 1 ] = offset + ( selectedSlot * MENU_RING_SLOT_STEP );
+    }
+
+    setLogoRing( count, sel, ( ( offset % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH );
+}
+
+// Consolidated menu-line render. Paints the selected line (plus the optional
+// stay-on-top header) and the reminder onto the breadboard buffer, optionally
+// mirrors text to the OLED, and signals Core 2 to flush — keeping both panels in
+// sync. Several navigation sites used to hand-roll this b.clear/b.print/
+// printMenuReminder/showLEDsCore2 combo and occasionally dropped the OLED update
+// or the flush, leaving one display stale. Route them all through here instead.
+//   stayOnTopLevel/stayOnTopIndex: getMenuSelection's pinned-header state (-1 = none).
+//   oledText: when non-null, mirrored to the OLED; pass nullptr to leave it alone.
+//   ledShowMode: value written to showLEDsCore2 (2 = flush the menu text buffer).
+static void renderMenuLine( int menuPosition, int menuLevel,
+                            int stayOnTopLevel, int stayOnTopIndex,
+                            const char* oledText = nullptr, int ledShowMode = 2 ) {
+    b.clear( );
+    if ( stayOnTopLevel != -1 && stayOnTopIndex != -1 && menuLevel != stayOnTopLevel ) {
+        b.print( menuLines[ stayOnTopIndex ].c_str( ), menuColors[ stayOnTopLevel ],
+                 0xFFFFFF, 0, 0,
+                 menuLines[ stayOnTopIndex ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
+        b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
+        b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ], 0xFFFFFF, 0,
+                 1, menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
+    } else {
+        b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ], 0xFFFFFF, 0,
+                 -1, menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
+        b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
+    }
+    if ( oledText != nullptr ) {
+        oled.clearPrintShow( oledText, 2, true, true, true, -1, -1 );
+    }
+    updateMenuLogoRing( menuPosition, menuLevel );
+    showLEDsCore2 = ledShowMode;
+}
+
 int getMenuSelection( void ) {
 
     optionVoltage = 0;
@@ -708,6 +835,12 @@ int getMenuSelection( void ) {
     while ( Serial.available( ) == 0 ) {
         jOS.serviceCritical( );
         rotaryEncoderButtonStuff( ); // Update button state every iteration
+
+        // Keep the logo refreshing while the button is held in the pre-HELD
+        // window so the center LED animates its white->red press fade.
+        if ( encoderButtonState == PRESSED ) {
+            showLEDsCore2 = 2;
+        }
 
         if ( Serial.getWriteError( ) ) {
 
@@ -886,39 +1019,24 @@ int getMenuSelection( void ) {
                     oled.clearPrintShow( menuLines[ menuPosition ], 2, true, true, true, -1, -1 );
                 }
             } else {
-                // Serial.println(menuLines[menuPosition-1]);
-                Serial.println( " " );
-                // oled.print(" ");
+                // Action row: still mirror the line to the OLED so it doesn't lag
+                // behind the breadboard when you scroll onto an action entry.
+                String menuLine = menuLines[ menuPosition ];
+                menuLine.replace( "~", "±" );
+                menuLine.replace( "_", "-" );
+                Serial.println( menuLine.c_str( ) );
+                Serial.flush( );
+                menuLine.replace( "±", "+-" );
+                oled.clearPrintShow( menuLine.c_str( ), 2, true, true, true, -1, -1 );
             }
 
             /// Serial.print(menuLines[menuPosition]);
 
-            if ( stayOnTopLevel != -1 && stayOnTopIndex != -1 &&
-                 menuLevel != stayOnTopLevel ) {
-                b.clear( );
-                b.print( menuLines[ stayOnTopIndex ].c_str( ), menuColors[ stayOnTopLevel ],
-                         0xFFFFFF, 0, 0,
-                         menuLines[ stayOnTopIndex ].length( ) >= 7 || menuLevel == 0 ? 1
-                                                                                      : 3 );
-                b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-                b.print(
-                    menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ], 0xFFFFFF, 0,
-                    1, menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
-
-            } else {
-
-                b.clear( );
-                b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ],
-                         0xFFFFFF, 0, -1,
-                         menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1
-                                                                                    : 3 );
-                b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-            }
+            renderMenuLine( menuPosition, menuLevel, stayOnTopLevel, stayOnTopIndex );
 
             if ( menuLevel != lastMenuLevel ) {
                 // Serial.println();
             }
-            showLEDsCore2 = 2;
             lastMenuLevel = menuLevel;
             // previousMenuSelection[menuLevel] = menuPosition;
             // Serial.print("Menu position: ");
@@ -1284,29 +1402,7 @@ int getMenuSelection( void ) {
 
             } else {
 
-                if ( ( stayOnTopLevel != -1 && stayOnTopIndex != -1 ) &&
-                     menuLevel != stayOnTopLevel ) {
-                    b.clear( );
-                    b.print( menuLines[ stayOnTopIndex ].c_str( ), menuColors[ stayOnTopLevel ],
-                             0xFFFFFF, 0, 0,
-                             menuLines[ stayOnTopIndex ].length( ) >= 7 || menuLevel == 0
-                                 ? 1
-                                 : 3 );
-                    b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-                    b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ],
-                             0xFFFFFF, 0, 1,
-                             menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1
-                                                                                        : 3 );
-
-                } else {
-
-                    b.clear( );
-                    b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ],
-                             0xFFFFFF, 0, -1,
-                             menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1
-                                                                                        : 3 );
-                    b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-                }
+                renderMenuLine( menuPosition, menuLevel, stayOnTopLevel, stayOnTopIndex );
                 if ( numberOfChoices[ menuPosition ] > 0 ) {
                     // Serial.println("  fuck     !!");
                     subSelection = selectSubmenuOption( menuPosition, menuLevel );
@@ -1391,36 +1487,25 @@ int getMenuSelection( void ) {
                 }
             }
 
+            // Land on the right entry for this level, then render BOTH panels and
+            // flush. The old back path only painted the breadboard buffer (and only
+            // when previousMenuSelection != -1) — it never set showLEDsCore2 and
+            // never touched the OLED, so after "back" the breadboard could stay dark
+            // and the OLED kept the old line. renderMenuLine() fixes both.
+            bool twoLine = ( stayOnTopLevel != -1 && stayOnTopIndex != -1 &&
+                             menuLevel != stayOnTopLevel );
             if ( previousMenuSelection[ menuLevel ] == -1 ) {
                 menuPosition = subMenuStartIndex;
+            } else if ( !twoLine ) {
+                menuPosition = previousMenuSelection[ menuLevel ];
             }
 
-            if ( previousMenuSelection[ menuLevel ] != -1 ) {
-
-                if ( stayOnTopLevel != -1 && stayOnTopIndex != -1 ) {
-                    b.clear( );
-                    b.print( menuLines[ stayOnTopIndex ].c_str( ), menuColors[ stayOnTopLevel ],
-                             0xFFFFFF, 0, 0,
-                             menuLines[ stayOnTopIndex ].length( ) >= 7 || menuLevel == 0
-                                 ? 1
-                                 : 3 );
-                    b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-                    b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ],
-                             0xFFFFFF, 0, 1,
-                             menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1
-                                                                                        : 3 );
-
-                } else {
-
-                    menuPosition = previousMenuSelection[ menuLevel ];
-                    b.clear( );
-                    b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ],
-                             0xFFFFFF, 0, -1,
-                             menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1
-                                                                                        : 3 );
-                    b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-                }
-            }
+            String backLine = menuLines[ menuPosition ];
+            backLine.replace( "~", "±" );
+            backLine.replace( "_", "-" );
+            backLine.replace( "±", "+-" );
+            renderMenuLine( menuPosition, menuLevel, stayOnTopLevel, stayOnTopIndex,
+                            backLine.c_str( ), 2 );
             // back = 1;
             //  delay(500); // you'll step back a level every 500ms
             noInputTimer = millis( );
@@ -2093,8 +2178,12 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
             }
 
             // CRITICAL FIX: Signal Core 2 to display the menu buffer that was written by b.print()
-            // Without this, the menu text is written but never shown on the LEDs
-            showLEDsCore2 = 2;
+            // Without this, the menu text is written but never shown on the LEDs.
+            // Slot preview (menuType 3) is the exception: it needs the previewed slot's
+            // NET colors on the breadboard, but core2stuff() skips showNets() whenever
+            // rails==2 — so =2 would defeat SlotManager::isPreviewMode() and leave the
+            // breadboard showing menu text instead of the slot. Use =1 there so nets render.
+            showLEDsCore2 = ( menuType == 3 ) ? 1 : 2;
             changed = 0;
         }
 
@@ -2263,6 +2352,9 @@ int selectNodeAction( int whichSelection ) {
         jOS.serviceCritical( );
         if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             b.clear( );
+            // Flush the cleared buffer back to nets, otherwise the node-selection
+            // overlay lingers on the breadboard after cancelling.
+            showLEDsCore2 = -1;
             rotaryDivider = lastDivider;
             return -1;
         }

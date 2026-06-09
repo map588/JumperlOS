@@ -3,6 +3,17 @@
 #include "Debugs.h"
 #include "PersistentStuff.h"
 
+// Encoder-button analog press test (diagnostics menu entry; implementation lives
+// at the bottom of this file). Needs the encoder accessor + raw PIO/GPIO access.
+#include "JumperlessDefines.h"
+#include "RotaryEncoder.h"
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+#include "hardware/pio.h"
+#include "pico/stdlib.h"
+#include <stdio.h>
+#include <string.h>
+
 #include "AsyncPassthrough.h"
 #include "configManager.h"
 #include "config.h"
@@ -472,6 +483,7 @@ void action_memoryMap();
 void action_i2cScan();
 void action_speedTest();
 void action_colorSpectrum();
+void action_encoderButtonAnalyzer(); // implemented at the bottom of this file
 
 // Menu items array
 const StatusMenuItem statusMenuItems[] = {
@@ -487,6 +499,7 @@ const StatusMenuItem statusMenuItems[] = {
     { "I2C Scan",           "Scan I2C bus for devices",               action_i2cScan },
     { "Speed Test",         "Raw crossbar switch speed test",         action_speedTest },
     { "Color Spectrum",     "Display terminal color palette",         action_colorSpectrum },
+    { "Encoder Btn",        "Analog click-wheel button press test",   action_encoderButtonAnalyzer },
 };
 const int STATUS_MENU_COUNT = sizeof(statusMenuItems) / sizeof(statusMenuItems[0]);
 
@@ -1896,3 +1909,1105 @@ CommandResult cmd_fakeGpioDebug(char c, const String& line) {
     return CMD_DONT_SHOW_MENU;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Encoder Button ANALOG press test (diagnostics menu entry)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// "Analog" value from the encoder push-button (a plain mechanical switch).
+//
+// The button pin only reads HIGH/LOW, but the *time* it takes the node to
+// charge/discharge through whatever path exists depends on the switch contact
+// resistance. By driving the pin to one rail, releasing it to high-Z, and
+// counting loop iterations until it flips back, we turn that into a number --
+// same idea as the Femtonyl capacitance PIO, but here R varies and C is ~fixed.
+//
+// RESULT (kept as a reference / experiment): on the bare encoder-button pin this
+// only weakly separates a "half" press from a "full" one (best physical feature
+// ~0.7 Cohen's d, ~64% accuracy); only press DURATION separates well, and that's
+// behavioral, not a contact property. A bare pin lacks a defined RC for contact
+// resistance to modulate; a small cap to GND would be needed for a real signal.
+//
+// SELF-CONTAINED: this screen only suspends Core 2's encoder polling
+// (encoderOverride), drives BUTTON_ENC, and may borrow a free PIO state machine
+// WHILE IT IS RUNNING. It restores the pin to plain SIO input, re-arms the
+// encoder, and clears encoderOverride on exit, so it has no effect on the rest
+// of the firmware unless it is actively running.
+//
+// MODE = DISCHARGE (default): drive HIGH, release, count until LOW.
+// MODE = RECHARGE: drive LOW, release, count until HIGH (inverse polarity).
+// PULL selects the internal pull applied during the timed window.
+
+namespace {
+
+constexpr uint kBtnPin = BUTTON_ENC; // GPIO 11
+
+enum ParamId {
+    P_MODE = 0, // 0 = recharge (drive low), 1 = discharge (drive high)
+    P_PULL,     // 0 = none, 1 = up, 2 = down (internal pull during timing)
+    P_PRECHARGE,
+    P_TIMEOUT,
+    P_REPS,
+    P_THRESH,
+    P_COUNT
+};
+
+struct Params {
+    int mode      = 1;    // DISCHARGE
+    int pull      = 0;    // none
+    int precharge = 12;   // nop loops to slam the node to the rail
+    int timeout   = 1500; // max count before we give up waiting for the flip
+    int reps      = 32;   // averaged per sample; also the variance sample size
+                          // (need enough reps for a stable per-sample std)
+    int thresh    = 500;  // FULL/HALF classification boundary on the value
+};
+
+const char* modeStr( int m ) { return m == 1 ? "DISC" : "RECH"; }
+const char* pullStr( int p ) { return p == 0 ? "--" : ( p == 1 ? "up" : "dn" ); }
+
+const char* paramName( int id ) {
+    switch ( id ) {
+    case P_MODE: return "MODE";
+    case P_PULL: return "PULL";
+    case P_PRECHARGE: return "PRE";
+    case P_TIMEOUT: return "TMO";
+    case P_REPS: return "REPS";
+    case P_THRESH: return "THR";
+    }
+    return "?";
+}
+
+void paramValueStr( const Params& p, int id, char* out, size_t n ) {
+    switch ( id ) {
+    case P_MODE: snprintf( out, n, "%s", modeStr( p.mode ) ); break;
+    case P_PULL: snprintf( out, n, "%s", pullStr( p.pull ) ); break;
+    case P_PRECHARGE: snprintf( out, n, "%d", p.precharge ); break;
+    case P_TIMEOUT: snprintf( out, n, "%d", p.timeout ); break;
+    case P_REPS: snprintf( out, n, "%d", p.reps ); break;
+    case P_THRESH: snprintf( out, n, "%d", p.thresh ); break;
+    default: snprintf( out, n, "?" ); break;
+    }
+}
+
+int clampi( int v, int lo, int hi ) { return v < lo ? lo : ( v > hi ? hi : v ); }
+
+// Adjust the currently-selected parameter by `dir` detents.
+void adjustParam( Params& p, int sel, int dir ) {
+    switch ( sel ) {
+    case P_MODE: p.mode ^= 1; break; // 2-state: turning either way toggles
+    case P_PULL: p.pull = ( ( p.pull + dir ) % 3 + 3 ) % 3; break;
+    case P_PRECHARGE: p.precharge = clampi( p.precharge + dir * 8, 1, 4000 ); break;
+    case P_TIMEOUT: p.timeout = clampi( p.timeout + dir * 50, 50, 6000 ); break;
+    case P_REPS: p.reps = clampi( p.reps + dir, 1, 64 ); break;
+    case P_THRESH: p.thresh = clampi( p.thresh + dir * 25, 0, 6000 ); break;
+    }
+}
+
+// ── One charge/discharge timing measurement, averaged over reps. ────────────
+// Returns the mean count; also reports the digital state (true = pressed =
+// reads LOW, measured with a forced pull-up so it's independent of the timing
+// PULL mode) and the standard deviation ACROSS the individual reps.
+uint32_t measureButton( const Params& p, bool& pressedOut, uint32_t& stdOut ) {
+    // Clean digital read (force pull-up: pressed pulls to GND -> reads 0).
+    gpio_set_dir( kBtnPin, false ); // input
+    gpio_set_pulls( kBtnPin, true, false );
+    for ( volatile int i = 0; i < 80; i++ ) {
+        __asm__ volatile( "nop" );
+    }
+    pressedOut = ( gpio_get( kBtnPin ) == 0 );
+
+    // Apply the configured pull for the timed window.
+    const bool pu = ( p.pull == 1 );
+    const bool pd = ( p.pull == 2 );
+    gpio_set_pulls( kBtnPin, pu, pd );
+
+    const bool driveHigh = ( p.mode == 1 ); // discharge measures the fall to LOW
+    const uint32_t timeout = (uint32_t)p.timeout;
+    const uint32_t precharge = (uint32_t)p.precharge;
+    uint64_t sum = 0;
+    uint64_t sumsq = 0;
+
+    for ( int r = 0; r < p.reps; r++ ) {
+        // Keep the tight loop free of IRQ jitter; window is bounded by timeout
+        // (a few tens of microseconds worst case) so this never starves cores.
+        noInterrupts( );
+
+        gpio_put( kBtnPin, driveHigh ? 1 : 0 );
+        gpio_set_dir( kBtnPin, true ); // output: drive the node to the rail
+        for ( volatile uint32_t i = 0; i < precharge; i++ ) {
+            __asm__ volatile( "nop" );
+        }
+        gpio_set_dir( kBtnPin, false ); // release to high-Z (pulls reapply)
+
+        uint32_t c = 0;
+        if ( driveHigh ) {
+            while ( c < timeout && gpio_get( kBtnPin ) ) { // wait for fall to LOW
+                c++;
+            }
+        } else {
+            while ( c < timeout && !gpio_get( kBtnPin ) ) { // wait for rise to HIGH
+                c++;
+            }
+        }
+
+        interrupts( );
+        sum += c;
+        sumsq += (uint64_t)c * c;
+    }
+
+    int n = p.reps > 0 ? p.reps : 1;
+    double mean = (double)sum / n;
+    double var = (double)sumsq / n - mean * mean;
+    if ( var < 0.0 ) var = 0.0; // guard against fp rounding below zero
+    stdOut = (uint32_t)( sqrt( var ) + 0.5 );
+    return (uint32_t)( sum / (uint32_t)n );
+}
+
+// ── High-rate pre/post-trigger trace ring buffer (for serial CSV dumps). ────
+constexpr int kTraceN = 1024;
+constexpr int kTracePre = 300;
+constexpr int kTracePost = 300;
+uint32_t g_trace_t[ kTraceN ];
+uint16_t g_trace_v[ kTraceN ];
+uint16_t g_trace_s[ kTraceN ]; // per-sample std-dev across reps
+uint8_t g_trace_d[ kTraceN ];
+uint32_t g_seq = 0; // monotonic count of pushed samples
+
+void tracePush( uint32_t t_us, uint16_t v, uint16_t sd, bool pressed ) {
+    int idx = (int)( g_seq % kTraceN );
+    g_trace_t[ idx ] = t_us;
+    g_trace_v[ idx ] = v;
+    g_trace_s[ idx ] = sd;
+    g_trace_d[ idx ] = pressed ? 1 : 0;
+    g_seq++;
+}
+
+// Dump samples with sequence number in [loSeq, hiSeq] (inclusive) that are
+// still resident in the ring, as CSV. Times are relative to the first sample.
+void traceDump( uint32_t loSeq, uint32_t hiSeq ) {
+    uint32_t avail = g_seq > (uint32_t)kTraceN ? g_seq - (uint32_t)kTraceN : 0;
+    if ( loSeq < avail ) loSeq = avail;
+    if ( hiSeq > g_seq - 1 ) hiSeq = g_seq - 1;
+    if ( g_seq == 0 || hiSeq < loSeq ) {
+        Serial.println( "\r\n(no trace samples yet)" );
+        return;
+    }
+    uint32_t t0 = g_trace_t[ loSeq % kTraceN ];
+    Serial.printf( "\r\n--- TRACE %lu samples (seq %lu..%lu) ---\r\n",
+                   (unsigned long)( hiSeq - loSeq + 1 ),
+                   (unsigned long)loSeq, (unsigned long)hiSeq );
+    Serial.println( "n,t_us,value,std,pressed" );
+    int n = 0;
+    for ( uint32_t s = loSeq; s <= hiSeq; s++ ) {
+        int idx = (int)( s % kTraceN );
+        Serial.printf( "%d,%lu,%u,%u,%u\r\n", n++,
+                       (unsigned long)( g_trace_t[ idx ] - t0 ),
+                       (unsigned)g_trace_v[ idx ], (unsigned)g_trace_s[ idx ],
+                       (unsigned)g_trace_d[ idx ] );
+        if ( ( n & 31 ) == 0 ) Serial.flush( );
+    }
+    Serial.println( "--- end trace ---" );
+    Serial.flush( );
+}
+
+// ── High-rate PIO discharge timer (Femtonyl-style, hand-assembled) ──────────
+// One-time it pulls `timeout` into X and `precharge_cycles` into OSR (kept).
+// Each loop: drive HIGH and hold `precharge` cycles (charge the node), release
+// to high-Z, then count y down from `timeout` while the pin still reads HIGH
+// and push y. elapsed = timeout - y. ~2 PIO cycles per count (~13 ns at clk/1).
+//
+//      0: pull  block         ; OSR = timeout
+//      1: mov   x, osr        ; x = timeout (kept)
+//      2: pull  block         ; OSR = precharge cycles (kept; mov-read)
+//  .wrap_target (3)
+//      3: set   pindirs, 1    ; pin = output
+//      4: set   pins, 1       ; drive HIGH (charge)
+//      5: mov   y, osr        ; y = precharge
+//      6: jmp   y--, 6        ; charge-delay loop (y cycles)
+//      7: set   pindirs, 0    ; release to high-Z
+//      8: mov   y, x          ; y = timeout (countdown)
+//      9: jmp   pin, 11       ; pin still HIGH -> keep timing
+//     10: jmp   12            ; pin LOW -> done
+//     11: jmp   y--, 9        ; dec; loop; y==0 -> done
+//     12: in    y, 32         ; done: push remaining count
+//     13: push  noblock
+//  .wrap (-> 3)
+static const uint16_t btnTimerInsns[] = {
+    0x80a0, // 0: pull block
+    0xa027, // 1: mov  x, osr
+    0x80a0, // 2: pull block
+    0xe081, // 3: set  pindirs, 1
+    0xe001, // 4: set  pins, 1
+    0xa047, // 5: mov  y, osr
+    0x0086, // 6: jmp  y--, 6
+    0xe080, // 7: set  pindirs, 0
+    0xa041, // 8: mov  y, x
+    0x00cb, // 9: jmp  pin, 11
+    0x000c, // 10: jmp 12
+    0x0089, // 11: jmp y--, 9
+    0x4040, // 12: in  y, 32
+    0x8000, // 13: push noblock
+};
+static const struct pio_program btnTimerProgram = {
+    .instructions = btnTimerInsns,
+    .length = 14,
+    .origin = -1,
+};
+
+struct BtnPio {
+    PIO pio = nullptr;
+    int sm = -1;
+    uint offset = 0;
+    bool ok = false;
+};
+
+bool btnPioInit( BtnPio& bp, uint pin, uint32_t timeout, uint32_t prechargeCycles,
+                 int pull ) {
+    PIO insts[] = { pio0, pio1, pio2 };
+    for ( int i = 0; i < 3 && !bp.ok; i++ ) {
+        PIO pio = insts[ i ];
+        if ( !pio_can_add_program( pio, &btnTimerProgram ) ) continue;
+        int sm = pio_claim_unused_sm( pio, false );
+        if ( sm < 0 ) continue;
+        bp.pio = pio;
+        bp.sm = sm;
+        bp.offset = pio_add_program( pio, &btnTimerProgram );
+        bp.ok = true;
+    }
+    if ( !bp.ok ) return false;
+
+    pio_sm_config c = pio_get_default_sm_config( );
+    sm_config_set_wrap( &c, bp.offset + 3, bp.offset + 13 );
+    sm_config_set_set_pins( &c, pin, 1 );
+    sm_config_set_jmp_pin( &c, pin );
+    sm_config_set_in_shift( &c, false, false, 32 ); // no autopush
+    sm_config_set_clkdiv( &c, 1.0f );               // full speed
+
+    pio_gpio_init( bp.pio, pin );
+    gpio_set_pulls( pin, pull == 1, pull == 2 );
+
+    pio_sm_init( bp.pio, bp.sm, bp.offset, &c );
+    pio_sm_set_enabled( bp.pio, bp.sm, true );
+    pio_sm_put_blocking( bp.pio, bp.sm, timeout );        // first pull: timeout
+    pio_sm_put_blocking( bp.pio, bp.sm, prechargeCycles ); // second pull: precharge
+    return true;
+}
+
+void btnPioDeinit( BtnPio& bp, uint pin ) {
+    if ( !bp.ok ) return;
+    pio_sm_set_enabled( bp.pio, bp.sm, false );
+    pio_remove_program( bp.pio, &btnTimerProgram, bp.offset );
+    pio_sm_unclaim( bp.pio, bp.sm );
+    // Hand the pad back to plain SIO input for the normal C sampler + Core 2.
+    gpio_set_function( pin, GPIO_FUNC_SIO );
+    gpio_set_dir( pin, false );
+    gpio_disable_pulls( pin );
+    bp.ok = false;
+    bp.pio = nullptr;
+    bp.sm = -1;
+}
+
+// Arm the PIO sampler, wait for one press edge, capture a pre/post-trigger
+// window at full PIO rate, and dump it as CSV (reuses the trace ring + dump).
+// Discharge mode only. Returns with the pin restored. `quitOut` is set on ESC.
+void pioEdgeCapture( const Params& p, bool& quitOut ) {
+    Serial.print( "\033[2J\033[H\033[1;96m" );
+    Serial.println( "PIO EDGE CAPTURE (discharge, ~13ns/count)" );
+    Serial.print( "\033[0m" );
+    Serial.println( "Arming high-rate sampler... click the button once (q=abort)." );
+    Serial.flush( );
+
+    const uint32_t timeout = (uint32_t)p.timeout;
+    // ~6 PIO cycles per PRE unit so PRE tracks the C sampler's charge time and
+    // can reach tens of microseconds (enough to fully charge a debounce cap).
+    const uint32_t prechargeCycles = (uint32_t)p.precharge * 6;
+    BtnPio bp;
+    if ( !btnPioInit( bp, kBtnPin, timeout, prechargeCycles, p.pull ) ) {
+        Serial.println( "\r\nERROR: no free PIO state machine available." );
+        Serial.flush( );
+        return;
+    }
+
+    const uint32_t preN = 300, postN = 600;
+    // Released holds the node high so y reaches 0 -> elapsed == timeout. Any
+    // contact makes elapsed < timeout; treat that as "pressed".
+    const uint32_t edgeThresh = timeout > 8 ? timeout - 4 : 1;
+
+    // Flush any stale FIFO contents from setup.
+    while ( pio_sm_get_rx_fifo_level( bp.pio, bp.sm ) ) pio_sm_get( bp.pio, bp.sm );
+
+    uint32_t startSeq = g_seq;
+    bool triggered = false, lastPressed = false;
+    uint32_t triggerSeq = 0;
+    unsigned long deadline = millis( ) + 15000;
+    bool stalled = false;
+
+    while ( millis( ) < deadline ) {
+        encoderOverride = 100000; // keep Core 2 off pin 11 during the capture
+
+        if ( Serial.available( ) ) {
+            int c = Serial.read( );
+            if ( c == 'q' || c == 'Q' || c == 27 ) {
+                quitOut = ( c == 27 );
+                Serial.println( "\r\naborted." );
+                break;
+            }
+        }
+
+        // Bounded wait for the next sample (guards against a stalled SM).
+        unsigned long ws = micros( );
+        while ( pio_sm_get_rx_fifo_level( bp.pio, bp.sm ) == 0 ) {
+            if ( micros( ) - ws > 5000 ) {
+                stalled = true;
+                break;
+            }
+        }
+        if ( stalled ) break;
+
+        uint32_t y = pio_sm_get( bp.pio, bp.sm );
+        uint32_t elapsed = timeout > y ? timeout - y : 0;
+        bool pressed = elapsed < edgeThresh;
+        tracePush( micros( ), (uint16_t)( elapsed > 0xFFFF ? 0xFFFF : elapsed ),
+                   0, pressed );
+
+        if ( !triggered ) {
+            if ( pressed && !lastPressed && ( g_seq - startSeq ) >= preN ) {
+                triggerSeq = g_seq - 1;
+                triggered = true;
+            }
+        } else if ( g_seq >= triggerSeq + postN ) {
+            break;
+        }
+        lastPressed = pressed;
+    }
+
+    btnPioDeinit( bp, kBtnPin );
+
+    if ( stalled ) {
+        Serial.println( "\r\nERROR: PIO sampler produced no data (stalled)." );
+    } else if ( triggered ) {
+        uint32_t lo = triggerSeq > preN ? triggerSeq - preN : 0;
+        if ( lo < startSeq ) lo = startSeq;
+        Serial.printf( "\r\nedge at seq %lu; value = elapsed counts "
+                       "(~13ns each), released==%lu\r\n",
+                       (unsigned long)triggerSeq, (unsigned long)timeout );
+        traceDump( lo, triggerSeq + postN );
+    } else {
+        Serial.println( "\r\nno press detected within 15s." );
+    }
+    Serial.flush( );
+}
+
+// ── Rolling log of the most recently classified clicks (newest shown first) ──
+struct ClickRec {
+    int n;
+    uint32_t extreme;
+    uint32_t noise;  // std-dev across reps at the deepest-press sample
+    uint32_t dur_ms;
+    bool full;
+    int label;       // ground-truth tag at time of click: 0=none,1=FULL,2=HALF
+};
+constexpr int kClickLogN = 30;
+ClickRec g_clickLog[ kClickLogN ];
+int g_clickLogCount = 0;
+
+void pushClick( int n, uint32_t extreme, uint32_t noise, uint32_t dur_ms,
+                bool full, int label ) {
+    g_clickLog[ g_clickLogCount % kClickLogN ] = { n,    extreme, noise,
+                                                   dur_ms, full,  label };
+    g_clickLogCount++;
+}
+
+void clearClickLog( ) { g_clickLogCount = 0; }
+
+// ── Candidate discriminating features measured per click ────────────────────
+enum Feat {
+    F_EXTREME = 0, // value at the deepest-press sample (level)
+    F_EDGEVAL,     // value at the moment the digital edge first registered
+    F_DEEPEN,      // |edge_val - extreme|: how much it deepened AFTER registering
+    F_SDEXT,       // rep-to-rep std AT the deepest sample
+    F_SDPEAK,      // max rep-to-rep std seen anywhere during the press
+    F_SDMEAN,      // mean rep-to-rep std over the press
+    F_RANGE,       // value span (max-min) during the press
+    F_REBOUND,     // how far value backed off the extreme before release
+    F_DUR,         // press duration (ms) -- BEHAVIORAL, not a contact property
+    F_NFEAT
+};
+
+// dur_ms tracks how long YOU hold the button, not the contact, so it's excluded
+// from the "best separator" pick (it would otherwise win circularly).
+bool featIsBehavioral( int f ) { return f == F_DUR; }
+
+const char* featName( int f ) {
+    switch ( f ) {
+    case F_EXTREME: return "extreme ";
+    case F_EDGEVAL: return "edge_val";
+    case F_DEEPEN: return "deepen  ";
+    case F_SDEXT: return "sd@extr ";
+    case F_SDPEAK: return "sd_peak ";
+    case F_SDMEAN: return "sd_mean ";
+    case F_RANGE: return "val_rnge";
+    case F_REBOUND: return "rebound ";
+    case F_DUR: return "dur_ms  ";
+    }
+    return "?";
+}
+
+// Running mean/variance accumulator (one per class per feature).
+struct Stat {
+    uint32_t n;
+    double sum;
+    double sumsq;
+};
+Stat g_stat[ 2 ][ F_NFEAT ]; // [0]=FULL ground-truth, [1]=HALF ground-truth
+
+void statAdd( Stat& s, double x ) {
+    s.n++;
+    s.sum += x;
+    s.sumsq += x * x;
+}
+double statMean( const Stat& s ) { return s.n ? s.sum / s.n : 0.0; }
+double statStd( const Stat& s ) {
+    if ( s.n < 2 ) return 0.0;
+    double m = s.sum / s.n;
+    double v = s.sumsq / s.n - m * m;
+    return v > 0.0 ? sqrt( v ) : 0.0;
+}
+
+// Best-case classification accuracy (%) for two equal-prior Gaussians separated
+// by Cohen's d: a single optimal threshold gets Phi(d/2) right.
+double sepAccuracyPct( double d ) {
+    return 100.0 * 0.5 * ( 1.0 + erf( d / ( 2.0 * 1.41421356 ) ) );
+}
+void clearStats( ) { memset( g_stat, 0, sizeof( g_stat ) ); }
+
+// Accumulate one labeled click's whole feature vector. labelIdx 0=FULL, 1=HALF.
+void statAddClick( int labelIdx, const double feat[ F_NFEAT ] ) {
+    for ( int f = 0; f < F_NFEAT; f++ ) statAdd( g_stat[ labelIdx ][ f ], feat[ f ] );
+}
+
+// Scrolling report: per-feature FULL vs HALF mean±sd, Cohen's d, and accuracy.
+void printAnalysisReport( ) {
+    Serial.print( "\033[2J\033[H" );
+    uint32_t nF = g_stat[ 0 ][ F_EXTREME ].n;
+    uint32_t nH = g_stat[ 1 ][ F_EXTREME ].n;
+    Serial.printf( "\033[1;97m=== CLICK FEATURE ANALYSIS ===\033[0m\r\n" );
+    Serial.printf( "collected:  \033[1;92mFULL n=%lu\033[0m   \033[1;93mHALF n=%lu\033[0m\r\n\r\n",
+                   (unsigned long)nF, (unsigned long)nH );
+    if ( nF < 2 || nH < 2 ) {
+        Serial.println( "Need >=2 of EACH class. Tag with 'f' (full) / 'g' (half),"
+                        " click a batch of each, then 'r'.\r\n" );
+        Serial.println( "Press any key to return." );
+        Serial.flush( );
+        return;
+    }
+    Serial.println( "feature    FULL mean+-sd        HALF mean+-sd        Cohen_d  acc" );
+    Serial.println( "-----------------------------------------------------------------------" );
+
+    int bestF = -1;
+    double bestD = -1.0;
+    for ( int f = 0; f < F_NFEAT; f++ ) {
+        double mF = statMean( g_stat[ 0 ][ f ] ), sF = statStd( g_stat[ 0 ][ f ] );
+        double mH = statMean( g_stat[ 1 ][ f ] ), sH = statStd( g_stat[ 1 ][ f ] );
+        double pooled = sqrt( ( sF * sF + sH * sH ) / 2.0 );
+        double dpr = pooled > 1e-6 ? fabs( mF - mH ) / pooled : 0.0;
+        bool behav = featIsBehavioral( f );
+        if ( !behav && dpr > bestD ) {
+            bestD = dpr;
+            bestF = f;
+        }
+        const char* col = behav        ? "\033[38;5;240m"
+                          : dpr >= 2.0   ? "\033[1;92m"
+                          : dpr >= 0.8 ? "\033[1;93m"
+                                       : "\033[38;5;245m";
+        Serial.printf( "%s  %8.1f+-%-7.1f  %8.1f+-%-7.1f  %s%5.2f %3.0f%%%s\033[0m\r\n",
+                       featName( f ), mF, sF, mH, sH, col, dpr, sepAccuracyPct( dpr ),
+                       behav ? " behav" : "" );
+    }
+    Serial.println( "-----------------------------------------------------------------------" );
+    Serial.printf( "best PHYSICAL separator: \033[1;96m%s\033[0m (d=%.2f, ~%.0f%% accuracy)   "
+                   "[d>0.8 good, d>2 excellent]\r\n",
+                   bestF >= 0 ? featName( bestF ) : "-", bestD, sepAccuracyPct( bestD ) );
+
+    // The live FULL/HALF verdict thresholds on `extreme`; suggest the optimal
+    // split (midpoint of the class means) and the accuracy you'd get there.
+    {
+        double mFe = statMean( g_stat[ 0 ][ F_EXTREME ] );
+        double mHe = statMean( g_stat[ 1 ][ F_EXTREME ] );
+        double sFe = statStd( g_stat[ 0 ][ F_EXTREME ] );
+        double sHe = statStd( g_stat[ 1 ][ F_EXTREME ] );
+        double pooled = sqrt( ( sFe * sFe + sHe * sHe ) / 2.0 );
+        double de = pooled > 1e-6 ? fabs( mFe - mHe ) / pooled : 0.0;
+        Serial.printf( "live verdict ('extreme'): set \033[1;96mTHR ~ %.0f\033[0m "
+                       "for ~%.0f%% accuracy\r\n",
+                       ( mFe + mHe ) / 2.0, sepAccuracyPct( de ) );
+    }
+    Serial.println( "\r\nPress any key to return." );
+    Serial.flush( );
+}
+
+// Print content, clear to end-of-line, advance. Keeps the redraw artifact-free
+// even when a new line is shorter than what it overwrites.
+inline void putLine( const char* s ) {
+    Serial.print( s );
+    Serial.print( "\033[K\r\n" );
+}
+
+// ── In-place colored TUI frame (cursor-home redraw, no scrolling) ───────────
+void renderSerialFrame( const Params& p, bool pressed, uint32_t val,
+                        uint32_t curStd, uint32_t runMin, uint32_t runMax,
+                        int sel, int clicks, const char* lastLabel,
+                        bool liveStream, bool autoDump, int turnCW, int turnCCW,
+                        long turnNet, int lastTurnDir, bool turnRecent,
+                        int collectLabel, bool full ) {
+    char line[ 192 ];
+
+    if ( full ) Serial.print( "\033[2J" );
+    Serial.print( "\033[H" );
+
+    // Title bar — purple background, padded to width.
+    {
+        char title[ 96 ];
+        int len = snprintf( title, sizeof( title ),
+                            "  ENC BUTTON  \xE2\x80\xA2  ANALOG PRESS TEST" );
+        const int W = 78;
+        while ( len < W && len < (int)sizeof( title ) - 1 ) title[ len++ ] = ' ';
+        title[ len ] = '\0';
+        Serial.print( "\033[48;5;54m\033[1;97m" );
+        Serial.print( title );
+        Serial.print( "\033[0m\033[K\r\n" );
+    }
+
+    // Settings row — selected param highlighted (black on bright yellow).
+    {
+        Serial.print( " " );
+        for ( int i = 0; i < P_COUNT; i++ ) {
+            char pv[ 12 ];
+            paramValueStr( p, i, pv, sizeof( pv ) );
+            char seg[ 40 ];
+            if ( i == sel ) {
+                snprintf( seg, sizeof( seg ), "\033[1;30;103m %s:%s \033[0m ",
+                          paramName( i ), pv );
+            } else {
+                snprintf( seg, sizeof( seg ), "\033[36m%s:\033[1;37m%s\033[0m  ",
+                          paramName( i ), pv );
+            }
+            Serial.print( seg );
+        }
+        Serial.print( "\033[K\r\n" );
+    }
+
+    // Key hints.
+    Serial.print( "\033[38;5;245m" );
+    putLine( " [ ]/arrows=select   -/+ or arrows=adjust   1-6=pick param" );
+    putLine( " f=tag-FULL  g=tag-HALF  u=untag  r=report  c=clear-stats" );
+    putLine( " l=stream  a=auto-dump  d=dump  p=PIO-edge-capture  z=zero  h=redraw  q=quit" );
+    Serial.print( "\033[0m\033[38;5;238m" );
+    putLine( "==============================================================================" );
+    Serial.print( "\033[0m" );
+
+    // Live state.
+    {
+        const char* stcol = pressed ? "\033[1;91m" : "\033[1;92m";
+        snprintf( line, sizeof( line ),
+                  " STATE %s%-4s\033[0m   value \033[1;97m%5lu\033[0m \033[95m+-%-4lu\033[0m"
+                  "   range \033[97m%lu..%lu\033[0m",
+                  stcol, pressed ? "DOWN" : "UP", (unsigned long)val,
+                  (unsigned long)curStd, (unsigned long)runMin,
+                  (unsigned long)runMax );
+        putLine( line );
+    }
+
+    // Auto-ranged bar with a threshold marker. Emit a color code only on
+    // transitions to keep the byte count tiny.
+    {
+        const int W = 60;
+        uint32_t lo = runMin, hi = runMax;
+        uint32_t range = ( hi > lo ) ? ( hi - lo ) : 1;
+        int vpos = clampi( (int)( ( (uint64_t)( val - lo ) * W ) / range ), 0, W );
+        int tpos = clampi(
+            (int)( ( (int64_t)( (int)p.thresh - (int)lo ) * (int64_t)W ) / (int64_t)range ),
+            0, W - 1 );
+        const char* col[ 3 ] = { "\033[96m", "\033[38;5;238m", "\033[1;95m" };
+        int cur = -1;
+        Serial.print( " [" );
+        for ( int i = 0; i < W; i++ ) {
+            int want;
+            char ch;
+            if ( i == tpos ) {
+                want = 2;
+                ch = '|';
+            } else if ( i < vpos ) {
+                want = 0;
+                ch = '#';
+            } else {
+                want = 1;
+                ch = '.';
+            }
+            if ( want != cur ) {
+                Serial.print( col[ want ] );
+                cur = want;
+            }
+            Serial.write( ch );
+        }
+        Serial.print( "\033[0m]\033[K\r\n" );
+    }
+
+    // Rotation indicator (display-only; the wheel never edits values, so an
+    // accidental nudge while clicking is shown here but changes nothing).
+    {
+        const char* hot = turnRecent ? "\033[1;93m" : "\033[38;5;245m";
+        const char* dirstr = lastTurnDir > 0 ? "CW" : ( lastTurnDir < 0 ? "CCW" : "--" );
+        snprintf( line, sizeof( line ),
+                  " %swheel  CW:%d  CCW:%d  net:%+ld  last:%s%s\033[0m",
+                  hot, turnCW, turnCCW, turnNet, dirstr,
+                  turnRecent ? "   <-- turned (ignored)" : "" );
+        putLine( line );
+    }
+
+    // Clicks summary.
+    {
+        const char* lc = ( strcmp( lastLabel, "FULL" ) == 0 )   ? "\033[1;92m"
+                         : ( strcmp( lastLabel, "HALF" ) == 0 ) ? "\033[1;93m"
+                                                                : "\033[0m";
+        snprintf( line, sizeof( line ),
+                  " clicks \033[1;97m%d\033[0m   last %s%s\033[0m   thr \033[97m%d\033[0m"
+                  "   %s%s",
+                  clicks, lc, lastLabel, p.thresh,
+                  liveStream ? "\033[1;93m[STREAM] \033[0m" : "",
+                  autoDump ? "\033[1;93m[AUTODUMP]\033[0m" : "" );
+        putLine( line );
+    }
+
+    // Feature-collection status: which class new clicks are being binned into,
+    // and how many of each we have for the analysis report.
+    {
+        const char* tagstr = collectLabel == 1 ? "\033[1;92mFULL\033[0m"
+                             : collectLabel == 2 ? "\033[1;93mHALF\033[0m"
+                                                 : "\033[38;5;245moff\033[0m";
+        snprintf( line, sizeof( line ),
+                  " collect %s   bins: \033[1;92mFULL n=%lu\033[0m  "
+                  "\033[1;93mHALF n=%lu\033[0m   (r=report)",
+                  tagstr, (unsigned long)g_stat[ 0 ][ F_EXTREME ].n,
+                  (unsigned long)g_stat[ 1 ][ F_EXTREME ].n );
+        putLine( line );
+    }
+
+    Serial.print( "\033[38;5;238m" );
+    putLine( "-- recent clicks (extreme vs thr; <F>/<H> = tagged class) -------------------" );
+    Serial.print( "\033[0m" );
+
+    int shown = g_clickLogCount < kClickLogN ? g_clickLogCount : kClickLogN;
+    for ( int i = 0; i < kClickLogN; i++ ) {
+        if ( i < shown ) {
+            int idx = ( g_clickLogCount - 1 - i ) % kClickLogN;
+            if ( idx < 0 ) idx += kClickLogN;
+            const ClickRec& c = g_clickLog[ idx ];
+            const char* tag = c.label == 1 ? "\033[1;92m<F>\033[0m"
+                              : c.label == 2 ? "\033[1;93m<H>\033[0m"
+                                             : "   ";
+            snprintf( line, sizeof( line ),
+                      "  #%-4d ex=%5lu  sd=%4lu  dur=%5lums  %s%-4s\033[0m %s", c.n,
+                      (unsigned long)c.extreme, (unsigned long)c.noise,
+                      (unsigned long)c.dur_ms,
+                      c.full ? "\033[1;92m" : "\033[1;93m", c.full ? "FULL" : "HALF",
+                      tag );
+            putLine( line );
+        } else {
+            putLine( "" );
+        }
+    }
+
+    Serial.print( "\033[J" ); // clear anything left below the frame
+    Serial.flush( );
+}
+
+void renderOled( const Params& p, const char* stateStr, uint32_t val,
+                 uint32_t curStd, uint32_t runMin, uint32_t runMax, int sel,
+                 int clicks, const char* lastLabel ) {
+    if ( !oled.isConnected( ) ) return;
+
+    // 16-cell auto-ranged bar between the recent min/max.
+    char bar[ 19 ];
+    uint32_t lo = runMin, hi = runMax;
+    uint32_t range = ( hi > lo ) ? ( hi - lo ) : 1;
+    int cells = (int)( ( (uint64_t)( val - lo ) * 16 ) / range );
+    cells = clampi( cells, 0, 16 );
+    bar[ 0 ] = '[';
+    for ( int i = 0; i < 16; i++ ) bar[ 1 + i ] = ( i < cells ) ? '#' : '.';
+    bar[ 17 ] = ']';
+    bar[ 18 ] = '\0';
+
+    char pval[ 12 ];
+    paramValueStr( p, sel, pval, sizeof( pval ) );
+
+    char buf[ 256 ];
+    snprintf( buf, sizeof( buf ),
+              "ENC BTN ANALOG\n"
+              "%-4s v=%4lu s%lu\n"
+              "%s\n"
+              "rng %4lu-%4lu\n"
+              ">%s %s\n"
+              "md:%s pu:%s pre:%d\n"
+              "to:%d rp:%d thr:%d\n"
+              "clk:%d %s",
+              stateStr, (unsigned long)val, (unsigned long)curStd,
+              bar,
+              (unsigned long)runMin, (unsigned long)runMax,
+              paramName( sel ), pval,
+              modeStr( p.mode ), pullStr( p.pull ), p.precharge,
+              p.timeout, p.reps, p.thresh,
+              clicks, lastLabel );
+
+    oled.showMultiLineSmallText( buf, true, true );
+}
+
+} // namespace
+
+void action_encoderButtonAnalyzer( void ) {
+    Serial.print( "\033[2J\033[H" );
+    Serial.flush( );
+
+    Params params;
+    int selected = P_MODE;
+
+    // Take over the button pin: suspend Core 2's encoder/button polling so it
+    // doesn't read pin 11 while we drive it. We read rotation ourselves from
+    // the raw quadrature count (pins 12/13 are untouched by this).
+    encoderOverride = 100000;
+    long detentBaseline = getEncoderRawCount( );
+
+    // Rotation is flagged in the TUI for visibility but never changes values --
+    // it's too easy to nudge the wheel while clicking the button under test.
+    int turnCW = 0, turnCCW = 0;
+    long turnNet = 0;
+    int lastTurnDir = 0;
+    unsigned long lastTurnMs = 0;
+
+    // Press / hold / click tracking (derived from our own sampling).
+    bool lastPressed = false;
+    uint32_t pressStartUs = 0;
+    bool pressIsHold = false; // long press; not classified as a click
+    uint32_t clickExtreme = 0;
+    uint32_t clickNoiseAtExtreme = 0; // rep-to-rep std at the deepest press
+    uint32_t clickEdgeVal = 0;        // value at the instant digital contact hit
+    // Per-press feature accumulators (reset on each press edge).
+    uint32_t clickSdPeak = 0;
+    double clickSdSum = 0.0;
+    int clickSdCount = 0;
+    uint32_t clickValMin = 0, clickValMax = 0, clickLastVal = 0;
+    int clicks = 0;
+    char lastLabel[ 8 ] = "--";
+
+    // Feature collection: tag clicks with ground truth so the report can find
+    // the most reliable discriminator. 0=off, 1=FULL, 2=HALF.
+    int collectLabel = 0;
+
+    // Auto-range state for the bar / display.
+    uint32_t runMin = params.timeout;
+    uint32_t runMax = 0;
+    bool rangeInit = false;
+
+    bool liveStream = false;
+    bool autoDump = false;
+
+    // Pending trace-dump scheduling (post-trigger fill).
+    bool dumpPending = false;
+    uint32_t dumpTriggerSeq = 0;
+
+    unsigned long lastOledMs = 0;
+    unsigned long lastFrameMs = 0;
+    unsigned long lastProbeMs = 0;
+    unsigned long probeHeldSince = 0;
+
+    // Serial TUI redraw state.
+    bool forceFull = true; // request a full clear+redraw on the next frame
+    bool dirty = true;     // content changed; redraw sooner than the periodic tick
+    bool paused = false;   // a CSV trace dump owns the screen; hold off the TUI
+
+    const uint32_t HOLD_US = 600000;       // press this long => next param
+    const uint32_t CLICK_MAX_US = 450000;  // press shorter than this => a click
+
+    bool quit = false;
+    while ( !quit ) {
+        // Keep Core 2 suspended (it decrements encoderOverride every loop).
+        encoderOverride = 100000;
+
+        // ── Serial input ────────────────────────────────────────────────
+        while ( Serial.available( ) > 0 ) {
+            int ch = Serial.read( );
+
+            // Any key dismisses a CSV trace dump and brings the TUI back.
+            if ( paused ) {
+                paused = false;
+                forceFull = true;
+            }
+            dirty = true;
+
+            if ( ch == 27 ) { // ESC or arrow sequence
+                if ( Serial.available( ) == 0 ) {
+                    delay( 2 );
+                }
+                if ( Serial.available( ) > 0 && Serial.peek( ) == '[' ) {
+                    Serial.read( ); // consume '['
+                    if ( Serial.available( ) == 0 ) delay( 2 );
+                    int dir = Serial.available( ) > 0 ? Serial.read( ) : 0;
+                    switch ( dir ) {
+                    case 'A': adjustParam( params, selected, +1 ); break; // up
+                    case 'B': adjustParam( params, selected, -1 ); break; // down
+                    case 'C': selected = ( selected + 1 ) % P_COUNT; break;   // right
+                    case 'D': selected = ( selected + P_COUNT - 1 ) % P_COUNT; break; // left
+                    }
+                } else {
+                    quit = true;
+                }
+                continue;
+            }
+            // Direct param selection by number (1..6).
+            if ( ch >= '1' && ch <= '0' + P_COUNT ) {
+                selected = ch - '1';
+                continue;
+            }
+            switch ( ch ) {
+            case 'q':
+            case 'Q': quit = true; break;
+            case '[': selected = ( selected + P_COUNT - 1 ) % P_COUNT; break;
+            case ']': selected = ( selected + 1 ) % P_COUNT; break;
+            case '-':
+            case '_': adjustParam( params, selected, -1 ); break;
+            case '=':
+            case '+': adjustParam( params, selected, +1 ); break;
+            case 'l':
+            case 'L':
+                liveStream = !liveStream;
+                if ( liveStream ) {
+                    Serial.print( "\033[2J\033[H\033[1;93m"
+                                  "LIVE STREAM  (t_us,value,std,pressed)  press 'l' to stop"
+                                  "\033[0m\r\n" );
+                } else {
+                    forceFull = true; // redraw the TUI over the stream
+                }
+                break;
+            case 'a':
+            case 'A': autoDump = !autoDump; break;
+            case 'f':
+            case 'F': collectLabel = 1; break; // tag subsequent clicks as FULL
+            case 'g':
+            case 'G': collectLabel = 2; break; // tag subsequent clicks as HALF
+            case 'u':
+            case 'U': collectLabel = 0; break; // stop tagging
+            case 'r':
+            case 'R':
+                printAnalysisReport( );
+                paused = true; // keep the report on screen until the next key
+                break;
+            case 'c':
+            case 'C': clearStats( ); break;
+            case 'p':
+            case 'P':
+                pioEdgeCapture( params, quit );
+                paused = true; // keep the capture CSV up until the next key
+                break;
+            case 'd':
+            case 'D':
+                traceDump( g_seq > (uint32_t)( kTracePre + kTracePost )
+                               ? g_seq - (uint32_t)( kTracePre + kTracePost )
+                               : 0,
+                           g_seq > 0 ? g_seq - 1 : 0 );
+                paused = true; // keep the CSV on screen until the next keypress
+                break;
+            case 'z':
+            case 'Z':
+                rangeInit = false;
+                clearClickLog( );
+                clicks = 0;
+                snprintf( lastLabel, sizeof( lastLabel ), "--" );
+                break;
+            case 'h':
+            case 'H':
+            case '?': forceFull = true; break;
+            }
+        }
+        if ( quit ) break;
+
+        // ── Encoder rotation: FLAG ONLY (does not adjust values) ─────────
+        // Counts detents for the on-screen turn indicator so accidental nudges
+        // are visible, but deliberately does not touch any parameter.
+        long raw = getEncoderRawCount( );
+        int div = rotaryDivider > 0 ? rotaryDivider : 4;
+        long d = raw - detentBaseline;
+        while ( d >= div ) {
+            detentBaseline += div;
+            d -= div;
+            turnCW++;
+            turnNet++;
+            lastTurnDir = +1;
+            lastTurnMs = millis( );
+            dirty = true;
+        }
+        while ( d <= -div ) {
+            detentBaseline -= div;
+            d += div;
+            turnCCW++;
+            turnNet--;
+            lastTurnDir = -1;
+            lastTurnMs = millis( );
+            dirty = true;
+        }
+
+        // ── Sample the button ───────────────────────────────────────────
+        bool pressed = false;
+        uint32_t stdv = 0;
+        uint32_t val = measureButton( params, pressed, stdv );
+        uint32_t nowUs = micros( );
+        tracePush( nowUs, (uint16_t)( val > 0xFFFF ? 0xFFFF : val ),
+                   (uint16_t)( stdv > 0xFFFF ? 0xFFFF : stdv ), pressed );
+
+        // Auto-range (instant expand, slow relax so the bar keeps adapting).
+        if ( !rangeInit ) {
+            runMin = runMax = val;
+            rangeInit = true;
+        } else {
+            if ( val < runMin ) runMin = val;
+            if ( val > runMax ) runMax = val;
+            // relax ~0.1%/sample toward val so old extremes fade
+            runMin += ( val > runMin ) ? ( ( val - runMin ) / 1024 ) : 0;
+            if ( val < runMax ) runMax -= ( ( runMax - val ) / 1024 );
+        }
+
+        // ── Press / hold / click edge handling ──────────────────────────
+        // "Press strength" extreme during a press: discharge mode presses pull
+        // the value DOWN (track min); recharge mode pushes it UP (track max).
+        bool dischargeMode = ( params.mode == 1 );
+        if ( pressed && !lastPressed ) {
+            // press edge: seed all per-press accumulators with this sample
+            pressStartUs = nowUs;
+            pressIsHold = false;
+            clickExtreme = val;
+            clickNoiseAtExtreme = stdv;
+            clickEdgeVal = val; // analog value the moment digital contact hit
+            clickSdPeak = stdv;
+            clickSdSum = stdv;
+            clickSdCount = 1;
+            clickValMin = val;
+            clickValMax = val;
+            clickLastVal = val;
+            if ( autoDump && !dumpPending && !paused ) {
+                dumpPending = true;
+                dumpTriggerSeq = g_seq - 1;
+            }
+        } else if ( pressed && lastPressed ) {
+            // during press: capture the deepest-press sample + accumulate the
+            // candidate features over the whole press window
+            bool newExtreme = dischargeMode ? ( val < clickExtreme )
+                                            : ( val > clickExtreme );
+            if ( newExtreme ) {
+                clickExtreme = val;
+                clickNoiseAtExtreme = stdv;
+            }
+            if ( stdv > clickSdPeak ) clickSdPeak = stdv;
+            clickSdSum += stdv;
+            clickSdCount++;
+            if ( val < clickValMin ) clickValMin = val;
+            if ( val > clickValMax ) clickValMax = val;
+            clickLastVal = val;
+            // A long press is not a "click"; flag it so release won't classify
+            // it. (The button no longer changes any parameter.)
+            if ( !pressIsHold && ( nowUs - pressStartUs ) >= HOLD_US ) {
+                pressIsHold = true;
+            }
+        } else if ( !pressed && lastPressed ) {
+            // release edge: classify as a click if it was short (not a hold)
+            uint32_t dur = nowUs - pressStartUs;
+            if ( !pressIsHold && dur < CLICK_MAX_US ) {
+                bool full = dischargeMode ? ( clickExtreme <= (uint32_t)params.thresh )
+                                          : ( clickExtreme >= (uint32_t)params.thresh );
+                snprintf( lastLabel, sizeof( lastLabel ), "%s", full ? "FULL" : "HALF" );
+                clicks++;
+
+                // Build the per-click feature vector and bin it under the
+                // active ground-truth label (if any) for the analysis report.
+                double feat[ F_NFEAT ];
+                feat[ F_EXTREME ] = (double)clickExtreme;
+                feat[ F_EDGEVAL ] = (double)clickEdgeVal;
+                feat[ F_DEEPEN ] =
+                    (double)( clickEdgeVal > clickExtreme
+                                  ? clickEdgeVal - clickExtreme
+                                  : clickExtreme - clickEdgeVal );
+                feat[ F_SDEXT ] = (double)clickNoiseAtExtreme;
+                feat[ F_SDPEAK ] = (double)clickSdPeak;
+                feat[ F_SDMEAN ] =
+                    clickSdCount > 0 ? clickSdSum / clickSdCount : 0.0;
+                feat[ F_RANGE ] = (double)( clickValMax - clickValMin );
+                feat[ F_REBOUND ] =
+                    (double)( clickLastVal > clickExtreme
+                                  ? clickLastVal - clickExtreme
+                                  : clickExtreme - clickLastVal );
+                feat[ F_DUR ] = (double)( dur / 1000 );
+                if ( collectLabel == 1 ) statAddClick( 0, feat );
+                else if ( collectLabel == 2 ) statAddClick( 1, feat );
+
+                pushClick( clicks, clickExtreme, clickNoiseAtExtreme, dur / 1000,
+                           full, collectLabel );
+                dirty = true; // surface the new click immediately
+            }
+        }
+        lastPressed = pressed;
+
+        // ── Deferred trace dump once the post-trigger window has filled ──
+        if ( dumpPending && g_seq >= dumpTriggerSeq + (uint32_t)kTracePost ) {
+            uint32_t lo = dumpTriggerSeq > (uint32_t)kTracePre
+                              ? dumpTriggerSeq - (uint32_t)kTracePre
+                              : 0;
+            traceDump( lo, dumpTriggerSeq + (uint32_t)kTracePost );
+            dumpPending = false;
+            paused = true; // keep the CSV on screen until the next keypress
+        }
+
+        // ── Throttled OLED update (~20 Hz) ──────────────────────────────
+        unsigned long ms = millis( );
+        if ( ms - lastOledMs >= 50 ) {
+            lastOledMs = ms;
+            renderOled( params, pressed ? "DOWN" : " up", val, stdv, runMin,
+                        runMax, selected, clicks, lastLabel );
+        }
+
+        // ── Serial: live raw stream, or the in-place colored TUI frame ──
+        if ( liveStream ) {
+            // Raw scrolling sample stream for capture/plotting.
+            Serial.printf( "%lu,%lu,%lu,%d\r\n", (unsigned long)nowUs,
+                           (unsigned long)val, (unsigned long)stdv,
+                           pressed ? 1 : 0 );
+        } else if ( !paused && ( forceFull || dirty || ms - lastFrameMs >= 70 ) ) {
+            bool turnRecent = ( turnCW + turnCCW ) > 0 && ( ms - lastTurnMs ) < 600;
+            renderSerialFrame( params, pressed, val, stdv, runMin, runMax,
+                               selected, clicks, lastLabel, liveStream, autoDump,
+                               turnCW, turnCCW, turnNet, lastTurnDir, turnRecent,
+                               collectLabel, forceFull );
+            forceFull = false;
+            dirty = false;
+            lastFrameMs = ms;
+        }
+
+        // ── Probe button = alternate exit (held ~400ms), polled slowly ──
+        if ( ms - lastProbeMs >= 60 ) {
+            lastProbeMs = ms;
+            if ( checkProbeButtonState( ) != 0 ) {
+                if ( probeHeldSince == 0 ) probeHeldSince = ms;
+                else if ( ms - probeHeldSince > 400 ) quit = true;
+            } else {
+                probeHeldSince = 0;
+            }
+        }
+    }
+
+    // ── Restore the button pin + hand the encoder back to Core 2 ────────
+    gpio_set_dir( kBtnPin, false ); // input
+    gpio_disable_pulls( kBtnPin );
+    pinMode( BUTTON_ENC, INPUT );
+    resetEncoderPosition = true; // rebaseline so menus don't see a position jump
+    encoderOverride = 0;
+
+    Serial.print( "\033[0m" );
+    Serial.println( "\r\nEncoder button test exited." );
+    Serial.flush( );
+}

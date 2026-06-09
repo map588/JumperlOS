@@ -168,6 +168,16 @@ bool isRotaryEncoderInitialized( void ) {
     return ( pioEnc != nullptr && smEnc != (uint)-1 );
 }
 
+// Read the raw quadrature count straight from the PIO state machine. Safe to
+// call from Core 1 only while Core 2's rotaryEncoderStuff() is suspended via
+// encoderOverride (otherwise both cores drain the same RX FIFO and race).
+long getEncoderRawCount( void ) {
+    if ( !isRotaryEncoderInitialized( ) ) {
+        return 0;
+    }
+    return (long)quadrature_encoder_get_count( pioEnc, smEnc );
+}
+
 // Function to get rotary encoder status
 void printRotaryEncoderStatus( void ) {
     if ( isRotaryEncoderInitialized( ) ) {
@@ -243,36 +253,48 @@ static bool holdAnimActive = false;
 static bool holdAnimLongHeldFlashed = false;
 
 // Encoder click/rotation interlock: pushing the button mechanically torques the
-// shaft, so rotary pulses around the press moment are spurious. We suppress
-// rotation within a window on either side of the button press ("click"):
-//   - AFTER window:  rotation is frozen for CLICK_SUPPRESS_AFTER_US following the
-//                    press; the baselines are kept resynced so motion resumes
-//                    smoothly (no jump) once the window expires.
-//   - BEFORE window: on the press we roll the logical encoder state back to a
-//                    snapshot taken ~CLICK_SUPPRESS_BEFORE_US earlier, discarding
-//                    the jiggle that starts as the finger begins to push. Because
-//                    encoderPosition is consumed as a delta by the numeric editors,
-//                    rolling it back makes the editor reverse the spurious change.
-// NOTE: the BEFORE window also reverts a deliberate "turn-then-click" gesture, so
-// keep it modest. The two windows are tuned independently below.
-const unsigned long CLICK_SUPPRESS_BEFORE_US = 100000; // 100ms before the press
-const unsigned long CLICK_SUPPRESS_AFTER_US  = 100000; // 100ms after the press
+// shaft, so rotary pulses around the press moment are spurious and used to
+// advance the value/menu on every click. We disambiguate click-vs-turn at the
+// source, so a spurious step is never *committed* (and therefore never drawn) —
+// no commit-then-revert, no single-frame flash on the OLED / breadboard.
+//
+// Two cooperating mechanisms:
+//   - CONFIRM GATE: the first detent out of rest is held back (invisible) for
+//                   STEP_CONFIRM_US. The raw motion still accumulates, but
+//                   encoderPosition / encoderDirectionState stay frozen. If a
+//                   press lands inside the window the pending motion is discarded
+//                   (nothing was drawn). If the window elapses with no press, the
+//                   motion commits in one go — the detent registers, just slightly
+//                   late. Mid-spin steps are never gated, so an active turn stays
+//                   fully responsive.
+//   - AFTER window: once a press is detected, rotation is frozen for
+//                   CLICK_SUPPRESS_AFTER_US so the click itself (and its release
+//                   jiggle) cannot register as rotation; the baselines track the
+//                   shaft so motion resumes without a jump once it expires.
+// FOLLOW-UP (deep refactor): collapse the two consumer paths (encoderPosition for
+// the numeric editors, encoderDirectionState/position for the menus) onto a single
+// "committedRaw" value, so the AFTER window and the confirm gate become two simple
+// policies governing how committedRaw follows the live quadrature count. Also unify
+// the dual polling (Core 0 menu loops call rotaryEncoderStuff() directly while Core 2
+// also polls it) so there is one owner of the encoder state.
+const unsigned long CLICK_SUPPRESS_AFTER_US = 100000; // 100ms after the press
+const unsigned long STEP_CONFIRM_US = 35000;          // first detent held this long before it shows
+const unsigned long ENCODER_REARM_IDLE_US = 150000;   // shaft must rest this long to re-arm the gate
 static unsigned long lastEncoderClickUs = 0;
-static volatile bool encoderClickPending = false; // set on the press edge, handled in rotaryEncoderStuff
-
-// Rolling history of the logical encoder state so a press can restore how things
-// looked before the BEFORE window. Sized to span comfortably more than the window.
-struct EncoderSnapshot {
-  unsigned long t;
-  long encoderPos;   // value of encoderPosition (raw - offset)
-  long menuPosition; // value of the menu position counter
-};
-#define ENCODER_SNAPSHOT_COUNT 32
-static const unsigned long ENCODER_SNAPSHOT_INTERVAL_US = 8000; // ~8ms -> ~256ms of history
-static EncoderSnapshot encoderSnapshots[ENCODER_SNAPSHOT_COUNT] = {0};
-static int encoderSnapshotHead = 0;
-static bool encoderSnapshotSeeded = false;
 static long heldEncoderPos = 0; // encoderPosition value held frozen during the AFTER window
+
+// Confirm-gate state. heldConfirmPos / restMenuPosition snapshot the logical
+// state at the moment the shaft leaves rest so a press can restore it; the gate
+// is "armed" (motionConfirmed == false) until either it commits or a press
+// cancels it.
+static unsigned long lastRawChangeUs = 0;
+static long lastRawForIdle = 0;
+static unsigned long motionStartUs = 0;
+static bool motionConfirmed = true; // true => no pending unconfirmed first-detent motion
+static long heldConfirmPos = 0;     // encoderPosition held frozen during the confirm window
+static long restMenuPosition = 0;   // menu position counter captured at rest
+static long prevEncoderPos = 0;     // encoderPosition from the previous poll (the at-rest value)
+static bool encoderWasPressedGate = false; // press-edge detector local to rotaryEncoderStuff
 
 // Hysteresis baseline for menu navigation: the raw encoder count at the last
 // committed detent step. A new step is only emitted once the shaft has moved a
@@ -380,9 +402,8 @@ void rotaryEncoderButtonStuff( void ) {
         // lastPositionEncoder = encoderRaw;
 
         // Click/rotation interlock: mark the press moment so rotaryEncoderStuff can
-        // suppress the jiggle on either side of it (see CLICK_SUPPRESS_* notes).
+        // suppress the click jiggle (see CLICK_SUPPRESS_AFTER_US / confirm-gate notes).
         lastEncoderClickUs = micros( );
-        encoderClickPending = true;
 
         if ( millis( ) - doubleClickTimer < doubleClickLength ) {
             encoderButtonState = DOUBLECLICKED;
@@ -756,39 +777,42 @@ void rotaryEncoderStuff( void ) {
     // ---- Click/rotation interlock --------------------------------------------
     unsigned long nowClickUs = micros( );
 
-    // Keep a throttled rolling history of the logical state for BEFORE-window undo.
-    if ( !encoderSnapshotSeeded ||
-         ( nowClickUs - encoderSnapshots[ encoderSnapshotHead ].t ) >= ENCODER_SNAPSHOT_INTERVAL_US ) {
-        encoderSnapshotHead = ( encoderSnapshotHead + 1 ) % ENCODER_SNAPSHOT_COUNT;
-        encoderSnapshots[ encoderSnapshotHead ].t = nowClickUs;
-        encoderSnapshots[ encoderSnapshotHead ].encoderPos = (long)encoderPosition;
-        encoderSnapshots[ encoderSnapshotHead ].menuPosition = (long)position;
-        encoderSnapshotSeeded = true;
+    // Rest / motion tracking for the first-detent confirm gate. When the shaft
+    // first leaves a long rest, snapshot the logical state and arm the gate.
+    if ( rawCount != lastRawForIdle ) {
+        if ( ( nowClickUs - lastRawChangeUs ) >= ENCODER_REARM_IDLE_US && motionConfirmed ) {
+            // Shaft was at rest: this is the first motion out of rest. prevEncoderPos
+            // holds the at-rest encoderPosition (before this raw change applied).
+            motionStartUs = nowClickUs;
+            motionConfirmed = false;
+            heldConfirmPos = prevEncoderPos;
+            restMenuPosition = (long)position;
+        }
+        lastRawForIdle = rawCount;
+        lastRawChangeUs = nowClickUs;
     }
 
-    // On the press edge, roll the logical state back to the start of the BEFORE
-    // window, discarding the jiggle that the push induced. encoderPosition is then
-    // held frozen through the AFTER window below.
-    if ( encoderClickPending ) {
-        encoderClickPending = false;
-        EncoderSnapshot* snap = &encoderSnapshots[ encoderSnapshotHead ];
-        unsigned long beforeTarget = lastEncoderClickUs - CLICK_SUPPRESS_BEFORE_US;
-        for ( int i = 0; i < ENCODER_SNAPSHOT_COUNT; i++ ) {
-            int idx = ( encoderSnapshotHead - i + ENCODER_SNAPSHOT_COUNT ) % ENCODER_SNAPSHOT_COUNT;
-            snap = &encoderSnapshots[ idx ]; // newest first; falls through to oldest available
-            // wrap-safe "snapshot is at least BEFORE_US old": (signed)(t - target) <= 0
-            if ( (long)( encoderSnapshots[ idx ].t - beforeTarget ) <= 0 ) break;
+    // Press edge: resolve the gate. If motion was still unconfirmed, the press is a
+    // click on the wheel, not a turn — discard the pending (never-drawn) motion by
+    // restoring the at-rest snapshot. Otherwise hold at the current committed value.
+    bool pressedNow = isEncoderButtonPhysicallyPressed( );
+    if ( pressedNow && !encoderWasPressedGate ) {
+        if ( !motionConfirmed ) {
+            heldEncoderPos = heldConfirmPos;
+            position = (int)restMenuPosition;
+        } else {
+            heldEncoderPos = (long)encoderPosition;
         }
-        heldEncoderPos = snap->encoderPos;
-        position = (int)snap->menuPosition;
         encoderDirectionState = NONE;
         encoderDirectionConsumed = true;
+        motionConfirmed = true; // gate resolved; nothing left pending
     }
+    encoderWasPressedGate = pressedNow;
 
     // While the button is physically held, suppress all rotation outright. Keep the
     // AFTER window anchored to "now" through the hold so suppression also continues
     // for CLICK_SUPPRESS_AFTER_US past the release (covers release jiggle on long holds).
-    if ( isEncoderButtonPhysicallyPressed( ) ) {
+    if ( pressedNow ) {
         lastEncoderClickUs = nowClickUs;
     }
 
@@ -800,9 +824,28 @@ void rotaryEncoderStuff( void ) {
         lastDetentRaw = rawCount; // keep the hysteresis baseline under the shaft, no catch-up
         if ( encoderDirectionConsumed ) encoderDirectionState = NONE;
         numberOfSteps = 0;
+        prevEncoderPos = (long)encoderPosition;
         return;
     }
+
+    // CONFIRM GATE: hold the first detent out of rest invisible until the window
+    // elapses. The raw count keeps accumulating (we leave lastDetentRaw alone), but
+    // encoderPosition / direction stay frozen so consumers draw nothing. On expiry
+    // the accumulated delta flushes through the detent block below in one commit.
+    if ( !motionConfirmed ) {
+        if ( ( nowClickUs - motionStartUs ) < STEP_CONFIRM_US ) {
+            encoderPositionOffset = rawCount - heldConfirmPos;
+            encoderPosition = heldConfirmPos;
+            if ( encoderDirectionConsumed ) encoderDirectionState = NONE;
+            numberOfSteps = 0;
+            prevEncoderPos = (long)encoderPosition;
+            return;
+        }
+        motionConfirmed = true; // window elapsed with no click — commit the motion
+    }
     // ---- end click/rotation interlock ----------------------------------------
+
+    prevEncoderPos = (long)encoderPosition; // at-rest baseline for the next motion-start check
 
     // Hysteresis: only step once the shaft has moved a full rotaryDivider of raw
     // counts past the last committed detent. Each crossing is exactly one logical

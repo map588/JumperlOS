@@ -24,7 +24,27 @@
 volatile int sendAllPathsCore2 =
     0; // this signals the core 2 to send all the paths to the CH446Q
 
-    ///negative values clear, 1 = show the netlist as in node file, 2 = keep added graphics, 3 = don't clear this
+// showLEDsCore2 — cross-core "refresh the LEDs" request, decoded in core2stuff()
+// (main.cpp). The integer is a packed command:
+//   base mode (after stripping the modifiers below):
+//     0 = idle / nothing requested
+//     1 = show the netlist (showNets + measurements + row animations + overlays)
+//     2 = menu/graphics text buffer only (flush b.print output; skip showNets)
+//     3 = staged graphics: keep whatever is already in the buffer, skip showNets
+//   modifiers:
+//     negative  -> clear the breadboard (clearLEDsExceptRails) before composing,
+//                  then process abs(value)  (e.g. -1 = clear + show nets)
+//     +10       -> use a blocking show (showBBBlocking) instead of async DMA
+//                  (e.g. 12 = blocking menu-buffer flush; see waitForBlockingDisplay)
+// (Modes 4/5/6 were never produced by any writer and have been removed.)
+//
+// FOLLOW-UP (deep refactor, after the encoder/flush pass is verified on hardware):
+// replace this packed magic-int with a typed request, e.g.
+//   struct LedRefreshRequest { enum Mode { OFF, NETS, MENU, STAGED } mode;
+//                              bool clear_bb; bool blocking; };
+// and funnel all writers through one Core-2 compose function with a single show()
+// call site, retiring the negative/+10 encoding. See also the encoder-source and
+// dirty-flag follow-up notes in RotaryEncoder.cpp / LEDs.cpp.
 volatile int showLEDsCore2 = 0; // this signals the core 2 to show the LEDs
 volatile int showProbeLEDs =
     0; // this signals the core 2 to show the probe LEDs

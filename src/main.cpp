@@ -1465,16 +1465,14 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
         showLEDsCore2 -= 10; // Normalize to regular value (10->0, 11->1, 12->2, etc)
     }
 
-    if ( micros( ) - schedulerTimer > schedulerUpdateTime || showLEDsCore2 == 3 || showLEDsCore2 == 4 || showLEDsCore2 == 2 ||
-         showLEDsCore2 == 6 && core1busy == false && core1request == 0 ) {
+    // Run the LED block immediately (don't wait for the 8ms scheduler tick) for the
+    // interactive modes 2 (menu text flush) and 3 (staged graphics). Modes 4/5/6
+    // were never written by any code and have been removed.
+    if ( micros( ) - schedulerTimer > schedulerUpdateTime || showLEDsCore2 == 3 || showLEDsCore2 == 2 ) {
 
         if ( ( ( ( showLEDsCore2 >= 1 && loadingFile == 0 ) || showLEDsCore2 == 3 ||
                  ( swirled == 1 ) && sendAllPathsCore2 == 0 ) ) &&
              sendAllPathsCore2 == 0 ) {
-
-            if ( showLEDsCore2 == 6 ) {
-                showLEDsCore2 = 1;
-            }
 
             // Capture the current value to process, but don't clear it yet
             // This prevents race conditions where menu code sets it again during processing
@@ -1488,7 +1486,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                 core2busy = false;
             }
 
-            if ( rails == 5 || rails == 3 ) {
+            if ( rails == 3 ) {
                 core2busy = true;
 
                 logoSwirl( swirlCount, spread, probeActive );
@@ -1502,7 +1500,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             // Allow showing nets if not in menu OR if in preview mode OR
             // if the History scrub menu is live (its job is to show the
             // reverted bridge state on the breadboard, not menu text).
-            if ( rails != 2 && rails != 5 && rails != 3 &&
+            if ( rails != 2 && rails != 3 &&
                  ( inClickMenu == 0 || SlotManager::getInstance( ).isPreviewMode( ) ||
                    g_historyScrubActive ) &&
                  inPadMenu == 0 && hideNets == 0 ) {

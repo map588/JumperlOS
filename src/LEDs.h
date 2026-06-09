@@ -131,6 +131,44 @@ extern volatile bool logoOverriden;
 void clearColorOverrides(bool logo = true, bool pads = true, bool header = true);
 
 
+// ============================================================================
+// LogoRing — reusable ring indicator (6 ring LEDs + 1 center)
+// ----------------------------------------------------------------------------
+// Ring LED slots 0..5 map to LOGO_LED_START+0..+5 (slot 0 = top-right, going
+// counter-clockwise). The center LED is LOGO_LED_START+6.
+//
+// Driven from any context (menus, voltage selectors, …): the caller sets the
+// state fields and renderLogoRing() (called by logoSwirl) paints it. State
+// updates follow the existing volatile core1->core2 pattern.
+// ============================================================================
+enum LogoRingColorMode {
+  RING_RAINBOW_BY_POSITION = 0, // sample PALETTE_RAINBOW evenly across the ring
+  RING_PALETTE             = 1, // sample a caller-supplied palette instead
+};
+
+struct LogoRing {
+  volatile bool    enabled            = false; // master gate: ring owns the logo
+  volatile int     itemCount          = 0;     // number of selectable items
+  volatile int     selectedIndex      = 0;     // currently highlighted item
+  volatile int     hueOffset          = 0;     // granular palette shift (0..LOGO_COLOR_LENGTH-1)
+  volatile uint8_t baseBrightness     = 30;    // available-but-unselected slots
+  volatile uint8_t selectedBrightness = 250;   // highlighted slot
+  volatile uint8_t centerBrightness   = 130;   // center button-fade brightness
+  volatile int     colorMode          = RING_RAINBOW_BY_POSITION;
+  const uint32_t*  palette            = nullptr; // used when colorMode == RING_PALETTE
+};
+
+extern LogoRing logoRing;
+
+// Convenience: update the three navigation fields in one call.
+void setLogoRing(int itemCount, int selectedIndex, int hueOffset);
+
+// Paint the ring + center button indicator. Returns true if the ring fully
+// owned the logo this frame (caller should stop drawing the logo), false to
+// hand off (e.g. while the encoder hold/reboot sweep is running).
+bool renderLogoRing(void);
+
+
 class ledClass { //I'm literally copying this from Adafruit_NeoPixel.h so I can split leds.show() into 2 strips without modifying the library 
   public:
   void begin(void);
