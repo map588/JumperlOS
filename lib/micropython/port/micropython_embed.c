@@ -34,6 +34,12 @@
 #define PSRAM_BASE 0x11000000
 // C wrapper for Arduino rp2040.getPSRAMSize() - implemented in Python_Proper.cpp
 extern size_t jl_get_psram_size(void);
+// Partitioned MicroPython sub-region of PSRAM (everything past the app-side
+// PsramArena that holds the undo log / file cache / scratch buffers). Falls
+// back to the whole chip when the arena is unavailable. Implemented in
+// Python_Proper.cpp.
+extern uintptr_t jl_get_psram_mp_base(void);
+extern size_t jl_get_psram_mp_size(void);
 // Track PSRAM state for reporting
 static size_t psram_heap_size = 0;
 
@@ -99,15 +105,20 @@ int mp_embed_init(void *heap, size_t heap_size, void *stack_top) {
     // The PSRAM is memory-mapped by the Arduino-Pico framework at PSRAM_BASE (0x11000000).
     // Detection is done at runtime - same firmware works with or without PSRAM.
     #if MICROPY_GC_SPLIT_HEAP
-    // jl_get_psram_size() wraps rp2040.getPSRAMSize() from Arduino-Pico
-    size_t detected_psram_size = jl_get_psram_size();
-    if (detected_psram_size > 0) {
-        // Add PSRAM region to GC heap
+    // Only claim the MicroPython sub-region of PSRAM, NOT the whole chip.
+    // The app-side PsramArena (undo log, file cache, scratch buffers) lives at
+    // PSRAM_BASE; gc_add() plops its area struct + alloc tables at the start
+    // of whatever range it's given and memsets them, so adding the full chip
+    // here silently wiped the undo rings (restored history reverted as no-ops)
+    // and let GC bookkeeping keep scribbling over the arena at runtime.
+    // jl_get_psram_mp_base/size return the partition computed by
+    // psram_arena_init(), or the whole chip when no arena was reserved.
+    size_t mp_psram_size = jl_get_psram_mp_size();
+    uintptr_t mp_psram_base = jl_get_psram_mp_base();
+    if (mp_psram_size > 0 && mp_psram_base != 0) {
         // Note: gc_add() handles the region as a separate heap segment
-        void *psram_start = (void *)PSRAM_BASE;
-        void *psram_end = (void *)(PSRAM_BASE + detected_psram_size);
-        gc_add(psram_start, psram_end);
-        psram_heap_size = detected_psram_size;
+        gc_add((void *)mp_psram_base, (void *)(mp_psram_base + mp_psram_size));
+        psram_heap_size = mp_psram_size;
     }
     #endif
     
