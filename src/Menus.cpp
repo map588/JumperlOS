@@ -1,6 +1,7 @@
 #include "Menus.h"
 #include "RotaryEncoder.h"
 #include "SafeString.h"
+#include "SingleCharCommands.h"
 #include <Arduino.h>
 
 #include "Apps.h"
@@ -17,6 +18,7 @@
 #include "JumperlessDefines.h"
 #include "LEDs.h"
 #include "MatrixState.h"
+#include "MenuTransitions.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
 #include "Peripherals.h"
@@ -148,7 +150,7 @@ void readMenuFile( int flashOrLocal ) {
         }
         menuLength = 0;
 
-        while ( menuFile.available( ) ) {
+        while ( menuFile.available( ) && menuLineIndex < 150 ) {
             menuLines[ menuLineIndex ] = menuFile.readStringUntil( '\n' );
             menuLineIndex++;
         }
@@ -174,6 +176,20 @@ void readMenuFile( int flashOrLocal ) {
                 menuLineIndex++;
             }
         }
+
+        // No "end" sentinel found (it's consumed by the first pass — this is a
+        // re-read). Without this clamp menuLineIndex lands on 150 and every
+        // menu walk goes out of bounds. Shouldn't happen now that menuRead is
+        // latched below, but never let a bad table poison all menu consumers.
+        if ( menuLineIndex >= 150 ) {
+            menuLineIndex = 0;
+        }
+
+        // Latch so initMenu() never re-runs this path. It is NOT idempotent:
+        // it consumes the "end" sentinel, so a second run can't find the end
+        // of the table. (This latch was only ever set in the FatFS branch
+        // above, so every initMenu() call re-read the local tree.)
+        menuRead = 1;
     }
 }
 
@@ -436,6 +452,36 @@ char chosenOptions[ 20 ][ 40 ];
 
 int previousMenuSelection[ 10 ] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
+// Full LED-state teardown for leaving menu mode mid-action to hand the
+// display to something else (apps, File Manager, calibration, history
+// scrub). These doMenuAction branches zero inClickMenu themselves before
+// running — which used to make clickMenu()'s end-of-session cleanup
+// (gated on inClickMenu still being 1) a silent no-op, leaving the logo
+// ring enabled (stale ring frozen on the logo) and the depth pads lit
+// after the app exited.
+static void exitMenuModeForAction( void ) {
+    inClickMenu = 0;
+    logoRing.enabled = false;
+    clearColorOverrides( false, true, false ); // restore depth pads
+    menuTransitionCancel( );
+}
+
+// Re-assert a swallowed LED show request. Core 2's end-of-frame
+// compare-and-swap (`if (showLEDsCore2 == rails) showLEDsCore2 = 0`) can't
+// tell a fresh request apart from the one it just serviced: a
+// showLEDsCore2 = 2 written while Core 2 is mid-frame (with rails==2
+// already captured) gets cleared along with the serviced one, and the
+// painted buffer never reaches the LEDs. The bracketed menu painters
+// recover via the transition linger's re-requests; the unbracketed screens
+// (node picker, value editors) call this in their wait loops instead.
+static void menuShowKeepalive( unsigned long& lastRequestMs,
+                               unsigned long cadenceMs = 50 ) {
+    if ( showLEDsCore2 == 0 && millis( ) - lastRequestMs >= cadenceMs ) {
+        showLEDsCore2 = 2;
+        lastRequestMs = millis( );
+    }
+}
+
 int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
     // Don't allow menus to run if the bitmap editor is active
     if ( BitmapEditor::getInstance( ).active ) {
@@ -450,6 +496,7 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
     }
 
     int returnedMenuPosition = -1;
+    bool menuSessionRan = false;
     if ( encoderButtonState == RELEASED && lastButtonEncoderState == PRESSED ) {
         // Check if Highlighting wants to handle this button press (for voltage adjustment)
         if ( Highlighting::getInstance( ).wantsToHandleButtonPress( ) ) {
@@ -461,7 +508,9 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
 
         encoderButtonState = IDLE;
         inClickMenu = 1;
+        menuSessionRan = true;
         logoRing.enabled = true; // ring owns the logo LEDs for this menu session
+        logoRing.holdStepLengthMs = 0; // no stale hold-stepping state from last session
         // if (menuRead == 0) {
         //   readMenuFile();
         // }
@@ -495,7 +544,12 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
                 mgr.exitPreview( false, errorMsg ); // Cancel preview
             }
 
-            showLEDsCore2 = 1;
+            // This early return bypasses the end-of-session cleanup below,
+            // so it must do its own buffer wipe + negative show (clear
+            // before drawing wires) or the menu text stays on the
+            // breadboard underneath the redrawn nets.
+            b.clear( );
+            showLEDsCore2 = -1;
             inClickMenu = 0;
             logoRing.enabled = false;
             clearColorOverrides( false, true, false ); // restore depth pads
@@ -524,9 +578,40 @@ int Menus::clickMenu( int menuType, int menuOption, int extraOptions ) {
 
         // getMenuSelection();
     }
-    inClickMenu = 0;
-    logoRing.enabled = false;
-    clearColorOverrides( false, true, false ); // restore depth pads
+
+    // Only clean up if a menu session actually ran. clickMenu() is POLLED from
+    // Menus::service() every main-loop iteration, so an unconditional
+    // clearColorOverrides() here wiped the connector-pad overrides thousands
+    // of times a second on the main screen — which erased the encoder
+    // hold/reboot sweep's pad writes the instant they landed (caught live via
+    // a debugger watchpoint on GPIOcolorOverride0).
+    //
+    // Gated on a local session flag, NOT on inClickMenu still being 1: action
+    // paths (apps / File Manager / history scrub / voltage selectors) zero
+    // inClickMenu themselves, which used to skip this cleanup entirely and
+    // strand the logo ring + depth pads.
+    if ( menuSessionRan ) {
+        inClickMenu = 0;
+        logoRing.enabled = false;
+        clearColorOverrides( false, true, false ); // restore depth pads
+        menuTransitionCancel( );
+
+        // Hand the breadboard back to the wires with a CLEAN slate: wipe the
+        // menu text out of the pixel buffer and request the show as a
+        // NEGATIVE value, which makes Core 2 run clearLEDsExceptRails()
+        // before showNets() - a plain positive show draws the wires on top
+        // of whatever menu text is still in the buffer.
+        b.clear( );
+        showLEDsCore2 = -1;
+
+        // Leave the terminal in a known state when the wheel session ends:
+        // clear whatever the menu / launched app left on screen and reprint
+        // the serial main menu (printMenu() itself respects dontShowMenu).
+        extern int showExtraMenu;
+        Serial.print( "\x1b[2J\x1b[H" );
+        Serial.flush( );
+        singleCharCommands.printMenu( showExtraMenu );
+    }
 
     // oled.showJogo32h();
 
@@ -659,45 +744,43 @@ void printActionStruct( void ) {
     Serial.println( "\n\r" );
 }
 
-// Per-ring-slot hue spacing in PALETTE_RAINBOW indices (6 slots span the wheel).
-#define MENU_RING_SLOT_STEP ( LOGO_COLOR_LENGTH / 6 )
-
 // Accumulated ring hue offset per menu level. Level 0 starts at 0; each child
-// level inherits its parent's offset plus the slot of the item that was
+// level inherits its parent's offset plus the hue of the item that was
 // selected to descend into it, so a submenu's colors are anchored to the color
-// of the item you picked (each branch gets its own hue lineage).
+// of the item you picked (each branch gets its own hue lineage). Because the
+// lineage keeps accumulating, levels with only 1-2 options still land on a
+// different hue per branch instead of always showing the same color.
 static int menuRingLevelOffset[ 12 ] = { 0 };
 
-// Show menu depth on the connector pad LEDs via the color overrides: one pad
-// pair lights per level (GPIO -> DAC -> ADC), tinted with the current branch
-// hue. Capped at 3 — deeper levels just keep all three lit. Top level (depth 0)
-// blanks them so the ladder reads cleanly.
-static void setMenuDepthLEDs( int depth, int offset ) {
-    if ( depth < 0 )
-        depth = 0;
-    if ( depth > 3 )
-        depth = 3;
-    static const logoOverrideNames depthPairs[ 3 ][ 2 ] = {
-        { GPIO_0, GPIO_1 },
+// Show the menu breadcrumb on the connector pad LEDs via the color overrides.
+// Pads read top-to-bottom as ADC -> DAC -> GPIO. The pad for the current level
+// glows in the live selection's ring hue (so at the top level only ADC is lit,
+// tracking the highlighted item), and the pads above it hold the colors of the
+// items that were picked to get here. Past 3 levels the window slides so the
+// pads always show the colors of the last 3 selections.
+static void setMenuDepthLEDs( int menuLevel, int currentHueIdx ) {
+    static const logoOverrideNames padPairs[ 3 ][ 2 ] = {
+        { ADC_0, ADC_1 },   // topmost pad pair = shallowest shown level
         { DAC_0, DAC_1 },
-        { ADC_0, ADC_1 },
+        { GPIO_0, GPIO_1 }, // bottom pad pair = current level (once depth >= 2)
     };
-    int idx = ( ( offset % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH;
-    uint32_t depthColor = dimLogoColor( logoColorsAll[ PALETTE_RAINBOW ][ idx ], 70 );
+    int firstLevel = menuLevel - 2;
+    if ( firstLevel < 0 )
+        firstLevel = 0;
     for ( int p = 0; p < 3; p++ ) {
-        uint32_t c = ( p < depth ) ? depthColor : (uint32_t)0;
-        setLogoOverride( depthPairs[ p ][ 0 ], c );
-        setLogoOverride( depthPairs[ p ][ 1 ], c );
+        int lvl = firstLevel + p;
+        uint32_t c = 0;
+        if ( lvl <= menuLevel ) {
+            // Ancestor pads show the hue of the item chosen at that level —
+            // exactly the offset it seeded into the level below it. The
+            // current level's pad tracks the live selection hue.
+            int idx = ( lvl < menuLevel ) ? menuRingLevelOffset[ lvl + 1 ] : currentHueIdx;
+            idx = ( ( idx % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH;
+            c = dimLogoColor( applyRingHueTweaks( logoColorsAll[ PALETTE_RAINBOW ][ idx ] ), 70 );
+        }
+        setLogoOverride( padPairs[ p ][ 0 ], c );
+        setLogoOverride( padPairs[ p ][ 1 ], c );
     }
-}
-
-// Map a selected sibling index onto its ring slot (must match renderLogoRing).
-static int menuRingSelectedSlot( int count, int sel ) {
-    if ( count <= 0 )
-        return 0;
-    if ( count <= 6 )
-        return ( ( ( sel * 6 ) + ( count / 2 ) ) / count ) % 6;
-    return ( ( sel % 6 ) + 6 ) % 6;
 }
 
 // Drive the reusable logo ring from the current menu cursor. Siblings at the
@@ -705,7 +788,9 @@ static int menuRingSelectedSlot( int count, int sel ) {
 // a lower level (deeper children are skipped in the count but stay inside the
 // run). itemCount/selectedIndex feed the ring layout; the hue offset is
 // inherited from the parent's selected item.
-static void updateMenuLogoRing( int menuPosition, int menuLevel ) {
+// Returns the selected item's ring color so the menu text can be painted in
+// the same hue (falls back to the depth palette if the cursor is invalid).
+static uint32_t updateMenuLogoRing( int menuPosition, int menuLevel ) {
     if ( menuLevel < 0 )
         menuLevel = 0;
     int maxLevel = (int)( sizeof( menuRingLevelOffset ) / sizeof( menuRingLevelOffset[ 0 ] ) ) - 1;
@@ -714,11 +799,19 @@ static void updateMenuLogoRing( int menuPosition, int menuLevel ) {
 
     int offset = ( menuLevel == 0 ) ? 0 : menuRingLevelOffset[ menuLevel ];
 
-    setMenuDepthLEDs( menuLevel, offset );
+    // The hold/reboot sweep owns the connector pads while the button is held
+    // (each hold-to-back step re-renders the menu line, and repainting the
+    // breadcrumb here would stomp the sweep's progress every step). The
+    // breadcrumb comes back on the first repaint after release.
+    bool padsFree = encoderButtonState != HELD && encoderButtonState != MEDIUM_HELD &&
+                    encoderButtonState != LONG_HELD;
 
     if ( menuPosition < 0 || menuPosition > menuLineIndex ) {
+        if ( padsFree ) {
+            setMenuDepthLEDs( menuLevel, offset );
+        }
         setLogoRing( 0, 0, ( ( offset % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH );
-        return;
+        return menuColors[ menuLevel > 9 ? 9 : menuLevel ];
     }
     int lo = menuPosition;
     while ( lo > 0 && menuLevels[ lo - 1 ] >= menuLevel )
@@ -737,14 +830,42 @@ static void updateMenuLogoRing( int menuPosition, int menuLevel ) {
         }
     }
 
+    // Selected item's hue: siblings are spaced evenly across the whole wheel
+    // by their actual count (item k of N sits at k/N-th of the circle — must
+    // match ringItemColor in LEDs.cpp), on top of the branch offset.
+    int selHueStep = ( count > 0 ) ? ( sel * LOGO_COLOR_LENGTH ) / count : 0;
+
     // Seed the next level's offset from the currently-selected item so a later
     // descent inherits the picked item's hue.
     if ( menuLevel < maxLevel ) {
-        int selectedSlot = menuRingSelectedSlot( count, sel );
-        menuRingLevelOffset[ menuLevel + 1 ] = offset + ( selectedSlot * MENU_RING_SLOT_STEP );
+        menuRingLevelOffset[ menuLevel + 1 ] = offset + selHueStep;
+    }
+
+    // Feed the selected item's ring hue to the frame-transition engine so the
+    // accent transition types flash each item in its own color.
+    int accentIdx = ( ( selHueStep + offset ) % LOGO_COLOR_LENGTH + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH;
+    uint32_t accent = applyRingHueTweaks( logoColorsAll[ PALETTE_RAINBOW ][ accentIdx ] );
+    menuTransitionSetAccent( accent );
+
+    // Breadcrumb pads: ancestors hold their picked-item colors, the current
+    // level's pad tracks the live selection hue.
+    if ( padsFree ) {
+        setMenuDepthLEDs( menuLevel, accentIdx );
     }
 
     setLogoRing( count, sel, ( ( offset % LOGO_COLOR_LENGTH ) + LOGO_COLOR_LENGTH ) % LOGO_COLOR_LENGTH );
+
+    // Breadboard text tracks the same hue, but as its own dimmer color: the
+    // raw ring palette is calibrated for the diffused logo and is way too
+    // bright for the bare breadboard LEDs. Re-value it down near the old
+    // menuColors brightness (their HSV v sat around 8-15), a few ticks
+    // brighter — the print path then scales this by the user's
+    // menuBrightnessSetting (printGraphicsRow), so the setting still rules.
+    // Because the hue comes from the branch offset lineage (parent offset +
+    // selected item hue), it keeps evolving at every depth.
+    hsvColor textHsv = RgbToHsv( accent );
+    textHsv.v = 18;
+    return HsvToRaw( textHsv );
 }
 
 // Consolidated menu-line render. Paints the selected line (plus the optional
@@ -759,25 +880,46 @@ static void updateMenuLogoRing( int menuPosition, int menuLevel ) {
 static void renderMenuLine( int menuPosition, int menuLevel,
                             int stayOnTopLevel, int stayOnTopIndex,
                             const char* oledText = nullptr, int ledShowMode = 2 ) {
+    // Ring update runs first: it computes the selected item's ring hue (and
+    // hands it to the transition engine for the accent frame), and the item
+    // text below is painted in a dim variant of that same hue — the text
+    // continuously matches the logo ring instead of the per-depth palette.
+    // It only touches logo/pad state, never the breadboard rows, so it stays
+    // outside the beginDraw/arm bracket.
+    uint32_t itemColor = updateMenuLogoRing( menuPosition, menuLevel );
+    // Scrolling choice rows (number/option lists, numberOfChoices > 0) keep
+    // the original depth-palette coloring; the ring hue is only for regular
+    // item labels.
+    if ( menuPosition >= 0 && menuPosition <= menuLineIndex &&
+         numberOfChoices[ menuPosition ] > 0 ) {
+        itemColor = menuColors[ menuLevel > 9 ? 9 : menuLevel ];
+    }
+    // Bracket the repaint for the transition engine: Core 2 holds off showing
+    // the breadboard between beginDraw and arm, so a half-painted buffer never
+    // hits the LEDs, and arm() snapshots the finished frame as the blend target.
+    menuTransitionBeginDraw( );
     b.clear( );
     if ( stayOnTopLevel != -1 && stayOnTopIndex != -1 && menuLevel != stayOnTopLevel ) {
         b.print( menuLines[ stayOnTopIndex ].c_str( ), menuColors[ stayOnTopLevel ],
                  0xFFFFFF, 0, 0,
                  menuLines[ stayOnTopIndex ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
         b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
-        b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ], 0xFFFFFF, 0,
+        b.print( menuLines[ menuPosition ].c_str( ), itemColor, 0xFFFFFF, 0,
                  1, menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
     } else {
-        b.print( menuLines[ menuPosition ].c_str( ), menuColors[ menuLevel ], 0xFFFFFF, 0,
+        b.print( menuLines[ menuPosition ].c_str( ), itemColor, 0xFFFFFF, 0,
                  -1, menuLines[ menuPosition ].length( ) >= 7 || menuLevel == 0 ? 1 : 3 );
         b.printMenuReminder( menuLevel, menuColors[ menuLevel ] );
     }
+    menuTransitionArm( );
     if ( oledText != nullptr ) {
         oled.clearPrintShow( oledText, 2, true, true, true, -1, -1 );
     }
-    updateMenuLogoRing( menuPosition, menuLevel );
     showLEDsCore2 = ledShowMode;
 }
+
+// (The Menu FX debug TUI drives the real click menu directly — see
+// action_menuTransitionTuner() in Debugs.cpp.)
 
 int getMenuSelection( void ) {
 
@@ -813,6 +955,14 @@ int getMenuSelection( void ) {
 
     int force = 0;
 
+    // Hold-to-back pacing: the first back-step registers (and redraws) the
+    // moment HELD fires; while the button stays physically down, further
+    // levels step at most once per HOLD_BACK_REPEAT_MS. Lifting the finger
+    // re-arms so a fresh hold backs out immediately again.
+    const unsigned long HOLD_BACK_REPEAT_MS = 800;
+    bool holdBackArmed = true;
+    unsigned long holdBackLastStepMs = 0;
+
     clearAction( );
 
     // showLEDsCore2 = 2;
@@ -836,9 +986,24 @@ int getMenuSelection( void ) {
         jOS.serviceCritical( );
         rotaryEncoderButtonStuff( ); // Update button state every iteration
 
-        // Keep the logo refreshing while the button is held in the pre-HELD
-        // window so the center LED animates its white->red press fade.
-        if ( encoderButtonState == PRESSED ) {
+        // Finger lifted -> re-arm the hold-to-back gate so the next hold's
+        // first back-step registers immediately. Wait for the state machine to
+        // settle to IDLE, then repaint once: the hold sweep clears the pad
+        // overrides on release, so this restores the menu depth ladder.
+        if ( !isEncoderButtonPhysicallyPressed( ) && encoderButtonState == IDLE ) {
+            if ( !holdBackArmed && menuPosition >= 0 ) {
+                renderMenuLine( menuPosition, menuLevel, stayOnTopLevel, stayOnTopIndex );
+            }
+            holdBackArmed = true;
+            // Release ends the hold-stepping session — HELD hands the logo
+            // back to the reboot sweep again on the next hold.
+            logoRing.holdStepLengthMs = 0;
+        }
+
+        // Keep the logo refreshing while the button is held so the center LED
+        // animates its V (white -> black -> active color) press indicator,
+        // including the per-step replays during hold-to-back.
+        if ( encoderButtonState == PRESSED || logoRing.holdStepLengthMs > 0 ) {
             showLEDsCore2 = 2;
         }
 
@@ -850,7 +1015,11 @@ int getMenuSelection( void ) {
         }
         /// rotaryDivider = 9;
         // delayMicroseconds(1000);
-        rotaryDivider = 4;
+        // 8 raw counts = one physical detent on this encoder. The old value
+        // of 4 was 2 menu items per detent - masked for years by the event
+        // collapser in rotaryEncoderStuff(), exposed when emission became
+        // faithful (one event per committed step).
+        rotaryDivider = 8;
         if ( millis( ) - noInputTimer > exitMenuTime ) {
             encoderButtonState = IDLE;
             lastButtonEncoderState = IDLE;
@@ -900,10 +1069,17 @@ int getMenuSelection( void ) {
             }
 
             // Serial.println();
-            // Clear the consumed event and wait for physical button release (debounce)
+            // Clear the consumed event and wait for physical button release (debounce).
+            // Keep critical services running and bail out after 2s so a stuck or
+            // shorted button can't hang Core 0 here forever.
             encoderButtonState = IDLE;
-            while ( isEncoderButtonPhysicallyPressed( ) ) // Wait for physical button release
-                ;
+            unsigned long releaseWaitStart = millis( );
+            while ( isEncoderButtonPhysicallyPressed( ) ) {
+                jOS.serviceCritical( );
+                if ( millis( ) - releaseWaitStart > 2000 ) {
+                    break;
+                }
+            }
         } else if ( encoderDirectionState == UP || firstTime == 1 || force == 1 ) { // ! up
             // lastMenuLevel > menuLevel) {
             encoderDirectionState = NONE;
@@ -1097,8 +1273,12 @@ int getMenuSelection( void ) {
 
                         if ( actions[ menuPosition ] == 7 ) {
                             // Integer input action found
-                            // currentAction.fromAscii[subSelection] contains the selected option text
-                            String selectedOptionText = String( currentAction.fromAscii[ subSelection ] );
+                            // currentAction.fromAscii[subSelection] contains the selected option
+                            // text (subSelection is -1 when nothing was picked — don't index)
+                            String selectedOptionText =
+                                ( subSelection >= 0 && subSelection < 20 )
+                                    ? String( currentAction.fromAscii[ subSelection ] )
+                                    : String( "" );
                             selectedOptionText.toLowerCase( );
 
                             // Check if it's "Custom" - only then trigger interactive input
@@ -1292,8 +1472,12 @@ int getMenuSelection( void ) {
 
             } else if ( actions[ menuPosition ] == 7 ) {
                 // Integer input action - handle presets or custom input
-                // currentAction.fromAscii[subSelection] contains the selected option text
-                String selectedOptionText = String( currentAction.fromAscii[ subSelection ] );
+                // currentAction.fromAscii[subSelection] contains the selected option
+                // text (subSelection is -1 when nothing was picked — don't index)
+                String selectedOptionText =
+                    ( subSelection >= 0 && subSelection < 20 )
+                        ? String( currentAction.fromAscii[ subSelection ] )
+                        : String( "" );
                 selectedOptionText.toLowerCase( );
 
                 // Check if "Custom" was selected
@@ -1347,7 +1531,11 @@ int getMenuSelection( void ) {
             } else if ( actions[ menuPosition ] == 8 ) {
                 // Text input action: -->t(maxLength)
                 // Check if user selected "Edit" (trigger input) or "Clear" (skip input)
-                String selectedOptionText = String( currentAction.fromAscii[ subSelection ] );
+                // (subSelection is -1 when nothing was picked — don't index)
+                String selectedOptionText =
+                    ( subSelection >= 0 && subSelection < 20 )
+                        ? String( currentAction.fromAscii[ subSelection ] )
+                        : String( "" );
                 // Serial.print("DEBUG: selectedOptionText BEFORE toLowerCase: '");
                 // Serial.print(selectedOptionText);
                 // Serial.println("'");
@@ -1429,7 +1617,30 @@ int getMenuSelection( void ) {
 
         delayMicroseconds( 80 );
 
-        if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
+        // Hold-to-back: the first back-step fires the moment HELD registers
+        // (the redraw happens right here in the handler, not on release), then
+        // a continued hold steps one more level per HOLD_BACK_REPEAT_MS.
+        // MEDIUM_HELD / LONG_HELD are the hold-animation escalations of the
+        // same physical hold, so they keep stepping too.
+        bool holdBackStep = false;
+        if ( encoderButtonState == HELD || encoderButtonState == MEDIUM_HELD ||
+             encoderButtonState == LONG_HELD ) {
+            if ( holdBackArmed || ( millis( ) - holdBackLastStepMs >= HOLD_BACK_REPEAT_MS ) ) {
+                holdBackStep = true;
+                holdBackArmed = false;
+                holdBackLastStepMs = millis( );
+                // Each back-step restarts the hold cycle: the center V replays
+                // for the next level (renderLogoRing keeps the ring up through
+                // HELD while holdStepLengthMs is set), and resetting
+                // buttonHoldStart keeps the MEDIUM/LONG reboot escalation from
+                // creeping in while you're still stepping through menus.
+                buttonHoldStart = millis( );
+                logoRing.holdStepStartMs = millis( );
+                logoRing.holdStepLengthMs = HOLD_BACK_REPEAT_MS;
+            }
+        }
+
+        if ( holdBackStep || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             noInputTimer = millis( );
             lastMenuLevel = menuLevel;
             // Serial.println("Held");
@@ -1439,8 +1650,13 @@ int getMenuSelection( void ) {
             stayOnTopLevel = -1;
             stayOnTopIndex = -1;
             //}
-            firstTime = 1;
-            int noPrevious = 0;
+            // NB: do NOT set firstTime here. The firstTime branch of the nav
+            // loop does menuPosition += 1 (that's how a fresh menu open walks
+            // from -1 onto item 0), so setting it after a back-step advanced
+            // the cursor off the restored item and onto its next sibling —
+            // popping out of a submenu landed you one entry past the one you
+            // entered from. This handler renders and recomputes the submenu
+            // bounds itself, so nothing else is needed.
 
             for ( int i = menuLevel + 1; i < 10; i++ ) {
                 previousMenuSelection[ i ] = -1;
@@ -1495,7 +1711,19 @@ int getMenuSelection( void ) {
             bool twoLine = ( stayOnTopLevel != -1 && stayOnTopIndex != -1 &&
                              menuLevel != stayOnTopLevel );
             if ( previousMenuSelection[ menuLevel ] == -1 ) {
+                // No remembered pick at this level (e.g. restored from a
+                // timeout straight into a deep level). subMenuStartIndex is
+                // the parent/boundary line, not a sibling — land on the first
+                // real entry at this level. (The old firstTime=1 hack used to
+                // paper over this by re-scanning, at the cost of advancing the
+                // cursor one item past the restored position on every back.)
                 menuPosition = subMenuStartIndex;
+                for ( int i = subMenuStartIndex; i <= subMenuEndIndex && i <= menuLineIndex; i++ ) {
+                    if ( menuLevels[ i ] == menuLevel ) {
+                        menuPosition = i;
+                        break;
+                    }
+                }
             } else if ( !twoLine ) {
                 menuPosition = previousMenuSelection[ menuLevel ];
             }
@@ -1506,25 +1734,17 @@ int getMenuSelection( void ) {
             backLine.replace( "±", "+-" );
             renderMenuLine( menuPosition, menuLevel, stayOnTopLevel, stayOnTopIndex,
                             backLine.c_str( ), 2 );
-            // back = 1;
-            //  delay(500); // you'll step back a level every 500ms
             noInputTimer = millis( );
 
-            while ( encoderButtonState == HELD ) {
-                if ( millis( ) - noInputTimer > 1000 ) {
-                    encoderButtonState = IDLE;
-                    break;
-                }
-            }
-
-            // if (encoderDirectionState == DOWN || encoderDirectionState == UP) {
-            //   encoderButtonState = IDLE;
-
-            //   break;
-            // }
-            // this determines if you just
-            // co back to the top level or if you go back to the previous level
-            //   ;
+            // Deliberately do NOT consume encoderButtonState here: leaving it
+            // in HELD (and its MEDIUM/LONG escalations) keeps the hold/reboot
+            // animation visible inside menus — renderLogoRing() hands the logo
+            // back to the sweep while those states are live, and
+            // holdAnimationStuff() needs the state to progress. The
+            // HOLD_BACK_REPEAT_MS gate above paces back-steps by time, so the
+            // persistent state can't re-trigger early. On release the state
+            // machine reports RELEASED with lastButtonEncoderState == HELD,
+            // which the click-descend check ignores — no phantom descend.
         }
     }
 
@@ -1552,10 +1772,29 @@ uint32_t nodeSelectionColorsHeader[ 10 ] = {
     0x061f29,
 };
 
+// Safe "does the menu line picked at this level contain this text" lookup.
+// previousMenuSelection[] entries are -1 when nothing was picked, and callers
+// historically indexed with menuLevel-2 (negative at shallow levels) — both
+// walked off menuLines[] / previousMenuSelection[] and read garbage Strings.
+static bool pickedLineContains( int level, const char* needle ) {
+    if ( level < 0 || level >= 10 ) {
+        return false;
+    }
+    int sel = previousMenuSelection[ level ];
+    if ( sel < 0 || sel > menuLineIndex ) {
+        return false;
+    }
+    return menuLines[ sel ].indexOf( needle ) != -1;
+}
+
 int selectSubmenuOption( int menuPosition, int menuLevel ) {
 
     int railMenu = 0;
-    rotaryDivider = 4;
+    // 2 detents per option step at ~4 raw quadrature counts per physical
+    // detent — the option carousel consumes encoderDirectionState, whose
+    // pacing is exactly rotaryDivider raw counts per UP/DOWN. One-detent
+    // stepping (divider 4) made the short option lists feel hair-trigger.
+    rotaryDivider = 8;
     delayMicroseconds( 3000 );
     int optionSelected = -1;
     int highlightedOption = 1;
@@ -1691,27 +1930,27 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
     // Serial.println(menuLines[previousMenuSelection[1]]);
     // }
 
-    if ( menuLines[ previousMenuSelection[ 1 ] ].indexOf( "Load" ) != -1 ) {
+    if ( pickedLineContains( 1, "Load" ) ) {
         // Serial.println("Load");
         menuType = 3;
     }
 
-    if ( menuLines[ previousMenuSelection[ menuLevel - 2 ] ].indexOf( "Bright" ) != -1 && menuLines[ previousMenuSelection[ menuLevel - 1 ] ].indexOf( "Menu" ) != -1 ) {
+    if ( pickedLineContains( menuLevel - 2, "Bright" ) && pickedLineContains( menuLevel - 1, "Menu" ) ) {
 
         brightnessMenu = 1;
     }
 
-    if ( menuLines[ previousMenuSelection[ menuLevel - 2 ] ].indexOf( "Bright" ) != -1 && menuLines[ previousMenuSelection[ menuLevel - 1 ] ].indexOf( "Rails" ) != -1 ) {
+    if ( pickedLineContains( menuLevel - 2, "Bright" ) && pickedLineContains( menuLevel - 1, "Rails" ) ) {
 
         brightnessMenu = 2;
     }
 
-    if ( menuLines[ previousMenuSelection[ menuLevel - 2 ] ].indexOf( "Bright" ) != -1 && menuLines[ previousMenuSelection[ menuLevel - 1 ] ].indexOf( "Wires" ) != -1 ) {
+    if ( pickedLineContains( menuLevel - 2, "Bright" ) && pickedLineContains( menuLevel - 1, "Wires" ) ) {
 
         brightnessMenu = 3;
     }
 
-    if ( menuLines[ previousMenuSelection[ menuLevel - 2 ] ].indexOf( "Bright" ) != -1 && menuLines[ previousMenuSelection[ menuLevel - 1 ] ].indexOf( "Special" ) != -1 ) {
+    if ( pickedLineContains( menuLevel - 2, "Bright" ) && pickedLineContains( menuLevel - 1, "Special" ) ) {
 
         brightnessMenu = 4;
     }
@@ -1811,6 +2050,15 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
             changed = 1;
         }
         if ( changed == 1 ) {
+
+            // Bracket this repaint so the configured frame transition (possibly
+            // OFF) fires between option rows, same as the main menu lines.
+            // Slot preview (menuType 3) is excluded: it shows net colors via the
+            // rails==1 path, which the transition engine doesn't own.
+            bool fxBracket = ( menuType != 3 );
+            if ( fxBracket ) {
+                menuTransitionBeginDraw( );
+            }
 
             b.clear( 1 );
 
@@ -2177,6 +2425,10 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
                 // Preview mode handled via SlotManager::isPreviewMode() in core2stuff
             }
 
+            if ( fxBracket ) {
+                menuTransitionArm( );
+            }
+
             // CRITICAL FIX: Signal Core 2 to display the menu buffer that was written by b.print()
             // Without this, the menu text is written but never shown on the LEDs.
             // Slot preview (menuType 3) is the exception: it needs the previewed slot's
@@ -2199,7 +2451,7 @@ int selectSubmenuOption( int menuPosition, int menuLevel ) {
 int yesNoMenu( unsigned long timeout ) {
     inClickMenu = 1;
 
-    rotaryDivider = 4;
+    rotaryDivider = 8; // one option step per physical detent (8 counts)
     // delayMicroseconds(3000);
     int optionSelected = -1;
     int highlightedOption = 0;
@@ -2216,11 +2468,13 @@ int yesNoMenu( unsigned long timeout ) {
 
     // Display initial state immediately before entering loop
     Serial.print( "\r                      \r" );
+    menuTransitionBeginDraw( );
     b.clear( 1 );
     Serial.print( "No" );
     b.print( ">", noColorBright, 0x0, 4, 1, -1 );
     b.print( "Yes", yesColor, 0x0, 1, 1, -2 );
     b.print( "No", noColorBright, 0x0, 5, 1, -1 );
+    menuTransitionArm( );
     delay( 100 );
     showLEDsCore2 = 2;
 
@@ -2279,6 +2533,7 @@ int yesNoMenu( unsigned long timeout ) {
         if ( changed == 1 ) {
             Serial.print( "\r                      \r" );
 
+            menuTransitionBeginDraw( );
             b.clear( 1 );
             if ( highlightedOption == 1 ) {
                 Serial.print( "Yes" );
@@ -2291,6 +2546,7 @@ int yesNoMenu( unsigned long timeout ) {
                 b.print( "Yes", yesColor, 0x0, 1, 1, -2 );
                 b.print( "No", noColorBright, 0x0, 5, 1, -1 );
             }
+            menuTransitionArm( );
 
             showLEDsCore2 = 2;
 
@@ -2302,6 +2558,11 @@ int yesNoMenu( unsigned long timeout ) {
 }
 
 int selectNodeAction( int whichSelection ) {
+    // This screen paints the breadboard without the transition bracket —
+    // abort any in-flight menu transition so its blend frames can't stamp
+    // the old menu line over what we draw here.
+    menuTransitionCancel( );
+
     b.clear( );
     showLEDsCore2 = -1;
 
@@ -2309,7 +2570,6 @@ int selectNodeAction( int whichSelection ) {
     int currentlySelecting = whichSelection;
 
     int highlightedNode = currentlySelecting + 13;
-    uint32_t highlightedNodeColor = 0x000000;
 
     int firstTime = 1;
     int inNanoHeader = 0;
@@ -2331,25 +2591,42 @@ int selectNodeAction( int whichSelection ) {
         maxNumSelections++;
     }
 
-    // Set rotary divider for good responsiveness
+    // NOTE: this screen reads raw encoderPosition deltas directly, which
+    // rotaryDivider does NOT pace (the divider only paces the
+    // encoderDirectionState/UP-DOWN consumer path). The old code still
+    // flapped rotaryDivider between 2 and 3 as "acceleration" — useless for
+    // this path, and every divider change restarts the encoder PIO state
+    // machine mid-scroll. Stepping is paced here instead, by detents.
     int lastDivider = rotaryDivider;
-    rotaryDivider = 3;
     delayMicroseconds( 300 );
 
     // Position-based tracking for direct encoder reading
     long lastEncoderPosition = encoderPosition;
 
-    // Acceleration tracking with direction
-    unsigned long lastChangeTime = millis( );
-    int scrollAcceleration = 1;
-    int lastDirection = 0;        // -1=down, 0=none, 1=up
-    int consecutiveFastCount = 0; // Track consecutive fast movements
-    int accelCount = 0;
+    // ── Detent-accumulator stepping with speed tiers ──
+    // Raw counts accumulate into detentAccum and each cursor step costs:
+    //   speedLevel 0-1 (rest/slow): 2 detents per node — a stray count or
+    //                               half-detent nudge never moves the cursor
+    //   speedLevel 2-3 (turning):   1 detent per node
+    //   speedLevel 4   (flick):     1 detent moves 2 nodes (max speed)
+    // Steps committed close together raise the tier one notch each; a pause
+    // (or direction flip) drops it back to slow. Two fast steps to reach
+    // single-detent stepping, four to reach max — a deliberately gradual ramp.
+    const int COUNTS_PER_DETENT = 2;
+    const int NODE_SPEED_LEVEL_MAX = 4;
+    const unsigned long NODE_ACCEL_STEP_MS = 100;  // step gaps below this accelerate
+    const unsigned long NODE_ACCEL_RESET_MS = 350; // pauses above this reset to slow
+    int detentAccum = 0;
+    int speedLevel = 0;
+    unsigned long lastStepTimeMs = millis( );
+
+    unsigned long lastShowRequestMs = 0;
 
     while ( nodeSelected == -1 && Serial.available( ) == 0 ) {
         delayMicroseconds( 200 );
-        rotaryEncoderStuff( );
+        // rotaryEncoderStuff( );
         jOS.serviceCritical( );
+        menuShowKeepalive( lastShowRequestMs );
         if ( encoderButtonState == HELD || Serial.available( ) > 0 || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
             b.clear( );
             // Flush the cleared buffer back to nets, otherwise the node-selection
@@ -2362,65 +2639,48 @@ int selectNodeAction( int whichSelection ) {
         // Read encoder position directly for immediate response
         long currentEncoderPosition = encoderPosition;
         long encoderDelta = -( currentEncoderPosition - lastEncoderPosition );
+        lastEncoderPosition = currentEncoderPosition;
 
         bool needsUpdate = false;
+        if ( firstTime == 1 ) {
+            needsUpdate = true;
+            firstTime = 0;
+        }
 
-        if ( encoderDelta != 0 || firstTime == 1 ) {
+        if ( encoderDelta != 0 ) {
+            // A direction flip discards progress toward the old direction
+            // (and any built-up speed) so reversals are always deliberate.
+            if ( detentAccum != 0 && ( encoderDelta > 0 ) != ( detentAccum > 0 ) ) {
+                detentAccum = 0;
+                speedLevel = 0;
+            }
+            detentAccum += (int)encoderDelta;
 
-            if ( firstTime != 1 ) {
-                // Determine current direction from delta
-                int currentDirection = ( encoderDelta > 0 ) ? 1 : ( ( encoderDelta < 0 ) ? -1 : 0 );
+            // Speed decays back to the slow (2-detent) tier after a pause.
+            if ( millis( ) - lastStepTimeMs > NODE_ACCEL_RESET_MS ) {
+                speedLevel = 0;
+            }
 
-                // Reset acceleration if direction changed
-                if ( currentDirection != 0 && currentDirection != lastDirection ) {
-                    scrollAcceleration = 1;
-                    consecutiveFastCount = 0;
-                    accelCount = 0;
-                    lastDirection = currentDirection;
+            int stepCost = COUNTS_PER_DETENT * ( speedLevel <= 1 ? 2 : 1 );
+            int nodesPerStep = ( speedLevel >= NODE_SPEED_LEVEL_MAX ) ? 2 : 1;
+
+            while ( detentAccum >= stepCost || detentAccum <= -stepCost ) {
+                int dir = ( detentAccum > 0 ) ? 1 : -1;
+                detentAccum -= dir * stepCost;
+
+                // Blank the highlight we're moving off of. Only the nano
+                // header needs this (the repaint below b.clear()s the
+                // breadboard rows but never touches header pixels). The old
+                // code did this unguarded — bbPixelToNodesMapV5[node - 70]
+                // is an out-of-bounds read for breadboard rows (0-59).
+                int mapIdx = highlightedNode - 70;
+                if ( inNanoHeader == 1 && mapIdx >= 0 && mapIdx < 30 ) {
+                    leds.setPixelColor( bbPixelToNodesMapV5[ mapIdx ][ 1 ], 0x000000 );
                 }
 
-                // Calculate acceleration based on delta magnitude
-                unsigned long currentTime = millis( );
-                unsigned long timeSinceLastChange = currentTime - lastChangeTime;
-                int deltaMagnitude = abs( encoderDelta );
-
-                // Fast rotation = large delta between polls
-                bool isFastRotation = ( deltaMagnitude >= 3 );
-
-                if ( isFastRotation ) {
-                    consecutiveFastCount++;
-                    accelCount++;
-
-                    // Gradually increase acceleration
-                    if ( consecutiveFastCount >= 2 ) {
-                        rotaryDivider = 2;
-                    }
-                    if ( accelCount >= 4 ) {
-                        scrollAcceleration = 2;
-                    }
-                    if ( scrollAcceleration > 24 ) {
-                        scrollAcceleration = 24;
-                    }
-                } else if ( timeSinceLastChange > 80 ) {
-                    // Slow/stopped - reset everything
-                    scrollAcceleration = 1;
-                    rotaryDivider = 3;
-                    consecutiveFastCount = 0;
-                    accelCount = 0;
-                    lastDirection = 0;
-                } else {
-                    // Medium speed - reset fast count but maintain some acceleration
-                    consecutiveFastCount = 0;
-                }
-
-                lastChangeTime = currentTime;
-
-                // Apply movement based on delta direction
-                if ( encoderDelta < 0 ) {
+                if ( dir < 0 ) {
                     // Moving down (counter-clockwise)
-                    leds.setPixelColor( bbPixelToNodesMapV5[ highlightedNode - 70 ][ 1 ], 0x000000 );
-
-                    highlightedNode -= scrollAcceleration;
+                    highlightedNode -= nodesPerStep;
                     if ( highlightedNode < 0 ) {
                         highlightedNode = NANO_RESET_0;
                         inNanoHeader = 1;
@@ -2428,32 +2688,10 @@ int selectNodeAction( int whichSelection ) {
                     if ( highlightedNode < NANO_D0 && inNanoHeader == 1 ) {
                         highlightedNode = 59;
                         inNanoHeader = 0;
-
-                        for ( int a = 0; a < 8; a++ ) {
-                            if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] >= NANO_D0 ) {
-                                leds.setPixelColor(
-                                    bbPixelToNodesMapV5[ subMenuChoices[ a ] - 70 ][ 1 ],
-                                    nodeSelectionColorsHeader[ a ] );
-                                highlightedNodeColor = nodeSelectionColorsHeader[ a ];
-                            } else if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] < 60 ) {
-                                b.printRawRow( 0b00000100, ( subMenuChoices[ a ] - 1 ), middleColor,
-                                               nodeSelectionColors[ a ] );
-                                highlightedNodeColor = nodeSelectionColors[ a ];
-                            }
-                        }
                     }
-                    Serial.print( "\r                      \r" );
-                    Serial.print( ">>>> " );
-                    printNodeOrName( highlightedNode, 1 );
-                    oled.clearPrintShow( "> ", 2, true, false );
-                    oled.clearPrintShow( definesToChar( highlightedNode, 0 ), 2, true, true );
-
-                } else if ( encoderDelta > 0 ) {
+                } else {
                     // Moving up (clockwise)
-                    leds.setPixelColor( bbPixelToNodesMapV5[ highlightedNode - 70 ][ 1 ], 0x000000 );
-
-                    highlightedNode += scrollAcceleration;
-
+                    highlightedNode += nodesPerStep;
                     if ( highlightedNode > 59 && inNanoHeader == 0 ) {
                         highlightedNode = NANO_D0;
                         inNanoHeader = 1;
@@ -2461,32 +2699,34 @@ int selectNodeAction( int whichSelection ) {
                     if ( highlightedNode > NANO_RESET_0 ) {
                         highlightedNode = 0;
                         inNanoHeader = 0;
-
+                        // Leaving the header: blank all header pixels — the
+                        // breadboard repaint below doesn't touch them.
                         for ( int i = 0; i < 30; i++ ) {
                             leds.setPixelColor( bbPixelToNodesMapV5[ i ][ 1 ], 0x000000 );
                         }
-
-                        for ( int a = 0; a < 8; a++ ) {
-                            if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] >= NANO_D0 ) {
-                                leds.setPixelColor(
-                                    bbPixelToNodesMapV5[ subMenuChoices[ a ] - 70 ][ 1 ],
-                                    nodeSelectionColorsHeader[ a ] );
-                            } else if ( subMenuChoices[ a ] != -1 && subMenuChoices[ a ] < 60 ) {
-                                b.printRawRow( 0b00000100, ( subMenuChoices[ a ] - 1 ), middleColor,
-                                               nodeSelectionColors[ a ] );
-                            }
-                        }
                     }
-                    Serial.print( "\r                      \r" );
-                    Serial.print( ">>>> " );
-                    printNodeOrName( highlightedNode, 1 );
-                    oled.clearPrintShow( definesToChar( highlightedNode, 0 ), 2, true, true );
                 }
+
+                // Steps committed close together raise the speed tier;
+                // re-derive the costs so acceleration applies mid-batch.
+                unsigned long now = millis( );
+                if ( now - lastStepTimeMs < NODE_ACCEL_STEP_MS &&
+                     speedLevel < NODE_SPEED_LEVEL_MAX ) {
+                    speedLevel++;
+                }
+                lastStepTimeMs = now;
+                stepCost = COUNTS_PER_DETENT * ( speedLevel <= 1 ? 2 : 1 );
+                nodesPerStep = ( speedLevel >= NODE_SPEED_LEVEL_MAX ) ? 2 : 1;
+
+                needsUpdate = true;
             }
 
-            lastEncoderPosition = currentEncoderPosition;
-            needsUpdate = true;
-            firstTime = 0;
+            if ( needsUpdate ) {
+                Serial.print( "\r                      \r" );
+                Serial.print( ">>>> " );
+                printNodeOrName( highlightedNode, 1 );
+                oled.clearPrintShow( definesToChar( highlightedNode, 0 ), 2, true, true );
+            }
         }
 
         // Update LED display if value changed
@@ -2550,6 +2790,7 @@ int selectNodeAction( int whichSelection ) {
                 }
             }
             showLEDsCore2 = 2;
+            lastShowRequestMs = millis( );
         }
 
         // Check for confirmation (short press)
@@ -2586,6 +2827,11 @@ int selectNodeAction( int whichSelection ) {
 }
 
 float getActionFloat( int menuPosition, int rail ) {
+    // This screen paints the breadboard without the transition bracket —
+    // abort any in-flight menu transition so its blend frames can't stamp
+    // the old menu line over what we draw here.
+    menuTransitionCancel( );
+
     float currentChoice = -0.1;
     float snapValues[ 9 ] = { 1.0, 2.0, 3.0, 3.3, 4.0, 5.0, 6.0, 7.0 };
 
@@ -2680,9 +2926,11 @@ float getActionFloat( int menuPosition, int rail ) {
     }
     roundedCurrentChoice = roundf( currentChoice * 10.0f ) / 10.0f;
 
+    unsigned long lastShowRequestMs = 0;
 
     while ( true ) {
         jOS.serviceCritical( );
+        menuShowKeepalive( lastShowRequestMs );
         // rotaryEncoderStuff();  // Update encoder and button state
 
         // Check for cancellation (long press) - check FIRST on every iteration
@@ -3066,6 +3314,11 @@ roundedCurrentChoice = roundf(currentChoice * 10.0f) / 10.0f;
  * @return Selected integer value
  */
 int getActionInt( int minVal, int maxVal, int currentValue ) {
+    // This screen paints the breadboard without the transition bracket —
+    // abort any in-flight menu transition so its blend frames can't stamp
+    // the old menu line over what we draw here.
+    menuTransitionCancel( );
+
     // Initialize to middle of range if no current value provided
     if ( currentValue == -1 ) {
         currentValue = ( minVal + maxVal ) / 2;
@@ -3128,10 +3381,13 @@ int getActionInt( int minVal, int maxVal, int currentValue ) {
     oled.clearPrintShow( intString, 2, true, true, true );
     showLEDsCore2 = 2;
 
+    unsigned long lastShowRequestMs = millis( );
+
     while ( true ) {
         delayMicroseconds( 200 );
         rotaryEncoderStuff( );
         jOS.serviceCritical( );
+        menuShowKeepalive( lastShowRequestMs );
 
         // Check for cancellation (long press)
         if ( encoderButtonState == HELD || ProbeButton::getInstance( ).getButtonPress( ) == 1 ) {
@@ -3326,6 +3582,11 @@ static void displayStringOnBreadboard( const char* inputString, int cursorPos,
  * @return Entered string (empty on cancel/ESC)
  */
 String getActionString( int maxLength ) {
+    // This screen paints the breadboard without the transition bracket —
+    // abort any in-flight menu transition so its blend frames can't stamp
+    // the old menu line over what we draw here.
+    menuTransitionCancel( );
+
     // Character set for text input (printable ASCII + special control chars)
     // Special chars use placeholder indices that map to actual control codes
     const char* characterSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:',.<>?/\\\"\x08\t\n ";
@@ -3382,10 +3643,13 @@ String getActionString( int maxLength ) {
     Serial.println( "Type directly or use encoder. ESC to cancel, Ctrl+Enter to finish." );
     showLEDsCore2 = 2;
 
+    unsigned long lastShowRequestMs = millis( );
+
     while ( true ) {
         // delayMicroseconds(300);
         rotaryEncoderStuff( );
         jOS.serviceCritical( );
+        menuShowKeepalive( lastShowRequestMs );
         // Handle serial input for direct typing
         if ( Serial.available( ) > 0 ) {
             char c = Serial.read( );
@@ -3669,6 +3933,11 @@ String getActionString( int maxLength ) {
  * @return Selected image filename (empty on cancel)
  */
 String getActionBitmap( ) {
+    // This screen paints the breadboard without the transition bracket —
+    // abort any in-flight menu transition so its blend frames can't stamp
+    // the old menu line over what we draw here.
+    menuTransitionCancel( );
+
     // Call the interactive image selector from ImagesApp
     return selectImageFromMenu( );
 }
@@ -3739,6 +4008,11 @@ actionCategories getActionCategory( void ) {
 }
 
 int doMenuAction( int menuPosition, int selection ) {
+    // This screen paints the breadboard without the transition bracket —
+    // abort any in-flight menu transition so its blend frames can't stamp
+    // the old menu line over what we draw here.
+    menuTransitionCancel( );
+
 
     populateAction( );
 
@@ -3864,6 +4138,42 @@ int doMenuAction( int menuPosition, int selection ) {
                             break;
                         }
                         updateGPIOConfigFromState( );
+                    }
+                }
+            }
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "UART" ) != -1 ) {
+            // Dispatch on from[i] (the picked option index), NOT on
+            // indexOf("Tx") against the option line - that line is "Tx Rx"
+            // so the string test always matched Tx and Rx was unreachable.
+            for ( int i = 0; i < 10; i++ ) {
+                if ( currentAction.from[ i ] != -1 && currentAction.to[ i ] != -1 ) {
+                    switch ( currentAction.from[ i ] ) {
+                    case 0:
+                        addBridgeToState( RP_UART_TX, currentAction.to[ i ] );
+                        break;
+                    case 1:
+                        addBridgeToState( RP_UART_RX, currentAction.to[ i ] );
+                        break;
+                    default:
+                        break;
+                    }
+                }
+            }
+        } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "I2C" ) != -1 ) {
+            // Same from[i] dispatch fix as UART ("SDA SCL" always matched
+            // SDA). I2C1 is routed on GPIO 26/27 (breadboard GPIO 7/8, the
+            // same pair the OLED's crossbar connection uses).
+            for ( int i = 0; i < 10; i++ ) {
+                if ( currentAction.from[ i ] != -1 && currentAction.to[ i ] != -1 ) {
+                    switch ( currentAction.from[ i ] ) {
+                    case 0:
+                        addBridgeToState( RP_GPIO_26, currentAction.to[ i ] ); // SDA
+                        break;
+                    case 1:
+                        addBridgeToState( RP_GPIO_27, currentAction.to[ i ] ); // SCL
+                        break;
+                    default:
+                        break;
                     }
                 }
             }
@@ -4027,6 +4337,9 @@ int doMenuAction( int menuPosition, int selection ) {
 
                 // break;
             }
+            // Without this the bridges only land in state and nothing
+            // routes them until some other action refreshes.
+            refreshConnections( );
 
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf(
                         "Voltage" ) != -1 ) {
@@ -4086,6 +4399,8 @@ int doMenuAction( int menuPosition, int selection ) {
                     // break;
                 }
             }
+            // Same as GPIO above - route the new bridges now.
+            refreshConnections( );
         } else if ( menuLines[ currentAction.previousMenuPositions[ 1 ] ].indexOf( "Limits" ) != -1 ) {
             if ( menuLines[ currentAction.previousMenuPositions[ 2 ] ].indexOf( "Min Max" ) != -1 ) {
                 // Serial.print( "Min Max\n\r" );
@@ -4115,7 +4430,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
     } else if ( currentCategory == HISTORYACTION ) { //! History
 
-        inClickMenu = 0;
+        exitMenuModeForAction( );
         runHistoryScrubMenu( );
         refreshConnections( -1, 0 );
         return 10;
@@ -4145,7 +4460,7 @@ int doMenuAction( int menuPosition, int selection ) {
         // chooseShownReadings();
 
         // slotChanged = 0;
-        inClickMenu = 0;
+        exitMenuModeForAction( );
 
         runApp( -1, (char*)menuLines[ appNameIdx ].c_str( ) );
         // showLEDsCore2 = -1;
@@ -4157,7 +4472,7 @@ int doMenuAction( int menuPosition, int selection ) {
 
         // Serial.print( "Calibration Action\n\r" ); //! Calibration Action
 
-        inClickMenu = 0;
+        exitMenuModeForAction( );
 
         // Translate menu names to app names
         String menuItem = menuLines[ currentAction.previousMenuPositions[ 1 ] ];
@@ -4202,15 +4517,20 @@ int doMenuAction( int menuPosition, int selection ) {
             setOrClear = 1; // Connect mode
         }
 
-        // Exit menu mode before entering probe mode
-        inClickMenu = 0;
+        // Exit menu mode before entering probe mode. Full teardown (not just
+        // inClickMenu = 0): probeMode owns the logo for its connect/clear
+        // colors, so the menu's logoRing + color overrides must be dropped
+        // here or the ring stays painted over the probe's blue/red logo.
+        exitMenuModeForAction( );
 
         // Enter probe mode with encoder support
         // This works exactly like clicking the probe button, but with encoder cursor support
         probeMode( setOrClear, -1 );
 
-        // Refresh display after exiting probe mode
-        showLEDsCore2 = 1;
+        // Refresh display after exiting probe mode (negative = clear the
+        // probe-mode leftovers out of the buffer before drawing wires)
+        b.clear( );
+        showLEDsCore2 = -1;
         oled.showJogo32h( );
 
     } else if ( currentCategory == ROUTINGACTION ) { //! Routing Options

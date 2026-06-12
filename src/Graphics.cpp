@@ -3016,7 +3016,9 @@ void __not_in_flash_func(bread::printRawRow)(uint8_t data, int row, uint32_t col
                         int scale) {
 
   // color = scaleBrightness(color, (menuBrightnessSetting / scale));
-  if (row <= 60) {
+  // Rows are 0-59; the old `row <= 60` off-by-one let row 60 through to
+  // printGraphicsRow, which wrote pixels 300-304 — the first rail LEDs.
+  if (row < 60) {
     printGraphicsRow(data, row, color, bg);
   } else {
     for (int i = 0; i < 35; i++) {
@@ -3124,16 +3126,27 @@ void __not_in_flash_func(printGraphicsRow)(uint8_t data, int row, uint32_t color
   uint8_t columnMask[5] = // 'JumperlessFontmap', 500x5px
       {0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001};
 
+  // Breadboard rows only (0-59). Row 60+ would write pixels 300+ — the rails.
+  if (row < 0 || row > 59) {
+    return;
+  }
+
   if (color == 0xFFFFFF) {
     color = defaultColor;
   }
+  // Scale ONCE, outside the pixel loop. This used to be
+  // `color = scaleBrightness(color, ...)` inside the loop, re-scaling the
+  // already-scaled color for every lit pixel in the row — so pixels in the
+  // same row got progressively dimmer (or, with a positive brightness
+  // setting, progressively BRIGHTER) depending on how many lit pixels
+  // preceded them.
+  uint32_t scaledColor = scaleBrightness(color, menuBrightnessSetting);
+
   if (bg == 0xFFFFFF) {
 
     for (int j = 4; j >= 0; j--) {
-      // Jerial.println(((data) & columnMask[j]) != 0 ? "1" : "0");
       if (((data)&columnMask[j]) != 0) {
-        color = scaleBrightness(color, menuBrightnessSetting);
-        leds.setPixelColor(((row) * 5) + j, color);
+        leds.setPixelColor(((row) * 5) + j, scaledColor);
       } else {
         leds.setPixelColor(((row) * 5) + j, 0);
       }
@@ -3141,10 +3154,8 @@ void __not_in_flash_func(printGraphicsRow)(uint8_t data, int row, uint32_t color
   } else if (bg == 0xFFFFFE) {
 
     for (int j = 4; j >= 0; j--) {
-      // Jerial.println(((data) & columnMask[j]) != 0 ? "1" : "0");
       if (((data)&columnMask[j]) != 0) {
-        color = scaleBrightness(color, menuBrightnessSetting);
-        leds.setPixelColor(((row) * 5) + j, color);
+        leds.setPixelColor(((row) * 5) + j, scaledColor);
       } else {
         // leds.getPixelColor(((row) * 5) + j);
         // leds.setPixelColor(((row) * 5) + j, 0);
@@ -3153,8 +3164,7 @@ void __not_in_flash_func(printGraphicsRow)(uint8_t data, int row, uint32_t color
   } else {
     for (int j = 4; j >= 0; j--) {
       if (((data)&columnMask[j]) != 0) {
-        color = scaleBrightness(color, menuBrightnessSetting);
-        leds.setPixelColor(((row) * 5) + j, color);
+        leds.setPixelColor(((row) * 5) + j, scaledColor);
       } else {
         leds.setPixelColor(((row) * 5) + j, bg);
       }
@@ -3223,40 +3233,51 @@ void printChar(const char c, uint32_t color, uint32_t bg, int position,
   uint8_t columnMask[5] = // 'JumperlessFontmap', 500x5px
       {0b00000001, 0b00000010, 0b00000100, 0b00001000, 0b00010000};
 
+  // Bounded pixel write: text rows are breadboard rows 0-59. Long strings
+  // plus a nudge could push the computed row past 59 — pixel index >= 300,
+  // which is the RAILS (and a negative row underflows the buffer the other
+  // way). Clamp every font write to the text region.
+  auto setTextPixel = [](int column, int j, uint32_t c) {
+    if (column < 0 || column > 59) {
+      return;
+    }
+    leds.setPixelColor((uint16_t)((column * 5) + j), c);
+  };
+
   if (bg == 0xFFFFFF) {
     for (int i = 0; i < 3; i++) {
       for (int j = 0; j < 5; j++) {
         if (((font[fontMapIndex][i]) & columnMask[j]) != 0) {
-          leds.setPixelColor(((charPosition + i + nudge) * 5) + j, color);
+          setTextPixel(charPosition + i + nudge, j, color);
         } else {
-          leds.setPixelColor(((charPosition + i + nudge) * 5) + j, 0);
+          setTextPixel(charPosition + i + nudge, j, 0);
         }
       }
     }
   } else if (bg == 0xFFFFFD) {
     for (int j = 0; j < 5; j++) {
 
-      leds.setPixelColor(((charPosition + nudge - 1) * 5) + j, 0);
+      setTextPixel(charPosition + nudge - 1, j, 0);
     }
 
     for (int i = 0; i < 3; i++) {
       for (int j = 0; j < 5; j++) {
         if (((font[fontMapIndex][i]) & columnMask[j]) != 0) {
-          leds.setPixelColor(((charPosition + i + nudge) * 5) + j, color);
+          setTextPixel(charPosition + i + nudge, j, color);
         } else {
-          leds.setPixelColor(((charPosition + i + nudge) * 5) + j, 0);
+          setTextPixel(charPosition + i + nudge, j, 0);
         }
       }
     }
     for (int j = 0; j < 5; j++) {
 
-      leds.setPixelColor(((charPosition + nudge + 3) * 5) + j, 0);
+      setTextPixel(charPosition + nudge + 3, j, 0);
     }
   } else if (bg == 0xFFFFFE) {
     for (int i = 0; i < 3; i++) {
       for (int j = 0; j < 5; j++) {
         if (((font[fontMapIndex][i]) & columnMask[j]) != 0) {
-          leds.setPixelColor(((charPosition + i + nudge) * 5) + j, color);
+          setTextPixel(charPosition + i + nudge, j, color);
         } else {
           // leds.setPixelColor((i*5)+j, bg);
         }
@@ -3266,21 +3287,21 @@ void printChar(const char c, uint32_t color, uint32_t bg, int position,
     if (charPosition + nudge != 0) {
       for (int j = 0; j < 5; j++) {
 
-        leds.setPixelColor(((charPosition + nudge - 1) * 5) + j, bg);
+        setTextPixel(charPosition + nudge - 1, j, bg);
       }
     }
     for (int i = 0; i < 4; i++) {
       if (i < 3) {
         for (int j = 0; j < 5; j++) {
           if (((font[fontMapIndex][i]) & columnMask[j]) != 0) {
-            leds.setPixelColor(((charPosition + i + nudge) * 5) + j, color);
+            setTextPixel(charPosition + i + nudge, j, color);
           } else {
-            leds.setPixelColor(((charPosition + i + nudge) * 5) + j, bg);
+            setTextPixel(charPosition + i + nudge, j, bg);
           }
         }
       } else {
         for (int j = 0; j < 5; j++) {
-          leds.setPixelColor(((charPosition + i + nudge) * 5) + j, bg);
+          setTextPixel(charPosition + i + nudge, j, bg);
         }
       }
     }

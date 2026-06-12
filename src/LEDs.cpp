@@ -3353,6 +3353,46 @@ void setLogoRing(int itemCount, int selectedIndex, int hueOffset) {
   logoRing.hueOffset = hueOffset;
 }
 
+// ============================================================================
+// Ring hue tweak table — adjust how specific hue ranges render anywhere the
+// ring palette shows up (ring LEDs, menu text, depth pads). Each entry covers
+// an inclusive HSV hue range on the mod-256 wheel (0..255, 0 = red) and can
+// shift the hue and/or scale saturation and value (percent, 100 = unchanged).
+// First matching range wins. A range with hueStart > hueEnd wraps around the
+// red boundary: { 240, 10, ... } covers 240..255 and 0..10.
+// Examples:
+//   { 31, 50, -6, 100, 100 },   // pull muddy yellows toward orange
+//   { 126, 160, 0, 80, 100 },   // desaturate blues 20%
+//   { 245, 8, 0, 100, 80 },     // dim the reds across the wrap
+// ============================================================================
+static const RingHueTweak ringHueTweaks[] = {
+  // add entries here
+  { 0, 10, -1, 90, 100 },
+  { 50, 60, 5, 100, 100 },
+};
+
+uint32_t applyRingHueTweaks(uint32_t color) {
+  if (color == 0) return 0;
+  hsvColor hsv = RgbToHsv(color);
+  for (unsigned int i = 0; i < sizeof(ringHueTweaks) / sizeof(ringHueTweaks[0]); i++) {
+    const RingHueTweak& t = ringHueTweaks[i];
+    // Inclusive range; hueStart > hueEnd means it wraps around red (255->0).
+    bool inRange = (t.hueStart <= t.hueEnd)
+                       ? (hsv.h >= t.hueStart && hsv.h <= t.hueEnd)
+                       : (hsv.h >= t.hueStart || hsv.h <= t.hueEnd);
+    if (!inRange) continue;
+    // The HSV wheel used by HsvToRgb/RgbToHsv is mod-256, so shifts wrap with
+    // & 0xFF: 0 - 1 -> 255, 255 + 1 -> 0.
+    hsv.h = (uint8_t)(((int)hsv.h + t.hueShift) & 0xFF);
+    int s = ((int)hsv.s * t.satPercent) / 100;
+    int v = ((int)hsv.v * t.valPercent) / 100;
+    hsv.s = (uint8_t)(s > 255 ? 255 : s);
+    hsv.v = (uint8_t)(v > 255 ? 255 : v);
+    return HsvToRaw(hsv);
+  }
+  return color;
+}
+
 // Per-hue brightness compensation for the yellowish PCB: warm hues (red->green)
 // transmit brighter, cool hues (cyan->violet) get filtered down, so we trim the
 // warm slots and boost the cool ones to balance perceived ring brightness.
@@ -3371,58 +3411,113 @@ static inline int pcbHueBrightnessScale(uint8_t hue) {
   }
 }
 
-// Pick the color for a ring slot (0..5). Hue is sampled from the full-spectrum
-// rainbow (or a caller-supplied palette) so the 6 slots span the whole circle,
-// shifted by the granular hueOffset. Brightness depends on selection and is
-// PCB-corrected per hue.
-static inline uint32_t ringSlotColor(int slot, bool selected) {
+// Pick the color for item `item` of `count`. Hues are spaced evenly across the
+// whole palette by item count — item k of N sits at k/N-th of the circle — so a
+// 4-item menu shows 4 evenly spaced hues, not 4 of the 6 fixed slot hues. The
+// granular hueOffset shifts the whole set. Brightness depends on selection,
+// is scaled by the angular weight (weightNum/weightDenom — how much of the
+// item's position lands on this LED), and is PCB-corrected per hue after the
+// per-range tweak table is applied.
+static inline uint32_t ringItemColor(int item, int count, bool selected,
+                                     int weightNum, int weightDenom) {
   int bright = selected ? logoRing.selectedBrightness : logoRing.baseBrightness;
+  if (weightDenom > 0 && weightNum < weightDenom) {
+    bright = (bright * weightNum) / weightDenom;
+  }
   const uint32_t* palette =
       (logoRing.colorMode == RING_PALETTE && logoRing.palette != nullptr)
           ? logoRing.palette
           : logoColorsAll[PALETTE_RAINBOW];
-  int idx = ((slot * (LOGO_COLOR_LENGTH / 6)) + logoRing.hueOffset) % LOGO_COLOR_LENGTH;
+  if (count < 1) count = 1;
+  int idx = (((item * LOGO_COLOR_LENGTH) / count) + logoRing.hueOffset) % LOGO_COLOR_LENGTH;
   if (idx < 0) idx += LOGO_COLOR_LENGTH;
-  uint32_t base = palette[idx];
+  uint32_t base = applyRingHueTweaks(palette[idx]);
   // Balance perceived brightness across the ring for the PCB tint.
   uint8_t hue = RgbToHsv(unpackRgb(base)).h;
+  // Brightness saturates — never wrap it. Hues are circular; brightness is
+  // not: the PCB boost for cool hues (up to 145%) can push a selected slot
+  // past 254, and wrapping would fold the brightest slots down to near-dark
+  // (selected violet: 250 * 118 / 100 = 295 -> 40).
   int corrected = (bright * pcbHueBrightnessScale(hue)) / 100;
   if (corrected < 1) corrected = 1;
   if (corrected > 254) corrected = 254;
   return dimLogoColor(base, corrected);
 }
 
-// Center LED: bright white -> red while the encoder button is held in the
-// PRESSED window (0..buttonHoldLength). Off when idle. Once HELD fires the ring
-// hands off, so this only ever runs during the pre-HELD press.
-//
-// Uses an ease-in (frac^2) on saturation so it stays clearly white through most
-// of the press then snaps decisively to a saturated red right before the hold
-// fires — high contrast both frame-to-frame and against the colored ring. The
-// value runs at full centerBrightness; near the trigger the red also pulses for
-// extra visibility.
+// One LED's winning claim on the ring: which item lights it, whether that
+// item is the selection, and how much of the item's angular position falls
+// on this LED (weight/denominator). Selected items always beat unselected
+// ones; among equals the larger weight wins.
+struct RingContrib {
+  int  item;     // -1 = unlit
+  bool selected;
+  int  weight;   // numerator, out of the layout's denominator (itemCount)
+};
+
+static inline void ringAddContrib(RingContrib* c, int item, bool selected, int weight) {
+  if (weight <= 0) return;
+  if (c->item < 0 || (selected && !c->selected) ||
+      (selected == c->selected && weight > c->weight)) {
+    c->item = item;
+    c->selected = selected;
+    c->weight = weight;
+  }
+}
+
+// The ring LEDs are wired counter-clockwise from LOGO_LED_START, which made
+// the indicator orbit against the encoder's rotation. Flip the logical slot
+// order onto the physical LEDs (slot 0 stays at top-right) so increasing
+// slots — i.e. clockwise encoder turns — advance clockwise on the board.
+static inline int ringSlotToLed(int slot) {
+  return LOGO_LED_START + ((6 - slot) % 6);
+}
+
+// Center LED: "V" press indicator. Starts at full-brightness white the moment
+// the press lands, fades to black by the midpoint of the hold window, then
+// rises back to full brightness in the active color (the selected item's ring
+// hue) — the white->color flip telegraphs that the hold action is about to
+// fire. During menu hold-to-back stepping (HELD with holdStepLengthMs set)
+// the same V replays once per back-step, anchored to the last step time. Off
+// when idle.
 static inline uint32_t ringCenterColor(void) {
+  unsigned long start, length;
   if (encoderButtonState == PRESSED) {
-    long elapsed = (long)(millis() - buttonHoldStart);
-    float frac = (buttonHoldLength > 0) ? ((float)elapsed / (float)buttonHoldLength) : 1.0f;
-    if (frac < 0.0f) frac = 0.0f;
-    if (frac > 1.0f) frac = 1.0f;
+    start = buttonHoldStart;
+    length = buttonHoldLength;
+  } else if ((encoderButtonState == HELD || encoderButtonState == MEDIUM_HELD ||
+              encoderButtonState == LONG_HELD) &&
+             logoRing.holdStepLengthMs > 0) {
+    start = logoRing.holdStepStartMs;
+    length = logoRing.holdStepLengthMs;
+  } else {
+    return 0;
+  }
 
-    float eased = frac * frac; // stay white, then redden fast near the hold
-    uint8_t sat = (uint8_t)(eased * 254.0f);
+  float frac = (length > 0) ? ((float)(millis() - start) / (float)length) : 1.0f;
+  if (frac < 0.0f) frac = 0.0f;
+  if (frac > 1.0f) frac = 1.0f;
 
-    // Fast brightness pulse that deepens as the press approaches the hold, so
-    // the indicator visibly "charges" instead of a flat gradient.
-    int val = (int)logoRing.centerBrightness;
-    float pulse = 0.5f + 0.5f * sinf((float)millis() * 0.045f);
-    val -= (int)(eased * 90.0f * pulse);
-    if (val < 40) val = 40;
-    if (val > 254) val = 254;
-
-    hsvColor hsv = { 0, sat, (uint8_t)val };
+  if (frac < 0.5f) {
+    // Downstroke of the V: white fading out.
+    uint8_t val = (uint8_t)((1.0f - frac * 2.0f) * (float)logoRing.centerBrightness);
+    hsvColor hsv = { 0, 0, val };
     return HsvToRaw(hsv);
   }
-  return 0;
+
+  // Upstroke: the complement of the selected item's ring color fading in
+  // (same hue math as ringItemColor, then flipped halfway around the mod-256
+  // wheel) — the center always contrasts with the selected slot beside it.
+  const uint32_t* palette =
+      (logoRing.colorMode == RING_PALETTE && logoRing.palette != nullptr)
+          ? logoRing.palette
+          : logoColorsAll[PALETTE_RAINBOW];
+  int count = logoRing.itemCount < 1 ? 1 : logoRing.itemCount;
+  int idx = (((logoRing.selectedIndex * LOGO_COLOR_LENGTH) / count) + logoRing.hueOffset) % LOGO_COLOR_LENGTH;
+  if (idx < 0) idx += LOGO_COLOR_LENGTH;
+  hsvColor hsv = RgbToHsv(applyRingHueTweaks(palette[idx]));
+  hsv.h = (uint8_t)(hsv.h + 128); // inverse hue (uint8_t wraps mod 256)
+  hsv.v = (uint8_t)((frac - 0.5f) * 2.0f * (float)logoRing.centerBrightness);
+  return HsvToRaw(hsv);
 }
 
 bool renderLogoRing(void) {
@@ -3431,40 +3526,64 @@ bool renderLogoRing(void) {
   }
 
   // While the encoder is held past the press window, hand the logo back to the
-  // existing hold/reboot sweep so its countdown stays visible.
+  // existing hold/reboot sweep so its countdown stays visible — unless the
+  // menu is hold-stepping back through levels (holdStepLengthMs set), where
+  // the ring stays up and the center V recharges once per step instead.
   if (encoderButtonState == HELD || encoderButtonState == MEDIUM_HELD ||
       encoderButtonState == LONG_HELD) {
-    return false;
+    if (logoRing.holdStepLengthMs == 0) {
+      return false;
+    }
   }
 
   int itemCount = logoRing.itemCount;
   int selectedIndex = logoRing.selectedIndex;
 
-  bool slotAvail[6] = { false, false, false, false, false, false };
-  int selectedSlot = -1;
+  // Winning contribution per ring slot. Each slot is painted in its item's
+  // own hue (evenly spaced by item count) at a brightness proportional to how
+  // much of the item's angle falls on that LED.
+  RingContrib contrib[6] = {
+    { -1, false, 0 }, { -1, false, 0 }, { -1, false, 0 },
+    { -1, false, 0 }, { -1, false, 0 }, { -1, false, 0 },
+  };
+  int weightDenom = 1;
 
   if (itemCount <= 0) {
     // nothing to lay out — ring stays dark, only the center indicator shows
   } else if (itemCount <= 6) {
-    // Even angular spread: round(k * 6 / itemCount).
+    // True angular spread: item k of N sits at k/N-th of the circle, i.e. at
+    // slot position k*6/N. When that lands between two LEDs the item lights
+    // both, split by proximity — 5 items really look like 5 evenly spaced
+    // points, not 5 of the 6 fixed slots.
+    weightDenom = itemCount;
     for (int k = 0; k < itemCount; k++) {
-      int slot = ((k * 6) + (itemCount / 2)) / itemCount;
-      slot %= 6;
-      slotAvail[slot] = true;
+      int num = k * 6;
+      int slotA = num / itemCount;          // 0..5
+      int rem = num % itemCount;            // fractional part, /itemCount
+      bool sel = (k == selectedIndex);
+      ringAddContrib(&contrib[slotA % 6], k, sel, itemCount - rem);
+      ringAddContrib(&contrib[(slotA + 1) % 6], k, sel, rem);
     }
-    selectedSlot = (((selectedIndex * 6) + (itemCount / 2)) / itemCount) % 6;
-    if (selectedSlot >= 0 && selectedSlot < 6) slotAvail[selectedSlot] = true;
   } else {
     // More items than slots: light all 6, selection rotates/wraps (relative).
-    for (int s = 0; s < 6; s++) slotAvail[s] = true;
-    selectedSlot = ((selectedIndex % 6) + 6) % 6;
+    // Each slot shows the item that occupies it in the selection's window, so
+    // neighbor hues stay attached to their items as the ring scrolls.
+    int selectedSlot = ((selectedIndex % 6) + 6) % 6;
+    for (int s = 0; s < 6; s++) {
+      int item = (selectedIndex + (s - selectedSlot)) % itemCount;
+      if (item < 0) item += itemCount;
+      ringAddContrib(&contrib[s], item, s == selectedSlot, 1);
+    }
   }
 
   for (int slot = 0; slot < 6; slot++) {
-    if (slotAvail[slot]) {
-      leds.setPixelColor(LOGO_LED_START + slot, ringSlotColor(slot, slot == selectedSlot));
+    if (contrib[slot].item >= 0) {
+      leds.setPixelColor(ringSlotToLed(slot),
+                         ringItemColor(contrib[slot].item, itemCount,
+                                       contrib[slot].selected,
+                                       contrib[slot].weight, weightDenom));
     } else {
-      leds.setPixelColor(LOGO_LED_START + slot, (uint32_t)0);
+      leds.setPixelColor(ringSlotToLed(slot), (uint32_t)0);
     }
   }
 

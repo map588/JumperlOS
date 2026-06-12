@@ -759,6 +759,9 @@ int gpioReadWithFloating(
     //} else 
     if ( gpio_is_pulled_up( pin ) == 1 ) {
         pullupState = 1;
+        // The input buffer is left disabled between reads, and a disabled
+        // buffer always reads 0 — enable it or this check always returns low.
+        gpio_set_input_enabled( pin, true );
         // Allow time for pullup to settle before checking
         delayMicroseconds( settleDelay );
         if ( gpio_get( pin ) == 0 ) { /// don't mess with the pullups if the pin is
@@ -801,8 +804,16 @@ int gpioReadWithFloating(
 
         gpio_set_pulls( pin, false, true );
 
+        // RP2350-E9 errata: enabling the input buffer while the pad is still
+        // above ~1V makes the pad leak enough current to overpower the
+        // internal pulldown and latch at ~2.2V, which still reads high — so a
+        // floating pin randomly reads high instead of floating. Discharge the
+        // node with the input buffer disabled (no leakage path), then enable
+        // it only to take the reading.
+        delayMicroseconds( settleDelay * 3 );
+
         gpio_set_input_enabled( pin, true );
-        delayMicroseconds( settleDelay );
+        delayMicroseconds( 2 );
         readingPulldown = gpio_get( pin );
         gpio_set_input_enabled( pin, false );
 
@@ -816,8 +827,12 @@ int gpioReadWithFloating(
              // floating low
         gpio_set_pulls( pin, true, false );
 
+        // Same ordering as the pulldown check above: charge the node with the
+        // input buffer disabled, then enable it only to take the reading.
+        delayMicroseconds( settleDelay * 3 );
+
         gpio_set_input_enabled( pin, true );
-        delayMicroseconds( settleDelay );
+        delayMicroseconds( 2 );
         readingPullup = gpio_get( pin );
         gpio_set_input_enabled( pin, false );
 

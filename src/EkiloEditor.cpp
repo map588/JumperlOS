@@ -2573,6 +2573,9 @@ void ekilo_confirm_character() {
     E.screen_dirty = true;
 }
 
+// Click/hold classifier for the editor (reset on editor entry in ekilo_run)
+static EncoderClickTracker g_ekilo_click;
+
 // Process encoder input for cursor movement and character selection
 void ekilo_process_encoder_input() {
     // Check for character selection timeout
@@ -2692,13 +2695,13 @@ void ekilo_process_encoder_input() {
         }
     }
     
-    // Handle button press with direct digitalRead and debouncing
-    bool current_button_state = digitalRead(BUTTON_ENC);
-    
-    // Check for button press (HIGH to LOW transition) with debouncing
-    if (!current_button_state && E.last_button_state && (currentTime - E.button_debounce_time > 50)) {
-        E.button_debounce_time = currentTime;
-        
+    // Button: classified on the physical pin via EncoderClickTracker. The
+    // editor is a "fast UI" - the primary action fires on ENC_PRESS for
+    // instant feedback. A LONG_HOLD is the hardware Ctrl-Q: quit from
+    // anywhere (saving first if there are unsaved changes, since a physical
+    // gesture can't answer the unsaved-changes prompt).
+    switch (g_ekilo_click.poll()) {
+    case ENC_PRESS:
         if (E.char_selection_mode) {
             // In character selection mode: confirm character
             ekilo_confirm_character();
@@ -2717,9 +2720,28 @@ void ekilo_process_encoder_input() {
             // Initialize encoder position tracking when entering char selection
             E.last_encoder_position = encoderPosition;
         }
+        break;
+
+    case ENC_LONG_HOLD: {
+        if (E.dirty && !E.read_only) {
+            ekilo_save();
+        }
+        E.should_quit = 1;
+        // Swallow the rest of the hold so the main screen / caller doesn't
+        // interpret it as its own hold gesture (3s stuck-button bail-out).
+        unsigned long releaseWaitStart = millis();
+        while (isEncoderButtonPhysicallyPressed() &&
+               millis() - releaseWaitStart < 3000) {
+            delayMicroseconds(500);
+        }
+        encoderButtonState = IDLE;
+        lastButtonEncoderState = IDLE;
+        break;
     }
-    
-    E.last_button_state = current_button_state;
+
+    default:
+        break;
+    }
 }
 
 // REMOVED: REPL mode functions - editor now always runs in normal mode
@@ -2856,7 +2878,9 @@ bool ekilo_run(const char* filename) {
     E.last_encoder_position = encoderPosition;
     E.last_encoder_update = millis();
     
-    // Initialize button state
+    // Initialize button state (tracker syncs to the pin so a click still
+    // held from launching the editor isn't misread as a fresh press)
+    g_ekilo_click.reset();
     E.last_button_state = digitalRead(BUTTON_ENC);
     E.button_debounce_time = millis();
     

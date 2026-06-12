@@ -134,8 +134,15 @@ void clearColorOverrides(bool logo = true, bool pads = true, bool header = true)
 // ============================================================================
 // LogoRing — reusable ring indicator (6 ring LEDs + 1 center)
 // ----------------------------------------------------------------------------
-// Ring LED slots 0..5 map to LOGO_LED_START+0..+5 (slot 0 = top-right, going
-// counter-clockwise). The center LED is LOGO_LED_START+6.
+// Logical ring slots 0..5 start at top-right and advance clockwise; the
+// physical LEDs are wired counter-clockwise from LOGO_LED_START, so the
+// renderer flips the mapping (slot 0 = LED +0, slot 1 = LED +5, …) to make
+// the indicator orbit with the encoder. The center LED is LOGO_LED_START+6.
+//
+// Items are laid out at true evenly spaced angles: item k of N sits at
+// k/N-th of the circle, in both hue (palette position, shifted by hueOffset)
+// and angle (slot position k*6/N). When an item's angle falls between two
+// LEDs, both light up with brightness split by proximity.
 //
 // Driven from any context (menus, voltage selectors, …): the caller sets the
 // state fields and renderLogoRing() (called by logoSwirl) paints it. State
@@ -153,9 +160,16 @@ struct LogoRing {
   volatile int     hueOffset          = 0;     // granular palette shift (0..LOGO_COLOR_LENGTH-1)
   volatile uint8_t baseBrightness     = 30;    // available-but-unselected slots
   volatile uint8_t selectedBrightness = 250;   // highlighted slot
-  volatile uint8_t centerBrightness   = 130;   // center button-fade brightness
+  volatile uint8_t centerBrightness   = 254;   // center press-indicator peak brightness
   volatile int     colorMode          = RING_RAINBOW_BY_POSITION;
   const uint32_t*  palette            = nullptr; // used when colorMode == RING_PALETTE
+
+  // Hold-to-back stepping (set by the menu): while > 0 the ring keeps owning
+  // the logo through HELD and the center "V" indicator replays once per
+  // back-step, phase-anchored at holdStepStartMs. 0 = not stepping — HELD
+  // hands the logo to the hold/reboot sweep as usual.
+  volatile unsigned long holdStepStartMs  = 0;
+  volatile unsigned long holdStepLengthMs = 0;
 };
 
 extern LogoRing logoRing;
@@ -167,6 +181,23 @@ void setLogoRing(int itemCount, int selectedIndex, int hueOffset);
 // owned the logo this frame (caller should stop drawing the logo), false to
 // hand off (e.g. while the encoder hold/reboot sweep is running).
 bool renderLogoRing(void);
+
+// Per-hue-range tweak applied to every ring-palette color (ring LEDs, menu
+// text, depth pads). Edit the ringHueTweaks table in LEDs.cpp to shift the
+// hue or scale saturation/value of an inclusive HSV hue range. Hues live on
+// the mod-256 wheel (0..255, 0 = red); a range with hueStart > hueEnd wraps
+// around the red boundary (e.g. 240..10 covers 240..255 and 0..10).
+struct RingHueTweak {
+  uint8_t hueStart;  // inclusive range start (HSV hue 0..255)
+  uint8_t hueEnd;    // inclusive range end (may be < hueStart to wrap)
+  int     hueShift;  // added to hue (wraps mod 256 around the wheel)
+  int     satPercent; // 100 = unchanged
+  int     valPercent; // 100 = unchanged
+};
+
+// Run a packed RGB color through the tweak table; returns it unchanged when
+// no range matches (or the color is off).
+uint32_t applyRingHueTweaks(uint32_t color);
 
 
 class ledClass { //I'm literally copying this from Adafruit_NeoPixel.h so I can split leds.show() into 2 strips without modifying the library 

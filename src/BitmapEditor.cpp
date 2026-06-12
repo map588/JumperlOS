@@ -1010,11 +1010,6 @@ void BitmapEditor::handleInput(int ch) {
         moveCursor(1, 0);
         return;
     }
-if (encoderButtonState == LONG_HELD) {
-    save();
-    running = false;
-    return;
-}
     switch (ch) {
         
         // Toggle pixel
@@ -1161,6 +1156,11 @@ void BitmapEditor::run() {
     
     bool screen_dirty = false;
     int lastSwitchPos = -1;
+
+    // Long-hold quit classifier (synced to the pin so the click that
+    // launched the editor isn't misread as a fresh press)
+    EncoderClickTracker clickTracker;
+    clickTracker.reset();
     
     while (running) {
         // Run critical services (probe button, menus, etc.)
@@ -1206,7 +1206,25 @@ void BitmapEditor::run() {
         
         // Process encoder input (like eKilo)
         processEncoderInput();
-        
+
+        // Long hold = hardware Ctrl-Q: save and quit from anywhere. (This
+        // used to live in handleInput(), where it only ran when a serial
+        // key happened to arrive - the hold did nothing on its own.)
+        if (clickTracker.poll() == ENC_LONG_HOLD) {
+            save();
+            // Swallow the rest of the hold so the caller / main screen
+            // doesn't see it as its own hold gesture (3s bail-out).
+            unsigned long releaseWaitStart = millis();
+            while (isEncoderButtonPhysicallyPressed() &&
+                   millis() - releaseWaitStart < 3000) {
+                delayMicroseconds(500);
+            }
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            running = false;
+            continue;
+        }
+
         // Process serial keyboard input
         if (Serial.available()) {
             int ch = Serial.read();

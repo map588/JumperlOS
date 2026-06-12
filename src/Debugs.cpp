@@ -18,6 +18,9 @@
 #include "configManager.h"
 #include "config.h"
 #include "ArduinoStuff.h"
+#include "Commands.h"        // showLEDsCore2
+#include "Menus.h"           // clickMenu() — the Menu FX tuner drives the real menu
+#include "MenuTransitions.h" // menuTransitionConfig (Menu FX tuner)
 #include "JulseView.h"
 #include "Peripherals.h"
 #include "Probing.h"
@@ -484,6 +487,7 @@ void action_i2cScan();
 void action_speedTest();
 void action_colorSpectrum();
 void action_encoderButtonAnalyzer(); // implemented at the bottom of this file
+void action_menuTransitionTuner();   // implemented at the bottom of this file
 
 // Menu items array
 const StatusMenuItem statusMenuItems[] = {
@@ -500,6 +504,7 @@ const StatusMenuItem statusMenuItems[] = {
     { "Speed Test",         "Raw crossbar switch speed test",         action_speedTest },
     { "Color Spectrum",     "Display terminal color palette",         action_colorSpectrum },
     { "Encoder Btn",        "Analog click-wheel button press test",   action_encoderButtonAnalyzer },
+    { "Menu FX",            "Tune menu frame transitions",            action_menuTransitionTuner },
 };
 const int STATUS_MENU_COUNT = sizeof(statusMenuItems) / sizeof(statusMenuItems[0]);
 
@@ -3009,5 +3014,160 @@ void action_encoderButtonAnalyzer( void ) {
 
     Serial.print( "\033[0m" );
     Serial.println( "\r\nEncoder button test exited." );
+    Serial.flush( );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Menu FX — frame transition tuner
+//
+// Runs the REAL click menu (clickMenu()/getMenuSelection() — encoder-driven,
+// real splits, real actions) while letting you mutate menuTransitionConfig
+// live over serial. getMenuSelection() pops back out the moment a serial byte
+// arrives (byte left buffered), so each tuner keypress briefly closes the
+// menu, applies the change, and reopens it — which also repaints the first
+// line through renderMenuLine(), giving an instant preview of the new setting.
+// 'p' prints the config to hardcode the winner; 'q' (or ESC) quits.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Sparkle tint palette the 'c' key cycles through (0 = random hues).
+static const uint32_t menuFxTints[] = { 0x000000, 0x303030, 0x300000, 0x301800, 0x003030, 0x180030 };
+static const char* menuFxTintNames[] = { "random", "white", "red", "amber", "cyan", "purple" };
+static const int MENU_FX_TINT_COUNT = (int)( sizeof( menuFxTints ) / sizeof( menuFxTints[ 0 ] ) );
+
+static void drawMenuFxPanel( void ) {
+    Serial.print( "\033[2J\033[H" );
+    Serial.print( "\033[1;96m╭──────────────────────────────────────────────────────────╮\033[0m\n\r" );
+    Serial.print( "\033[1;96m│\033[0m  \033[1mMENU FX\033[0m — frame transition tuner                         \033[1;96m│\033[0m\n\r" );
+    Serial.print( "\033[1;96m╰──────────────────────────────────────────────────────────╯\033[0m\n\r\n\r" );
+
+    int tintIdx = 0;
+    for ( int i = 0; i < MENU_FX_TINT_COUNT; i++ ) {
+        if ( menuTransitionConfig.tintColor == menuFxTints[ i ] ) {
+            tintIdx = i;
+            break;
+        }
+    }
+
+    Serial.printf( "  \033[1;93mt\033[0m  Type      : \033[1m%-8s\033[0m\n\r",
+                   menuTransitionTypeName( menuTransitionConfig.type ) );
+    Serial.printf( " \033[1;93m-/+\033[0m Duration  : \033[1m%u ms\033[0m\n\r",
+                   (unsigned)menuTransitionConfig.durationMs );
+    Serial.printf( "  \033[1;93mc\033[0m  Tint      : \033[1m%s\033[0m (0x%06lX)  \033[90m(sparkle only)\033[0m\n\r",
+                   menuFxTintNames[ tintIdx ], (unsigned long)menuTransitionConfig.tintColor );
+    Serial.printf( "  \033[1;93md\033[0m  Density   : \033[1m%u\033[0m  \033[90m(sparkle only)\033[0m\n\r\n\r",
+                   (unsigned)menuTransitionConfig.density );
+
+    Serial.print( "  \033[90mThe real menu is live on the breadboard — navigate with\033[0m\n\r" );
+    Serial.print( "  \033[90mthe encoder. Keys here apply instantly and reopen the menu.\033[0m\n\r" );
+    Serial.print( "  \033[90mp: print config   q/ESC: quit\033[0m\n\r" );
+    Serial.flush( );
+}
+
+void action_menuTransitionTuner( void ) {
+    drawMenuFxPanel( );
+
+    bool dirty = false;
+    bool quit = false;
+    while ( !quit ) {
+        // ── Tuner keys (these pop getMenuSelection back out to us) ───────
+        while ( Serial.available( ) > 0 ) {
+            int ch = Serial.read( );
+            if ( ch == 27 ) { // ESC (consume a stray arrow sequence harmlessly)
+                if ( Serial.available( ) == 0 ) delay( 2 );
+                if ( Serial.available( ) > 0 && Serial.peek( ) == '[' ) {
+                    Serial.read( );
+                    if ( Serial.available( ) == 0 ) delay( 2 );
+                    if ( Serial.available( ) > 0 ) Serial.read( );
+                } else {
+                    quit = true; // bare ESC
+                }
+                continue;
+            }
+            switch ( ch ) {
+            case 'q':
+            case 'Q': quit = true; break;
+            case 't':
+            case 'T':
+                menuTransitionConfig.type =
+                    ( menuTransitionConfig.type + 1 ) % MENU_TRANSITION_TYPE_COUNT;
+                dirty = true;
+                break;
+            case '-':
+            case '_': {
+                int d = (int)menuTransitionConfig.durationMs - 15;
+                menuTransitionConfig.durationMs = ( d < 0 ) ? 0 : (uint16_t)d;
+                dirty = true;
+                break;
+            }
+            case '=':
+            case '+': {
+                int d = (int)menuTransitionConfig.durationMs + 15;
+                menuTransitionConfig.durationMs = ( d > 1000 ) ? 1000 : (uint16_t)d;
+                dirty = true;
+                break;
+            }
+            case 'c':
+            case 'C': {
+                int tintIdx = 0;
+                for ( int i = 0; i < MENU_FX_TINT_COUNT; i++ ) {
+                    if ( menuTransitionConfig.tintColor == menuFxTints[ i ] ) {
+                        tintIdx = i;
+                        break;
+                    }
+                }
+                menuTransitionConfig.tintColor =
+                    menuFxTints[ ( tintIdx + 1 ) % MENU_FX_TINT_COUNT ];
+                dirty = true;
+                break;
+            }
+            case 'd':
+            case 'D': {
+                // Cycle 0 -> 64 -> 128 -> 192 -> 255 -> 0
+                int dv = menuTransitionConfig.density + 64;
+                menuTransitionConfig.density = ( dv > 255 ) ? ( dv >= 319 ? 0 : 255 ) : (uint8_t)dv;
+                dirty = true;
+                break;
+            }
+            case 'p':
+            case 'P':
+                Serial.printf( "\n\r\033[1mmenuTransitionConfig:\033[0m type=%s durationMs=%u "
+                               "tintColor=0x%06lX density=%u\n\r",
+                               menuTransitionTypeName( menuTransitionConfig.type ),
+                               (unsigned)menuTransitionConfig.durationMs,
+                               (unsigned long)menuTransitionConfig.tintColor,
+                               (unsigned)menuTransitionConfig.density );
+                Serial.print( "(press any key to continue)\n\r" );
+                Serial.flush( );
+                while ( Serial.available( ) == 0 ) {
+                    delay( 10 );
+                }
+                Serial.read( );
+                dirty = true;
+                break;
+            default: break;
+            }
+        }
+        if ( quit ) {
+            break;
+        }
+        if ( dirty ) {
+            drawMenuFxPanel( );
+            dirty = false;
+        }
+
+        // ── Hand control to the real menu ────────────────────────────────
+        // clickMenu() only opens on a click event, so synthesize one; the
+        // encoder drives navigation natively from there. It returns as soon
+        // as a serial byte arrives (handled above on the next lap) or when a
+        // menu action runs / the menu exits — either way we just reopen it.
+        encoderButtonState = RELEASED;
+        lastButtonEncoderState = PRESSED;
+        clickMenu( );
+        delay( 2 );
+    }
+
+    showLEDsCore2 = 1; // back to nets
+    Serial.print( "\033[0m" );
+    Serial.println( "\r\nMenu FX tuner exited." );
     Serial.flush( );
 }

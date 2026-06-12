@@ -51,6 +51,7 @@ KevinC@ppucc.io
 #include "LEDs.h"
 #include "LogicAnalyzer.h"
 #include "MatrixState.h"
+#include "MenuTransitions.h"
 #include "Menus.h"
 #include "NetManager.h"
 #include "NetsToChipConnections.h"
@@ -131,10 +132,46 @@ const char firmwareVersion[] = FIRMWARE_VERSION;
 
 bool newConfigOptions = true; //! set to true with new config options //!
 
+// ── Core stack layout ──
+// By default arduino-pico puts Core 0's stack in SCRATCH_Y (0x20081000-
+// 0x20082000, 4KB physical) and Core 1's stack in SCRATCH_X directly below
+// it, topping out at exactly 0x20081000. Deep Core 0 call chains (the
+// click-menu → doMenuAction → runApp → File Manager path with all its
+// String/heap locals) overflow SCRATCH_Y straight into Core 1's stack
+// frames. Caught live via SWD: Core 0 malloc-lock frames written below
+// 0x20081000, Core 1 popping a Core-0 stack remnant (0x00000010) into PC →
+// INVSTATE hard fault. This was also the true mechanism behind the earlier
+// "Core 1 executed XIP garbage during a flash program" crashes (handoff doc
+// open issue 3) - FM flash ops happen at maximum stack depth, so the smash
+// correlated with flash writes and masqueraded as an XIP/idleOtherCore hole.
+//
+// Setting this arduino-pico weak flag moves Core 1's stack to an 8KB heap
+// block, which (a) takes Core 1 out of the blast zone entirely and (b) lets
+// Core 0 grow through both scratch banks (8KB) before reaching anything
+// that matters.
+bool core1_separate_stack = true;
+
+#ifdef PICO_RP2350
+// Cortex-M33 hardware stack-limit guard: a future overflow becomes an
+// immediate, debuggable STKOF UsageFault at the faulting push instead of
+// silent cross-core memory corruption. Limits sit a redzone above the
+// absolute floor of each core's stack region.
+static inline void armStackLimit( uint32_t floorAddr ) {
+    __asm volatile( "msr MSPLIM, %0" ::"r"( floorAddr ) : );
+}
+#endif
+
 // julseview julseview;
 LogicAnalyzer logicAnalyzer;
 
 void setup( ) {
+#ifdef PICO_RP2350
+    // Core 0 stack: SCRATCH_Y top (0x20082000) growing down; with Core 1 on
+    // its separate heap stack, both scratch banks belong to Core 0. Floor =
+    // SCRATCH_X base (0x20080000) + 64-byte redzone.
+    extern uint32_t __scratch_x_start__;
+    armStackLimit( (uint32_t)&__scratch_x_start__ + 64 );
+#endif
     pinMode( RESETPIN, OUTPUT_12MA );
 
     digitalWrite( RESETPIN, HIGH );
@@ -460,6 +497,14 @@ void setupCore2stuff( ) {
 
 void setup1( ) {
     // flash_safe_execute_core_init();
+
+#ifdef PICO_RP2350
+    // Core 1 stack: 8KB heap block (core1_separate_stack above). Floor =
+    // base of that allocation + 64-byte redzone.
+    if ( core1_separate_stack_address != nullptr ) {
+        armStackLimit( (uint32_t)core1_separate_stack_address + 64 );
+    }
+#endif
 
     setupCore2stuff( );
     startupCore2timers[ 7 ] = millis( );
@@ -1407,6 +1452,14 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
     return;
 #endif
 
+    // Encoder poll: Core 1 is the SOLE owner of encoder state (see
+    // RotaryEncoder.cpp single-owner banner; Core 0 calls are no-ops).
+    // Polled unconditionally here - not just in the branch-specific sites
+    // below - because probe mode runs with showLEDsCore2 != 0 and
+    // inClickMenu == 0, a combination none of the in-branch poll sites
+    // cover. Internally throttled to 2kHz, so calling every pass is cheap.
+    rotaryEncoderStuff( );
+
     // OPTIMIZATION: Check bypass flag BEFORE trying to acquire mutex
     // This prevents deadlock when Core 0 is waiting for Core 2 but Core 2 can't get mutex
     // The bypass flag (3) is specifically designed for fast, non-blocking operation
@@ -1448,6 +1501,16 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
     if ( pauseCore2 ) {
         core_sync_release( );
         return;
+    }
+
+    // Pace menu frame transitions: when the engine says the next blend frame
+    // is due, request a menu flush. This MUST live up here, checked every
+    // iteration — the LED branch below only executes when showLEDsCore2 is
+    // already set or a logo swirl ticked, so a re-trigger placed inside it
+    // got paced by the 51ms swirl timer instead of MT_FRAME_MS (visibly
+    // choppy transitions).
+    if ( inClickMenu == 1 && showLEDsCore2 == 0 && menuTransitionFrameDue( ) ) {
+        showLEDsCore2 = 2;
     }
 
     // Check for negative values (clear before show)
@@ -1569,10 +1632,36 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             } else if ( rails == 2 && ( inClickMenu == 1 || inPadMenu == 1 ) ) {
                 // Menu mode - display menu text buffer written by b.print()
                 // Supports both click menus (inClickMenu) and probe menus (inPadMenu)
-                needsLedShow = true;
+                // The transition engine paints the prev->target frame blend into
+                // the buffer first; it returns false while Core 0 is mid-repaint
+                // so we never show a half-drawn menu frame.
+                //
+                // CRITICAL: re-check pauseCore2 and raise core2busy around the
+                // render. menuTransitionRender() is flash-resident code, and
+                // pauseCore2ForFlash() waits on core2busy before letting a
+                // flash op proceed — without this bracket it saw Core 2 as
+                // "idle" while we were mid-render and started erasing flash
+                // under our XIP fetches (the File-Manager-from-menu crash:
+                // FM runs with inClickMenu==1, so this branch stays hot
+                // during its flash writes; serial entry has inClickMenu==0
+                // and never hit it).
+                if ( pauseCore2 ) {
+                    core_sync_release( );
+                    return;
+                }
+                core2busy = true;
+                needsLedShow = menuTransitionRender( );
+                core2busy = false;
             }
 
-            // Call leds.show() if either showNets() was called OR if we're in menu mode
+            // Call leds.show() if either showNets() was called OR if we're in menu mode.
+            // Menu frames re-check the transition draw gate at the last moment:
+            // Core 0 may have STARTED a repaint since menuTransitionRender()
+            // returned, and showing now would stream a half-painted buffer
+            // (one frame of garbled/misaligned text).
+            if ( rails == 2 && inClickMenu == 1 && !menuTransitionCanShow( ) ) {
+                needsLedShow = false;
+            }
             if ( needsLedShow ) {
                 core2busy = true;
 
@@ -1618,6 +1707,9 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
 
                 // delayMicroseconds(3200);
             }
+
+            // (Menu transition frames are re-triggered by the paced check at
+            // the top of core2stuff — see menuTransitionFrameDue.)
 
             swirled = 0;
             if ( inClickMenu == 1 ) {

@@ -4730,7 +4730,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
         b.print( "5v", sfOptionColors[ 7 ], 0xFFFFFF, 5, 0, 1 );
         int vSelected = -1;
         int encoderReadingPos = 45;
-        rotaryDivider = 4;
+        rotaryDivider = 8; // one 0.1V step per physical detent (8 counts)
         while ( vSelected == -1 ) {
             jOS.serviceCritical( );
             int reading = justReadProbe( );
@@ -4842,7 +4842,7 @@ float Probing::voltageSelect( int fiveOrEight ) {
         b.print( "+8v", sfOptionColors[ 1 ], 0xFFFFFF, 4, 0, 1 );
         int vSelected = -1;
         int encoderReadingPos = 45;
-        rotaryDivider = 4;
+        rotaryDivider = 8; // one 0.1V step per physical detent (8 counts)
 
         float lastVoltageProbe = -10.0;
 

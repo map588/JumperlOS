@@ -6,14 +6,20 @@
 
 
 
-String menuLines[] = {
+// IMPORTANT: this array MUST be declared with an explicit size matching the
+// companion arrays in Menus.cpp (menuLevels[150], stayOnTop[150], actions[150],
+// ...). It used to be sized by its initializer (~117 entries), so any code
+// indexing up to 150 walked off the end — straight into menuParsed/menuPosition/
+// menuTreeFile, reinterpreting them as String objects (heap corruption, then a
+// hard fault in free()). The unused tail is value-initialized to empty Strings.
+String menuLines[150] = {
   "$Rails$",
   "-*Both* *Top* *Bottom*",
   "-->v1",
 
   "$Connect$",
   "-*Add**Remove**",
-  "--->c2",
+  // "-->c2",
   
 
 
@@ -57,11 +63,11 @@ String menuLines[] = {
     "---*1**2**3**4**5**6**7**8*",
     "---->n1",
     "-$UART$",
-    "---*Tx* *Rx*",
-    "---->n2",
+    "--*Tx* *Rx*",
+    "--->n2",
     "-$I2C$",
-    "---*SDA* *SCL*",
-    "---->n2",
+    "--*SDA* *SCL*",
+    "--->n2",
     "-$Current$",
     "--*Pos* *Neg*",
     "--->n2",

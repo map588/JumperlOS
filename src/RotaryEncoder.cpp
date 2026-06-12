@@ -10,6 +10,8 @@
 #include "Peripherals.h"
 #include "Probing.h"
 #include "hardware/pwm.h"
+#include "hardware/structs/sio.h" // sio_hw->cpuid for single-owner core check
+#include "pico/mutex.h"
 #include "pico/stdlib.h"
 #include "quadrature.pio.h"
 
@@ -292,9 +294,36 @@ static long lastRawForIdle = 0;
 static unsigned long motionStartUs = 0;
 static bool motionConfirmed = true; // true => no pending unconfirmed first-detent motion
 static long heldConfirmPos = 0;     // encoderPosition held frozen during the confirm window
+static long heldConfirmOffset = 0;  // encoderPositionOffset at arm time - restored on commit
 static long restMenuPosition = 0;   // menu position counter captured at rest
 static long prevEncoderPos = 0;     // encoderPosition from the previous poll (the at-rest value)
 static bool encoderWasPressedGate = false; // press-edge detector local to rotaryEncoderStuff
+
+// Paced direction-event emission (see the "Paced event emission" block in
+// rotaryEncoderStuffLocked): timestamp of the last emitted UP/DOWN event and
+// how long an unconsumed event may sit before it's considered abandoned.
+static unsigned long dirEventEmitUs = 0;
+const unsigned long DIR_EVENT_ABANDON_US = 250000; // 250ms
+
+// Direction of the last committed detent step (+1 = raw increasing, -1 =
+// decreasing, 0 = none yet). Drives the backlash margin: a step against this
+// direction needs an extra half-divider of travel before it counts.
+static int lastStepDir = 0;
+
+// Recoil guard: when a fast flick ends, the shaft bounces off the detent
+// spring by 1-2 REAL detents (+4..+7 raw counts against the travel
+// direction - verified on hardware via the [enc] diagnostics), which the
+// static backlash margin can't absorb. While steps are committing rapidly
+// (faster than RECOIL_ARM_GAP_US apart), reversals are disbelieved outright
+// until the shaft has been step-quiet for RECOIL_GUARD_US; the recoil travel
+// slides the baseline instead of accumulating, so resumed forward motion
+// registers without catching up through the bounce distance. A deliberate
+// direction change just waits out the guard (~200ms after the last fast
+// step) - imperceptible in practice.
+static unsigned long lastCommitUs = 0;
+static unsigned long recoilGuardUntilUs = 0;
+const unsigned long RECOIL_ARM_GAP_US = 100000; // commits closer than this = "fast"
+const unsigned long RECOIL_GUARD_US = 200000;   // reversal quiet window after fast steps
 
 // Hysteresis baseline for menu navigation: the raw encoder count at the last
 // committed detent step. A new step is only emitted once the shaft has moved a
@@ -312,7 +341,9 @@ static unsigned long pressAnimUpdateTimer = 0;
 volatile bool buttonPressAnimActive = false;
 volatile uint32_t pressAnimLogoColors[ 8 ] = { 0 };
 
-void rotaryEncoderButtonStuff( void ) {
+// Body of the button-state poll. ONLY call with encoderPollMutex held (via
+// the rotaryEncoderButtonStuff() wrapper or from rotaryEncoderStuffLocked).
+static void rotaryEncoderButtonStuffLocked( void ) {
     // CRITICAL: Don't update lastButtonEncoderState while we're holding an event for Core 1
     // This preserves the PRESSED->RELEASED transition that Core 1 checks for
     // Only update when state actually changes or when not in a held event state
@@ -397,7 +428,13 @@ void rotaryEncoderButtonStuff( void ) {
 
     if ( encoderIsPressed == 1 && encoderWasPressed == 0 ) {
         buttonHoldStart = millis( );
-        pio_sm_restart( pioEnc, smEnc );
+        // NOTE: do NOT pio_sm_restart() here (removed). The quadrature
+        // program keeps its previous-pin-state in the OSR; restart clears
+        // the OSR, so if the pins aren't at 00 the program sees a phantom
+        // transition and injects a spurious +/-1 count. Restarting on every
+        // click (plus every divider change) made the raw count drift by
+        // THOUSANDS over a session - caught via the [enc] reversal
+        // diagnostics. The SM is initialized once and never restarted.
         // encoderRaw = quadrature_encoder_get_count(pioEnc, smEnc);
         // lastPositionEncoder = encoderRaw;
 
@@ -425,6 +462,58 @@ void rotaryEncoderButtonStuff( void ) {
 bool isEncoderButtonPhysicallyPressed( void ) {
     // Button is active LOW - returns true when physically pressed (GPIO reads 0)
     return gpio_get( BUTTON_ENC ) == 0;
+}
+
+// ── EncoderClickTracker ─────────────────────────────────────────────────────
+// Per-UI click/hold classifier on the physical pin (see RotaryEncoder.h).
+
+void EncoderClickTracker::reset( void ) {
+    wasDown = isEncoderButtonPhysicallyPressed( );
+    // If the button is already down on entry (e.g. the click that launched
+    // this UI is still held), pretend the hold already fired so the eventual
+    // release is classified as ENC_HOLD_RELEASE, not a spurious ENC_CLICK.
+    holdFired = wasDown;
+    longFired = wasDown;
+    downStartMs = millis( );
+    lastEdgeMs = millis( );
+}
+
+unsigned long EncoderClickTracker::heldForMs( void ) const {
+    return wasDown ? ( millis( ) - downStartMs ) : 0;
+}
+
+EncoderClickEvent EncoderClickTracker::poll( void ) {
+    unsigned long now = millis( );
+    bool down = isEncoderButtonPhysicallyPressed( );
+
+    if ( down != wasDown ) {
+        if ( now - lastEdgeMs < debounceMs ) {
+            return ENC_NONE; // bounce - ignore the edge for now
+        }
+        lastEdgeMs = now;
+        wasDown = down;
+        if ( down ) {
+            downStartMs = now;
+            holdFired = false;
+            longFired = false;
+            return ENC_PRESS;
+        }
+        return holdFired ? ENC_HOLD_RELEASE : ENC_CLICK;
+    }
+
+    if ( down ) {
+        unsigned long held = now - downStartMs;
+        if ( !longFired && held >= longHoldMs ) {
+            longFired = true;
+            holdFired = true;
+            return ENC_LONG_HOLD;
+        }
+        if ( !holdFired && held >= holdMs ) {
+            holdFired = true;
+            return ENC_HOLD;
+        }
+    }
+    return ENC_NONE;
 }
 
 void holdAnimationStuff( void ) {
@@ -718,9 +807,36 @@ void holdAnimationStuff( void ) {
     }
 }
 
+// ── Single-core ownership ───────────────────────────────────────────────────
+// ALL encoder state (PIO FIFO drain, hysteresis, interlock gates, button
+// state machine) is mutated by Core 1 ONLY. The earlier scheme - Core 0
+// menu/editor loops and Core 1's core2stuff() both calling the poll, first
+// bare, then mutex+throttle serialized - still had two alternating writers
+// over ~20 pieces of interlock/hysteresis/pacing state, and the alternation
+// itself produced count glitches (skips, phantom reverse steps).
+//
+// Single-writer (per pico_sync guidance: prefer ownership over locking for
+// hot paths): calls from Core 0 return immediately and the poll body needs
+// no mutex at all. Consumers on either core keep reading the volatile
+// event flags (encoderDirectionState / encoderButtonState) exactly as
+// before - one-word reads/writes, handshake semantics unchanged.
+//
+// Cadence is guaranteed by an unconditional owner poll at the top of
+// core2stuff() (the old in-branch poll sites starved in probe mode, which
+// is why Core 0 used to poll directly). Internally throttled - the PIO
+// counts in hardware, so sampling faster than 2kHz buys nothing.
+static volatile uint32_t lastEncoderPollUs = 0;
+static const uint32_t ENCODER_POLL_INTERVAL_US = 500; // 2kHz effective poll
+
+static void rotaryEncoderStuffLocked( void );
+static void rotaryEncoderButtonStuffLocked( void );
+
 void rotaryEncoderStuff( void ) {
 
-    if ( false ) {
+    // Single-owner: only Core 1 runs the poll body. (Core 0 call sites in
+    // menus/probing/apps are left in place as no-ops - cheaper than
+    // hunting them all down, and they document where polling used to be.)
+    if ( ( sio_hw->cpuid & 1 ) == 0 ) {
         return;
     }
 
@@ -731,8 +847,29 @@ void rotaryEncoderStuff( void ) {
         return;
     }
 
+    uint32_t now = micros( );
+    if ( (uint32_t)( now - lastEncoderPollUs ) < ENCODER_POLL_INTERVAL_US ) {
+        return;
+    }
+    lastEncoderPollUs = now;
+    rotaryEncoderStuffLocked( );
+}
+
+// Menu loops on Core 0 call this every iteration for click responsiveness.
+// Under single-ownership it's a no-op there - Core 1's steady poll runs the
+// button state machine, and the 10ms BUTTON_EVENT_MIN_DURATION_US hold is
+// what guarantees Core 0 pollers still catch the PRESSED/RELEASED edges.
+void rotaryEncoderButtonStuff( void ) {
+    if ( ( sio_hw->cpuid & 1 ) == 0 ) {
+        return;
+    }
+    rotaryEncoderButtonStuffLocked( );
+}
+
+static void rotaryEncoderStuffLocked( void ) {
+
     // Handle button state checking and updates
-    rotaryEncoderButtonStuff( );
+    rotaryEncoderButtonStuffLocked( );
 
     // Drive the hold animation + LONG_HELD transition
     holdAnimationStuff( );
@@ -766,12 +903,18 @@ void rotaryEncoderStuff( void ) {
     }
 
     if ( lastRotaryDivider != rotaryDivider ) {
-        pio_sm_restart( pioEnc, smEnc );
+        // NOTE: no pio_sm_restart() here (removed) - the divider is purely
+        // software bookkeeping (raw counts per logical step); the PIO just
+        // counts and must never be restarted. Restart clears the program's
+        // previous-pin-state (OSR), injecting a phantom +/-1 whenever the
+        // pins aren't at 00 - and since menus/probe/highlighting all set
+        // different dividers, the constant restarts drifted the raw count
+        // by thousands per session ("hops backwards while scrolling").
         lastRotaryDivider = rotaryDivider;
         // Changing the divider only changes sensitivity; reseed the hysteresis
         // baseline to the current raw count so the logical position doesn't jump.
-        lastDetentRaw = quadrature_encoder_get_count( pioEnc, smEnc );
-        rawCount = lastDetentRaw;
+        lastDetentRaw = rawCount;
+        lastStepDir = 0; // direction continuity broken with the baseline
     }
 
     // ---- Click/rotation interlock --------------------------------------------
@@ -786,6 +929,7 @@ void rotaryEncoderStuff( void ) {
             motionStartUs = nowClickUs;
             motionConfirmed = false;
             heldConfirmPos = prevEncoderPos;
+            heldConfirmOffset = encoderPositionOffset;
             restMenuPosition = (long)position;
         }
         lastRawForIdle = rawCount;
@@ -806,6 +950,9 @@ void rotaryEncoderStuff( void ) {
         encoderDirectionState = NONE;
         encoderDirectionConsumed = true;
         motionConfirmed = true; // gate resolved; nothing left pending
+        // A click cancels any queued-but-unemitted detents too - replaying
+        // them after the press would move a UI the user just clicked on.
+        lastPositionEncoder = encoderRaw;
     }
     encoderWasPressedGate = pressedNow;
 
@@ -822,6 +969,7 @@ void rotaryEncoderStuff( void ) {
         encoderPositionOffset = rawCount - heldEncoderPos;
         encoderPosition = heldEncoderPos;
         lastDetentRaw = rawCount; // keep the hysteresis baseline under the shaft, no catch-up
+        lastStepDir = 0;          // baseline moved - direction continuity broken
         if ( encoderDirectionConsumed ) encoderDirectionState = NONE;
         numberOfSteps = 0;
         prevEncoderPos = (long)encoderPosition;
@@ -842,6 +990,17 @@ void rotaryEncoderStuff( void ) {
             return;
         }
         motionConfirmed = true; // window elapsed with no click — commit the motion
+        // Restore the arm-time offset so the motion accumulated during the
+        // freeze flushes into encoderPosition in one go. The freeze loop
+        // above rebases the offset every poll to pin encoderPosition; if the
+        // rebase were left standing, the entire freeze window's travel would
+        // be permanently swallowed from the encoderPosition stream. At
+        // deliberate turning speeds (>150ms between detents) the gate
+        // re-arms for EVERY detent, so each detent's whole travel got eaten
+        // - the probe-mode connect cursor (encoderPosition consumer, unlike
+        // the menus' detent-event path) skipped constantly.
+        encoderPositionOffset = heldConfirmOffset;
+        encoderPosition = rawCount - encoderPositionOffset;
     }
     // ---- end click/rotation interlock ----------------------------------------
 
@@ -852,40 +1011,99 @@ void rotaryEncoderStuff( void ) {
     // step, so the divider sets sensitivity (counts per step) without placing any
     // fixed bin boundary the resting detent could chatter across.
     long detentDelta = rawCount - lastDetentRaw;
+
+    // Backlash margin: the detent spring settling into a notch (or quadrature
+    // chatter at certain speeds) can re-cross the trip point AGAINST the
+    // direction of travel - the residual after a committed step can leave the
+    // reverse trip point only one detent's worth of counts away. The old code
+    // accidentally masked these phantom reversals by collapsing steps; the
+    // paced emission below faithfully reports every step, so reversals must
+    // clear an extra half-divider before they count ("hops a step backwards
+    // while scrolling at particular speeds").
+    long stepThreshold = (long)rotaryDivider;
+    bool reverseDelta = ( lastStepDir > 0 && detentDelta < 0 ) ||
+                        ( lastStepDir < 0 && detentDelta > 0 );
+    if ( reverseDelta ) {
+        stepThreshold += rotaryDivider / 2;
+    }
+
+    // Recoil guard (see banner above): during/just after a fast run of
+    // steps, reverse travel is treated as detent-spring bounce no matter
+    // how far it goes. Slide the baseline so the bounce never accumulates
+    // more than a sub-step residual - resumed travel in the original
+    // direction then registers after at most one detent, and a genuine
+    // direction change commits as soon as the guard expires.
+    if ( reverseDelta && (long)( recoilGuardUntilUs - nowClickUs ) > 0 ) {
+        long cap = stepThreshold - 1;
+        if ( detentDelta > cap ) {
+            lastDetentRaw = rawCount - cap;
+        } else if ( detentDelta < -cap ) {
+            lastDetentRaw = rawCount + cap;
+        }
+        detentDelta = 0; // nothing commits this poll
+    }
+
     int steps = 0;
-    if ( detentDelta >= rotaryDivider || detentDelta <= -rotaryDivider ) {
+    if ( detentDelta >= stepThreshold || detentDelta <= -stepThreshold ) {
         steps = (int)( detentDelta / rotaryDivider ); // truncates toward zero; |steps| >= 1 here
         lastDetentRaw += (long)steps * rotaryDivider;
-        encoderRaw += steps; // encoderRaw is the persistent logical position; lastPositionEncoder catches up below
+        int stepDir = ( steps > 0 ) ? 1 : -1;
+        if ( lastStepDir != 0 && stepDir != lastStepDir ) {
+            // Genuine reversal: any queued events from the old direction are
+            // stale - drop the backlog so the first thing the UI sees is the
+            // new direction, not leftover old-direction motion.
+            lastPositionEncoder = encoderRaw;
+        }
+        lastStepDir = stepDir;
+        encoderRaw += steps; // emission below drains one event per consumer ack
+
+        // Arm the recoil guard only when steps are committing rapidly -
+        // slow deliberate stepping (including quick one-detent jogs) never
+        // arms it, so normal back-and-forth navigation is unaffected.
+        if ( (unsigned long)( nowClickUs - lastCommitUs ) < RECOIL_ARM_GAP_US ) {
+            recoilGuardUntilUs = nowClickUs + RECOIL_GUARD_US;
+        }
+        lastCommitUs = nowClickUs;
     }
 
     numberOfSteps = abs( steps );
 
-    if ( lastPositionEncoder != encoderRaw ) {
-
-        if ( lastPositionEncoder > encoderRaw && encoderDirectionState != DOWN ) {
+    // ── Paced event emission ──
+    // Emit ONE detent per direction event and hold the rest back until the
+    // consumer acknowledges (sets encoderDirectionState back to NONE). The
+    // old code snapped lastPositionEncoder all the way to encoderRaw on
+    // every emission, so a multi-detent twist - or detents that accumulated
+    // while the consumer was busy with an OLED/TUI redraw - collapsed into a
+    // single step: the "encoder skips pulses / feels choppy" complaint.
+    // Backlog now drains one event per consumer ack (the 500µs cross-core
+    // poll throttle sets the max drain rate). If nothing consumes the event
+    // (no UI listening, e.g. the main screen), it expires after
+    // DIR_EVENT_ABANDON_US and the backlog is dropped with it so a later
+    // consumer doesn't replay stale motion.
+    if ( encoderDirectionConsumed && encoderDirectionState != NONE ) {
+        encoderDirectionState = NONE; // consumer ack'd via the consumed flag
+    }
+    if ( encoderDirectionState == NONE ) {
+        if ( lastPositionEncoder > encoderRaw ) {
             position++;
             encoderDirectionState = UP;
             encoderDirectionConsumed = false; // Mark as unconsumed
             noteUserInput( );  // gate background flash writes - user is turning
-            lastPositionEncoder = encoderRaw;
-
-        } else if ( lastPositionEncoder < encoderRaw &&
-                    encoderDirectionState != UP ) {
+            lastPositionEncoder--;
+            dirEventEmitUs = nowClickUs;
+        } else if ( lastPositionEncoder < encoderRaw ) {
             position--;
             encoderDirectionState = DOWN;
             encoderDirectionConsumed = false; // Mark as unconsumed
             noteUserInput( );
-            lastPositionEncoder = encoderRaw;
-
-        } else if ( encoderDirectionConsumed ) {
-            // Only clear to NONE if already consumed
-            encoderDirectionState = NONE;
+            lastPositionEncoder++;
+            dirEventEmitUs = nowClickUs;
         }
-
-    } else if ( encoderDirectionConsumed ) {
-        // Only clear to NONE if already consumed
+    } else if ( (unsigned long)( nowClickUs - dirEventEmitUs ) > DIR_EVENT_ABANDON_US ) {
+        // Unconsumed for too long: no active consumer. Drop event + backlog.
         encoderDirectionState = NONE;
+        encoderDirectionConsumed = true;
+        lastPositionEncoder = encoderRaw;
     }
 
     // slotManager();

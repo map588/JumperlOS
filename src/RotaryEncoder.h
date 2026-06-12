@@ -99,6 +99,57 @@ long getEncoderRawCount(void);
  */
 bool isEncoderButtonPhysicallyPressed(void);
 
+// ── Generalized click/hold classifier ──────────────────────────────────────
+//
+// The shared encoderButtonState machine is cross-core and gets re-armed by
+// various consumers, which makes "did the user click or hold?" ambiguous for
+// any one UI. EncoderClickTracker is a small per-UI classifier that watches
+// the PHYSICAL pin and turns it into unambiguous one-shot events:
+//
+//   ENC_PRESS        button just went down. Fast UIs (editors, char pickers)
+//                    fire their primary action here for instant feedback —
+//                    but then they must treat a following HOLD/LONG_HOLD as
+//                    a separate gesture.
+//   ENC_CLICK        released BEFORE the hold threshold. Slow UIs (file
+//                    manager, anything where a hold means "back/exit") fire
+//                    here instead of on PRESS, so a hold never triggers the
+//                    click action on its way to becoming a hold.
+//   ENC_HOLD         hold threshold crossed, button still down (fires once).
+//   ENC_LONG_HOLD    long-hold threshold crossed, still down (fires once).
+//                    Convention: universal quit, like Ctrl-Q.
+//   ENC_HOLD_RELEASE released after ENC_HOLD / ENC_LONG_HOLD fired (i.e.
+//                    this release is NOT a click).
+//
+// Each UI owns its own instance (no shared static state to fight over) and
+// calls poll() once per loop iteration. Call reset() on UI entry so a button
+// already held during the transition isn't misread as a fresh press.
+enum EncoderClickEvent {
+    ENC_NONE = 0,
+    ENC_PRESS,
+    ENC_CLICK,
+    ENC_HOLD,
+    ENC_LONG_HOLD,
+    ENC_HOLD_RELEASE,
+};
+
+struct EncoderClickTracker {
+    unsigned long holdMs = 500;       // ENC_HOLD threshold
+    unsigned long longHoldMs = 1500;  // ENC_LONG_HOLD threshold
+    unsigned long debounceMs = 30;    // edge debounce
+
+    void reset(void);                 // sync to current pin state, clear flags
+    EncoderClickEvent poll(void);     // call every loop; returns one-shot events
+    bool isDown(void) const { return wasDown; }
+    unsigned long heldForMs(void) const; // 0 when not pressed
+
+  private:
+    bool wasDown = false;
+    bool holdFired = false;
+    bool longFired = false;
+    unsigned long downStartMs = 0;
+    unsigned long lastEdgeMs = 0;
+};
+
 /**
  * @brief Helper class for rotary encoder acceleration
  * 
@@ -243,9 +294,14 @@ public:
     /**
      * @brief Slow preset - for precise selection (e.g., 0-100)
      * Gentle acceleration with maximum precision
+     *
+     * baseSpeed 0.15 ~= one step per physical detent (8 raw counts per
+     * detent) with a touch of extra travel on multi-detent turns; maxSpeed
+     * 0.65 lets fast spins cover ~5 nodes per detent. Careful single
+     * detents still move exactly one step.
      */
     static EncoderAccelerator Slow() {
-        return EncoderAccelerator(0.1f, 0.4f, 0.1f, 10.8f, 5, 170);
+        return EncoderAccelerator(0.15f, 0.65f, 0.15f, 10.8f, 5, 170);
     }
 
     /**

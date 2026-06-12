@@ -15,6 +15,7 @@
 #include "micropythonExamples.h"
 #include "oled.h"
 #include <cstring>
+#include <memory>
 #include <time.h>
 #include <stdint.h>
 
@@ -428,9 +429,6 @@ String FileManager::formatDateTime( time_t timestamp ) {
 }
 
 void FileManager::updateOLEDStatus( ) {
-    if ( !oled.oledConnected )
-        return;
-
     // Get current selection info
     const char* selectedFileName = ( fileCount > 0 && selectedIndex < fileCount )
                                        ? fileList[ selectedIndex ].name.c_str( )
@@ -438,6 +436,8 @@ void FileManager::updateOLEDStatus( ) {
 
     // Breadboard mode (from click menu): show on breadboard LEDs via b.print()
     // Top row = directory name (7 chars), Bottom row = selected file name (7 chars)
+    // NOTE: this must run BEFORE the oledConnected early-return - the
+    // breadboard text is the primary display when no OLED is attached.
     if ( fromClickMenu ) {
         String topLine;
         if ( currentPath == "/" ) {
@@ -462,6 +462,9 @@ void FileManager::updateOLEDStatus( ) {
         showLEDsCore2 = 2;
         // Fall through to still update the OLED normally
     }
+
+    if ( !oled.oledConnected )
+        return;
 
     if ( !selectedFileName ) {
         // No file selected, just show path
@@ -567,7 +570,12 @@ bool FileManager::changeDirectory( const String& path ) {
     // Clean up path (remove double slashes, etc.)
     newPath.replace( "//", "/" );
 
-    // Check if directory exists - handle root directory specially
+    // Check if directory exists - handle root directory specially.
+    // Park Core 1 around the FatFS ops: the SPIFTL journal can append a flash
+    // page on any f_close, and Core 1 executing XIP code during a flash
+    // program hard-faults (garbage instruction fetch). Same contract as
+    // safeFileOpen/safeFileClose.
+    bool was_paused = pauseCore2ForFlash( 100 );
     bool dirExists = false;
     if ( newPath == "/" ) {
         // For root directory, use openDir instead of exists
@@ -581,6 +589,7 @@ bool FileManager::changeDirectory( const String& path ) {
     } else {
         dirExists = FatFS.exists( newPath.c_str( ) );
     }
+    unpauseCore2ForFlash( was_paused );
 
     if ( dirExists ) {
         currentPath = newPath;
@@ -659,6 +668,13 @@ void FileManager::refreshListing( ) {
         return;
     }
 
+    // Park Core 1 around the FatFS directory walk: the SPIFTL journal can
+    // append a flash page on any f_close, and Core 1 executing XIP code during
+    // a flash program hard-faults on a garbage instruction fetch. This is the
+    // same contract safeFileOpen/safeFileClose follow; the nested recursive
+    // calls below are safe via the was_paused save/restore idiom.
+    bool was_paused = pauseCore2ForFlash( 100 );
+
     // Use FatFS directory API instead of file API
     Dir dir = FatFS.openDir( currentPath );
 
@@ -697,6 +713,7 @@ void FileManager::refreshListing( ) {
                 if ( FatFS.exists( "/" ) ) {
                     refreshListing( ); // Recursive call to try root
                     recursion_depth--; // Decrement on successful path
+                    unpauseCore2ForFlash( was_paused );
                     return;
                 }
 
@@ -707,6 +724,7 @@ void FileManager::refreshListing( ) {
             Serial.println( "[FS] All recovery attempts failed, filesystem unavailable" );
             currentPath = "[NO_FS]";
             recursion_depth = 0; // Reset for next attempt
+            unpauseCore2ForFlash( was_paused );
             refreshListing( );   // Show error message
             return;
         }
@@ -730,7 +748,7 @@ void FileManager::refreshListing( ) {
     // Re-open directory to start from beginning for actual listing
     dir = FatFS.openDir( currentPath );
 
-    while ( dir.next( ) && fileCount < maxFiles ) {
+    while ( dir.next( ) && fileCount < maxFiles ) { // (Core 1 still parked here)
         // Service USB periodically during long directory reads to prevent disconnect
         #ifdef USE_TINYUSB
         if ( ( fileCount & 0x03 ) == 0 ) tud_task( );
@@ -758,6 +776,9 @@ void FileManager::refreshListing( ) {
 
         fileCount++;
     }
+
+    // Directory walk done — let Core 1 run again. The sort below is pure RAM.
+    unpauseCore2ForFlash( was_paused );
 
     // Sort directories first, then files alphabetically
     // But keep ".." at the very top if it exists
@@ -1418,6 +1439,12 @@ void FileManager::run( ) {
     refreshListing( );
     bool running = true;
 
+    // Click/hold classifier on the physical pin. The FM is a "slow UI":
+    // selection fires on ENC_CLICK (release before the hold threshold), so
+    // holding the wheel to back out NEVER opens the highlighted file first.
+    EncoderClickTracker clickTracker;
+    clickTracker.reset( );
+
     // Initialize interactive mode
     initInteractiveMode( );
 
@@ -1458,35 +1485,114 @@ void FileManager::run( ) {
         // Handle rotary encoder input
         // rotaryEncoderStuff();
 
-        // Check for encoder direction changes
-        if ( encoderDirectionState != lastEncoderDirectionState ) {
-            if ( encoderDirectionState == UP ) {
-                encoderDirectionState = NONE;
-                moveSelection( -1 );
-                scheduleOLEDUpdate( );
-                lastInputTime = micros( ); // Record input time
-            } else if ( encoderDirectionState == DOWN ) {
-                encoderDirectionState = NONE;
-                moveSelection( 1 );
-                scheduleOLEDUpdate( );
-                lastInputTime = micros( ); // Record input time
-            }
-            lastEncoderDirectionState = encoderDirectionState;
+        // Check for encoder rotation. Act on the LEVEL, not on a transition:
+        // the old `encoderDirectionState != lastEncoderDirectionState` gate
+        // raced with Core 1's poller - if a new detent landed between our
+        // NONE write and the re-read that fed lastEncoderDirectionState, we
+        // recorded last==UP with the state still UP, and every further
+        // same-direction detent compared equal: rotation permanently wedged
+        // until the user turned the other way. getMenuSelection() consumes
+        // by level for the same reason.
+        if ( encoderDirectionState == UP ) {
+            encoderDirectionState = NONE;
+            moveSelection( -1 );
+            scheduleOLEDUpdate( );
+            lastInputTime = micros( ); // Record input time
+        } else if ( encoderDirectionState == DOWN ) {
+            encoderDirectionState = NONE;
+            moveSelection( 1 );
+            scheduleOLEDUpdate( );
+            lastInputTime = micros( ); // Record input time
         }
 
-        // Check for encoder button presses
-        if ( encoderButtonState != lastEncoderButtonState ) {
-            if ( encoderButtonState == PRESSED && lastEncoderButtonState == IDLE ) {
-                inClickMenu = false;
-                showLEDsCore2 = -1;
-                selectCurrentFile( );
+        // Encoder button: classified on the physical pin (EncoderClickTracker)
+        // instead of the shared cross-core state machine. CLICK = released
+        // before the hold threshold (so a hold never opens the highlighted
+        // file on its way to being a hold), HOLD = back one level,
+        // LONG_HOLD = quit entirely (Ctrl-Q equivalent).
+        switch ( clickTracker.poll( ) ) {
+        case ENC_CLICK:
+            // NOTE: deliberately do NOT clear inClickMenu here. Clearing
+            // it on the first click knocked Core 1 out of the menu-render
+            // branch for the rest of the session, so the breadboard file
+            // text stopped showing and showLEDsCore2=-1 repainted the
+            // wires over it. inClickMenu is owned by the entry/exit code
+            // (pickPythonScriptFromClickMenu).
+            selectCurrentFile( );
+            scheduleOLEDUpdate( );
+            lastInputTime = micros( ); // Record input time
+            blockInputBriefly( );      // Block input briefly after interface changes
+            // Note: selectCurrentFile() now handles interface redrawing internally
+            break;
+
+        case ENC_HOLD:
+            // Hold-to-back, matching the menu idiom: one directory up. At the
+            // top level there's nothing further up — keep holding and
+            // ENC_LONG_HOLD below quits, or release and re-hold to exit.
+            if ( currentPath == "/" ) {
+                closeAllFiles( );
+                // Swallow the rest of the hold so the main screen doesn't
+                // see it as a disconnect/reboot gesture.
+                unsigned long rootReleaseWait = millis( );
+                while ( isEncoderButtonPhysicallyPressed( ) &&
+                        millis( ) - rootReleaseWait < 3000 ) {
+                    #ifdef USE_TINYUSB
+                    tud_task( );
+                    #endif
+                    delayMicroseconds( 500 );
+                }
+                encoderButtonState = IDLE;
+                lastButtonEncoderState = IDLE;
+                running = false;
+            } else {
+                goUp( );
+                drawInterface( );
                 scheduleOLEDUpdate( );
-                lastInputTime = micros( ); // Record input time
-                blockInputBriefly( );      // Block input briefly after interface changes
-                // Note: selectCurrentFile() now handles interface redrawing internally
+                lastInputTime = micros( );
+                blockInputBriefly( );
             }
-            lastEncoderButtonState = encoderButtonState;
+            break;
+
+        case ENC_LONG_HOLD: {
+            // Universal quit (Ctrl-Q equivalent) from anywhere in the tree.
+            closeAllFiles( );
+            // Swallow the rest of the physical hold so the main screen
+            // doesn't see it as a disconnect/reboot gesture. 3s bail-out
+            // so a stuck/shorted button can't pin Core 0 here.
+            unsigned long releaseWaitStart = millis( );
+            while ( isEncoderButtonPhysicallyPressed( ) &&
+                    millis( ) - releaseWaitStart < 3000 ) {
+                #ifdef USE_TINYUSB
+                tud_task( );
+                #endif
+                delayMicroseconds( 500 );
+            }
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+            running = false;
+            break;
         }
+
+        default:
+            break;
+        }
+        if ( !running ) {
+            break;
+        }
+        // Keep the shared state machine from leaking FM-era events to the
+        // main screen: consume anything it latched while we own the wheel.
+        if ( encoderButtonState == RELEASED || encoderButtonState == DOUBLECLICKED ) {
+            encoderButtonState = IDLE;
+            lastButtonEncoderState = IDLE;
+        }
+
+        // Keep the USB device stack serviced. The file manager blocks Core 0
+        // for its whole session, and a navigation burst (each key = OLED I2C +
+        // a multi-KB ANSI redraw + a directory walk) can starve TinyUSB long
+        // enough that the host gives up and drops the CDC port entirely.
+        #ifdef USE_TINYUSB
+        tud_task( );
+        #endif
 
         // Check if input is blocked (except Ctrl+Q and ESC)
         char input = 0;
@@ -2387,7 +2493,12 @@ void filesystemApp( bool waitForEnter ) {
         Serial.println( "   Press Enter to launch File Manager..." );
     }
     changeTerminalColor( 8, true );
-    FileManager manager;
+    // Heap-allocate: Core 0's stack is a small scratch bank and the menu
+    // launch path is already deep; a stack-local FileManager (plus run()'s
+    // call tree) overflowed into Core 1's stack. See core1_separate_stack
+    // in main.cpp for the full post-mortem.
+    std::unique_ptr<FileManager> managerPtr( new FileManager( ) );
+    FileManager& manager = *managerPtr;
     manager.initInteractiveMode( );
 
     // Wait for user to press enter to break the input loop
@@ -2483,7 +2594,11 @@ String pickPythonScriptFromClickMenu( ) {
     initializeMicroPythonExamples( );
 
     saveScreenState( );
-    FileManager manager;
+    // Heap-allocate: the click-menu launch path (clickMenu → getMenuSelection
+    // → doMenuAction → runApp → here) is the deepest FM entry point and is
+    // exactly the one that smashed Core 1's stack. Keep it off Core 0's stack.
+    std::unique_ptr<FileManager> managerPtr( new FileManager( ) );
+    FileManager& manager = *managerPtr;
     manager.setFromClickMenu( true );
     manager.initInteractiveMode( );
     manager.clearScreen( );
@@ -2503,8 +2618,11 @@ String pickPythonScriptFromClickMenu( ) {
     restoreScreenState( );
     jumperlessConfig.top_oled.show_in_terminal = showOledInTerminal;
     ContextManager::getInstance( ).popContext( );
+    // Session over: leave menu-render mode and put the wires back. (The FM
+    // run loop no longer clears inClickMenu mid-session - it's owned here.)
+    inClickMenu = false;
     b.clear( );
-    showLEDsCore2 = 2;
+    showLEDsCore2 = -1;
 
     return selectedPath;
 }
@@ -2811,7 +2929,10 @@ String filesystemAppPythonScriptsREPL( ) {
     Serial.flush( );
     saveScreenState( );
 
-    FileManager manager;
+    // Heap-allocate to keep the deep FM session off Core 0's small stack
+    // (see core1_separate_stack in main.cpp).
+    std::unique_ptr<FileManager> managerPtr( new FileManager( ) );
+    FileManager& manager = *managerPtr;
     // Set REPL mode so the manager knows to use launchEkiloREPL
     manager.setREPLMode( true );
 
