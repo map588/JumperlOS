@@ -161,6 +161,34 @@ ServiceStatus MpRemoteService::service( ) {
             Serial.flush();
         }
 
+        // Drop stray control bytes that the FRIENDLY REPL can't use. These leak
+        // in from the app/terminal's interactive-mode handshake (line-buffering
+        // SO 0x0E / SI 0x0F / legacy DC3 0x13, see Jerial.cpp) and from flow
+        // control. The native friendly REPL has no SingleCharCommands
+        // interception, so any such byte lands in the line buffer and Enter
+        // parses it as code -> "SyntaxError: invalid syntax" on an apparently
+        // empty line. Allow only the control codes the friendly REPL actually
+        // acts on; pass everything >= 0x20 (printable + UTF-8) untouched.
+        // Raw REPL (ViperIDE/mpremote) transfers arbitrary bytes verbatim, so
+        // this filtering is gated to friendly mode only.
+        if ( !m_in_raw_repl && c < 0x20 ) {
+            switch ( c ) {
+                case 0x01: // Ctrl-A: enter raw REPL
+                case 0x02: // Ctrl-B: exit to friendly REPL
+                case 0x03: // Ctrl-C: interrupt
+                case 0x04: // Ctrl-D: EOF / soft reset
+                case 0x05: // Ctrl-E: paste mode
+                case 0x08: // Backspace
+                case 0x09: // Tab
+                case 0x0A: // LF
+                case 0x0D: // CR (Enter)
+                case 0x1B: // ESC (arrow-key / escape sequences)
+                    break; // legitimate: fall through to feed the REPL
+                default:
+                    continue; // stray control byte: drop it
+            }
+        }
+
         // Feed character to event-driven REPL
         // Returns 0 normally, PYEXEC_FORCED_EXIT if soft reset requested
         //

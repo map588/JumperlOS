@@ -1,5 +1,14 @@
 # Jumperless Skill for Large Language Models
 
+> **Superseded.** The canonical Jumperless automation (Agent Skill + MCP
+> server) now lives at
+> [Architeuthis-Flux/Large-Breadboard-Model](https://github.com/Architeuthis-Flux/Large-Breadboard-Model).
+> That repo has the maintained `SKILL.md`, progressive-disclosure `reference/`,
+> the `scripts/jumperless.py` host helper (which now labels every USB port role
+> via `detect --roles`, replacing `port_identify.py`), and the `mcp/` submodule.
+> See also the docs hub: <https://docs.jumperless.org/07.5-automation/>.
+> This file is kept for firmware-repo discoverability only and is not expanded.
+
 This document describes how to interact with the Jumperless hardware using
 MicroPython commands.  It's written as a **skill specification** for any LLM that
 needs to build, test and debug circuits on real hardware via the Jumperless

@@ -173,7 +173,7 @@ void printString(const char *s, uint32_t color = 0xFFFFFF,
                  int nudge = 0, int lowercase = 0);
 
 void drawWires(int net = -1);
-void printWireStatus(void);
+void printWireStatus(Stream* target = nullptr);
 
 void defcon(int start, int spread, int color = 0, int nudge = 1);
 

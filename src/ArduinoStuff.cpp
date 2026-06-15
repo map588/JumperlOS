@@ -22,6 +22,11 @@
 #include "States.h"
 #include "Jerial.h"
 
+#ifdef USE_TINYUSB
+#include "tusb.h" // tud_cdc_n_* for the 1200-baud bootloader touch below
+#endif
+#include "pico/bootrom.h" // reset_usb_boot()
+
 #include "hardware/structs/io_bank0.h"
 #include "hardware/structs/xip.h"
 
@@ -377,6 +382,26 @@ int secondSerialHandler( void ) {
     // two things that must run on Core 0's main loop:
     //   1. one-time UART crossbar auto-connect when a flash starts, and
     //   2. polling for flash completion to release the Arduino to normal mode.
+
+    #ifdef USE_TINYUSB
+    // ── 1200-baud bootloader touch on the MicroPython REPL port (CDC 2) ──
+    // Adafruit TinyUSB only honors the classic "open at 1200 baud, then
+    // close" reset convention on CDC instance 0 (Jumperless Main), but
+    // JumperIDE talks to CDC 2 — honor the same convention there so the IDE
+    // can reboot us into BOOTSEL for an in-browser PICOBOOT flash. The MSD
+    // interface is disabled (mask bit 0) so the host never mounts a drive;
+    // a manual BOOTSEL (button held at power-up) still exposes the drive
+    // for drag-and-drop. CDC 1 is deliberately excluded: avrdude does its
+    // own 1200-baud games through the UART passthrough when flashing an
+    // attached Arduino.
+    if ( !tud_cdc_n_connected( 2 ) ) {
+        cdc_line_coding_t coding;
+        tud_cdc_n_get_line_coding( 2, &coding );
+        if ( coding.bit_rate == 1200 ) {
+            reset_usb_boot( 0, 1 ); // bit 0 = disable BOOTSEL MSD, PICOBOOT only
+        }
+    }
+    #endif
 
     #if ASYNC_PASSTHROUGH_ENABLED == 1
     // A DTR rising edge already reset the Arduino and entered flash mode (in

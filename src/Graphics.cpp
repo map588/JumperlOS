@@ -2755,58 +2755,61 @@ void __not_in_flash_func(showAllRowAnimations)() {
 }
 
 
-void printWireStatus(void) {
+void printWireStatus(Stream* target) {
+  // Default to the broadcast Jerial output; the USBSer3 backchannel passes its
+  // own stream so the dump lands on the requesting port instead of the main one.
+  if (target == nullptr) target = (Stream*)&Jerial;
 
   for (int s = 1; s <= 30; s++) {
-    Jerial.print(s);
-    Jerial.print(" ");
+    target->print(s);
+    target->print(" ");
     if (s <= 9) {
-      Jerial.print(" ");
+      target->print(" ");
     }
   }
-  Jerial.println();
+  target->println();
 
   int level = 1;
   for (int r = 0; r < 5; r++) {
     for (int s = 1; s <= 30; s++) {
       if (wireStatus[s][r] == 0) {
-        Jerial.print(".");
+        target->print(".");
       } else {
-        changeTerminalColor(globalState.connections.nets[wireStatus[s][r]].termColor);
-          Jerial.print(wireStatus[s][r]);
-          changeTerminalColor();
+        changeTerminalColor(globalState.connections.nets[wireStatus[s][r]].termColor, true, target);
+          target->print(wireStatus[s][r]);
+          changeTerminalColor(-1, true, target);
       }
-      Jerial.print(" ");
+      target->print(" ");
       if (wireStatus[s][r] < 10) {
-        Jerial.print(" ");
+        target->print(" ");
       }
     }
-    Jerial.println();
+    target->println();
   }
-  Jerial.println("\n\n");
+  target->println("\n\n");
   for (int s = 31; s <= 60; s++) {
-    Jerial.print(s);
-    Jerial.print(" ");
+    target->print(s);
+    target->print(" ");
     if (s < 9) {
-      Jerial.print(" ");
+      target->print(" ");
     }
   }
-  Jerial.println();
+  target->println();
   for (int r = 0; r < 5; r++) {
     for (int s = 31; s <= 60; s++) {
       if (wireStatus[s][r] == 0) {
-        Jerial.print(".");
+        target->print(".");
       } else {
-        changeTerminalColor(globalState.connections.nets[wireStatus[s][r]].termColor);
-        Jerial.print(wireStatus[s][r]);
-        changeTerminalColor();
+        changeTerminalColor(globalState.connections.nets[wireStatus[s][r]].termColor, true, target);
+        target->print(wireStatus[s][r]);
+        changeTerminalColor(-1, true, target);
       }
-      Jerial.print(" ");
+      target->print(" ");
       if (wireStatus[s][r] < 10) {
-        Jerial.print(" ");
+        target->print(" ");
       }
     }
-    Jerial.println();
+    target->println();
   }
 }
 // }

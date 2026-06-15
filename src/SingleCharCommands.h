@@ -183,6 +183,14 @@ public:
      * @return Pointer to command, or nullptr if not found
      */
     const Command* getCommand(char trigger) const;
+
+    /**
+     * @brief Get command by its index in the (sorted) table
+     * @return Pointer to command, or nullptr if index out of range
+     */
+    const Command* getCommandByIndex(int index) const {
+        return (index >= 0 && index < commandCount) ? &commands[index] : nullptr;
+    }
     
     /**
      * @brief Get all commands for a category

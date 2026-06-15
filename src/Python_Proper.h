@@ -187,6 +187,11 @@ void deinitMicroPythonProper(void);
 bool initMicroPythonQuiet(bool preserve_interrupt_char = false);
 bool executeSinglePythonCommand(const char* command, char* result_buffer = nullptr, size_t buffer_size = 0);
 bool executePythonFileContent(const char* src);
+
+// Recursive, machine-readable filesystem listing via the global Python walk().
+// Routes output to `out` (defaults to the current MP stream). Brings up
+// MicroPython if needed. Emits f|path|size / d|path|size lines.
+void runFilesystemWalk(Stream* out = nullptr);
 bool executeSinglePythonCommandFormatted(const char* command, char* result_buffer, size_t buffer_size);
 bool executeSinglePythonCommandFloat(const char* command, float* result);
 float quickPythonCommand(const char* command);

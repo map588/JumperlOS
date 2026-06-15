@@ -2576,9 +2576,67 @@ void addJumperlessPythonFunctions(void) {
       "    print('△ Error setting up globals: ' + str(e))\n"
       "    import traceback\n"
       "    traceback.print_exc()\n");
-  
+
+  // Define walk() globally so a recursive, machine-readable filesystem
+  // listing is available even before a host IDE connects. Mirrors the
+  // body of scripts/ex/viperide_reinit.py. Emits one line per entry:
+  //   f|<path>|<size>   (file)    d|<path>|<size>   (directory, then recurses)
+  // os is imported here so walk() works regardless of addMicroPythonModules
+  // ordering.
+  mp_embed_exec_str(
+      "import os\n"
+      "def walk(p):\n"
+      "    for n in os.listdir(p if p else '/'):\n"
+      "        fn=p+'/'+n\n"
+      "        try: s=os.stat(fn)\n"
+      "        except: s=(0,)*7\n"
+      "        try:\n"
+      "            if s[0] & 0x4000 == 0:\n"
+      "                print('f|'+fn+'|'+str(s[6]))\n"
+      "            elif n not in ('.','..'):\n"
+      "                print('d|'+fn+'|'+str(s[6]))\n"
+      "                walk(fn)\n"
+      "        except:\n"
+      "            print('f|'+p+'/???|'+str(s[6]))\n"
+      "globals()['walk'] = walk\n");
+
   // Mark as successfully loaded
   jumperless_globals_loaded = true;
+}
+
+// Run the global walk() (defined in addJumperlessPythonFunctions) and route
+// its output to `out` (e.g. the USBSer3 backchannel). Brings MicroPython up
+// (full init, so os + VFS are mounted) if it isn't already, then restores the
+// previous MP stream. Emits f|path|size / d|path|size lines, framed.
+void runFilesystemWalk(Stream* out) {
+  if (out == nullptr) {
+    out = global_mp_stream ? global_mp_stream : &Serial;
+  }
+  Stream* prev = global_mp_stream;
+
+  if (!mp_initialized) {
+    initMicroPythonProper(out);
+  }
+  if (!mp_initialized) {
+    out->print("{\"error\":\"mp_init_failed\"}\r\n");
+    return;
+  }
+
+  // Make sure os is imported and walk() is defined (both no-op if already done).
+  addMicroPythonModules();
+  addJumperlessPythonFunctions();
+
+  setGlobalStream(out);
+  out->print("fs_start\r\n");
+  mp_embed_exec_str(
+      "try:\n"
+      "    walk('')\n"
+      "except Exception as e:\n"
+      "    print('fs_error|'+str(e))\n");
+  out->print("fs_end\r\n");
+  out->flush();
+
+  setGlobalStream(prev);
 }
 
 void addMicroPythonModules(bool time, bool machine, bool os, bool math, bool gc) {

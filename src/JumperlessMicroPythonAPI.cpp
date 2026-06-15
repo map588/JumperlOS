@@ -1386,6 +1386,26 @@ extern "C" void jl_soft_reboot( void ) {
     // Import jumperless convenience functions
     mp_embed_exec_str( "try:\n    from jumperless import *\nexcept: pass\n" );
 
+    // Re-define walk() in the fresh VM (addJumperlessPythonFunctions early-returns
+    // after first load, so its walk()/check_interrupt defs are lost on reinit).
+    // Mirrors the definition baked at init so :fs keeps working after a soft reset.
+    mp_embed_exec_str(
+        "import os\n"
+        "def walk(p):\n"
+        "    for n in os.listdir(p if p else '/'):\n"
+        "        fn=p+'/'+n\n"
+        "        try: s=os.stat(fn)\n"
+        "        except: s=(0,)*7\n"
+        "        try:\n"
+        "            if s[0] & 0x4000 == 0:\n"
+        "                print('f|'+fn+'|'+str(s[6]))\n"
+        "            elif n not in ('.','..'):\n"
+        "                print('d|'+fn+'|'+str(s[6]))\n"
+        "                walk(fn)\n"
+        "        except:\n"
+        "            print('f|'+p+'/???|'+str(s[6]))\n"
+        "globals()['walk'] = walk\n" );
+
 #ifdef USE_TINYUSB
     // Final USB service to ensure clean state
     for ( int i = 0; i < 5; i++ ) {

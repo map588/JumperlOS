@@ -35,6 +35,12 @@
 bool oledConnected = false;
 bool oledUsingHardwiredPins = false; // Global flag: true if using RP6/RP7 (GPIO 6/7), false if using crossbar
 
+// USBSer3 framebuffer streaming state (see oled.h / SingleCharCommands.cpp)
+volatile bool oledSer3Stream = false;
+volatile uint8_t oledSer3Enc = OLED_ENC_QUARTER;
+Stream* oledSer3Target = nullptr;
+static uint32_t oledSer3StreamHash = 0;  // last streamed frame hash (change detection)
+
 #define OLED_RESET -1       // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 
@@ -1625,6 +1631,7 @@ void oled::priorityFlushHeldFrame() {
         dumpFrameBufferQuarterSize( 1 );
         Serial.flush();
     }
+    streamFrameToSer3();
 }
 
 // Backward-compatible two-line helper. Splits `text` on a single '\n'
@@ -2185,6 +2192,10 @@ bool oled::show( int waitToFinish ) {
     if ( jumperlessConfig.top_oled.show_in_terminal > 0 ) {
         dumpFrameBufferQuarterSize( 1 );
     }
+    // USBSer3 machine stream (independent of the terminal mirror above). Runs
+    // before the connected check so the host sees the framebuffer even when no
+    // physical panel is attached.
+    streamFrameToSer3();
     if ( !oledConnected ) {
         // Serial.println( "OLED not connected" );
         return false;
@@ -3569,6 +3580,114 @@ void oled::dumpFrameBuffer( Stream* stream ) {
     }
 
     stream->println( "└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘" );
+}
+
+// Machine-readable framebuffer dump. quarter/full = ASCII art; b64/raw emit
+// the raw SSD1306 page buffer (width * ceil(height/8) bytes) so a host can
+// reconstruct pixels directly. Each frame is wrapped in a tagged envelope.
+void oled::dumpFrameBufferEncoded( Stream* stream, uint8_t enc ) {
+    if ( stream == nullptr ) stream = &Jerial;
+
+    if ( enc == OLED_ENC_FULL ) {
+        dumpFrameBuffer( stream );
+        return;
+    }
+
+    uint8_t* buffer = oledGetDumpBuffer();
+    if ( !buffer ) {
+        stream->print( "oled{none}\r\n" );
+        return;
+    }
+
+    const int w = displayWidth;
+    const int h = displayHeight;
+    const size_t nbytes = (size_t)w * ( ( h + 7 ) / 8 );
+
+    if ( enc == OLED_ENC_QUARTER ) {
+        // Quarter-block art, no ANSI positioning (machine/log friendly).
+        static const char* qb[ 16 ] = {
+            " ", "▘", "▝", "▀", "▖", "▌", "▞", "▛",
+            "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█" };
+        stream->printf( "oled_q{%dx%d:\r\n", w, h );
+        for ( int blockRow = 0; blockRow < h / 2; blockRow++ ) {
+            for ( int blockCol = 0; blockCol < w / 2; blockCol++ ) {
+                uint8_t mask = 0;
+                for ( int dy = 0; dy < 2; dy++ ) {
+                    for ( int dx = 0; dx < 2; dx++ ) {
+                        int row = blockRow * 2 + dy;
+                        int col = blockCol * 2 + dx;
+                        int idx = ( row / 8 ) * w + col;
+                        if ( ( buffer[ idx ] >> ( row % 8 ) ) & 0x01 )
+                            mask |= ( 1 << ( dy * 2 + dx ) );
+                    }
+                }
+                stream->print( qb[ mask ] );
+            }
+            stream->print( "\r\n" );
+        }
+        stream->print( "}\r\n" );
+        return;
+    }
+
+    if ( enc == OLED_ENC_RAW ) {
+        stream->printf( "oled_raw{%dx%d:%u:", w, h, (unsigned)nbytes );
+        stream->write( buffer, nbytes );
+        stream->print( "}\r\n" );
+        return;
+    }
+
+    // OLED_ENC_B64 (default): base64 of the page buffer.
+    static const char b64tab[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    stream->printf( "oled_b64{%dx%d:", w, h );
+    size_t i = 0;
+    char out[ 4 ];
+    while ( i + 3 <= nbytes ) {
+        uint32_t v = ( (uint32_t)buffer[ i ] << 16 ) |
+                     ( (uint32_t)buffer[ i + 1 ] << 8 ) | buffer[ i + 2 ];
+        out[ 0 ] = b64tab[ ( v >> 18 ) & 63 ];
+        out[ 1 ] = b64tab[ ( v >> 12 ) & 63 ];
+        out[ 2 ] = b64tab[ ( v >> 6 ) & 63 ];
+        out[ 3 ] = b64tab[ v & 63 ];
+        stream->write( (const uint8_t*)out, 4 );
+        i += 3;
+    }
+    size_t rem = nbytes - i;
+    if ( rem == 1 ) {
+        uint32_t v = (uint32_t)buffer[ i ] << 16;
+        out[ 0 ] = b64tab[ ( v >> 18 ) & 63 ];
+        out[ 1 ] = b64tab[ ( v >> 12 ) & 63 ];
+        out[ 2 ] = '=';
+        out[ 3 ] = '=';
+        stream->write( (const uint8_t*)out, 4 );
+    } else if ( rem == 2 ) {
+        uint32_t v = ( (uint32_t)buffer[ i ] << 16 ) | ( (uint32_t)buffer[ i + 1 ] << 8 );
+        out[ 0 ] = b64tab[ ( v >> 18 ) & 63 ];
+        out[ 1 ] = b64tab[ ( v >> 12 ) & 63 ];
+        out[ 2 ] = b64tab[ ( v >> 6 ) & 63 ];
+        out[ 3 ] = '=';
+        stream->write( (const uint8_t*)out, 4 );
+    }
+    stream->print( "}\r\n" );
+}
+
+// Push one frame to the USBSer3 backchannel if streaming is enabled. Cheap
+// FNV-1a change detection skips identical frames; a full TX FIFO (host not
+// draining) drops the frame rather than stalling the OLED/UI render path.
+void oled::streamFrameToSer3() {
+    if ( !oledSer3Stream || oledSer3Target == nullptr ) return;
+    uint8_t* sbuf = oledGetDumpBuffer();
+    if ( !sbuf ) return;
+    size_t n = (size_t)displayWidth * ( ( displayHeight + 7 ) / 8 );
+    uint32_t hsh = 2166136261u;
+    for ( size_t i = 0; i < n; i++ ) {
+        hsh ^= sbuf[ i ];
+        hsh *= 16777619u;
+    }
+    if ( hsh == oledSer3StreamHash ) return;        // unchanged frame, skip
+    if ( USBSer3.availableForWrite() <= 0 ) return;  // host not draining, drop
+    dumpFrameBufferEncoded( oledSer3Target, oledSer3Enc );
+    oledSer3StreamHash = hsh;
 }
 
 // SMALL FONT FUNCTIONS

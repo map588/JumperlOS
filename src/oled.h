@@ -311,6 +311,13 @@ public:
     // Debug functions
     void dumpFrameBufferQuarterSize(int clearFirst = 0, int x_pos = 40, int y_pos = 24, int border = 1);
     void dumpFrameBuffer(Stream* stream = nullptr);
+    // Machine-readable framebuffer dump in a selectable encoding (see OledDumpEnc):
+    // quarter/full = ASCII art, b64/raw = compact SSD1306 page-buffer bytes for host UIs.
+    void dumpFrameBufferEncoded(Stream* stream, uint8_t enc);
+    // Push the current framebuffer to oledSer3Target if streaming is enabled.
+    // Change-detected (skips identical frames) and back-pressure aware (drops
+    // when the host isn't draining), so it is safe to call on every show().
+    void streamFrameToSer3();
     
     // Positioning functions (simplified)
     void getCenteredPosition(const char* str, int16_t* x, int16_t* y, PositionMode mode);
@@ -637,6 +644,23 @@ extern int numFonts;
 
 // Global instance
 extern class oled oled;
+
+// =====================================================================
+// USBSer3 framebuffer streaming (push-on-show)
+// =====================================================================
+// When oledSer3Stream is true, oled::show() / priorityFlushHeldFrame()
+// emit one machine-readable frame to oledSer3Target (the USBSer3
+// backchannel) in the oledSer3Enc encoding. Driven from the backchannel
+// verb :oled:stream:on[:enc] / :oled:stream:off (SingleCharCommands.cpp).
+enum OledDumpEnc {
+    OLED_ENC_QUARTER = 0,  // 2x2 quarter-block ASCII art (default, human-readable)
+    OLED_ENC_FULL    = 1,  // full per-pixel block ASCII art
+    OLED_ENC_B64     = 2,  // base64 of the raw SSD1306 page buffer
+    OLED_ENC_RAW     = 3   // raw bytes of the SSD1306 page buffer
+};
+extern volatile bool oledSer3Stream;   // push a frame on every show()
+extern volatile uint8_t oledSer3Enc;   // OledDumpEnc encoding for the stream
+extern Stream* oledSer3Target;         // destination (set to &USBSer3 by the backchannel)
 
 #endif
 

@@ -298,49 +298,7 @@ void SingleCharCommands::printMenu( int extraMenuLevel ) {
 
         menuItemCount[ showExtraMenu ] = shownMenuItems;
     }
-    /*
-    int numberOfMenuItems = 0;
-
-    // Count items at this level
-    for (int i = 0; i < commandCount; i++) {
-        if (commands[i].showInMenu && commands[i].menuLevel <= extraMenuLevel) {
-            numberOfMenuItems++;
-        }
-    }
-
-    float steps = (float)highSaturationBrightColorsCount / (float)(numberOfMenuItems + 5);
-    cycleTerminalColor(true, steps, true, &Jerial);
-
-    Jerial.println("\n\n\r\t\tMenu\n\r");
-    Jerial.println("\t'help' for docs or [command]?\n\r");
-    Jerial.println();
-
-    // Group by category and print
-    CommandCategory currentCat = CAT_CONNECTIONS;
-    bool firstInCategory = true;
-
-    for (int i = 0; i < commandCount; i++) {
-        if (!commands[i].showInMenu || commands[i].menuLevel > extraMenuLevel) {
-            continue;
-        }
-
-        // Add spacing between categories
-        if (commands[i].category != currentCat) {
-            Jerial.println();
-            currentCat = commands[i].category;
-            firstInCategory = true;
-        }
-
-        cycleTerminalColor(true, steps, true, &Jerial);
-        Jerial.print("\t");
-        Jerial.print(commands[i].trigger);
-        Jerial.print(" = ");
-        Jerial.println(commands[i].shortDesc);
-    }
-
-    Jerial.println();
-    Jerial.flush();
-    */
+ 
 }
 
 void SingleCharCommands::printCommandHelp( char cmdChar ) {
@@ -516,7 +474,7 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( 'P', "PSRAM test (memory integrity + speed)",
                      "Run comprehensive PSRAM tests: size info, integrity check, speed comparison vs SRAM.",
-                     cmd_psramTest, MENU_ADVANCED, CAT_HARDWARE );
+                     cmd_psramTest, MENU_ADVANCED, CAT_HARDWARE, true, SER3_IRRELEVANT );
 
     registerCommand( '>', "send Python formatted command",
                      "Execute a single Python command. Usage: > print('hello')",
@@ -546,7 +504,7 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( '~', "print config",
                      "Display current configuration to serial.",
-                     cmd_printConfig, MENU_BASIC, CAT_SETTINGS );
+                     cmd_printConfig, MENU_BASIC, CAT_SETTINGS, true, SER3_IRRELEVANT );
 
     // === Hardware commands ===
     registerCommand( 'r', "reset Arduino (rt/rb)",
@@ -593,11 +551,11 @@ void SingleCharCommands::initializeCommands( ) {
     // Phase 5 PSRAM / undo / cache telemetry
     registerCommand( '^', "undo last change",
                      "Revert the last connection or DAC change.",
-                     cmd_undo, MENU_STANDARD, CAT_DEBUG );
+                     cmd_undo, MENU_STANDARD, CAT_DEBUG, true, SER3_MODIFIES_STATE );
 
     registerCommand( '&', "redo last undone change",
                      "Reapply the last change that was undone.",
-                     cmd_redo, MENU_STANDARD, CAT_DEBUG );
+                     cmd_redo, MENU_STANDARD, CAT_DEBUG, true, SER3_MODIFIES_STATE );
 
     registerCommand( '_', "history status",
                      "Print the undo log status (size, position, recent labels).",
@@ -609,11 +567,11 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( ')', "PSRAM / file cache status",
                      "Show PSRAM arena, file cache, and undo log status.",
-                     cmd_psramStatus, MENU_DEBUG, CAT_DEBUG );
+                     cmd_psramStatus, MENU_DEBUG, CAT_DEBUG, true, SER3_IRRELEVANT );
 
     registerCommand( '%', "toggle PSRAM debug trace",
                      "Toggle verbose trace prints for PSRAM/FileCache/Undo.",
-                     cmd_psramDebugToggle, MENU_DEBUG, CAT_DEBUG );
+                     cmd_psramDebugToggle, MENU_DEBUG, CAT_DEBUG, true, SER3_MODIFIES_STATE );
 
     registerCommand( 'g', "print gpio state",
                      "Display state of all GPIO pins.",
@@ -625,7 +583,7 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( ';', "print wire status",
                      "Print wire status to terminal.",
-                     cmd_printWireStatus, MENU_DEBUG, CAT_DEBUG );
+                     cmd_printWireStatus, MENU_DEBUG, CAT_DEBUG);
 
     registerCommand( 'H', "fakeGPIO debug (live)",
                      "Live-updating FakeGPIO status showing TDM voltages and pin states.",
@@ -695,7 +653,7 @@ void SingleCharCommands::initializeCommands( ) {
 
     registerCommand( 'R', "show board LEDs (R!=toggle R=one-shot)",
                      "Display board LEDs in terminal. R to toggle persistent mode, R! for one-shot dump.",
-                     cmd_showBoardLEDs, MENU_ADVANCED, CAT_APPS );
+                     cmd_showBoardLEDs, MENU_ADVANCED, CAT_APPS, true, SER3_MODIFIES_STATE );
 
     registerCommand( '\'', "show startup animation",
                      "Play the startup animation.",
@@ -2092,8 +2050,11 @@ CommandResult cmd_disableUSBStorage( char c, const String& line ) {
 }
 
 CommandResult cmd_listFilesystem( char c, const String& line ) {
-    // Implementation would list all files recursively
-    Jerial.println( "Filesystem listing not yet implemented" );
+    // Recursive, machine-readable listing via the global Python walk()
+    // (defined at MicroPython init). Emits f|path|size / d|path|size lines.
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Jerial;
+    runFilesystemWalk( target );
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -2213,13 +2174,13 @@ CommandResult cmd_readADC( char c, const String& line ) {
         } else if ( ch == 'i' ) {
             if ( arg.length( ) > 1 && arg[ 1 ] == '1' ) {
                 extern INA219 INA1;
-                float iSense = INA1.getCurrent_mA( );
+                float iSense = INA1.getCurrent_mA()- currentReadingOffset1_mA;
                 target->print( "ina1 = " );
                 target->print( iSense );
                 target->println( "mA" );
             } else {
                 extern INA219 INA0;
-                float iSense = INA0.getCurrent_mA( );
+                float iSense = INA0.getCurrent_mA()- currentReadingOffset0_mA;
                 target->print( "ina0 = " );
                 target->print( iSense );
                 target->print( "mA \t" );
@@ -3324,7 +3285,8 @@ CommandResult cmd_erattaClear( char c, const String& line ) {
 }
 
 CommandResult cmd_printWireStatus( char c, const String& line ) {
-    printWireStatus( );
+    Stream* target = Jerial.getResponseTarget( );
+    printWireStatus( target );   // nullptr -> Jerial (main); backchannel target -> port 7
     return CMD_DONT_SHOW_MENU;
 }
 
@@ -3365,160 +3327,3 @@ CommandResult cmd_uartStats( char c, const String& line ) {
 }
 
 
-// ============================================================================
-// USBSer3 Backchannel - Machine-Parseable Commands
-// ============================================================================
-
-extern Adafruit_USBD_CDC USBSer3;
-
-static void usbSer3_printNormalized(const String& s) {
-    for (unsigned int i = 0; i < s.length(); i++) {
-        char ch = s[i];
-        if (ch == '\n') {
-            USBSer3.print("\r\n");
-            if (i + 1 < s.length() && s[i + 1] == '\r') i++;
-        } else if (ch == '\r') {
-            USBSer3.print("\r\n");
-            if (i + 1 < s.length() && s[i + 1] == '\n') i++;
-        } else {
-            USBSer3.write(ch);
-        }
-    }
-}
-
-static void usbSer3_sendAllStatus() {
-    extern JumperlessState globalState;
-    extern const char firmwareVersion[];
-
-    SlotManager& mgr = SlotManager::getInstance();
-
-    USBSer3.print("{\"version\":\"");
-    USBSer3.print(firmwareVersion);
-    USBSer3.print("\",\"slot\":");
-    USBSer3.print(mgr.getActiveSlot());
-    USBSer3.print(",\r\n");
-
-    USBSer3.print("\"adc\":{");
-    for (int i = 0; i < 5; i++) {
-        if (i > 0) USBSer3.print(',');
-        USBSer3.printf("\"adc%d\":%.4f", i, readAdcVoltage(i, 8));
-    }
-    USBSer3.print("},\r\n");
-
-    USBSer3.printf("\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":%.3f},\r\n",
-                   INA0.getCurrent_mA(), INA1.getCurrent_mA());
-
-    const char* readingNames[] = {"low", "high", "float", "unknown"};
-    USBSer3.print("\"gpio\":[");
-    for (int i = 0; i < 10; i++) {
-        if (i > 0) USBSer3.print(',');
-        int reading = gpioReading[i];
-        if (reading < 0 || reading > 3) reading = 3;
-        USBSer3.printf("{\"net\":%d,\"reading\":\"%s\"}", gpioNet[i], readingNames[reading]);
-    }
-    USBSer3.print("],\r\n");
-
-    String json = JsonState::getJumperlessStateJSON("nets");
-    if (json.length() > 0) {
-        USBSer3.print(",\"nets\":");
-        usbSer3_printNormalized(json);
-    }
-
-    json = JsonState::getJumperlessStateJSON("power");
-    if (json.length() > 0) {
-        USBSer3.print(",\"power\":");
-        usbSer3_printNormalized(json);
-    }
-
-    USBSer3.print("}\r\n");
-}
-
-static void usbSer3_sendYAML() {
-    extern JumperlessState globalState;
-    String yaml;
-    if (globalState.toYAML(yaml, 0)) {
-        USBSer3.print("---YAML_START---\r\n");
-        usbSer3_printNormalized(yaml);
-        USBSer3.print("---YAML_END---\r\n");
-    } else {
-        USBSer3.print("{\"error\":\"yaml_failed\"}\r\n");
-    }
-}
-
-static void usbSer3_sendADC() {
-    USBSer3.print("{\"adc\":{");
-    for (int i = 0; i < 5; i++) {
-        if (i > 0) USBSer3.print(',');
-        USBSer3.printf("\"adc%d\":%.4f", i, readAdcVoltage(i, 8));
-    }
-    USBSer3.printf("},\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":%.3f}}\r\n",
-                   INA0.getCurrent_mA(), INA1.getCurrent_mA());
-}
-
-static void usbSer3_sendGPIO() {
-    const char* readingNames[] = {"low", "high", "float", "unknown"};
-    USBSer3.print("{\"gpio\":[");
-    for (int i = 0; i < 10; i++) {
-        if (i > 0) USBSer3.print(',');
-        int reading = gpioReading[i];
-        if (reading < 0 || reading > 3) reading = 3;
-        USBSer3.printf("{\"net\":%d,\"reading\":\"%s\"}", gpioNet[i], readingNames[reading]);
-    }
-    USBSer3.print("]}\r\n");
-}
-
-static void usbSer3_sendNets() {
-    String json = JsonState::getJumperlessStateJSON("nets");
-    if (json.length() > 0) {
-        usbSer3_printNormalized(json);
-        USBSer3.print("\r\n");
-    } else {
-        USBSer3.print("{\"nets\":[]}\r\n");
-    }
-}
-
-static bool handleUSBSer3Special(char c) {
-    bool handled = true;
-    switch (c) {
-        case 'A': usbSer3_sendAllStatus(); break;
-        case 'V': usbSer3_sendADC();       break;
-        case 'G': usbSer3_sendGPIO();      break;
-        case 'N': usbSer3_sendNets();      break;
-        case 'K': usbSer3_sendYAML();      break;
-        default:  handled = false;          break;
-    }
-    if (handled) USBSer3.flush();
-    return handled;
-}
-
-void SingleCharCommands::serviceUSBSer3() {
-    while (USBSer3.available() > 0) {
-        char c = (char)USBSer3.read();
-        if (c <= 32 || c >= 127) continue;
-
-        if (handleUSBSer3Special(c)) continue;
-
-        Ser3Access access = getBackchannelAccess(c);
-        if (access != SER3_ALLOWED) {
-            const char* reason;
-            switch (access) {
-                case SER3_INTERACTIVE:    reason = "interactive";    break;
-                case SER3_MODIFIES_STATE: reason = "status_only";   break;
-                case SER3_IRRELEVANT:     reason = "irrelevant";    break;
-                case SER3_NOT_A_COMMAND:  reason = "not_a_command"; break;
-                default:                  reason = "blocked";       break;
-            }
-            USBSer3.printf("{\"error\":\"blocked\",\"cmd\":\"%c\",\"reason\":\"%s\"}\r\n", c, reason);
-            USBSer3.flush();
-            continue;
-        }
-
-        Jerial.setCurrentResponseTarget(&USBSer3);
-
-        char cmdStr[2] = {c, 0};
-        executeCommand(c, String(cmdStr));
-
-        Jerial.clearCurrentResponseTarget();
-        USBSer3.flush();
-    }
-}
