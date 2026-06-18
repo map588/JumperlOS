@@ -2082,6 +2082,20 @@ bool saveConfig(void) {
         fileCacheFlushNow("/config.txt");
         fileCacheSpiftlSync("saveConfig", true);
 
+        // Keep the durable EEPROM store (FS-wipe survivor: calibration + identity)
+        // in sync with config.txt. eepromReconcileAfterConfig() lets the EEPROM
+        // store WIN over config.txt on boot, so a calibration change written only
+        // to config.txt - which is exactly what the common saveConfigIncremental()
+        // path does - silently reverts to the stale EEPROM value on the next
+        // reboot. Mirror the kept fields and commit them here so the explicit save
+        // is fully durable. Both calls self-gate: eepromPersistFromConfig() only
+        // flags a commit when a kept field actually changed, and eepromCommitSafe()
+        // no-ops when nothing is pending, so ordinary (non-calibration) saves pay
+        // nothing extra. A calibration save trades a brief Core-2 pause for
+        // correctness, which is acceptable for an explicit config save.
+        eepromPersistFromConfig();
+        eepromCommitSafe();
+
         readSettingsFromConfig();
     }
     return success;

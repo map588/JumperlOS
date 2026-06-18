@@ -185,7 +185,7 @@ ServiceStatus MpRemoteService::service( ) {
                 case 0x1B: // ESC (arrow-key / escape sequences)
                     break; // legitimate: fall through to feed the REPL
                 default:
-                    continue; // stray control byte: drop it
+                    continue; // stray control byte: drop it                  //!!!!!!!!!!!!
             }
         }
 

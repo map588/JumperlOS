@@ -166,9 +166,17 @@ void eepromReconcileAfterConfig(void) {
 void eepromPersistFromConfig(void) {
   eepromBeginOnce();
   fillStoreFromConfig();
+  // Only flag a pending flash commit when a kept field actually changed. This
+  // keeps the EEPROM commit truly lazy: a saveConfig() that touched only
+  // non-calibration settings leaves the store byte-identical, so no commit is
+  // scheduled and eepromCommitSafe() stays a no-op (no Core-2 pause / flash
+  // erase). EEPROM.get/put operate on the in-RAM mirror, so this diff is cheap.
+  EepromStore existing;
+  EEPROM.get(EEPROM_STORE_ADDRESS, existing);
+  bool changed = (memcmp(&existing, &g_store, sizeof(EepromStore)) != 0);
   EEPROM.put(EEPROM_STORE_ADDRESS, g_store);
   g_storeValid = true;
-  eepromMarkDirty();
+  if (changed) eepromMarkDirty();
 }
 
 bool eepromCommitHeld(void) {

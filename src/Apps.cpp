@@ -618,7 +618,10 @@ void probeCalibApp( void ) {
 
 
 
-            Serial.printf( "                                  \rraw: %d enc: %d reading: %d max: %d node: %s mode: %s v: %0.4f",
+            // \r first (return to column 0), then content, then EL (\033[K) to
+            // wipe leftover chars from a longer previous line. Spaces-before-\r
+            // only extends the line rightward and never clears it.
+            Serial.printf( "\rraw: %d enc: %d reading: %d max: %d node: %s mode: %s v: %0.4f \033[K",
                            lastValidProbeRead, encoderPosition, rowProbed, jumperlessConfig.calibration.probe_max,
                            definesToChar( nodeSelected ), measureOrSelect ? "measure" : "select",
                            jumperlessConfig.calibration.measure_mode_output_voltage );
@@ -782,6 +785,7 @@ void probeCalibApp( void ) {
             oled.checkConnection(true);
             if (oled.isConnected()) {
                 oled.showMultiLineSmallText( "Probe calibration\n\rsaved!\n\rReturning to menu", true, true );
+                Serial.println( "\n\rProbe calibration saved!\n\rReturning to menu" );
             }
             
 
