@@ -2188,8 +2188,14 @@ bool isStartupComplete() {
 // runs every task() iteration as part of the CRITICAL passthrough service),
 // instead of being deferred to a blocking flashArduino() servicing loop.
 static bool s_dtr_state[3] = { false, false, false };
+static bool s_rts_prev = false;
 static bool s_dtr_pulse_detected = false;
 static uint32_t s_last_dtr_reset_time = 0;
+
+// Set to 1 to log DTR/RTS line transitions and reset triggers on Serial (CDC0 /
+// Main). Use this to confirm whether the host's avrdude actually drives a clean
+// reset edge to the device (e.g. avrdude 8.0 on Windows). Off in normal builds.
+#define DEBUG_DTR_RESET 0
 // Debounce between accepted rising edges. Small enough that avrdude's
 // open-assert and its later real reset-assert (≈250ms apart on avrdude 6.3,
 // less on newer versions) both get through, but large enough to swallow
@@ -2235,22 +2241,48 @@ static void triggerArduinoFlashReset() {
 
 void checkDTRState(Adafruit_USBD_CDC& cdc) {
     bool current_dtr = cdc.dtr();
-    bool prev = s_dtr_state[2];
+    // Adafruit_USBD_CDC exposes no rts() accessor, so read the raw CDC line-state
+    // bit (bit 1 = RTS). checkDTRState is only ever called with USBSer1, the
+    // passthrough CDC interface, so the fixed itf is correct here.
+    bool current_rts = ( tud_cdc_n_get_line_state( ASYNC_PASSTHROUGH_CDC_ITF ) & 0x02 ) != 0;
+    bool prev_dtr = s_dtr_state[2];
+    bool prev_rts = s_rts_prev;
 
     // Maintain the small history (used by some diagnostics) and detect the edge.
     s_dtr_state[0] = s_dtr_state[1];
     s_dtr_state[1] = s_dtr_state[2];
     s_dtr_state[2] = current_dtr;
+    s_rts_prev = current_rts;
 
-    // Cap emulation: only a rising edge (host asserts DTR) resets - like the
-    // series capacitor passing the falling edge of DTR# into the RESET pin.
-    if ( !( prev == false && current_dtr == true ) ) return;
+#if DEBUG_DTR_RESET == 1
+    if ( current_dtr != prev_dtr || current_rts != prev_rts ) {
+        Serial.printf( "[DTR] dtr %d->%d  rts %d->%d  @%lu\n",
+                       prev_dtr, current_dtr, prev_rts, current_rts, millis() );
+        Serial.flush();
+    }
+#endif
+
+    // Cap emulation: a rising edge on DTR (or RTS) resets - like the series
+    // capacitor passing the falling edge of DTR#/RTS# into the RESET pin. We
+    // watch BOTH because avrdude's "arduino" programmer toggles DTR *and* RTS to
+    // reset, and on some host/driver/avrdude combos (notably avrdude 8.0 on
+    // Windows) only one of them survives as a clean USB control-line edge that we
+    // can poll. Either rising edge triggers the reset; the debounce below absorbs
+    // the near-simultaneous second line.
+    bool rising = ( prev_dtr == false && current_dtr == true ) ||
+                  ( prev_rts == false && current_rts == true );
+    if ( !rising ) return;
 
     uint32_t now = millis();
     if ( now < 4000 ) return;                                        // ignore boot-time toggles
     if ( s_dtr_lockout_until && now < s_dtr_lockout_until ) return;  // post-flash lockout
     if ( now - s_last_dtr_reset_time < DTR_MIN_RESET_INTERVAL_MS ) return;
     s_last_dtr_reset_time = now;
+
+#if DEBUG_DTR_RESET == 1
+    Serial.printf( "[DTR] -> cap-emulation reset @%lu\n", now );
+    Serial.flush();
+#endif
 
     triggerArduinoFlashReset();
 }
