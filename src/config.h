@@ -71,6 +71,7 @@ struct config {
         int  arduino = 0;
         bool  usb_mass_storage = false;
         int  show_probe_current = 0;  // moved out of EEPROM - config is source of truth
+        bool show_node_errors = true;
     } debug;
 
     struct routing {

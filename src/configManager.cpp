@@ -667,6 +667,7 @@ void updateConfigFromFile(const char* filename) {
             else if (strcmp(key, "arduino") == 0) jumperlessConfig.debug.arduino = parseInt(value);
             else if (strcmp(key, "usb_mass_storage") == 0) jumperlessConfig.debug.usb_mass_storage = parseBool(value);
             else if (strcmp(key, "show_probe_current") == 0) jumperlessConfig.debug.show_probe_current = parseInt(value);
+            else if (strcmp(key, "show_node_errors") == 0) jumperlessConfig.debug.show_node_errors = parseBool(value);
         } else if (strcmp(section, "routing") == 0) {
             if (strcmp(key, "stack_paths") == 0) {
                 jumperlessConfig.routing.stack_paths = parseInt(value);
@@ -1014,6 +1015,7 @@ bool saveConfigToFile(const char* filename) {
     file.print("arduino = "); file.print(jumperlessConfig.debug.arduino); file.println(";");
     file.print("usb_mass_storage = "); file.print(jumperlessConfig.debug.usb_mass_storage ? 1:0); file.println(";");
     file.print("show_probe_current = "); file.print(jumperlessConfig.debug.show_probe_current); file.println(";");
+    file.print("show_node_errors = "); file.print(jumperlessConfig.debug.show_node_errors ? 1:0); file.println(";");
     file.println();
 
     // Write routing settings section
@@ -1189,6 +1191,7 @@ bool configHasChanges() {
     if (jumperlessConfig.debug.arduino != lastSavedConfig.debug.arduino) return true;
     if (jumperlessConfig.debug.usb_mass_storage != lastSavedConfig.debug.usb_mass_storage) return true;
     if (jumperlessConfig.debug.show_probe_current != lastSavedConfig.debug.show_probe_current) return true;
+    if (jumperlessConfig.debug.show_node_errors != lastSavedConfig.debug.show_node_errors) return true;
     
     // Routing section
     if (jumperlessConfig.routing.stack_paths != lastSavedConfig.routing.stack_paths) return true;
@@ -2165,6 +2168,14 @@ bool provisionEmbeddedFile(const char* filename, const unsigned char* data, unsi
  * This is called on first boot or firmware update
  */
 void provisionFirmwareFiles(bool print) {
+#if defined(OG_JUMPERLESS)
+    // These are all images/*.bin OLED/breadboard-LED display assets. The OG has
+    // no OLED and 1 LED per row, so they're unused - and writing them at boot
+    // (each file open make_shared's a ~4KB FatFS FIL) aborts on the OG's tight,
+    // fragmented heap. Skip entirely; mark provisioned so we don't retry.
+    jumperlessConfig.firmware.files_provisioned = true;
+    return;
+#endif
 
    if (print) {
     changeTerminalColor( 162, true );
@@ -2481,6 +2492,8 @@ void printConfigSectionToSerial(int section, bool showNames, bool pasteable) {
         Serial.print("usb_mass_storage = "); Serial.print(getStringFromTable(jumperlessConfig.debug.usb_mass_storage, boolTable)); Serial.println(";");
         if (pasteable == true) Serial.print("`[debug] ");
         Serial.print("show_probe_current = "); Serial.print(jumperlessConfig.debug.show_probe_current); Serial.println(";");
+        if (pasteable == true) Serial.print("`[debug] ");
+        Serial.print("show_node_errors = "); Serial.print(getStringFromTable(jumperlessConfig.debug.show_node_errors, boolTable)); Serial.println(";");
     }
     cycleTerminalColor();
     // Print routing settings section
@@ -3477,6 +3490,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "arduino") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.arduino);
         else if (strcmp(key, "usb_mass_storage") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.usb_mass_storage);
         else if (strcmp(key, "show_probe_current") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.show_probe_current);
+        else if (strcmp(key, "show_node_errors") == 0) sprintf(oldValue, "%d", jumperlessConfig.debug.show_node_errors);
     }
     else if (strcmp(section, "routing") == 0) {
         if (strcmp(key, "stack_paths") == 0) sprintf(oldValue, "%d", jumperlessConfig.routing.stack_paths);
@@ -3625,6 +3639,7 @@ void updateConfigValue(const char* section, const char* key, const char* value) 
         else if (strcmp(key, "arduino") == 0) jumperlessConfig.debug.arduino = parseInt(value);
         else if (strcmp(key, "usb_mass_storage") == 0) jumperlessConfig.debug.usb_mass_storage = parseBool(value);
         else if (strcmp(key, "show_probe_current") == 0) jumperlessConfig.debug.show_probe_current = parseInt(value);
+        else if (strcmp(key, "show_node_errors") == 0) jumperlessConfig.debug.show_node_errors = parseBool(value);
     }
     else if (strcmp(section, "routing") == 0) {
         if (strcmp(key, "stack_paths") == 0) jumperlessConfig.routing.stack_paths = parseInt(value);

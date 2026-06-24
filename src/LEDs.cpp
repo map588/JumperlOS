@@ -116,6 +116,12 @@ void ledClass::begin(void) {
 
  
 
+#if defined(OG_JUMPERLESS)
+  // OG: one physical chain on GPIO 25. We size the buffer to LED_COUNT + LED_COUNT_TOP (445 pixels)
+  // to prevent out-of-bounds reads/writes on special LEDs.
+  splitLEDs = 0;
+  bbleds.updateLength(LED_COUNT + LED_COUNT_TOP);
+#else
   if (jumperlessConfig.hardware.revision <= 3) {
     // Rev 3 and below use single strip for all LEDs
     splitLEDs = 0;
@@ -124,6 +130,7 @@ void ledClass::begin(void) {
     // Rev 4+ already initialized with correct sizes
     splitLEDs = 1;
     }
+#endif
 
   // CRITICAL: Call begin() AFTER updateLength() so DMA is set up with correct buffer size
   if (splitLEDs == 1) {
@@ -253,7 +260,19 @@ inline void __not_in_flash_func(setPixelColorRamHelper)(uint8_t* pixels, uint16_
   p[2] = b; // Blue
 }
 
+// One-past-the-last valid pixel index for the active strip configuration.
+// The RAM-resident fast path (setPixelColorRamHelper) writes the raw NeoPixel
+// buffer with no bounds check, so an out-of-range index walks straight into the
+// heap. This matters on the OG, whose 111-pixel buffer is far smaller than the
+// V5 image/animation data that shared graphics paths emit (a frame indexing up
+// to ~445 was overwriting heap singletons and hard-faulting on boot).
+static inline uint16_t __not_in_flash_func(ledMaxPixels)() {
+  return (splitLEDs == 1) ? (uint16_t)(LED_COUNT + topleds.numPixels())
+                          : bbleds.numPixels();
+}
+
 void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  if (n >= ledMaxPixels()) return;
   if (n >= LED_COUNT && splitLEDs == 1) {
     // topleds.setPixelColor(n - LED_COUNT, r, g, b);
     if (ram_top_pixels) {
@@ -275,6 +294,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t
   }
 
 void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
+  if (n >= ledMaxPixels()) return;
   uint8_t r = (uint8_t)(c >> 16);
   uint8_t g = (uint8_t)(c >> 8);
   uint8_t b = (uint8_t)c;
@@ -303,6 +323,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
 // Direct buffer access - NO dirty marking
 // Used by clear functions to avoid triggering premature LED updates
 void __not_in_flash_func(ledClass::setPixelColorDirect)(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  if (n >= ledMaxPixels()) return;
   if (n >= LED_COUNT && splitLEDs == 1) {
     if (ram_top_pixels) {
         setPixelColorRamHelper(ram_top_pixels, n - LED_COUNT, r, g, b);
@@ -377,7 +398,10 @@ void __not_in_flash_func(ledClass::clear)(void) {
     topDirty = true; // Mark top strip as needing refresh
     }
   
-  int bb_count = (splitLEDs == 1) ? LED_COUNT : (LED_COUNT + LED_COUNT_TOP);
+  // Clear exactly the buffer that was allocated. On the OG the single strip is
+  // LED_COUNT pixels (not LED_COUNT + LED_COUNT_TOP like V5 rev<=3), so deriving
+  // the count from the strip itself avoids running past the buffer.
+  int bb_count = bbleds.numPixels();
   if (ram_bb_pixels) {
       memset(ram_bb_pixels, 0, bb_count * 3);
   } else {
@@ -568,9 +592,13 @@ void initLEDs(void) {
   // }
 
 
+#if !defined(OG_JUMPERLESS)
+  // OG has no dedicated probe LED (V5-only, on pin 2). Skipping avoids claiming
+  // a PIO SM that the OG's oversubscribed PIO blocks can't spare.
   probeLEDs.begin();
   probeLEDs.setPixelColor(0, 0x000000);
   probeLEDs.show();
+#endif
 
 
   // Serial.println("\n\rprobeLEDs.begin()\n\r");
@@ -2576,7 +2604,12 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) + 320, color);
 
                     } else {
-
+#if defined(OG_JUMPERLESS)
+                    // OG: 1 LED per row. nodesToPixelMap[node] is the OG pixel index.
+                    leds.setPixelColor(
+                        nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]],
+                        color);
+#else
                     leds.setPixelColor(
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 0,
                         color);
@@ -2592,6 +2625,7 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                     leds.setPixelColor(
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 4,
                         color);
+#endif
 
                     // if (logoTopSetting[
                     }
@@ -4449,7 +4483,10 @@ void startupColors(void) {
   //   showLEDsCore2 = 1;
   }
 
-uint32_t chillinColors[LED_COUNT + 200] = {
+// Fixed capacity sized to its initializer (was LED_COUNT+200 = 500 on V5). Kept
+// at 500 regardless of board so the OG's smaller LED_COUNT doesn't truncate the
+// initializer; the animation only ever indexes up to LED_COUNT (<= 500).
+uint32_t chillinColors[500] = {
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,

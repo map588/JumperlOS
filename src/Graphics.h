@@ -94,7 +94,15 @@ struct specialRowAnimation {
 };
 
 
+// The current-sense overlay animates a path across the 5-LED-per-row breadboard
+// matrix. On the OG (1 LED/row) it can't render, so the three pixel arrays in
+// CurrentSenseOverlayState (3 x this x 4 bytes ~= 3.8 KB) are shrunk to reclaim
+// scarce RP2040 SRAM (heap headroom for boot).
+#if defined(OG_JUMPERLESS)
+static constexpr int kCurrentSenseMaxPathLength = 8;
+#else
 static constexpr int kCurrentSenseMaxPathLength = 320; // Allow full breadboard coverage (60 rows × 5 columns + margin)
+#endif
 static constexpr int kCurrentSensePatternLength = 5;
 static constexpr float kCurrentSenseMinMotionCurrent_mA = 0.05f;
 static constexpr uint8_t kCurrentSenseRowTintAlpha = 50;

@@ -2173,8 +2173,12 @@ CommandResult cmd_readADC( char c, const String& line ) {
             }
         } else if ( ch == 'i' ) {
             if ( arg.length( ) > 1 && arg[ 1 ] == '1' ) {
+#if defined(OG_JUMPERLESS)
+                float iSense = 0.0f;
+#else
                 extern INA219 INA1;
                 float iSense = INA1.getCurrent_mA()- currentReadingOffset1_mA;
+#endif
                 target->print( "ina1 = " );
                 target->print( iSense );
                 target->println( "mA" );
@@ -2665,6 +2669,8 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
                    pio_sm_is_claimed( pio1, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio1, 3 ) ? "●" : "○" );
     
+    // PIO2 only exists on RP2350; RP2040 (OG) has just pio0/pio1.
+#if defined(PICO_RP2350)
     target->printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
                    jumperlessConfig.top_oled.sda_pin,
                    jumperlessConfig.top_oled.scl_pin,
@@ -2672,6 +2678,11 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
                    pio_sm_is_claimed( pio2, 1 ) ? "●" : "○",
                    pio_sm_is_claimed( pio2, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio2, 3 ) ? "●" : "○" );
+#else
+    target->printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: n/a (RP2040)                │\n\r",
+                   jumperlessConfig.top_oled.sda_pin,
+                   jumperlessConfig.top_oled.scl_pin );
+#endif
     
     if ( jumperlessConfig.top_oled.sda_row >= 0 ) {
         target->printf( "│ SDA Row: %3s  SCL Row: %3s       │                                   │\n\r",

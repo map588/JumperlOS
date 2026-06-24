@@ -224,7 +224,18 @@
     / System Configurations
     /---------------------------------------------------------------------------*/
 
+/*  On the OG Jumperless (RP2040) every open file otherwise carries its own
+    /  FF_MAX_SS (4096) byte sector buffer, making a FIL ~4152 bytes. make_shared<FIL>
+    /  then needs a 4 KB contiguous heap block, which fails/aborts on the RP2040's
+    /  tight, fragmented heap (~71 KB shared with everything). Tiny mode drops the
+    /  per-file buffer (FIL ~56 bytes), sharing the one buffer in the FATFS object.
+    /  Slower file I/O, but file opens become trivially small and the on-disk format
+    /  is unchanged. V5 keeps normal mode (it has PSRAM + plenty of heap). */
+#if defined(OG_JUMPERLESS)
+#define FF_FS_TINY		1
+#else
 #define FF_FS_TINY		0
+#endif
 /*  This option switches tiny buffer configuration. (0:Normal or 1:Tiny)
     /  At the tiny configuration, size of file object (FIL) is shrinked FF_MAX_SS bytes.
     /  Instead of private sector buffer eliminated from the file object, common sector

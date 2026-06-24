@@ -20,8 +20,18 @@
 //
 // ============================================================================
 
-// Maximum overlays and size constraints
+// Maximum overlays and size constraints.
+// Graphic overlays are a breadboard-LED-matrix feature (10 rows x 30 cols of
+// addressable color). The OG Jumperless has a single LED per row, so overlays
+// can't render there; we shrink the storage to one slot to reclaim ~8.7 KB of
+// the RP2040's scarce SRAM (graphicOverlayState was ~10 KB) and no-op the
+// renderer (see renderGraphicOverlays). The struct/API stay intact so the ~12
+// files that reference the overlay system still compile unchanged.
+#if defined(OG_JUMPERLESS)
+#define MAX_GRAPHIC_OVERLAYS 1
+#else
 #define MAX_GRAPHIC_OVERLAYS 8
+#endif
 #define MAX_OVERLAY_WIDTH 30   // Max columns
 #define MAX_OVERLAY_HEIGHT 10  // Max rows
 #define MAX_OVERLAY_PIXELS (MAX_OVERLAY_WIDTH * MAX_OVERLAY_HEIGHT)  // 300 pixels

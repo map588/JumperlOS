@@ -6,6 +6,7 @@
 #include "config.h"
 #include "CH446Q.h"
 #include "States.h"  // For globalState access (but not GlobalStateMacros.h)
+#include "boards/board.h"
 
 
 
@@ -625,6 +626,17 @@ void initNets(void) {
   // Copy chip status initialization data to globalState
   for (int i = 0; i < 12; i++) {
     globalState.connections.chipStates[i] = chipStatusInit[i];
+  }
+
+  // Copy active board's topology maps into runtime structures
+  const auto &board = board::currentBoard();
+  for (int i = 0; i < 12; i++) {
+    for (int j = 0; j < 16; j++) {
+      globalState.connections.chipStates[i].xMap[j] = board.xMap[i][j];
+    }
+    for (int j = 0; j < 8; j++) {
+      globalState.connections.chipStates[i].yMap[j] = board.yMap[i][j];
+    }
   }
 
   initChipStatus();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "FileParsing.h"
+#include "boards/board.h"
 #include "PersistentStuff.h" // For firmwareVersion
 #include "ArduinoJson.h"
 #include "JumperlessDefines.h"
@@ -35,9 +36,19 @@ bool debugFPtime = false;
 // LEGACY: These SafeString buffers are kept for backward compatibility with old slot files
 // TODO: Eventually migrate all legacy file parsing to use States.cpp YAML format
 // and remove these buffers entirely (would save 5.1KB)
+// These three SafeStrings are static .bss (~6.1 KB). On the RP2040 (OG) that
+// directly shrinks the heap, so size them down - OG slot files are smaller
+// (fewer special-function nets, less routing). Each holds connection text; if
+// ever truncated, the YAML state path in States.cpp is the real store.
+#if defined(OG_JUMPERLESS)
+createSafeString(nodeFileString, 900);
+createSafeString(currentColorSlotColorsString, 512);
+createSafeString(specialFunctionsString, 900);
+#else
 createSafeString(nodeFileString, 1800);
 createSafeString(currentColorSlotColorsString, 1500);
 createSafeString(specialFunctionsString, 2800);
+#endif
 
 // General-purpose nodeFileString backup/restore system
 // // static char nodeFileStringBackup[1800];
@@ -2002,23 +2013,61 @@ void readStringFromSerial(int source, int addRemove) {
 
 int parseStringToNode(int source) { return 0; }
 
+bool isNodeOnBoard(int node) {
+  const auto &b = board::currentBoard();
+  for (int c = 0; c < board::kChipCount; c++) {
+    for (int x = 0; x < board::kXLanes; x++) {
+      if (b.xMap[c][x] == node) {
+        return true;
+      }
+    }
+    for (int y = 0; y < board::kYLanes; y++) {
+      if (b.yMap[c][y] == node) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 int isNodeValid(int node) {
   if (node == -1) {
     return -1;
-  } else if (node >= 1 && node <= 60) {
-    return 1;
+  }
+  
+  bool withinRange = false;
+  if (node >= 1 && node <= 60) {
+    withinRange = true;
   } else if (node >= 70 && node <= 93) {
-    return 1;
+    withinRange = true;
   } else if (node >= 100 && node <= 117) {
-    return 1;
-  } else if (node >= RP_GPIO_1 &&
-             node <= ROUTABLE_BUFFER_OUT) { // Extended range to include 126-140
-    return 1;
-  } else if (node >= FAKE_GPIO_1 && node <= FAKE_GPIO_32) { // Fake GPIO 141-172
-    return 1;
-  } else {
+    withinRange = true;
+  } else if (node >= RP_GPIO_1 && node <= ROUTABLE_BUFFER_OUT) {
+    withinRange = true;
+  } else if (node >= FAKE_GPIO_1 && node <= FAKE_GPIO_32) {
+    withinRange = true;
+  }
+  
+  if (!withinRange) {
     return 0;
   }
+  
+  // Breadboard rows, GND, and fake GPIOs are always valid
+  if ((node >= 1 && node <= 60) || node == GND || (node >= FAKE_GPIO_1 && node <= FAKE_GPIO_32)) {
+    return 1;
+  }
+  
+  // For other nodes, verify they physically exist on the active board
+  if (isNodeOnBoard(node)) {
+    return 1;
+  }
+  
+  // Print warning if enabled
+  if (jumperlessConfig.debug.show_node_errors) {
+    Jerial.printf("Node %d (%s) doesn't exist on this hardware\n\r", node, definesToChar(node, 0));
+  }
+  
+  return 0;
 }
 
 // Lightning-fast validation using character parsing instead of String operations

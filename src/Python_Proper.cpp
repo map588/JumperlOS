@@ -752,6 +752,7 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
   // is already on sys.path (see setupFilesystemAndPaths above), so the
   // import resolves cleanly via VFS without any Python eval gymnastics.
   // Writing on every init means accidental deletion self-heals next boot.
+#if !defined(OG_JUMPERLESS)
   {
     const char *rp2_path = "/python_scripts/lib/rp2.py";
     if (!safeFileExists(rp2_path, 500)) {
@@ -762,6 +763,12 @@ bool initMicroPythonProper(Stream *stream, bool preserve_interrupt_char) {
       writeStringToFile(rp2_path, rp2_py_content);
     }
   }
+#else
+  // OG (RP2040): skip rp2.py provisioning. The ~7.7 KB writeStringToFile spikes
+  // ~10 KB of C heap, which collides with the larger MicroPython GC heap on the
+  // tight 264 KB SRAM. The PIO @asm_pio helper isn't needed for the minimal OG
+  // goal (LLM + basic MicroPython control); `import rp2` simply won't resolve.
+#endif
 
     
   mp_initialized = true;

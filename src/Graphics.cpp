@@ -1,4 +1,5 @@
 #include "Graphics.h"
+#include "boards/board.h"
 #include <vector>
 #include "JeoPixel.h"
 #include "Commands.h"
@@ -1050,6 +1051,9 @@ static int rowColumnToPixelIndex(int row, int column) {
   if (row <= 0 || row > 60 || column < 0 || column > 4) {
     return -1;
   }
+  if (board::currentBoard().caps.ledsPerRow == 1) {
+    return nodesToPixelMap[row];
+  }
   int base = (row - 1) * 5;
   if (row > 30) {
     column = 4 - column;
@@ -1067,6 +1071,9 @@ static int rowColumnToPixelIndex(int row, int column) {
 static int wireStatusToPixelIndex(int row, int column) {
   if (row <= 0 || row > 60 || column < 0 || column > 4) {
     return -1;
+  }
+  if (board::currentBoard().caps.ledsPerRow == 1) {
+    return nodesToPixelMap[row];
   }
   int index = (row - 1) * 5 + column;
   if (index < 0 || index >= LED_COUNT) {
@@ -3913,6 +3920,7 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
   bool inlineMode = (posX < 0 && posY < 0);
   bool mainSerial = false;
 
+  // rgbOrRaw = 1;
   if (millis() - lastDumpAttemptTime < minDumpInterval) return;
   lastDumpAttemptTime = millis();
   if (dumpingToSerial) return;

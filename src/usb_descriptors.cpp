@@ -324,8 +324,13 @@ static const char* string_desc_arr [] =
 {
   (const char[]) { 0x09, 0x04 }, // 0: is supported language is English (0x0409)
   "Architeuthis Flux",           // 1: Manufacturer
-  "Jumperless V5",               // 2: Product  
-  "JLV5port",                     // 3: Serials, should use chip ID
+#if defined(OG_JUMPERLESS)
+  "Jumperless OG",               // 2: Product
+  "JLOGport",                    // 3: Serial base -> enumerates as JLOGportX
+#else
+  "Jumperless V5",               // 2: Product
+  "JLV5port",                    // 3: Serial base -> enumerates as JLV5portX
+#endif
   //"JLLA",            // 4: Logic Analyzer
   
   // CDC interface names (only include if enabled)

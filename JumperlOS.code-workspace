@@ -53,5 +53,209 @@
         {
             "path": "../JumperLLM"
         }
-    ]
+    ],
+    "launch": {
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "type": "platformio-debug",
+                "request": "launch",
+                "name": "Debug Jumperless V5 (SWD)",
+                "executable": "${workspaceFolder:JumperlOS}/.pio/build/jumperless_v5_debug/firmware.elf",
+                "projectEnvName": "jumperless_v5_debug",
+                "toolchainBinDir": "/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+                "internalConsoleOptions": "openOnSessionStart",
+                "svdPath": "/Users/kevinsanto/.platformio/platforms/raspberrypi/misc/svd/rp2350.svd",
+                "preLaunchTask": "Pre-Debug (V5)",
+                "postDebugTask": "Kill OpenOCD"
+            },
+            {
+                "type": "platformio-debug",
+                "request": "launch",
+                "name": "Debug Jumperless V5 (skip Pre-Debug)",
+                "executable": "${workspaceFolder:JumperlOS}/.pio/build/jumperless_v5_debug/firmware.elf",
+                "projectEnvName": "jumperless_v5_debug",
+                "toolchainBinDir": "/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+                "internalConsoleOptions": "openOnSessionStart",
+                "svdPath": "/Users/kevinsanto/.platformio/platforms/raspberrypi/misc/svd/rp2350.svd",
+                "postDebugTask": "Kill OpenOCD"
+            },
+            {
+                "type": "platformio-debug",
+                "request": "launch",
+                "name": "Debug Jumperless V5 (without uploading)",
+                "executable": "${workspaceFolder:JumperlOS}/.pio/build/jumperless_v5_debug/firmware.elf",
+                "projectEnvName": "jumperless_v5_debug",
+                "toolchainBinDir": "/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+                "internalConsoleOptions": "openOnSessionStart",
+                "svdPath": "/Users/kevinsanto/.platformio/platforms/raspberrypi/misc/svd/rp2350.svd",
+                "loadMode": "manual",
+                "postDebugTask": "Kill OpenOCD"
+            },
+            {
+                "type": "platformio-debug",
+                "request": "launch",
+                "name": "Debug OG Jumperless (SWD)",
+                "executable": "${workspaceFolder:JumperlOS}/.pio/build/jumperless_og_debug/firmware.elf",
+                "projectEnvName": "jumperless_og_debug",
+                "toolchainBinDir": "/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+                "internalConsoleOptions": "openOnSessionStart",
+                "svdPath": "/Users/kevinsanto/.platformio/platforms/raspberrypi/misc/svd/rp2040.svd",
+                "preLaunchTask": "Pre-Debug (OG)",
+                "postDebugTask": "Kill OpenOCD"
+            },
+            {
+                "type": "platformio-debug",
+                "request": "launch",
+                "name": "Debug OG Jumperless (skip Pre-Debug)",
+                "executable": "${workspaceFolder:JumperlOS}/.pio/build/jumperless_og_debug/firmware.elf",
+                "projectEnvName": "jumperless_og_debug",
+                "toolchainBinDir": "/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+                "internalConsoleOptions": "openOnSessionStart",
+                "svdPath": "/Users/kevinsanto/.platformio/platforms/raspberrypi/misc/svd/rp2040.svd",
+                "postDebugTask": "Kill OpenOCD"
+            },
+            {
+                "type": "platformio-debug",
+                "request": "launch",
+                "name": "Debug OG Jumperless (without uploading)",
+                "executable": "${workspaceFolder:JumperlOS}/.pio/build/jumperless_og_debug/firmware.elf",
+                "projectEnvName": "jumperless_og_debug",
+                "toolchainBinDir": "/Users/kevinsanto/.platformio/packages/toolchain-rp2040-earlephilhower/bin",
+                "internalConsoleOptions": "openOnSessionStart",
+                "svdPath": "/Users/kevinsanto/.platformio/platforms/raspberrypi/misc/svd/rp2040.svd",
+                "loadMode": "manual",
+                "postDebugTask": "Kill OpenOCD"
+            }
+        ]
+    },
+    "tasks": {
+        "version": "2.0.0",
+        "tasks": [
+            {
+                "label": "Pre-Debug (V5)",
+                "detail": "Build the V5 Jumperless (RP2350) firmware for debugging.",
+                "type": "shell",
+                "command": "~/.platformio/penv/bin/pio run -e jumperless_v5_debug",
+                "problemMatcher": ["$platformio"],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "echo": true,
+                    "reveal": "always",
+                    "focus": true,
+                    "panel": "shared",
+                    "showReuseMessage": false,
+                    "clear": true
+                }
+            },
+            {
+                "label": "Flash via Probe (SWD)",
+                "detail": "Build + upload the firmware over the Raspberry Pi Debug Probe (CMSIS-DAP).",
+                "type": "shell",
+                "command": "~/.platformio/penv/bin/pio run -e jumperless_v5_debug -t upload",
+                "problemMatcher": ["$platformio"],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "echo": true,
+                    "reveal": "always",
+                    "focus": true,
+                    "panel": "shared",
+                    "showReuseMessage": false,
+                    "clear": true
+                }
+            },
+            {
+                "label": "Flash via USB (UF2/BOOTSEL)",
+                "detail": "Build + upload the firmware over USB to the normal env (preserves user data).",
+                "type": "shell",
+                "command": "~/.platformio/penv/bin/pio run -e jumperless_v5 -t upload",
+                "problemMatcher": ["$platformio"],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "echo": true,
+                    "reveal": "always",
+                    "focus": true,
+                    "panel": "shared",
+                    "showReuseMessage": false,
+                    "clear": true
+                }
+            },
+            {
+                "label": "Pre-Debug (OG)",
+                "detail": "Build the OG Jumperless (RP2040) firmware for debugging over SWD.",
+                "type": "shell",
+                "command": "~/.platformio/penv/bin/pio run -e jumperless_og_debug",
+                "problemMatcher": ["$platformio"],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "echo": true,
+                    "reveal": "always",
+                    "focus": true,
+                    "panel": "shared",
+                    "showReuseMessage": false,
+                    "clear": true
+                }
+            },
+            {
+                "label": "Flash via Probe (OG)",
+                "detail": "Build + upload the OG firmware over the Raspberry Pi Debug Probe (CMSIS-DAP).",
+                "type": "shell",
+                "command": "~/.platformio/penv/bin/pio run -e jumperless_og_debug -t upload",
+                "problemMatcher": ["$platformio"],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "echo": true,
+                    "reveal": "always",
+                    "focus": true,
+                    "panel": "shared",
+                    "showReuseMessage": false,
+                    "clear": true
+                }
+            },
+            {
+                "label": "Flash via USB (OG)",
+                "detail": "Build + upload the OG firmware over USB to the normal env.",
+                "type": "shell",
+                "command": "~/.platformio/penv/bin/pio run -e jumperless_og -t upload",
+                "problemMatcher": ["$platformio"],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "echo": true,
+                    "reveal": "always",
+                    "focus": true,
+                    "panel": "shared",
+                    "showReuseMessage": false,
+                    "clear": true
+                }
+            },
+            {
+                "label": "Kill OpenOCD",
+                "detail": "Kills any leftover OpenOCD started by PlatformIO so the next debug session can grab the probe. Wired to postDebugTask in launch.json.",
+                "type": "shell",
+                "command": "pkill -f openocd; exit 0",
+                "problemMatcher": [],
+                "options": {
+                    "cwd": "${workspaceFolder:JumperlOS}"
+                },
+                "presentation": {
+                    "reveal": "silent",
+                    "panel": "shared",
+                    "close": true,
+                    "showReuseMessage": false
+                }
+            }
+        ]
+    }
 }

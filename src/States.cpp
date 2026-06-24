@@ -3212,24 +3212,26 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
     }
     safeFileClose(file, false);  // Read-only
     
-    // Parse legacy format
-    JumperlessState newState;
-    if (!newState.fromLegacyNodeFile(content, errorMsg)) {
+    // Parse legacy format directly into the active state. JumperlessState is
+    // ~33-50KB and is non-copyable (see States.h) - a stack/temp copy would
+    // overflow the RP2040's tiny stack. Migration replaces the active slot with
+    // this slot anyway (activeSlotNumber=slotNum below), so parsing in place is
+    // correct. On failure the active state is left dirty and we return an error.
+    if (!activeState.fromLegacyNodeFile(content, errorMsg)) {
         errorMsg = "Failed to migrate legacy slot " + String(slotNum) + ": " + errorMsg;
         return false;
     }
     
     // Set default voltages for migrated old slot files (voltages no longer in config)
-    newState.setDacVoltage(0, 3.3);  // Default DAC0 voltage
-    newState.setDacVoltage(1, 0.0);  // Default DAC1 voltage
-    newState.setRailVoltage(true, 0.0);   // Default top rail voltage
-    newState.setRailVoltage(false, 0.0);  // Default bottom rail voltage
-    newState.setPathStacking(jumperlessConfig.routing.stack_paths, 
+    activeState.setDacVoltage(0, 3.3);  // Default DAC0 voltage
+    activeState.setDacVoltage(1, 0.0);  // Default DAC1 voltage
+    activeState.setRailVoltage(true, 0.0);   // Default top rail voltage
+    activeState.setRailVoltage(false, 0.0);  // Default bottom rail voltage
+    activeState.setPathStacking(jumperlessConfig.routing.stack_paths, 
                              jumperlessConfig.routing.stack_rails,
                              jumperlessConfig.routing.stack_dacs);
     
-    // Save in new format
-    activeState = newState;
+    // Save in new format (active state already holds the migrated content).
     if (!saveSlot(slotNum, errorMsg)) {
         return false;
     }
@@ -3241,21 +3243,14 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
     return true;
 }
 
-// History management
+// History management.
+// This legacy full-state-snapshot history is disabled (STATE_HISTORY_SIZE == 0)
+// and superseded by the delta-based undo log in Undo.cpp. Snapshotting copied
+// the entire ~50KB JumperlessState, which is now non-copyable (see States.h) and
+// unaffordable on the RP2040. These are kept as no-ops for API compatibility.
 void SlotManager::pushHistory() {
-    // Save current state to history buffer
-    historyBuffer[historyHead] = activeState;
-    
-    // Move head forward
-    historyHead = (historyHead + 1) % historySize;
-    
-    // Update count
-    if (historyCount < historySize) {
-        historyCount++;
-    }
-    
-    // Reset position to head (can't redo after new change)
-    historyPosition = historyHead;
+    if (historySize <= 0 || historyBuffer == nullptr) return;
+    // Disabled: see note above. (Was: historyBuffer[historyHead] = activeState;)
 }
 
 bool SlotManager::canUndo() const {
@@ -3267,33 +3262,15 @@ bool SlotManager::canRedo() const {
 }
 
 bool SlotManager::undo(String& errorMsg) {
-    if (!canUndo()) {
-        errorMsg = "Nothing to undo";
-        return false;
-    }
-    
-    // Move position back
-    historyPosition = (historyPosition - 1 + historySize) % historySize;
-    
-    // Restore state
-    activeState = historyBuffer[historyPosition];
-    
-    return true;
+    // Disabled legacy snapshot history (see pushHistory). The active undo system
+    // is the delta log in Undo.cpp.
+    errorMsg = "Nothing to undo";
+    return false;
 }
 
 bool SlotManager::redo(String& errorMsg) {
-    if (!canRedo()) {
-        errorMsg = "Nothing to redo";
-        return false;
-    }
-    
-    // Move position forward
-    historyPosition = (historyPosition + 1) % historySize;
-    
-    // Restore state
-    activeState = historyBuffer[historyPosition];
-    
-    return true;
+    errorMsg = "Nothing to redo";
+    return false;
 }
 
 void SlotManager::clearHistory() {
@@ -3320,18 +3297,22 @@ void SlotManager::printSlotInfo(int slotNum) {
     }
     
     String errorMsg;
-    JumperlessState tempState;
-    
-    // Save current active state
-    JumperlessState savedState = activeState;
+    // JumperlessState is non-copyable (~50KB), so we can't stash a copy of the
+    // active state. Instead: if inspecting a different slot, persist any unsaved
+    // edits, load the target in place to print it, then reload the original slot
+    // from disk. No struct copy.
     int savedSlot = activeSlotNumber;
-    
-    // Load the slot
-    if (!loadSlot(slotNum, errorMsg)) {
-        Serial.println("Error loading slot: " + errorMsg);
-        activeState = savedState;
-        activeSlotNumber = savedSlot;
-        return;
+    bool switched = (slotNum != savedSlot);
+
+    if (switched) {
+        if (activeState.isDirty()) {
+            saveSlot(savedSlot, errorMsg);  // so the reload below restores edits
+        }
+        if (!loadSlot(slotNum, errorMsg)) {
+            Serial.println("Error loading slot: " + errorMsg);
+            loadSlot(savedSlot, errorMsg);  // best-effort restore
+            return;
+        }
     }
     
     Serial.println("Connections: " + String(activeState.connections.numBridges));
@@ -3343,9 +3324,10 @@ void SlotManager::printSlotInfo(int slotNum) {
     Serial.println("Custom Colors: " + String(activeState.display.numCustomColors));
     Serial.println("RAM Usage: ~" + String(activeState.estimateRAMUsage()) + " bytes");
     
-    // Restore active state
-    activeState = savedState;
-    activeSlotNumber = savedSlot;
+    // Restore the original active slot from disk (no struct copy).
+    if (switched) {
+        loadSlot(savedSlot, errorMsg);
+    }
 }
 
 void SlotManager::listSlots() {

@@ -8,8 +8,27 @@
 // #define OG_JUMPERLESS 0
 
 // MicroPython heap sizes
+#if defined(OG_JUMPERLESS)
+// RP2040 has only 264 KB SRAM and no PSRAM, shared with the whole firmware.
+// MicroPython is lazy-initialized (first REPL use), so this heap is malloc'd at
+// runtime and does NOT affect boot. Measured at runtime: ~30 KB total is free
+// for (MP heap + C runtime heap). Registering the native `jumperless` module
+// consumes ~12 KB of the GC heap, so a 16 KB heap left <4 KB free and every
+// init/exec script died with "MemoryError: allocating 4168 bytes". Measured
+// stability vs heap size: 16 KB boots stably (~14.5 KB C heap free) but MP init
+// scripts OOM; 24 KB fixed the OOM but left only ~6.5 KB C heap and the firmware
+// reboot-looped (a main-loop C-heap allocation aborts). 20 KB is the balance:
+// ~8 KB free inside the GC heap (fits the 4168 B alloc) while keeping ~10.5 KB
+// C heap. rp2.py provisioning (a ~10 KB C-heap spike) is skipped on OG so it
+// can't collide with the larger heap - see Python_Proper.cpp.
+// ponytail: ceiling is total SRAM; grow further only by reclaiming V5-only
+// static RAM (rowAnimations/inflate window/logo buffers - see OG_BACKPORT.md).
+#define MICROPY_HEAP_SIZE       (20 * 1024)
+#define MICROPY_HEAP_SIZE_PSRAM (20 * 1024)
+#else
 #define MICROPY_HEAP_SIZE       (96 * 1024)  // SRAM heap when no PSRAM
 #define MICROPY_HEAP_SIZE_PSRAM  (96 * 1024)  // Smaller SRAM heap when PSRAM provides extra GC space
+#endif
 
 #define TERM_SUPPORTS_RGB 0
 #define TERM_SUPPORTS_ANSI_COLORS 1
@@ -120,8 +139,20 @@ extern int probeRev;
 #define USB_MODE_ADDRESS 165
 
 #define MAX_NETS 60
+// JumperlessState is dominated by nets[MAX_NETS] (each holds nodes[MAX_NODES] +
+// bridges[MAX_NODES][2]) and paths[MAX_BRIDGES]. On V5 that's ~50 KB. The RP2040
+// (OG) has only ~50 KB of TOTAL free RAM (heap+stack) after static, so it cannot
+// hold a second copy of the state (the slot-load / migration / preview paths in
+// States.cpp copy it). Shrinking MAX_BRIDGES/MAX_NODES on OG cuts globalState
+// AND every copy of it, both to free heap and to keep state copies survivable.
+// MAX_NETS stays 60 (netNameConstants[] is initialized with 60 entries).
+#if defined(OG_JUMPERLESS)
+#define MAX_BRIDGES 72
+#define MAX_NODES 24 //this is the max number of nodes that can be connected to a net
+#else
 #define MAX_BRIDGES 128
 #define MAX_NODES 40 //this is the max number of nodes that can be connected to a net
+#endif
 #define MAX_DNI 8 // max number of doNotIntersect rules
 #define MAX_DUPLICATE 8 // max number of duplicates
 

@@ -34,11 +34,17 @@
 #define INCLUDE_UART_LOOPBACK
 #define INCLUDE_VOLTAGE_MONITOR
 
-// Always include the jumperless Python module wrapper
+// Always include the jumperless Python module wrapper.
+// OG (RP2040) has too little heap to write these (36KB .py + 45KB .pyi) to
+// FatFS, and they're optional: the native C `jumperless` module already
+// satisfies `import jumperless` on its own. The .py wrapper only re-exports it
+// for autocomplete/discoverability, and the .pyi is IDE-only type stubs.
+#if !defined(OG_JUMPERLESS)
 #define INCLUDE_JUMPERLESS_MODULE
 
 // Optional: Include type stub and init files for ViperIDE support
 #define INCLUDE_JUMPERLESS_STUB // jumperless.pyi for autocomplete
+#endif
 // #define INCLUDE_VIPER_INIT      // viper_init.py for ViperIDE
 
 // Convenience defines to disable groups of examples

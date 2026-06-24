@@ -85,9 +85,18 @@ extern "C" {
 #define CFG_TUD_MIDI USB_MIDI_ENABLE
 #define CFG_TUD_VENDOR USB_VENDOR_ENABLE
 
-// CDC FIFO size of TX and RX - OPTIMIZED FOR HIGH-THROUGHPUT STREAMING
+// CDC FIFO size of TX and RX - OPTIMIZED FOR HIGH-THROUGHPUT STREAMING.
+// Each enabled CDC interface allocates RX+TX FIFOs in TinyUSB's static state
+// (_cdcd_itf ~= 8.5 KB for 4 CDC at 1024/1024). On the RP2040 (OG) that static
+// RAM is precious and it's a full-speed (64-byte packet) device anyway, so use
+// small FIFOs there.
+#if defined(OG_JUMPERLESS)
+#define CFG_TUD_CDC_RX_BUFSIZE 256
+#define CFG_TUD_CDC_TX_BUFSIZE 256
+#else
 #define CFG_TUD_CDC_RX_BUFSIZE 1024   // Keep RX buffer reasonable
 #define CFG_TUD_CDC_TX_BUFSIZE 1024  // Larger TX buffer for streaming - double the previous size
+#endif
 
 // STREAMING PERFORMANCE OPTIMIZATIONS
 #define CFG_TUSB_OPT_HIGH_SPEED 1

@@ -1560,6 +1560,16 @@ extern "C" {
 void undoInit(void) {
     if (g_ops) return;  // already initialized
 
+#if defined(OG_JUMPERLESS)
+    // Undo is disabled on the OG (RP2040): its no-PSRAM ring + persist scratch
+    // (~21 KB) is unaffordable on the ~71 KB heap shared with FatFS/MicroPython,
+    // and it fragments the heap enough that later file opens / printfs abort.
+    // Leaving g_ops/g_blobs null makes all the undo record hooks no-op (they
+    // null-check), exactly like the "allocation failed" path below. Undo is a
+    // nice-to-have, not required for the LLM/MicroPython control goal.
+    return;
+#endif
+
     bool havePsram = psram_available();
     if (havePsram) {
         // Default sizes: ops 16384, txns 4096, blobs 256KB. The ring is

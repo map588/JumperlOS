@@ -55,7 +55,17 @@ MeasureMode::MeasureMode() {
 
 ServiceStatus MeasureMode::service() {
     lastStatus = ServiceStatus::IDLE;
-    
+
+#if defined(OG_JUMPERLESS)
+    // OG has no probe-pad ADC + connect/measure switch wired into this V5
+    // service (its probe is the Phase-2 scanning system). Left enabled it sits
+    // in "measure mode", flooding Serial every loop with the voltage line the
+    // user saw "constantly flashing", and calling oled.clearPrintShow() into an
+    // OLED that's never initialized on OG (uninitialized I2C poke each cycle).
+    // No-op until the scanning-probe measure path exists for OG.
+    return lastStatus;
+#endif
+
     // Track switch position changes with debounce
     if (switchPosition != lastSwitchPosition) {
         lastSwitchPosition = switchPosition;

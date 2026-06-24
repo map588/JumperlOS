@@ -352,7 +352,14 @@ void setup( ) {
     // Serial.flush();
 
     startupTimers[ 4 ] = millis( );
+#if !defined(OG_JUMPERLESS)
     drawAnimatedImage( 0 );
+#endif
+    // OG: skip the multi-second V5 boot animation. It renders V5 imagery that is
+    // meaningless on the OG's 111-LED strip, was the site of the original boot
+    // heap-corruption crash, and is a long blocking delay loop in setup() that
+    // can starve the core watchdog/USB. (drawAnimatedImage stays bounds-safe via
+    // the LEDs.cpp guards regardless.)
     startupAnimationFinished = 1;
     // Serial.println("Startup animation finished");
     // Serial.flush();
@@ -386,7 +393,12 @@ void setup( ) {
     // Serial.println("ADC initialized");
     // Serial.flush();
 
+#if !defined(OG_JUMPERLESS)
+    // OG has no resistive probe pads (V5-only); getNothingTouched() reads ADC
+    // channel 5 which doesn't exist on the RP2040, causing "All nothing touched
+    // samples rejected". Scanning probe is Phase 2 work.
     getNothingTouched( );
+#endif
 
     startupTimers[ 8 ] = millis( );
     // createSlots( -1, 0 );
@@ -417,7 +429,7 @@ void setup( ) {
 
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
-    jOS.registerService( &probeButton );             // CRITICAL - high-frequency button checking
+  
     jOS.registerService( &termSerialService );       // CRITICAL - terminal input (when line buffering enabled)
     jOS.registerService( &injectedCommandService );  // CRITICAL - immediate command execution from injection buffer
     jOS.registerService( &asyncPassthroughService ); // CRITICAL - USB CDC1<->UART0 bridging (prevent data loss)
@@ -426,11 +438,22 @@ void setup( ) {
     // HIGH priority services - time-sensitive operations
     jOS.registerService( &tinyUSBService );  // HIGH - USB communication
     jOS.registerService( &slotManager );     // HIGH - states auto-save
+   
+
+    #if !defined(OG_JUMPERLESS)
+      jOS.registerService( &probeButton );             // HIGH - high-frequency button checking
     jOS.registerService( &probing );         // HIGH - user interaction sensitive (probe reading)
     jOS.registerService( &highlighting );    // HIGH - visual feedback
+    jOS.registerService( &measureModeService );
+    jOS.registerService( &probeSwitch );         // LOW - switch position (not time-critical)
+    jOS.registerService( &probePads );           // LOW - expensive ADC pad reading
+    #endif
+
+
     jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
 
-    jOS.registerService( &measureModeService );
+    
+    
 
     // NORMAL priority services - periodic tasks
     jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
@@ -441,8 +464,6 @@ void setup( ) {
     // LOW priority services - background tasks
     jOS.registerService( &oledService );         // LOW - display updates
     jOS.registerService( &liveCrossbarService ); // LOW - live crossbar terminal display
-    jOS.registerService( &probeSwitch );         // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );           // LOW - expensive ADC pad reading
     jOS.registerService( &configSaveService );   // LOW - background config save (non-blocking)
     jOS.registerService( &fileCacheFlushService ); // LOW - write-back PSRAM cache flush
 
@@ -639,10 +660,14 @@ menu:
         // Serial.flush();
         // Serial.println("millis = " + String(millis()));
 
+#if !defined(OG_JUMPERLESS)
+        // OG has no OLED; skip init (it also kicks refreshConnections + debug
+        // printfs that abort on the OG's tight heap).
         if ( jumperlessConfig.top_oled.connect_on_boot == 1 ) {
             // Serial.println("Initializing OLED");
             oled.init( );
         }
+#endif
         checkProbeCurrentZero( );
 
         // Ensure the probe-sense DAC is at the calibrated measure_mode_output_voltage
@@ -1826,4 +1851,4 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             }
         }
     }
-}
+}// force rebuild

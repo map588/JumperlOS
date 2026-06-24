@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "NetsToChipConnections.h"
+#include "boards/board.h"
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -5741,29 +5742,9 @@ void findStartAndEndChips(int node1, int node2, int pathIdx) {
     int candidatesFound = 0;
 
     switch (bothNodes[twice]) {
-    case 30:
-    case 60: {
-      globalState.connections.paths[pathIdx].chip[twice] = CHIP_L;
-      if (debugNTCC5) {
-        Serial.print("chip: ");
-        Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
-      }
-      break;
-    }
-
-    case 29:
-    case 59: {
-      globalState.connections.paths[pathIdx].chip[twice] = CHIP_K;
-      if (debugNTCC5) {
-        Serial.print("chip: ");
-        Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));
-      }
-      break;
-    }
-
-    case 1 ... 28: // on the breadboard
-    case 31 ... 58: {
-      globalState.connections.paths[pathIdx].chip[twice] = bbNodesToChip[bothNodes[twice]];
+    case 1 ... 60: // on the breadboard
+    {
+      globalState.connections.paths[pathIdx].chip[twice] = board::currentBoard().bbNodesToChip[bothNodes[twice]];
       if (debugNTCC5) {
         Serial.print("chip: ");
         Serial.println(chipNumToChar(globalState.connections.paths[pathIdx].chip[twice]));

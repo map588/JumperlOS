@@ -168,8 +168,17 @@ private:
     bool m_debug = false;  // Enable debug by default for troubleshooting
     bool m_code_executing = false;  // Track if code is currently executing in raw REPL
     
-    // Code buffer for receiving code
+    // Code buffer for receiving code.
+    // These four buffers (~16.5 KB total) are new[]'d in the constructor, which
+    // runs at STATIC-INIT time via the global `mpRemoteService` reference. On the
+    // RP2040 (OG) the heap is only ~25 KB after static allocation, so the 8 KB
+    // code buffer was the first allocation to abort() boot. Shrink them on OG;
+    // mpremote/ViperIDE scripts there are small.
+#if defined(OG_JUMPERLESS)
+    static const size_t CODE_BUFFER_SIZE = 1536;
+#else
     static const size_t CODE_BUFFER_SIZE = 8192;  // 8KB buffer for code
+#endif
     char* m_code_buffer = nullptr;
     size_t m_code_len = 0;
     
@@ -179,7 +188,11 @@ private:
     size_t m_line_len = 0;
     
     // Output capture buffers
+#if defined(OG_JUMPERLESS)
+    static const size_t OUTPUT_BUFFER_SIZE = 1024;
+#else
     static const size_t OUTPUT_BUFFER_SIZE = 4096;
+#endif
     char* m_stdout_buffer = nullptr;
     char* m_stderr_buffer = nullptr;
     size_t m_stdout_len = 0;

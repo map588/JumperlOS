@@ -1190,7 +1190,12 @@ extern "C" {
 // public declaration: both are defined at global scope in their .cpp but the
 // header decl is either commented out (newBridges) or namespaced (uartReceived).
 extern int     newBridges[MAX_NETS][MAX_DUPLICATE][2];  // NetsToChipConnections.cpp
+// Size must match the definition in AsyncPassthrough.cpp (board-gated ring).
+#if defined(OG_JUMPERLESS)
+extern uint8_t uartReceived[2048];                      // AsyncPassthrough.cpp (DMA RX ring)
+#else
 extern uint8_t uartReceived[8192];                      // AsyncPassthrough.cpp (DMA RX ring)
+#endif
 
 namespace {
 
@@ -2068,7 +2073,14 @@ uint32_t measureButton( const Params& p, bool& pressedOut, uint32_t& stdOut ) {
 }
 
 // ── High-rate pre/post-trigger trace ring buffer (for serial CSV dumps). ────
+// Debug ADC trace ring. ~9 KB of static .bss at 1024 (t/v/s/d arrays). On the
+// RP2040 (OG) that .bss directly shrinks the heap, and this is a diagnostic-only
+// trace, so use a tiny ring there. All access is `% kTraceN`, so this is safe.
+#if defined(OG_JUMPERLESS)
+constexpr int kTraceN = 64;
+#else
 constexpr int kTraceN = 1024;
+#endif
 constexpr int kTracePre = 300;
 constexpr int kTracePost = 300;
 uint32_t g_trace_t[ kTraceN ];
@@ -2167,8 +2179,14 @@ struct BtnPio {
 
 bool btnPioInit( BtnPio& bp, uint pin, uint32_t timeout, uint32_t prechargeCycles,
                  int pull ) {
+    // RP2350 has three PIO blocks; RP2040 has two.
+#if defined(PICO_RP2350)
     PIO insts[] = { pio0, pio1, pio2 };
-    for ( int i = 0; i < 3 && !bp.ok; i++ ) {
+#else
+    PIO insts[] = { pio0, pio1 };
+#endif
+    const int numPio = (int)( sizeof( insts ) / sizeof( insts[0] ) );
+    for ( int i = 0; i < numPio && !bp.ok; i++ ) {
         PIO pio = insts[ i ];
         if ( !pio_can_add_program( pio, &btnTimerProgram ) ) continue;
         int sm = pio_claim_unused_sm( pio, false );
