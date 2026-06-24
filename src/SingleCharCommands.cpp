@@ -1225,6 +1225,14 @@ CommandResult cmd_parseWokwi( char c, const String& line ) {
                 while ( Jerial.available( ) > 0 ) {
                     char trailing = Jerial.read( );
                     if ( trailing == '\n' || trailing == '\r' || trailing == ' ' ) continue;
+                    // The app brackets bulk sends with SI before / SO after to keep
+                    // the device out of line-buffering mode for the payload. The
+                    // trailing SO (restore) lands right after the JSON; honor it
+                    // here so it re-enables buffering instead of being appended as
+                    // a stray control char that corrupts the JSON (and leaves the
+                    // line editor stuck off).
+                    if ( trailing == 0x0E ) { acknowledgeAppLineBuffering( true ); continue; }
+                    if ( trailing == 0x0F ) { acknowledgeAppLineBuffering( false ); continue; }
                     jsonContent += trailing;
                 }
                 }

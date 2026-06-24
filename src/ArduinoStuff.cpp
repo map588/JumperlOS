@@ -608,10 +608,19 @@ int checkIfArduinoIsConnected( void ) {
 
 int arduinoPresence = 0;
 
+// Settle time after releasing a reset line to INPUT before sampling it. The line
+// is frequently driven LOW just before this (boot hold, flash auto-reset, manual
+// reset) and only rises again through the Arduino's weak (~20-50k) reset pull-up
+// fighting the breadboard/wiring capacitance — an RC of tens to hundreds of µs.
+// The old 10µs settle sampled before the line had charged, so a present Arduino
+// read back LOW (false "not present"). A couple ms is ample and is cheap: this
+// only runs on a presence query (DC4 / A?), not in any hot path.
+#define ARDUINO_RESET_SENSE_SETTLE_US 2000
+
 int checkArduinoResetPin0( void ) {
     // Arduino reset pin 0 should be pulled high when Arduino is present
     pinMode( ARDUINO_RESET_0_PIN, INPUT );
-    delayMicroseconds( 10 ); // Brief delay for pin to stabilize
+    delayMicroseconds( ARDUINO_RESET_SENSE_SETTLE_US ); // Let the pull-up charge the line
     return digitalRead( ARDUINO_RESET_0_PIN );
 }
 
@@ -622,7 +631,7 @@ int checkArduinoResetPin1( void ) {
     }
     // Arduino reset pin 1 should be pulled high when Arduino is present
     pinMode( ARDUINO_RESET_1_PIN, INPUT );
-    delayMicroseconds( 10 ); // Brief delay for pin to stabilize
+    delayMicroseconds( ARDUINO_RESET_SENSE_SETTLE_US ); // Let the pull-up charge the line
     return digitalRead( ARDUINO_RESET_1_PIN );
 }
 

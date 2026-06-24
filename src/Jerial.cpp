@@ -52,6 +52,31 @@ void acknowledgeAppLineBuffering( bool enabled ) {
     termInInteractiveMode = target; // app already knows; do not echo SO/SI back
 }
 
+// Bulk machine input (Wokwi diagram JSON, netlist blobs sent by the app or
+// pasted whole) should never enter the recallable command history: it is large,
+// single-use, and would evict real commands from the small ring buffer. A line
+// counts as "bulk" only if it contains a bracket AND is either the Wokwi command
+// ('W') or longer than a normal command line.
+// ponytail: simple prefix+length heuristic, ceiling = it won't historize a
+// legitimately-long bracketed command; upgrade path is an explicit opt-out flag
+// on the command if that ever matters.
+static bool isBulkMachineLine( const char* line, int len ) {
+    if ( !line || len <= 0 ) {
+        return false;
+    }
+    bool hasBracket = false;
+    for ( int i = 0; i < len; i++ ) {
+        if ( line[i] == '{' || line[i] == '[' ) {
+            hasBracket = true;
+            break;
+        }
+    }
+    if ( !hasBracket ) {
+        return false;
+    }
+    return ( line[0] == 'W' || len > 512 );
+}
+
 // ============================================================================
 // TermControl Implementation (Internal Class for USB Serial Endpoints)
 // ============================================================================
@@ -189,7 +214,53 @@ bool TermControl::service( ) {
         }
         if ( c == 0x0F ) {
             acknowledgeAppLineBuffering( false );
+            // CRITICAL: stop reading here. The app sends SI immediately before a
+            // bulk machine payload (Wokwi JSON, netlist) so the firmware skips the
+            // line editor for it. If we kept draining this while() loop, every
+            // following byte would still go through handleNormalChar (echo,
+            // per-keystroke syntax-highlight re-render, history) — exactly the
+            // mangling SI is meant to prevent. Returning hands the remaining bytes
+            // to the raw input path: the main busy loop recomputes useLineBuffering
+            // (now false), sees bytes available, and reads them char-by-char into
+            // the relevant command handler (e.g. cmd_parseWokwi).
+            return false;
+        }
+
+        // DC4 (0x14): Arduino presence query from the app. Answer it here so it
+        // works in buffered mode too. Otherwise the line editor swallows it as a
+        // bare control char, the app gets no "Y,Y" reply, reads the Arduino as
+        // "not present", and pops a blocking "Flash anyway?" prompt (the "have to
+        // press enter to flash" symptom). replyWithSerialInfo() on core 2 also
+        // answers DC4 by peeking Serial; whichever side consumes the byte first
+        // replies, and both produce the same response.
+        if ( c == 0x14 ) {
+            Serial.print( checkIfArduinoIsConnected( ) ? "Y," : "n," );
+            Serial.println( checkArduinoPresence( ) ? "Y" : "n" );
+            Serial.flush( );
             continue;
+        }
+
+        // Machine-command fast-path (buffered mode only). The app pushes Wokwi
+        // netlists as bare machine commands with NO trailing newline and NO
+        // separator between the 'Q' slot-query and the 'W <slot> {json}' payload.
+        // The interactive line editor would mash them into one un-submittable
+        // "QW 0 {json}" line — echoed and syntax-highlight re-rendered on every
+        // byte (the garbage you see) — and it could never dispatch as two
+        // commands anyway. When such a command appears at the start of an empty
+        // line, submit just the trigger char (no echo, no history) so its handler
+        // runs immediately and reads any payload straight from the stream, exactly
+        // as it does when line buffering is off. This makes app-pushed netlists
+        // work even when the app isn't using the SI/SO line-buffering handshake.
+        //   'Q' : slot query, no interactive argument form -> always fast-path.
+        //   'W' : Wokwi command; has human forms ("W 2", "W file [slot]"), so only
+        //         fast-path when its payload is already streaming in (a burst),
+        //         which only happens for an app/paste push, never a keypress.
+        if ( line_length == 0 && cursor_position == 0 &&
+             ( c == 'Q' || ( c == 'W' && stream->available( ) > 8 ) ) ) {
+            completed_line = String( c );
+            line_ready = true;
+            clearCurrentLine( );
+            return true;
         }
 
         // Handle ANSI escape sequences
@@ -332,8 +403,8 @@ void TermControl::injectCompletedLine( const char* line, Stream* response_target
     queue_head = (queue_head + 1) % COMMAND_QUEUE_SIZE;
     queue_count++;
     
-    // Optionally add to history
-    if ( history && strlen(line) > 0 ) {
+    // Optionally add to history (skip bulk machine input — see isBulkMachineLine)
+    if ( history && strlen(line) > 0 && !isBulkMachineLine( line, (int)strlen(line) ) ) {
         history->addToHistory( String( line ) );
     }
 }
@@ -500,10 +571,14 @@ void TermControl::handleEnter( ) {
         stream->flush( );
     }
 
-    // Add to history if we have a history manager and non-empty line
+    // Add to history if we have a history manager and non-empty line, but skip
+    // bulk machine input (Wokwi JSON / netlist pastes) so it doesn't flush the
+    // user's real command history out of the small ring buffer.
     if ( history && line_length > 0 ) {
         current_line[ line_length ] = '\0';
-        history->addToHistory( String( current_line ) );
+        if ( !isBulkMachineLine( current_line, line_length ) ) {
+            history->addToHistory( String( current_line ) );
+        }
     }
 
     // If there's a pending response target, queue this line with the target
