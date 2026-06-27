@@ -54,7 +54,7 @@
 			"label": "Pre-Debug (OG)",
 			"detail": "Build the OG Jumperless (RP2040) firmware for debugging over SWD.",
 			"type": "shell",
-			"command": "~/.platformio/penv/bin/pio run -e jumperless_og",
+			"command": "~/.platformio/penv/bin/pio run -e jumperless_og_debug",
 			"problemMatcher": ["$platformio"],
 			"presentation": {
 				"echo": true,
