@@ -71,8 +71,7 @@ static const int8_t kOgBbNodesToChip[kBbNodesToChipLen] = {
 };
 
 // Exactly 3 routable GPIO. RP_GPIO_0 is its OWN node (114), never aliased to
-// GPIO_1. physicalPin for RP_GPIO_0 is left -1 pending OG schematic
-// confirmation; UART TX/RX are GPIO 0/1 on the RP2040.
+// GPIO_1. RP_GPIO_0 maps to RP2040 GPIO 0; UART TX/RX are GPIO 17/16 on the RP2040.
 static const GpioEntry kOgGpio[] = {
     {RP_GPIO_0, 0, "GPIO_0", true},
     {RP_UART_TX, 17, "UART_TX", true},
