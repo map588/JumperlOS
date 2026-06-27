@@ -11,9 +11,17 @@
 #include "config.h"
 //#include <FastLED.h>
 
+#if defined(OG_JUMPERLESS)
+// OG Jumperless: a single WS2812 chain of 111 LEDs on GPIO 25 (matches the
+// stock OG firmware: Adafruit_NeoPixel leds(111, 25)). 1 LED per breadboard row.
+#define LED_PIN 25
+#define LED_PIN_TOP 25   // unused on OG (single strip), kept defined
+#define PROBE_LED_PIN 2
+#else
 #define LED_PIN 17
 #define LED_PIN_TOP 3
 #define PROBE_LED_PIN 2
+#endif
 
 
   #define RST_0_LED 402
@@ -37,8 +45,21 @@
   #define LOGO_LED_START 436
   #define LOGO_LED_END 445
 
+#if defined(OG_JUMPERLESS)
+// Keep the same size LED buffer even if we're only showing the middle row
 #define LED_COUNT 300
 #define LED_COUNT_TOP 145
+#else
+#define LED_COUNT 300
+#define LED_COUNT_TOP 145
+#endif
+
+// LEDs per breadboard row: V5 has 5 (wire-drawing, per-column effects); OG has 1.
+#if defined(OG_JUMPERLESS)
+#define LEDS_PER_ROW 1
+#else
+#define LEDS_PER_ROW 5
+#endif
 extern bool splitLEDs;
 
 #define DEFAULTMENUBRIGHTNESS 100
@@ -346,7 +367,18 @@ const int nodesToPixelMap[120] = {
 };
 
 #define LOGO_COLOR_LENGTH 60
+#if defined(OG_JUMPERLESS)
+// The OG has ONE logo LED, so it only ever needs the rainbow palette (index 0).
+// Sizing the table to a single row reclaims ~3.1 KB SRAM and is self-consistent:
+// generateLogoPalette() already guards its writes with (paletteIndex <
+// LOGO_PALETTE_COUNT) and setLogoFromPaletteIndex() folds any index via
+// (paletteIndex % LOGO_PALETTE_COUNT) → 0, so the undo/fs/measure indicator
+// swirls simply reuse the rainbow. The lone direct non-rainbow write
+// (PALETTE_8V_SELECT, in setupSwirlColors) is OG-guarded there.
+#define LOGO_PALETTE_COUNT 1
+#else
 #define LOGO_PALETTE_COUNT 12  // Total number of logo color palettes
+#endif
 
 // ============================================================================
 // LOGO COLOR PALETTE INDICES - Use these to select palettes by name
@@ -578,6 +610,9 @@ void lightUpRail(int logo = -1, int railNumber = -1, int onOff = 1,
                  int supplySwitchPosition = 0);
 void setupSwirlColors(void);
 void logoSwirl(int start = 0, int spread = 5, int probe = 0);
+#if defined(OG_JUMPERLESS)
+void ogStartupAnimation(void); // OG-only rainbow swirl boot animation
+#endif
 uint32_t dimLogoColor(uint32_t color, int brightness = 20);
 void lightUpNet(int netNumber = 0, int node = -1, int onOff = 1,
                 int brightness = DEFAULTBRIGHTNESS,

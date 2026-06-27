@@ -294,6 +294,11 @@ void initGraphicOverlays() {
  * @brief Render all overlays on top of existing LED state
  */
 void __not_in_flash_func(renderGraphicOverlays)() {
+#if defined(OG_JUMPERLESS)
+    // Overlays are a breadboard-LED-matrix feature; the OG has 1 LED per row and
+    // can't render them. Taken out on OG (storage shrunk to 1 slot in the header).
+    return;
+#endif
     if (graphicOverlayState.numOverlays == 0) {
         return;
     }

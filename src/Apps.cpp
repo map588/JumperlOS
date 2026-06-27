@@ -1396,6 +1396,10 @@ int i2cScan( int sdaRow, int sclRow, int sdaPin, int sclPin, int leaveConnection
 }
 
 void calibrateDacs( ) {
+#if defined(OG_JUMPERLESS)
+    Serial.println( "DAC calibration is not supported on Jumperless OG." );
+    return;
+#endif
     // Enter temporary slot FIRST to preserve user's active slot
     SlotManager::getInstance( ).enterTemporarySlot( 8 );  // Save current slot, switch to temp slot 8
     

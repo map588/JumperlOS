@@ -369,6 +369,19 @@ volatile uint32_t gpioSlowPWMPeriod[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 volatile uint32_t gpioSlowPWMDutyTicks[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 void initGPIO( void ) {
+#if defined(OG_JUMPERLESS)
+    // The pins-20-27 bank is the V5 routable-GPIO map; it does NOT apply to the
+    // OG. On the OG pin 25 is the WS2812 breadboard-LED data line (claimed by
+    // PIO in initLEDs on core1) and pins 26-29 are the RP2040 ADC inputs. Running
+    // gpio_init() over 20-27 here re-muxes pin 25 from PIO back to SIO - and
+    // because initDAC()->initGPIO() on core0 races initLEDs() on core1, it wins
+    // and leaves the whole strip dark (observed: pin 25 stuck in SIO). It would
+    // also stomp the ADC pins. The OG's only routable GPIO (RP_GPIO_0 + UART
+    // TX/RX) are owned by their own subsystems, so skip this bank entirely.
+    // ponytail: when the OG routable-GPIO map is finalized (Phase 2) this should
+    // iterate board::currentBoard().gpio instead of the hard-coded V5 pins.
+    return;
+#endif
     for ( int i = 0; i < 8; i++ ) {
         int gpio_pin = 0;
         if ( i < 8 ) {         // Regular GPIO pins 0-7 are on pins 20-27
@@ -435,10 +448,19 @@ void initADC( void ) {
     adc_set_round_robin( 0 );
     adc_run( false );
 
+    #if (OG_JUMPERLESS)
+        // Re-enable ADC GPIO pins for normal operation
+    for ( int i = 0; i < 4; i++ ) {
+        adc_gpio_init( 26 + i ); // Jumperless ADCs on pins 26-29
+    }
+    #else
+
+
     // Re-enable ADC GPIO pins for normal operation
     for ( int i = 0; i < 8; i++ ) {
         adc_gpio_init( 40 + i ); // Jumperless ADCs on pins 40-47
     }
+    #endif
 
     // Set Arduino ADC resolution to 12 bits for compatibility
     analogReadResolution( 12 );
@@ -448,6 +470,14 @@ void initDAC( void ) {
 
     
     initGPIO( );
+
+#if defined(OG_JUMPERLESS)
+    // OG Jumperless uses an MCP4822 dual DAC on SPI (pin 1 = CS, pin 2 = SCK,
+    // pin 3 = MOSI), NOT the V5's MCP4728 quad DAC on I2C. The SPI DAC backend
+    // is Phase 2 work; until then, skip the I2C probe entirely so we don't
+    // waste boot time scanning addresses and printing "Failed to find MCP4728".
+    return;
+#endif
 
     Wire.setSDA( 4 );
     Wire.setSCL( 5 );
@@ -662,6 +692,13 @@ int convertPullToJumperless(int pull) {
 
 void setGPIO( void ) {
     ///return;
+#if defined(OG_JUMPERLESS)
+    // See initGPIO(): the V5 routable-GPIO bank (pins 20-27) isn't present on the
+    // OG, and pins 25 (WS2812 LED) / 26-29 (ADC) must never be driven as SIO here.
+    // setGPIO() runs on every refreshConnections(), so leaving it active would
+    // re-assert gpio_set_dir()/gpio_put() on the LED pin each refresh. Skip.
+    return;
+#endif
     // Restore GPIO configurations from jumperlessConfig after
     // refreshConnections()
     for ( int i = 0; i < 10; i++ ) {
@@ -860,9 +897,12 @@ gpio_function_t gpio_function_map[ 10 ] = {
     GPIO_FUNC_SIO, GPIO_FUNC_SIO, GPIO_FUNC_SIO, GPIO_FUNC_SIO, GPIO_FUNC_SIO,
     GPIO_FUNC_SIO, GPIO_FUNC_SIO, GPIO_FUNC_SIO, GPIO_FUNC_SIO, GPIO_FUNC_SIO };
 
-gpio_function_name_struct gpio_function_names[ 15 ] = {
-
+// The GPIO function mux differs by MCU: RP2350 adds HSTX, PIO2, XIP_CS1,
+// CORESIGHT_TRACE and UART_AUX functions that don't exist on the RP2040.
+gpio_function_name_struct gpio_function_names[] = {
+#if defined(PICO_RP2350)
     { GPIO_FUNC_HSTX, "HSTX" },
+#endif
     { GPIO_FUNC_SPI, "SPI" },
     { GPIO_FUNC_UART, "UART" },
     { GPIO_FUNC_I2C, "I2C" },
@@ -870,17 +910,26 @@ gpio_function_name_struct gpio_function_names[ 15 ] = {
     { GPIO_FUNC_SIO, "SIO" },
     { GPIO_FUNC_PIO0, "PIO0" },
     { GPIO_FUNC_PIO1, "PIO1" },
+#if defined(PICO_RP2350)
     { GPIO_FUNC_PIO2, "PIO2" },
+#endif
     { GPIO_FUNC_GPCK, "GPCK" },
+#if defined(PICO_RP2350)
     { GPIO_FUNC_XIP_CS1, "XIP_CS1" },
     { GPIO_FUNC_CORESIGHT_TRACE, "CORESIGHT" },
+#endif
     { GPIO_FUNC_USB, "USB" },
+#if defined(PICO_RP2350)
     { GPIO_FUNC_UART_AUX, "UART_AUX" },
+#endif
     { GPIO_FUNC_NULL, "NULL" } };
+
+#define GPIO_FUNCTION_NAMES_COUNT                                              \
+    ( (int)( sizeof( gpio_function_names ) / sizeof( gpio_function_names[0] ) ) )
 
 char* gpio_function_name( gpio_function_t function ) {
     char* name = nullptr;
-    for ( int i = 0; i < 15; i++ ) {
+    for ( int i = 0; i < GPIO_FUNCTION_NAMES_COUNT; i++ ) {
         if ( gpio_function_names[ i ].function == function ) {
             name = gpio_function_names[ i ].name;
         }
@@ -950,8 +999,12 @@ const char* gpio_function_name_for_pin( uint gpio, gpio_function_t function ) {
     }
 
     // For all other function codes, use the simple lookup
-    // Function codes 0-8 and 10+ have unique meanings
-    if ( function < 15 ) {
+    // Function codes 0-8 and 10+ have unique meanings.
+    // Bound by the actual table size: it's 15 on RP2350 (unchanged) but smaller
+    // on RP2040 where the RP2350-only mux functions are compiled out, so a raw
+    // `< 15` would index past the end. The F9 special-casing above is RP2350
+    // pin mapping; on RP2040 this lookup is best-effort for the debug display.
+    if ( (int)function < GPIO_FUNCTION_NAMES_COUNT ) {
         return gpio_function_names[ function ].name;
     }
 
@@ -1446,6 +1499,7 @@ void setCSex( int chip, int value ) {
     if ( chip > 11 ) {
         return;
     }
+    #if !defined(OG_JUMPERLESS)
 
     if ( value > 0 ) {
         gpio_put( chip + 28, 1 );
@@ -1456,6 +1510,24 @@ void setCSex( int chip, int value ) {
         // digitalWrite(chip + 28, LOW);
         //  Serial.println(chip+28);
     }
+    #else
+    // OG chip-select GPIO map: crosspoint chips A..H (0-7) -> GPIO 6-13,
+    // chips I..L (8-11) -> GPIO 20-23. chip 8 must land on GPIO 20, so the
+    // offset for the second bank is +12 (chip - 8 + 20), NOT +20.
+    if ( chip >= 0 && chip <= 7 ) {
+        if ( value > 0 ) {
+            gpio_put( chip + 6, 1 );
+        } else {
+            gpio_put( chip + 6, 0 );
+        }
+    } else if ( chip >= 8 && chip <= 11 ) {
+        if ( value > 0 ) {
+            gpio_put( chip + 12, 1 );
+        } else {
+            gpio_put( chip + 12, 0 );
+        }
+    }
+    #endif
 }
 
 void erattaClearGPIO( int gpio ) {
@@ -1502,6 +1574,30 @@ float currentReadingOffset1_mA = 0.0f;
 
 void initINA219( void ) {
 
+#if defined(OG_JUMPERLESS)
+    // Initialize standard I2C0 bus on pins 4/5 at 400kHz for the single INA219 chip
+    Wire.setSDA( 4 );
+    Wire.setSCL( 5 );
+    Wire.setClock( 400000 );
+    Wire.begin( );
+
+    if ( !INA0.begin( ) ) {
+        Serial.println( "Failed to find INA219 chip" );
+    }
+
+    INA0.setShuntSamples(4);  // 16 samples averaged
+    INA0.setBusSamples(4);    // 16 samples averaged
+    INA0.setMaxCurrentShunt( 1, 2.0 );
+    INA0.setBusVoltageRange( 16 );
+
+    uint32_t start = millis();
+    while ( INA0.getConversionFlag() == false && (millis() - start < 100) ) {
+        tight_loop_contents();
+    }
+
+    currentReadingOffset0_mA = INA0.getCurrent_mA();
+    currentReadingOffset1_mA = 0.0f;
+#else
     if ( !INA0.begin( ) || !INA1.begin( ) ) {
         // Remove blocking delay - just log the error
         Serial.println( "Failed to find INA219 chip" );
@@ -1540,6 +1636,7 @@ void initINA219( void ) {
     // Serial.println("currentReadingOffset0_mA: " + String(currentReadingOffset0_mA));
     // Serial.println("currentReadingOffset1_mA: " + String(currentReadingOffset1_mA));
     // Serial.flush();
+#endif
 }
 
 void setDacByNumber( int dac, float voltage, int save, int saveEEPROM,
@@ -1970,6 +2067,13 @@ void __not_in_flash_func(showLEDmeasurements)( void ) {
 // pauseCore2/core2busy to match the rest of the core1 hardware paths so it
 // can't run during a flash write.
 void __not_in_flash_func(updateLazyAdcReadings)( void ) {
+#if defined(OG_JUMPERLESS)
+    // OG's only consumer of the adcReadings[] lazy cache is the OLED GUI
+    // ({adc:N} tokens), and OG has no OLED. This runs on core1 every loop;
+    // disabled on OG (MP adc_get() does its own fresh readAdcVoltage). Also a
+    // bisection step for the intermittent core1 lockup (the core1 ADC path).
+    return;
+#endif
 #if LAZY_ADC_READINGS
     extern volatile bool pauseCore2;
     extern volatile bool core2busy;
@@ -1992,6 +2096,10 @@ void __not_in_flash_func(updateLazyAdcReadings)( void ) {
         didRead = true;
     }
 
+#if !defined(OG_JUMPERLESS)
+    // V5 (RP2350B) has ADC channels 5-7; the RP2040 ADC only has inputs 0-4, so
+    // OG must not select channels 5-7 (they read garbage and would also index
+    // adcSpread/adcZero out of range). OG's 4 ADCs are covered by the fast loop.
     if ( (unsigned long)( nowUs - lastSlowUs ) >= (unsigned long)LAZY_ADC_SLOW_INTERVAL_US ) {
         lastSlowUs = nowUs;
         core2busy = true;
@@ -2000,6 +2108,9 @@ void __not_in_flash_func(updateLazyAdcReadings)( void ) {
         slowIdx = ( slowIdx + 1 ) % 3;
         didRead = true;
     }
+#else
+    (void)lastSlowUs; (void)slowIdx;
+#endif
 
     if ( didRead ) {
         core2busy = wasBusy;
@@ -2361,11 +2472,17 @@ void Peripherals::showMeasurements( int samples, int printOrBB, int oneShot ) {
 void printPIOStateMachines( ) {
     Serial.println( "=== PIO STATE MACHINE STATUS ===" );
 
-    // Check all PIO instances (pio0, pio1, pio2)
+    // Check all PIO instances. RP2350 has three blocks; RP2040 has two.
+#if defined(PICO_RP2350)
     PIO pio_instances[] = { pio0, pio1, pio2 };
     const char* pio_names[] = { "PIO0", "PIO1", "PIO2" };
+#else
+    PIO pio_instances[] = { pio0, pio1 };
+    const char* pio_names[] = { "PIO0", "PIO1" };
+#endif
+    const int numPio = (int)( sizeof( pio_instances ) / sizeof( pio_instances[0] ) );
 
-    for ( int pio_idx = 0; pio_idx < 3; pio_idx++ ) {
+    for ( int pio_idx = 0; pio_idx < numPio; pio_idx++ ) {
         PIO current_pio = pio_instances[ pio_idx ];
         Serial.printf( "%s:\n\r", pio_names[ pio_idx ] );
 

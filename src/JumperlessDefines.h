@@ -8,8 +8,69 @@
 // #define OG_JUMPERLESS 0
 
 // MicroPython heap sizes
+#if defined(OG_JUMPERLESS)
+// RP2040 has only 264 KB SRAM and no PSRAM, shared with the whole firmware.
+// MicroPython is lazy-initialized (first REPL use), so this heap is malloc'd at
+// runtime FROM THE C HEAP and does NOT affect static RAM/boot. Registering the
+// native `jumperless` module permanently consumes ~12 KB of the GC heap, so the
+// effective per-script budget is (HEAP - 12 KB).
+//
+// Sizing history: 16 KB OOM'd on init scripts (<4 KB free → "MemoryError:
+// allocating 4168 bytes"); 24 KB once reboot-looped because it left only
+// ~6.5 KB C heap — BUT that was measured at 79.9% static RAM. A later reclaim
+// pass dropped static to ~63.7% (~16.6 KB more free: uncompressed startup
+// frames, undo group off, dead newBridges deleted, rowAnimations + CDC FIFOs
+// shrunk), so the C-heap math changed and that 24 KB finding is now stale —
+// there is headroom to enlarge the GC heap without starving the C heap.
+// Bumped 20 → 28 KB so a SECOND script run (whose module-level globals from the
+// first run linger until GC) doesn't blow the ~8 KB script budget and OOM.
+// WHY THIS MATTERS AS A CRASH, NOT A TRACEBACK: on OG an unhandled MemoryError
+// doesn't always print cleanly — it can cascade through nlr_jump_fail and reset
+// core 0 (USB drops), so undersizing this heap looks like a hard disconnect
+// mid-script, not a tidy MemoryError. rp2.py provisioning (a ~10 KB C-heap
+// spike) is skipped on OG so it can't collide with the larger heap.
+//
+// If the contiguous malloc ever fails (fragmented C heap), initMicroPythonProper
+// prints "[MP] FATAL: failed to malloc" and bails cleanly — it does not crash.
+// ponytail: ceiling is total SRAM split between this GC heap and the C heap;
+// grow further only by reclaiming more V5-only static RAM (logo palettes, menu
+// buffers, globalState - see OG_BACKPORT.md), NOT by taking more from C heap.
+#define MICROPY_HEAP_SIZE       (28 * 1024)
+#define MICROPY_HEAP_SIZE_PSRAM (28 * 1024)
+#else
 #define MICROPY_HEAP_SIZE       (96 * 1024)  // SRAM heap when no PSRAM
 #define MICROPY_HEAP_SIZE_PSRAM  (96 * 1024)  // Smaller SRAM heap when PSRAM provides extra GC space
+#endif
+
+// ===========================================================================
+// Feature groups (compile-time subsystem toggles)
+// ===========================================================================
+// Two distinct gating mechanisms exist in this firmware; use the right one:
+//
+//   * Feature-group flags (HERE): ONE flag per subsystem. When 0, the WHOLE
+//     group is compiled out - its code AND its static buffers. This is the
+//     only mechanism that actually frees .bss/heap (the linker drops the
+//     symbols), so it is what we use to claw back RAM on the RP2040 OG. The
+//     subsystem's header provides no-op stubs when its flag is 0, so call
+//     sites compile unchanged with no per-caller #ifdef.
+//   * Runtime BoardCaps (src/boards/board.h): gate compiled-IN hardware or
+//     behavior at runtime (probe, encoder, PSRAM cache, boot animation). Does
+//     NOT free .bss - both code paths stay linked. Use it for the board
+//     contract / honest capability advertisement, not for RAM reclaim.
+//
+// Each flag defaults to 1 (full firmware) and is forced to 0 for the OG, where
+// the subsystem is either unaffordable on the ~30 KB free RAM or meaningless on
+// the hardware. Adding a new group: define it here, wrap its .cpp body in
+// `#if <FLAG>` with an `#else` stub block matching its header API.
+#if defined(OG_JUMPERLESS)
+// Undo/redo (delta ring + persisted /undo.hist + OLED toast scene graph). Its
+// ring buffers are heap-allocated lazily (already skipped on OG), but the OLED
+// undo-toast carries a permanent ~3.2 KB static OledScreen; gating the group
+// off reclaims it and removes the dead code path entirely. See Undo.cpp/Undo.h.
+#define UNDO_ENABLED 0
+#else
+#define UNDO_ENABLED 1
+#endif
 
 #define TERM_SUPPORTS_RGB 0
 #define TERM_SUPPORTS_ANSI_COLORS 1
@@ -120,8 +181,20 @@ extern int probeRev;
 #define USB_MODE_ADDRESS 165
 
 #define MAX_NETS 60
+// JumperlessState is dominated by nets[MAX_NETS] (each holds nodes[MAX_NODES] +
+// bridges[MAX_NODES][2]) and paths[MAX_BRIDGES]. On V5 that's ~50 KB. The RP2040
+// (OG) has only ~50 KB of TOTAL free RAM (heap+stack) after static, so it cannot
+// hold a second copy of the state (the slot-load / migration / preview paths in
+// States.cpp copy it). Shrinking MAX_BRIDGES/MAX_NODES on OG cuts globalState
+// AND every copy of it, both to free heap and to keep state copies survivable.
+// MAX_NETS stays 60 (netNameConstants[] is initialized with 60 entries).
+#if defined(OG_JUMPERLESS)
+#define MAX_BRIDGES 72
+#define MAX_NODES 24 //this is the max number of nodes that can be connected to a net
+#else
 #define MAX_BRIDGES 128
 #define MAX_NODES 40 //this is the max number of nodes that can be connected to a net
+#endif
 #define MAX_DNI 8 // max number of doNotIntersect rules
 #define MAX_DUPLICATE 8 // max number of duplicates
 
@@ -178,7 +251,11 @@ extern int probeRev;
 // #define CS_L_EX 0b0001000000000000
 
 // #define DATAPIN 14
+#if defined(OG_JUMPERLESS)
+#define RESETPIN 24
+#else
 #define RESETPIN 16
+#endif
 // #define CLKPIN 15
 
 #define UART0_TX 0

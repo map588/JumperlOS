@@ -38,6 +38,7 @@
 #include "configManager.h"
 #include "externVars.h"
 #include "hardware/gpio.h"
+#include "hardware/structs/sio.h"
 #include "oled.h"
 #include "JsonState.h"
 #include "Debugs.h"
@@ -576,6 +577,15 @@ void SingleCharCommands::initializeCommands( ) {
     registerCommand( 'g', "print gpio state",
                      "Display state of all GPIO pins.",
                      cmd_gpioState, MENU_ADVANCED, CAT_DEBUG );
+
+#if defined(OG_JUMPERLESS)
+    // OG-only diagnostic for the split chip-select banks (A-H on GPIO 6-13,
+    // I-L on GPIO 20-23). Kept off V5 so the V5 build stays byte-identical.
+    registerCommand( 'I', "test chip-select GPIOs",
+                     "Dump pad/IO state for every crossbar chip-select pin "
+                     "(A-H + I-L). 'I <chip 0-11>' pulses one chip's CS for scoping.",
+                     cmd_testChipSelect, MENU_DEBUG, CAT_DEBUG );
+#endif
 
     registerCommand( 'Z', "USB debug menu",
                      "Open USB debugging options menu.",
@@ -2181,8 +2191,12 @@ CommandResult cmd_readADC( char c, const String& line ) {
             }
         } else if ( ch == 'i' ) {
             if ( arg.length( ) > 1 && arg[ 1 ] == '1' ) {
+#if defined(OG_JUMPERLESS)
+                float iSense = 0.0f;
+#else
                 extern INA219 INA1;
                 float iSense = INA1.getCurrent_mA()- currentReadingOffset1_mA;
+#endif
                 target->print( "ina1 = " );
                 target->print( iSense );
                 target->println( "mA" );
@@ -2673,6 +2687,8 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
                    pio_sm_is_claimed( pio1, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio1, 3 ) ? "●" : "○" );
     
+    // PIO2 only exists on RP2350; RP2040 (OG) has just pio0/pio1.
+#if defined(PICO_RP2350)
     target->printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: SM0:%s SM1:%s SM2:%s SM3:%s     │\n\r",
                    jumperlessConfig.top_oled.sda_pin,
                    jumperlessConfig.top_oled.scl_pin,
@@ -2680,6 +2696,11 @@ CommandResult cmd_resourceStatus( char c, const String& line ) {
                    pio_sm_is_claimed( pio2, 1 ) ? "●" : "○",
                    pio_sm_is_claimed( pio2, 2 ) ? "●" : "○",
                    pio_sm_is_claimed( pio2, 3 ) ? "●" : "○" );
+#else
+    target->printf( "│ SDA: GPIO %2d  SCL: GPIO %2d       │ PIO2: n/a (RP2040)                │\n\r",
+                   jumperlessConfig.top_oled.sda_pin,
+                   jumperlessConfig.top_oled.scl_pin );
+#endif
     
     if ( jumperlessConfig.top_oled.sda_row >= 0 ) {
         target->printf( "│ SDA Row: %3s  SCL Row: %3s       │                                   │\n\r",
@@ -2736,6 +2757,86 @@ CommandResult cmd_gpioState( char c, const String& line ) {
     printGPIOState( target );
     return CMD_SHOW_MENU;
 }
+
+#if defined(OG_JUMPERLESS)
+// Diagnostic: confirm the crossbar chip-select GPIOs are actually driven.
+// On the OG, chips A-H sit on GPIO 6-13 and chips I-L on GPIO 20-23 (the V5
+// routable-GPIO bank). "I" with no argument dumps the pad/IO state for every
+// CS pin so a serial-only read distinguishes a firmware pad clobber (wrong
+// FUNCSEL / output-enable) from a hardware mapping issue. "I <chip>" pulses
+// that chip's CS line in a ~1 kHz square wave (setCSex high/low) for a few
+// seconds so it can be caught on a scope / the debug probe.
+// OG-only (gated so the V5 build is unaffected).
+CommandResult cmd_testChipSelect( char c, const String& line ) {
+    Stream* target = Jerial.getResponseTarget( );
+    if ( target == nullptr ) target = &Serial;
+
+    // chip -> CS GPIO, matching setCSex() exactly.
+    auto csGpioForChip = []( int chip ) -> int {
+        if ( chip >= 0 && chip <= 7 ) return chip + 6;
+        if ( chip >= 8 && chip <= 11 ) return chip + 12;
+        return -1;
+    };
+
+    String arg = getCommandArgs( line );
+    arg.trim( );
+
+    if ( arg.length( ) > 0 ) {
+        // Pulse mode: drive one chip's CS for scope capture.
+        int chip = arg.toInt( );
+        int pin = csGpioForChip( chip );
+        if ( pin < 0 ) {
+            target->println( "usage: I <chip 0-11>  (0=A .. 11=L), or 'I' for a register dump" );
+            return CMD_DONT_SHOW_MENU;
+        }
+        target->print( "Pulsing CS for chip " );
+        target->print( chipNumToChar( chip ) );
+        target->print( " on GPIO " );
+        target->print( pin );
+        target->println( " at ~1 kHz for 3 s (scope it now)..." );
+        target->flush( );
+        unsigned long until = millis( ) + 3000;
+        while ( millis( ) < until ) {
+            setCSex( chip, 1 );
+            delayMicroseconds( 500 );
+            setCSex( chip, 0 );
+            delayMicroseconds( 500 );
+        }
+        target->println( "done." );
+        return CMD_DONT_SHOW_MENU;
+    }
+
+    // Register dump: FUNCSEL / direction / output-enable / output level.
+    target->println( "\n\rCrossbar chip-select GPIO state" );
+    target->println( "chip  gpio  func  dir  oe  out" );
+    for ( int chip = 0; chip < 12; chip++ ) {
+        int pin = csGpioForChip( chip );
+        if ( pin < 0 ) continue;
+        uint32_t oe = ( sio_hw->gpio_oe >> pin ) & 1u;
+        uint32_t out = ( sio_hw->gpio_out >> pin ) & 1u;
+        int func = (int)gpio_get_function( pin );
+        bool dir = gpio_get_dir( pin );
+        target->print( "  " );
+        target->print( chipNumToChar( chip ) );
+        target->print( "    " );
+        if ( pin < 10 ) target->print( ' ' );
+        target->print( pin );
+        target->print( "    " );
+        target->print( func ); // expect 5 (GPIO_FUNC_SIO)
+        target->print( "    " );
+        target->print( dir ? "out" : "in " );
+        target->print( "  " );
+        target->print( oe );
+        target->print( "   " );
+        target->println( out );
+    }
+    target->println( "\n\rExpect func=5 (SIO), dir=out, oe=1 for ALL rows." );
+    target->println( "If chips I-L (GPIO 20-23) differ from A-H, it's a firmware" );
+    target->println( "pad clobber; if they match but the chip still won't switch," );
+    target->println( "it's hardware (CS not wired to 20-23). Use 'I <chip>' to scope." );
+    return CMD_SHOW_MENU;
+}
+#endif // OG_JUMPERLESS
 
 CommandResult cmd_usbDebugMenu( char c, const String& line ) {
     Jerial.println( "╭─────────────────────────────────╮" );

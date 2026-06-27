@@ -116,6 +116,12 @@ void ledClass::begin(void) {
 
  
 
+#if defined(OG_JUMPERLESS)
+  // OG: one physical chain on GPIO 25. We size the buffer to LED_COUNT + LED_COUNT_TOP (445 pixels)
+  // to prevent out-of-bounds reads/writes on special LEDs.
+  splitLEDs = 0;
+  bbleds.updateLength(LED_COUNT + LED_COUNT_TOP);
+#else
   if (jumperlessConfig.hardware.revision <= 3) {
     // Rev 3 and below use single strip for all LEDs
     splitLEDs = 0;
@@ -124,6 +130,7 @@ void ledClass::begin(void) {
     // Rev 4+ already initialized with correct sizes
     splitLEDs = 1;
     }
+#endif
 
   // CRITICAL: Call begin() AFTER updateLength() so DMA is set up with correct buffer size
   if (splitLEDs == 1) {
@@ -253,7 +260,19 @@ inline void __not_in_flash_func(setPixelColorRamHelper)(uint8_t* pixels, uint16_
   p[2] = b; // Blue
 }
 
+// One-past-the-last valid pixel index for the active strip configuration.
+// The RAM-resident fast path (setPixelColorRamHelper) writes the raw NeoPixel
+// buffer with no bounds check, so an out-of-range index walks straight into the
+// heap. This matters on the OG, whose 111-pixel buffer is far smaller than the
+// V5 image/animation data that shared graphics paths emit (a frame indexing up
+// to ~445 was overwriting heap singletons and hard-faulting on boot).
+static inline uint16_t __not_in_flash_func(ledMaxPixels)() {
+  return (splitLEDs == 1) ? (uint16_t)(LED_COUNT + topleds.numPixels())
+                          : bbleds.numPixels();
+}
+
 void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  if (n >= ledMaxPixels()) return;
   if (n >= LED_COUNT && splitLEDs == 1) {
     // topleds.setPixelColor(n - LED_COUNT, r, g, b);
     if (ram_top_pixels) {
@@ -275,6 +294,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint8_t r, uint8_t
   }
 
 void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
+  if (n >= ledMaxPixels()) return;
   uint8_t r = (uint8_t)(c >> 16);
   uint8_t g = (uint8_t)(c >> 8);
   uint8_t b = (uint8_t)c;
@@ -303,6 +323,7 @@ void __not_in_flash_func(ledClass::setPixelColor)(uint16_t n, uint32_t c) {
 // Direct buffer access - NO dirty marking
 // Used by clear functions to avoid triggering premature LED updates
 void __not_in_flash_func(ledClass::setPixelColorDirect)(uint16_t n, uint8_t r, uint8_t g, uint8_t b) {
+  if (n >= ledMaxPixels()) return;
   if (n >= LED_COUNT && splitLEDs == 1) {
     if (ram_top_pixels) {
         setPixelColorRamHelper(ram_top_pixels, n - LED_COUNT, r, g, b);
@@ -377,7 +398,10 @@ void __not_in_flash_func(ledClass::clear)(void) {
     topDirty = true; // Mark top strip as needing refresh
     }
   
-  int bb_count = (splitLEDs == 1) ? LED_COUNT : (LED_COUNT + LED_COUNT_TOP);
+  // Clear exactly the buffer that was allocated. On the OG the single strip is
+  // LED_COUNT pixels (not LED_COUNT + LED_COUNT_TOP like V5 rev<=3), so deriving
+  // the count from the strip itself avoids running past the buffer.
+  int bb_count = bbleds.numPixels();
   if (ram_bb_pixels) {
       memset(ram_bb_pixels, 0, bb_count * 3);
   } else {
@@ -568,9 +592,13 @@ void initLEDs(void) {
   // }
 
 
+#if !defined(OG_JUMPERLESS)
+  // OG has no dedicated probe LED (V5-only, on pin 2). Skipping avoids claiming
+  // a PIO SM that the OG's oversubscribed PIO blocks can't spare.
   probeLEDs.begin();
   probeLEDs.setPixelColor(0, 0x000000);
   probeLEDs.show();
+#endif
 
 
   // Serial.println("\n\rprobeLEDs.begin()\n\r");
@@ -2572,11 +2600,26 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                     } else {
                       color = scaleBrightness(color, 0);
                     }
+#if defined(OG_JUMPERLESS)
+                    // OG: single LED chain. Nano/SF header LEDs live at their
+                    // plain nodesToPixelMap index (80-110), NOT at the V5 +320
+                    // special-LED offset. Using +320 here writes off the 111-LED
+                    // strip so the LED never lit; map straight through instead.
+                    leds.setPixelColor(
+                        nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]],
+                        color);
+#else
                     leds.setPixelColor(
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) + 320, color);
+#endif
 
                     } else {
-
+#if defined(OG_JUMPERLESS)
+                    // OG: 1 LED per row. nodesToPixelMap[node] is the OG pixel index.
+                    leds.setPixelColor(
+                        nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]],
+                        color);
+#else
                     leds.setPixelColor(
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 0,
                         color);
@@ -2592,6 +2635,7 @@ void lightUpNet(int netNumber, int node, int onOff, int brightness2,
                     leds.setPixelColor(
                         (nodesToPixelMap[globalState.connections.nets[netNumber].nodes[j]]) * 5 + 4,
                         color);
+#endif
 
                     // if (logoTopSetting[
                     }
@@ -2673,6 +2717,34 @@ void showSkippedNodes(uint32_t onColor, uint32_t offColor) {
   for (int i = 0; i < numberOfPaths; i++) {
 
     if (globalState.connections.paths[i].skip == 1) {
+#if defined(OG_JUMPERLESS)
+      // A dropped DUPLICATE (stack_paths) is marked skip=1 with cleared coords
+      // when no free parallel lane exists (e.g. a BB<->NANO route, where the
+      // BB chip reaches the nano chip on a single crossbar lane). That is NOT a
+      // routing failure - the primary path routed fine - so it must not blink
+      // the endpoint like an unconnectable node (the row 42 "couldn't find a
+      // path" artifact). Only render genuine unrouted (non-duplicate) skips.
+      if (globalState.connections.paths[i].duplicate == 1) {
+        continue;
+      }
+      // OG has 1 LED per breadboard row. The V5 blink pattern below writes
+      // pixels (node-1)*5 + 0..4 (the 5-LEDs-per-row physical layout), which on
+      // the OG's single-pixel-per-row strip lights five rows' worth of LEDs for
+      // one skipped node. Render each skipped breadboard endpoint as its single
+      // mapped pixel (nodesToPixelMap[node]) with the same on/off alternation,
+      // then skip the V5 column logic.
+      {
+        int sn1 = globalState.connections.paths[i].node1;
+        int sn2 = globalState.connections.paths[i].node2;
+        if (sn1 > 0 && sn1 <= 60) {
+          leds.setPixelColor(nodesToPixelMap[sn1], toggleSkippedNodes ? onColor : offColor);
+        }
+        if (sn2 > 0 && sn2 <= 60) {
+          leds.setPixelColor(nodesToPixelMap[sn2], toggleSkippedNodes ? offColor : onColor);
+        }
+      }
+      continue;
+#endif
       // colorCycleOff = (colorCycleOff) % 254;
       // colorCycleOn = (colorCycleOn + (numberOfUnconnectablePaths)) % 254;
       if (globalState.connections.paths[i].node1 > 0 && globalState.connections.paths[i].node1 <= 60) {
@@ -3297,7 +3369,12 @@ void setupSwirlColors(void) {
     logoColors8vSelect[i] = packRgb(
         logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8, logoColorsRGB[i].b / 8);
 
+#if !defined(OG_JUMPERLESS)
+    // OG's logoColorsAll is a single rainbow row (LOGO_PALETTE_COUNT == 1); the
+    // 8V-select palette index is out of bounds there. The standalone
+    // logoColors8vSelect[] above is still populated for any direct consumer.
     logoColorsAll[PALETTE_8V_SELECT][(LOGO_COLOR_LENGTH + 10) - i] = logoColors8vSelect[i];
+#endif
   }
 }
 
@@ -3592,6 +3669,60 @@ bool renderLogoRing(void) {
 }
 
 // Mark to run from RAM to avoid flash contention during saves
+#if defined(OG_JUMPERLESS)
+// Rainbow swirl boot animation, ported from the OG reference firmware
+// (JumperlessNano startupColors()). The OG strip is a single chain of 111 LEDs
+// (1 per breadboard row + rails + header), with the logo at pixel 110. Runs once
+// on core0 at boot AFTER core1 finishes initLEDs() (core0 waits on
+// core2initFinished first), so core0 owns the strip exclusively here and can
+// drive leds.show() directly.
+void ogStartupAnimation(void) {
+  const int count     = 111; // physical OG LED count
+  const int logoPixel = 110; // single logo LED
+  hsvColor hsv;
+  int offset = 1;
+  int fade = 0;
+  int done = 0;
+
+  for (long j = 4; j < 162; j += 2) {
+    // Fade in for the first frames, hold at full, then fade out and stop.
+    if (j < DEFAULTBRIGHTNESS / 3) {
+      fade = j * 3;
+    } else {
+      int fadeout = j - DEFAULTBRIGHTNESS;
+      if (fadeout < 0) fadeout = 0;
+      if (fadeout > DEFAULTBRIGHTNESS) {
+        fadeout = DEFAULTBRIGHTNESS;
+        done = 1;
+      }
+      fade = DEFAULTBRIGHTNESS - fadeout;
+    }
+
+    for (int i = 0; i < count; i++) {
+      float i2 = i;
+      float j2 = j + 50;
+      float huef = (i2 * j2) * 0.1f;
+      hsv.h = ((int)huef) % 254;
+      hsv.s = 254;
+      if (((i + offset) % count) == logoPixel) {
+        hsv.v = 85; // logo stays brighter than the swirl
+        hsv.h = (189 + j);
+      } else {
+        hsv.v = fade;
+      }
+      rgbColor rgb = HsvToRgb(hsv);
+      leds.setPixelColor((i + offset) % count, packRgb(rgb.r, rgb.g, rgb.b));
+    }
+
+    offset += 1;
+    leds.show();
+    if (done) break;
+    delayMicroseconds(14000);
+  }
+  clearLEDs();
+}
+#endif
+
 void __not_in_flash_func(logoSwirl)(int start, int spread, int probe) {
 
 
@@ -4156,6 +4287,86 @@ void __not_in_flash_func(showNets)(void) {
     //     if (rp2040.cpuid() == 0) {
     //   core1busy = false;
     //  } else {
+
+#if defined(OG_JUMPERLESS)
+    // OG nano-header + logo overlay (mirrors the stock OG firmware). Runs after
+    // the nets are drawn so it only fills what a net did NOT light, and after
+    // logoSwirl() (which ran earlier this frame) so the swirl buffer is current.
+    {
+      const int kOgNanoHeaderFirst = 80;
+      const int kOgNanoHeaderLast  = 109;
+      const int kOgLogoPixel       = 110;
+      const uint32_t kOgHeaderGlow = 0x0C0028; // dim purple "headerglow"
+
+      // 1) Every still-unlit nano-header LED gets a dim purple glow so the
+      //    header is always faintly visible.
+      for (int p = kOgNanoHeaderFirst; p <= kOgNanoHeaderLast; p++) {
+        if (leds.getPixelColor(p) == 0) {
+          leds.setPixelColor(p, kOgHeaderGlow);
+        }
+      }
+
+      // 2) Hardwired power/ground/reset header pins are physically tied to the
+      //    Arduino's rails, so always light them in a recognizable color. Pixel
+      //    layout confirmed from the OG header LED order: top row 80-94 =
+      //    D1,D0,RST,GND,D2..D12; bottom row 95-109 = D13,3V3,AREF,A0..A7,5V,
+      //    RST,GND,VIN. These are painted UNCONDITIONALLY: the bottom-right pins
+      //    (5V/RST/GND/VIN, pixels 106-109) are the nodesToPixelMap targets of
+      //    the RESET/GND nodes, so lightUpNet() pre-paints them and a
+      //    "only-if-unlit" check would skip them (the "just blue" bug). They are
+      //    never part of a user-routable net, so overwriting is always correct.
+      struct OgHardwiredPin { int pixel; uint32_t color; };
+      static const OgHardwiredPin kOgHardwired[] = {
+          { 83,  0x00C030 }, // GND (top)    - green
+          { 108, 0x00C030 }, // GND (bottom) - green
+          { 96,  0xC05A00 }, // 3V3          - amber
+          { 106, 0xC01400 }, // 5V           - red-orange
+          { 109, 0xC00010 }, // VIN          - deep red
+          { 82,  0x3000B0 }, // RST (top)    - blue/violet
+          { 107, 0x3000B0 }, // RST (bottom) - blue/violet
+          { 97,  0x008060 }, // AREF         - teal
+      };
+      for (const auto& hp : kOgHardwired) {
+        leds.setPixelColor(hp.pixel, hp.color);
+      }
+
+      // 3) Breadboard power rails. The shared lightUpRail() renders into the V5
+      //    railsToPixelMap (pixels 300-399), which are off the 111-px OG strip,
+      //    so the physical OG rails never lit. Mirror each rail's color onto its
+      //    OG pixels. Positions from the OG hardware LED order (top+/top-/bot+/
+      //    bot-); railColorsV5[j][1] is the per-rail "bright" color, scaled up
+      //    since the raw values are tuned dim for V5's 5-LEDs-per-rail-segment.
+      static const int kOgRailPixels[4][5] = {
+          { 70, 73, 74, 77, 78 }, // rail 0: top positive
+          { 71, 72, 75, 76, 79 }, // rail 1: top negative
+          { 69, 66, 65, 62, 61 }, // rail 2: bottom positive
+          { 68, 67, 64, 63, 60 }, // rail 3: bottom negative
+      };
+      for (int j = 0; j < 4; j++) {
+        // Use the dim rail variant directly (no scale-up): the rails read too
+        // bright otherwise on the OG's single LED per rail segment.
+        uint32_t railColor = railColorsV5[j][0];
+        for (int i = 0; i < 5; i++) {
+          // Only fill unlit rail pixels: a rail that is part of a net was
+          // already painted its net color by lightUpNet() (pixels 60/61 are the
+          // nodesToPixelMap targets of the rail nodes), so leave those alone.
+          if (leds.getPixelColor(kOgRailPixels[j][i]) == 0) {
+            leds.setPixelColor(kOgRailPixels[j][i], railColor);
+          }
+        }
+      }
+
+      // 4) Logo is a SINGLE LED (pixel 110). The shared V5 swirl writes 7 LEDs
+      //    (LOGO_LED_START..+6), each at a different point on the rainbow --
+      //    those buffer slots are off the 111-px OG strip, and averaging them
+      //    would wash out to grey. Sample ONE (LOGO_LED_START+0, which logoSwirl
+      //    cycles through the whole spectrum over time) and brighten it (the
+      //    swirl runs dim because V5 clusters 7 LEDs; the OG shows just one).
+      leds.setPixelColor(kOgLogoPixel,
+                         scaleUpBrightness(leds.getPixelColor(LOGO_LED_START + 0), 12, 0x90));
+    }
+#endif
+
     core2busy = false;
     // }
   }
@@ -4449,7 +4660,10 @@ void startupColors(void) {
   //   showLEDsCore2 = 1;
   }
 
-uint32_t chillinColors[LED_COUNT + 200] = {
+// Fixed capacity sized to its initializer (was LED_COUNT+200 = 500 on V5). Kept
+// at 500 regardless of board so the OG's smaller LED_COUNT doesn't truncate the
+// initializer; the animation only ever indexes up to LED_COUNT (<= 500).
+uint32_t chillinColors[500] = {
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
     0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,

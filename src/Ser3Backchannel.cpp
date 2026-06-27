@@ -143,8 +143,13 @@ static void usbSer3_sendAllStatus(Stream* out) {
     }
     out->print("},\r\n");
 
+#if defined(OG_JUMPERLESS)
+    out->printf("\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":0.000},\r\n",
+                INA0.getCurrent_mA()- currentReadingOffset0_mA);
+#else
     out->printf("\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":%.3f},\r\n",
                 INA0.getCurrent_mA()- currentReadingOffset0_mA, INA1.getCurrent_mA()- currentReadingOffset1_mA);
+#endif
 
     const char* readingNames[] = {"low", "high", "float", "unknown"};
     out->print("\"gpio\":[");
@@ -189,8 +194,13 @@ static void usbSer3_sendADC(Stream* out) {
         if (i > 0) out->print(',');
         out->printf("\"adc%d\":%.4f", i, readAdcVoltage(i, 8));
     }
+#if defined(OG_JUMPERLESS)
+    out->printf("},\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":0.000}}\r\n",
+                INA0.getCurrent_mA()- currentReadingOffset0_mA);
+#else
     out->printf("},\"current\":{\"ina0_mA\":%.3f,\"ina1_mA\":%.3f}}\r\n",
                 INA0.getCurrent_mA()- currentReadingOffset0_mA, INA1.getCurrent_mA()- currentReadingOffset1_mA);
+#endif
 }
 
 static void usbSer3_sendGpioJson(Stream* out) {

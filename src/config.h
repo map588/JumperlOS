@@ -71,6 +71,7 @@ struct config {
         int  arduino = 0;
         bool  usb_mass_storage = false;
         int  show_probe_current = 0;  // moved out of EEPROM - config is source of truth
+        bool show_node_errors = true;
     } debug;
 
     struct routing {
@@ -131,7 +132,14 @@ struct config {
     } logo_pads;
 
     struct display {
+#if defined(OG_JUMPERLESS)
+        // OG has 1 LED per breadboard row; "wires" mode paints the 5-LEDs-per-row
+        // fill, which garbles the single-pixel strip. Default to lines so a freshly
+        // flashed OG renders correctly (parseLinesWires() also forces this on load).
+        volatile int lines_wires = 0;
+#else
         volatile int lines_wires = 1;
+#endif
         int menu_brightness = -10;
         int led_brightness = 10;
         int rail_brightness = 55;

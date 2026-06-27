@@ -66,7 +66,13 @@ struct pathStruct{
   enum pathType pathType;
   enum nodeType nodeType[3];
   bool sameChip;
-  //bool Lchip;
+#ifdef OG_JUMPERLESS
+  // OG only: this path routes a node that lives on CHIP_L (the physical hub:
+  // corner rows 1/30/31/60, RP_GPIO_0, UART, ...). The OG router (see
+  // NetsToChipConnections_OG.cpp) sets this so display/debug can tell hub paths
+  // apart. Kept out of the V5 build so the V5 pathStruct stays byte-identical.
+  bool Lchip = false;
+#endif
   bool skip = false;
 
 

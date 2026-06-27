@@ -56,12 +56,9 @@ void isrFromPio(void) {
   //  Serial.println("interrupt from pio  ");
   // Serial.print(chipSelect);
   // Serial.print(" \n\r");
-  //delayMicroseconds(10);
 
   setCSex(chipSelect, 0);
 
-  // Small delay to ensure signal stability
-  //delayMicroseconds(10);
   chipSelect = -1;
 
   // Clear the state machine interrupt (not PIO0_IRQ_0)
@@ -107,11 +104,27 @@ void initCH446Q(void) {
   // Serial.println(offset);
 
   pio_spi_ch446_multi_cs_init(pio, sm, offset, 8, 1, 0, 1, clk, dat);
-
+#if !defined(OG_JUMPERLESS)
   for (int i = 0; i < 12; i++) {
     pinMode(28 + i, OUTPUT_12MA);
     // digitalWrite(28+i, LOW);
     }
+    #else
+    // OG: crosspoint chip-selects are split across two GPIO banks - chips A-H on
+    // GPIO 6-13 and chips I-L on GPIO 20-23 (matching CS_A..CS_L in the OG
+    // reference firmware). The reference also drives every CS LOW (idle) right
+    // after pinMode; do the same so the pins are guaranteed SIO outputs at a
+    // known idle level before the first sendXYraw()/isrFromPio() CS pulse. The
+    // missing LOW init was a divergence from the known-good reference.
+    for (int i = 0; i < 8; i++) {
+      pinMode(6 + i, OUTPUT_12MA);
+      digitalWrite(6 + i, LOW);
+      }
+      for (int i = 0; i < 4; i++) {
+        pinMode(20 + i, OUTPUT_12MA);
+        digitalWrite(20 + i, LOW);
+        }
+    #endif
   // pio_spi_ch446_cs_handler_init(pio, smCS, offsetCS, 256, 1, 8, 20, 6);
   // pinMode(CS_A, OUTPUT);
   // digitalWrite(CS_A, HIGH);
@@ -181,7 +194,7 @@ void __not_in_flash_func(sendPaths)(int clean) {
 
 
 
-void refreshPaths(void) {
+void __not_in_flash_func(refreshPaths)(void) {
   for (int i = 0; i < MAX_BRIDGES; i++) {
     changedPaths[i] = -2;
     }
@@ -982,6 +995,7 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
       }
     }
 
+  #if !defined(OG_JUMPERLESS)
   // CRITICAL SAFETY: Chip K voltage source protection
   // Chip K X positions: 4=TOP_RAIL, 5=BOTTOM_RAIL, 6=DAC1, 7=DAC0, 15=GND
   // NEVER allow multiple voltage sources on the same Y (would short them together!)
@@ -1005,7 +1019,7 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
       }
     }
   }
-
+  #endif
   //unsigned long start = micros();
 
   int chYdata = y;
@@ -1039,28 +1053,20 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
     //delayMicroseconds(1);
     tight_loop_contents();
     
-    // DEBUG: Warn if waiting too long
+    // Recover if the PIO ISR never cleared chipSelect within 1 second.
     if (micros() > wait_end) {  // 1 second timeout
       ch446q_timeout_count++;
-      Serial.print("WARNING: CH446Q sendXYraw waiting for chipSelect for more than 1 second! (timeout #");
-      Serial.print(ch446q_timeout_count);
-      Serial.println(")");
-      Serial.println("CH446Q: Attempting emergency PIO reset...");
-      
-      // Emergency reset: force chipSelect to -1 and reset PIO
+      // CRITICAL: sendXYraw() runs on Core 1. Do NOT do Serial/USB I/O here -
+      // on RP2040 arduino-pico that pumps TinyUSB_Device_Task() via yield() ON
+      // CORE 1 and races Core 0's USB servicing, which can wedge the board (this
+      // is the same dual-core USB hazard that moved replyWithSerialInfo to
+      // Core 0). Recover the PIO SILENTLY; ch446q_timeout_count is readable from
+      // Core 0 for diagnostics. (delayMicroseconds busy-waits, no yield.)
       chipSelect = -1;
       pio_sm_set_enabled(pio, sm, false);
       delayMicroseconds(100);
       pio_sm_set_enabled(pio, sm, true);
       pio_interrupt_clear(pio, sm);
-      
-      // Debug PIO state after reset
-      Serial.print("CH446Q: After emergency reset - SM enabled: ");
-      Serial.print((pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + sm))) ? "YES" : "NO");
-      Serial.print(", IRQ enabled: ");
-      Serial.print(irq_is_enabled(PIO0_IRQ_1) ? "YES" : "NO");
-      Serial.print(", chipSelect: ");
-      Serial.println(chipSelect);
       isrFromPio();
       break;  // Break out of the loop to prevent infinite hang
     }

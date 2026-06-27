@@ -383,7 +383,11 @@ float jl_ina_get_current( int sensor ) {
     if ( sensor == 0 ) {
         result = INA0.getCurrent( );
     } else if ( sensor == 1 ) {
+#if defined(OG_JUMPERLESS)
+        result = 0.0f;
+#else
         result = INA1.getCurrent( );
+#endif
     }
 
     pauseCore2 = was_paused;
@@ -399,7 +403,11 @@ float jl_ina_get_voltage( int sensor ) {
     if ( sensor == 0 ) {
         result = INA0.getBusVoltage( );
     } else if ( sensor == 1 ) {
+#if defined(OG_JUMPERLESS)
+        result = 0.0f;
+#else
         result = INA1.getBusVoltage( );
+#endif
     }
 
     pauseCore2 = was_paused;
@@ -415,7 +423,11 @@ float jl_ina_get_bus_voltage( int sensor ) {
     if ( sensor == 0 ) {
         result = INA0.getBusVoltage( );
     } else if ( sensor == 1 ) {
+#if defined(OG_JUMPERLESS)
+        result = 0.0f;
+#else
         result = INA1.getBusVoltage( );
+#endif
     }
 
     pauseCore2 = was_paused;
@@ -431,7 +443,11 @@ float jl_ina_get_power( int sensor ) {
     if ( sensor == 0 ) {
         result = INA0.getPower( );
     } else if ( sensor == 1 ) {
+#if defined(OG_JUMPERLESS)
+        result = 0.0f;
+#else
         result = INA1.getPower( );
+#endif
     }
 
     pauseCore2 = was_paused;
@@ -1106,7 +1122,11 @@ const char* jl_get_path_info( int pathIdx ) {
 // Get all active paths as a formatted string
 // Returns count, followed by each path on a new line
 const char* jl_get_all_path_info( void ) {
+#if defined(OG_JUMPERLESS)
+    static char allPathsBuffer[ 1024 ]; // RP2040: scarce SRAM, fewer paths fit
+#else
     static char allPathsBuffer[ 4096 ]; // Large buffer for multiple paths
+#endif
     allPathsBuffer[ 0 ] = '\0';
 
     // Note: Paths should already be computed by refreshLocalConnections()
@@ -2298,7 +2318,11 @@ char* jl_fs_listdir( const char* path ) {
     fs_mutex_acquire( ); // THREAD SAFETY: Lock filesystem
 
     // Use static buffer to avoid memory management issues
+#if defined(OG_JUMPERLESS)
+    static char listBuffer[ 768 ]; // RP2040: scarce SRAM
+#else
     static char listBuffer[ 2048 ];
+#endif
     listBuffer[ 0 ] = '\0';
 
     Dir dir = FatFS.openDir( path );
@@ -2339,7 +2363,11 @@ char* jl_fs_read_file( const char* path ) {
         return nullptr;
 
     // Use static buffer for file contents
+#if defined(OG_JUMPERLESS)
+    static char fileBuffer[ 1024 ]; // RP2040: scarce SRAM, smaller max read via this API
+#else
     static char fileBuffer[ 4096 ];
+#endif
     size_t bytesRead = 0;
 
     if ( !safeFileReadAll( path, fileBuffer, sizeof( fileBuffer ), &bytesRead, 2000 ) ) {
@@ -3142,7 +3170,11 @@ int jl_overlay_place(const char* name, int row, int col) {
  * @return Pointer to static string buffer containing JSON
  */
 char* jl_overlay_serialize(void) {
+#if defined(OG_JUMPERLESS)
+    static char overlayBuffer[256]; // RP2040: graphic overlays are out on OG
+#else
     static char overlayBuffer[4096];
+#endif
     String json;
     serializeOverlaysToJSON(json);
     

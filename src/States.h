@@ -254,15 +254,18 @@ public:
     
     JumperlessState();
     
-    // CRITICAL WARNING: This object is HUGE (~50KB)! Copying exhausts stack memory.
-    // Default copy constructor/assignment are available but should RARELY be used.
-    // Prefer references: JumperlessState& state
-    // Only copy when absolutely necessary (e.g., undo/redo history)
+    // CRITICAL: This object is HUGE (~33-50KB). Copying it exhausts the RP2040's
+    // tiny stack/heap (the OG has only ~50KB TOTAL free RAM) and is wasteful on
+    // V5. Copying is therefore DELETED - the compiler will reject any copy. Work
+    // in place on globalState / a JumperlessState& reference, or serialize via
+    // toYAML/fromYAML to move state between slots without a struct copy.
     //
     // SAFE:   JumperlessState& state = globalState;           (reference, no copy)
     // SAFE:   void func(JumperlessState& state);              (pass by reference)
-    // DANGER: JumperlessState state = globalState;            (copy, uses 50KB stack!)
-    // DANGER: void func(JumperlessState state);               (pass by value, uses 50KB stack!)
+    // COMPILE ERROR: JumperlessState state = globalState;     (copy - deleted)
+    // COMPILE ERROR: void func(JumperlessState state);        (pass by value - deleted)
+    JumperlessState(const JumperlessState&) = delete;
+    JumperlessState& operator=(const JumperlessState&) = delete;
     
     // Connection management
     bool addConnection(int node1, int node2, String& errorMsg, int duplicates = -1);  // -1 = use default from config

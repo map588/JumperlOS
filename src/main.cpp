@@ -36,6 +36,7 @@ KevinC@ppucc.io
 #include "Apps.h"
 #include "ArduinoStuff.h"
 #include "AsyncPassthrough.h"
+#include "boards/board.h"  // board::currentBoard().caps - runtime hardware gating
 #include "CommandBuffer.h" // New simplified command buffer system
 #include "Debugs.h"
 #include "FakeGpio.h"
@@ -321,10 +322,12 @@ void setup( ) {
     // Serial.println("DAC initialized");
     // Serial.flush();
 
+    #if !defined(OG_JUMPERLESS)
     pinMode( PROBE_PIN, OUTPUT_8MA );
     pinMode( BUTTON_PIN, INPUT_PULLDOWN );
     // pinMode(buttonPin, INPUT_PULLDOWN);
     digitalWrite( PROBE_PIN, HIGH );
+    #endif
 
     // digitalWrite(BUTTON_PIN, HIGH);
     startupTimers[ 2 ] = millis( );
@@ -352,7 +355,20 @@ void setup( ) {
     // Serial.flush();
 
     startupTimers[ 4 ] = millis( );
-    drawAnimatedImage( 0 );
+#if defined(OG_JUMPERLESS)
+    // The OG runs its own short rainbow-swirl boot animation (ported from the OG
+    // reference firmware) instead of the V5 image animation, which renders
+    // imagery meaningless on the OG's 111-LED strip. core0 owns the strip here
+    // (it waited on core2initFinished above, so initLEDs() is done), so this is
+    // safe to drive directly.
+    ogStartupAnimation( );
+#else
+    // V5 image boot animation. (drawAnimatedImage stays bounds-safe via the
+    // LEDs.cpp guards regardless of board.)
+    if ( board::currentBoard( ).caps.hasStartupAnimation ) {
+        drawAnimatedImage( 0 );
+    }
+#endif
     startupAnimationFinished = 1;
     // Serial.println("Startup animation finished");
     // Serial.flush();
@@ -386,7 +402,12 @@ void setup( ) {
     // Serial.println("ADC initialized");
     // Serial.flush();
 
+#if !defined(OG_JUMPERLESS)
+    // OG has no resistive probe pads (V5-only); getNothingTouched() reads ADC
+    // channel 5 which doesn't exist on the RP2040, causing "All nothing touched
+    // samples rejected". Scanning probe is Phase 2 work.
     getNothingTouched( );
+#endif
 
     startupTimers[ 8 ] = millis( );
     // createSlots( -1, 0 );
@@ -417,7 +438,7 @@ void setup( ) {
 
     // Register all services in priority order using clean global names
     // CRITICAL priority services - run every loop for instant response
-    jOS.registerService( &probeButton );             // CRITICAL - high-frequency button checking
+  
     jOS.registerService( &termSerialService );       // CRITICAL - terminal input (when line buffering enabled)
     jOS.registerService( &injectedCommandService );  // CRITICAL - immediate command execution from injection buffer
     jOS.registerService( &asyncPassthroughService ); // CRITICAL - USB CDC1<->UART0 bridging (prevent data loss)
@@ -426,11 +447,26 @@ void setup( ) {
     // HIGH priority services - time-sensitive operations
     jOS.registerService( &tinyUSBService );  // HIGH - USB communication
     jOS.registerService( &slotManager );     // HIGH - states auto-save
-    jOS.registerService( &probing );         // HIGH - user interaction sensitive (probe reading)
-    jOS.registerService( &highlighting );    // HIGH - visual feedback
+   
+
+    // Probe stack is gated on the board having resistive probe pads (V5). The OG
+    // has no probe pads (its scanning probe is Phase 2 work), so registering
+    // these would poll nonexistent ADC channels and spam measure mode. Runtime
+    // cap instead of #ifdef so the contract - not a board macro - drives it.
+    if ( board::currentBoard( ).caps.hasProbePads ) {
+        jOS.registerService( &probeButton );      // HIGH - high-frequency button checking
+        jOS.registerService( &probing );          // HIGH - user interaction sensitive (probe reading)
+        jOS.registerService( &highlighting );     // HIGH - visual feedback
+        jOS.registerService( &measureModeService );
+        jOS.registerService( &probeSwitch );      // LOW - switch position (not time-critical)
+        jOS.registerService( &probePads );        // LOW - expensive ADC pad reading
+    }
+
+
     jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
 
-    jOS.registerService( &measureModeService );
+    
+    
 
     // NORMAL priority services - periodic tasks
     jOS.registerService( &usbPeriodicService ); // NORMAL - USB housekeeping (when MSC enabled)
@@ -439,12 +475,13 @@ void setup( ) {
     jOS.registerService( &oledGuiService );      // NORMAL - retained OLED screen render + live bindings (inert until a screen is active)
 
     // LOW priority services - background tasks
-    jOS.registerService( &oledService );         // LOW - display updates
+    jOS.registerService( &oledService );         // LOW - display updates (OLED preserved on OG: a user can wire a panel to GP18/19)
     jOS.registerService( &liveCrossbarService ); // LOW - live crossbar terminal display
-    jOS.registerService( &probeSwitch );         // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );           // LOW - expensive ADC pad reading
     jOS.registerService( &configSaveService );   // LOW - background config save (non-blocking)
-    jOS.registerService( &fileCacheFlushService ); // LOW - write-back PSRAM cache flush
+    // Write-back file cache lives in PSRAM; only boards with PSRAM run its flush.
+    if ( board::currentBoard( ).caps.hasPsram ) {
+        jOS.registerService( &fileCacheFlushService ); // LOW - write-back PSRAM cache flush
+    }
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts
@@ -488,7 +525,15 @@ void setupCore2stuff( ) {
     startupCore2timers[ 4 ] = millis( );
 
     startupCore2timers[ 5 ] = millis( );
-    initRotaryEncoder( );
+    // Only initialize the quadrature encoder on boards that have one. On the OG
+    // this matters beyond a no-op: initRotaryEncoder() claims a PIO state machine
+    // and loads the quadrature program, and the RP2040's 2 PIO blocks are already
+    // oversubscribed (probe button + WS2812 strips). Loading a dead encoder
+    // program there starved the LED program and the core1 poll of the unloaded SM
+    // caused the documented periodic reset. The cap keeps that PIO slot free.
+    if ( board::currentBoard( ).caps.hasRotaryEncoder ) {
+        initRotaryEncoder( );
+    }
     startupCore2timers[ 6 ] = millis( );
     initSecondSerial( );
     core2initFinished = 1;
@@ -639,10 +684,14 @@ menu:
         // Serial.flush();
         // Serial.println("millis = " + String(millis()));
 
+#if !defined(OG_JUMPERLESS)
+        // OG has no OLED; skip init (it also kicks refreshConnections + debug
+        // printfs that abort on the OG's tight heap).
         if ( jumperlessConfig.top_oled.connect_on_boot == 1 ) {
             // Serial.println("Initializing OLED");
             oled.init( );
         }
+#endif
         checkProbeCurrentZero( );
 
         // Ensure the probe-sense DAC is at the calibrated measure_mode_output_voltage
@@ -858,6 +907,11 @@ dontshowmenu:
             // Note: DTR detection now happens in AsyncPassthrough::checkDTRState()
             // but we still need this for the auto-connect and active servicing
             secondSerialHandler( );
+
+            // Port-info (ENQ 0x05) reply, moved here from loop1/Core 2. It does
+            // USB-CDC I/O which must stay on Core 0 (the USB-owning core); see the
+            // note at its old call site in loop1. Throttled with secondSerialHandler.
+            replyWithSerialInfo( );
         }
         busyTimers[ 2 ] = micros( );
 
@@ -1404,7 +1458,17 @@ void loop1( ) {
     if ( pauseCore2 )
         return;
 
-    replyWithSerialInfo( );
+    // replyWithSerialInfo() was MOVED to Core 0's loop() (next to
+    // secondSerialHandler()). It does USB-CDC I/O (USBSerX.available()/peek()/
+    // print()), and on RP2040 arduino-pico those pump TinyUSB_Device_Task() via
+    // yield() ON THE CALLING CORE. TinyUSB must only be serviced from Core 0:
+    // running it here raced Core 0's USB use (REPL/commands) and wedged the
+    // board - SWD-confirmed core1 hang in
+    //   loop1 -> replyWithSerialInfo -> USBSer2.available -> yield
+    //         -> TinyUSB_Device_Task -> mutex_try_enter -> spin_unlock (0xd0000154)
+    // surfacing as "Core 2 ... sendAllPathsCore2 ... timeout" + USB disconnect.
+    // This matches the earlier move of AsyncPassthrough/secondSerialHandler off
+    // Core 2 (see note above). Applies to BOTH boards.
 
     // Check pauseCore2 before LED dump
     if ( pauseCore2 )
@@ -1573,7 +1637,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                 if ( defconDisplay >= 0 && probeActive == 0 && !SlotManager::getInstance( ).isPreviewMode( ) ) {
 
                     // core2busy = true;
-                    defcon( swirlCount, spread, defconDisplay );
+                    // defcon( swirlCount, spread, defconDisplay );
                     // core2busy = false;
                 } else {
 
@@ -1826,4 +1890,4 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
             }
         }
     }
-}
+}// force rebuild

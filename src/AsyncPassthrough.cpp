@@ -343,7 +343,16 @@ static volatile bool s_resync_requested = false;
 // Exposed ring: uartReceived. Must be aligned to its own size for the DMA
 // ring-wrap feature. `uartReceivedHead` now tracks the DMA write pointer
 // (producer) and `uartReceivedTail` is the consume index (consumer, in task()).
+// DMA RX ring for the Arduino UART passthrough. The buffer is aligned to its
+// own power-of-2 size (RP2040 DMA ring requirement) and indexed via
+// UART_RECEIVED_MASK, both derived from this one define - so shrinking it stays
+// consistent. On the RP2040 (OG) the 8 KB ring is precious static .bss/heap, so
+// use 2 KB there (still ample for the passthrough at typical baud rates).
+#if defined(OG_JUMPERLESS)
+#define UART_RX_RING_BITS 11                 // 2^11 = 2048 bytes
+#else
 #define UART_RX_RING_BITS 13                 // 2^13 = 8192 bytes
+#endif
 uint8_t uartReceived[ 1u << UART_RX_RING_BITS ]
     __attribute__( ( aligned( 1u << UART_RX_RING_BITS ) ) );
 volatile uint16_t uartReceivedHead = 0;

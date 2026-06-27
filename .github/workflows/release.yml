@@ -70,10 +70,28 @@ jobs:
         id: version
         run: python scripts/bump_version_if_needed.py
 
-      - name: Build firmware
+      - name: Build V5 firmware
         # version_from_file.py (pre-build) bakes steps.version.outputs.version
         # into FirmwareVersion.generated.h, so the binary matches the tag.
         run: pio run -e jumperless_v5
+
+      - name: Build OG firmware
+        # Same source/version cadence; version_from_file.py remaps the major to
+        # 1 for the OG env, so this binary reports 1.x.x.x (e.g. 1.7.0.12).
+        run: pio run -e jumperless_og
+
+      - name: Stage OG firmware asset (versioned 1.x.x.x)
+        id: og
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # 5.7.0.12 -> 1.7.0.12 (swap the leading major component for 1).
+          OG_VERSION="1.${VERSION#*.}"
+          mkdir -p dist
+          cp .pio/build/jumperless_og/firmware.uf2 "dist/jumperless_og-${OG_VERSION}.uf2"
+          echo "og_version=$OG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Staged OG firmware dist/jumperless_og-${OG_VERSION}.uf2"
 
       - name: Commit version bump back to main
         if: steps.version.outputs.bumped == 'true'
@@ -87,13 +105,18 @@ jobs:
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Create GitHub release
+        # Publishes BOTH firmwares in one release: the V5 firmware.uf2 (asset name
+        # kept as firmware.uf2 -- the app/mirror download it by that name) and the
+        # OG firmware as jumperless_og-<1.x.x.x>.uf2.
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          OG_VERSION: ${{ steps.og.outputs.og_version }}
         run: |
           SHA="$(git rev-parse HEAD)"
           gh release create "$VERSION" \
             ".pio/build/jumperless_v5/firmware.uf2#Jumperless V5 firmware (${VERSION})" \
+            "dist/jumperless_og-${OG_VERSION}.uf2#Jumperless OG firmware (${OG_VERSION})" \
             --target "$SHA" \
             --title "$VERSION" \
             --generate-notes

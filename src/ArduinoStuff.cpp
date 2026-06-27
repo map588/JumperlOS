@@ -720,11 +720,18 @@ void applyPsramModeChange( int psramEnabled ) {
     // GPIO 19 is shared between NANO_RESET_1 and PSRAM_CS
     
     if ( psramEnabled ) {
+#if defined(PICO_RP2350)
+        // XIP CS1 (second QSPI chip select for PSRAM) only exists on RP2350.
+        // The OG Jumperless is an RP2040 with no PSRAM, so this path is dead
+        // there; psram_installed is always 0 on that board.
         gpio_set_function( ARDUINO_RESET_1_PIN, GPIO_FUNC_XIP_CS1 );
         xip_ctrl_hw->ctrl|=XIP_CTRL_WRITABLE_M1_BITS;
-        
+
         Serial.println( "PSRAM mode enabled - GPIO 19 released for PSRAM CS" );
         Serial.println( "Note: Top Arduino slot reset (NANO_RESET_1) is now disabled" );
+#else
+        Serial.println( "PSRAM mode unavailable on this board (no XIP CS1)" );
+#endif
     } else {
         pinMode( ARDUINO_RESET_1_PIN, INPUT );
         Serial.println( "PSRAM mode disabled - GPIO 19 restored as NANO_RESET_1" );

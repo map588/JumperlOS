@@ -14,8 +14,30 @@
 #include "Graphics.h"
 #include "PersistentStuff.h"
 #include "RotaryEncoder.h"
+// gpio_coproc.h is RP2350-only (the single-cycle GPIO coprocessor). It
+// hard-#errors on RP2040, so include it only on RP2350.
+#if defined(PICO_RP2350)
 #include "hardware/gpio_coproc.h"
+#endif
 #include "hardware/pio.h"
+
+// Portable output-enable toggles. V5 uses the RP2350 coprocessor's
+// single-cycle gpioc_bit_oe_set/clr; RP2040 (OG) uses the normal direction
+// API (the pin is already switched to SIO before these are called).
+static inline void probeOeClr( uint pin ) {
+#if defined(PICO_RP2350)
+    gpioc_bit_oe_clr( pin );
+#else
+    gpio_set_dir( pin, false );
+#endif
+}
+static inline void probeOeSet( uint pin ) {
+#if defined(PICO_RP2350)
+    gpioc_bit_oe_set( pin );
+#else
+    gpio_set_dir( pin, true );
+#endif
+}
 #include "hardware/pwm.h"
 #include "pico.h"
 #include "pico/stdlib.h"
@@ -823,7 +845,7 @@ int ProbeButton::checkProbeButtonHardware( void ) {
     gpio_set_function( PROBE_LED_PIN, GPIO_FUNC_SIO );
     gpio_disable_pulls( PROBE_LED_PIN );
     //gpio_set_dir( PROBE_LED_PIN, false );
-    gpioc_bit_oe_clr(PROBE_LED_PIN);
+    probeOeClr(PROBE_LED_PIN);
     delayMicroseconds( BUTTON_SETTLE_US );
 
     gpio_set_dir( PROBE_PIN, true );
@@ -861,7 +883,7 @@ int ProbeButton::checkProbeButtonHardware( void ) {
 
     gpio_set_pulls( BUTTON_PIN, false, true);
     gpio_set_function( PROBE_LED_PIN, lastProbeButtonFunction );
-    gpioc_bit_oe_set(PROBE_LED_PIN);
+    probeOeSet(PROBE_LED_PIN);
 
     delayMicroseconds( 20);
 
@@ -5079,6 +5101,9 @@ int Probing::checkSwitchPosition( ) { // 0 = measure, 1 = select
 // driving the high-impedance tip, ~0 mA), so the raw absolute value is what we
 // compare on BOTH sides.
 float Probing::checkProbeCurrentRaw( void ) {
+#if defined(OG_JUMPERLESS)
+    return 0.0f;
+#else
     int div = 1;
     float current = 0.0;
 
@@ -5100,6 +5125,7 @@ float Probing::checkProbeCurrentRaw( void ) {
     }
     current = current / (float)div;
     return current;
+#endif
 }
 
 // Zero-corrected probe current for the user-facing "current at the tip" display.
@@ -5153,6 +5179,17 @@ float Probing::checkProbeCurrent( void ) {
 }
 
 float Probing::checkProbeCurrentZero( void ) {
+#if defined(OG_JUMPERLESS)
+    // Only calibrate INA0 offset on OG, as INA1 doesn't exist.
+    unsigned long timeout_start = millis( );
+    while ( !INA0.getConversionFlag( ) && ( millis( ) - timeout_start < 20 ) ) {
+        delayMicroseconds( 100 );
+    }
+    currentReadingOffset0_mA = INA0.getCurrent_mA( );
+    jumperlessConfig.calibration.probe_current_zero = 0.0f;
+    showProbeLEDs = 4;
+    return 0.0f;
+#else
     // return 0.0f;
 
     // Serial.println("\n\n\n\\n\n\n\n\n\n\n\n checkingProbeCurrentZero \n\n\n\n\n\n");
@@ -5245,11 +5282,15 @@ float Probing::checkProbeCurrentZero( void ) {
 
     showProbeLEDs = 4;
     return current;
+#endif
 }
 
 int dontSwitchPowerDac = 1;
 
 void Probing::routableBufferPower( int offOn, int flash, int force ) {
+#if defined(OG_JUMPERLESS)
+    return;
+#endif
     // The probe buffer power rail (DAC0/DAC1 <-> BUFFER_IN bridge + its
     // measure-mode output voltage) is auto-managed by the system, not a user
     // action. Suppress undo recording for the whole function so neither the

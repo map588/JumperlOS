@@ -10,11 +10,20 @@
 // =============================================================================
 // Fixed configuration: 5 CDC + 1 MSC for logic analyzer on port 3
 
-// CDC Serial Interfaces (Communication Device Class)  
+// CDC Serial Interfaces (Communication Device Class)
+// Overridable per board via -DUSB_CDC_ENABLE_COUNT=N (see platformio.ini).
+// V5 exposes 4: CDC0 commands, USBSer1 Arduino passthrough, USBSer2 mpremote,
+// USBSer3 LLM JSON backchannel. OG keeps the same layout; if the RP2040
+// full-speed endpoint budget is tight, drop USBSer1 first (set this to 3).
+#ifndef USB_CDC_ENABLE_COUNT
 #define USB_CDC_ENABLE_COUNT 4
+#endif
 
-// MSC (Mass Storage Class) - Always enabled
+// MSC (Mass Storage Class). Overridable per board (OG may disable mass storage
+// if USBfs is filtered out of the build).
+#ifndef USB_MSC_ENABLE
 #define USB_MSC_ENABLE 1
+#endif
 
 // All other interfaces disabled for simplicity
 #define USB_MIDI_ENABLE 0

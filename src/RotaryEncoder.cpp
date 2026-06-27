@@ -46,18 +46,25 @@ volatile int slotPreview = 0;
 // volatile enum { IDLE, PRESSED, HELD, RELEASED } encoderButtonState;
 
 void initRotaryEncoder( void ) {
+    #if !defined(OG_JUMPERLESS)
     pinMode( BUTTON_ENC, INPUT );
     pinMode( QUADRATURE_A_PIN, INPUT_PULLUP );
     pinMode( QUADRATURE_B_PIN, INPUT_PULLUP );
+    #endif
 
     // CRITICAL: Dynamically claim an unused PIO to avoid conflicts
     // Serial.println("◆ Initializing rotary encoder with dynamic PIO allocation...");
 
-    // Try PIO instances in order: PIO2, PIO0, PIO1 (same priority as logic analyzer)
+    // Try PIO instances in order. RP2350 has three PIO blocks; RP2040 has two.
+#if defined(PICO_RP2350)
     PIO pio_instances[] = { pio0, pio1, pio2 };
+#else
+    PIO pio_instances[] = { pio0, pio1 };
+#endif
+    const int numPioInst = (int)( sizeof( pio_instances ) / sizeof( pio_instances[0] ) );
     bool pio_allocated = false;
 
-    for ( int i = 0; i < 3 && !pio_allocated; i++ ) {
+    for ( int i = 0; i < numPioInst && !pio_allocated; i++ ) {
         PIO test_pio = pio_instances[ i ];
         // Serial.printf("◆ Trying PIO%d for rotary encoder...\n", pio_get_index(test_pio));
 
@@ -832,6 +839,14 @@ static void rotaryEncoderStuffLocked( void );
 static void rotaryEncoderButtonStuffLocked( void );
 
 void rotaryEncoderStuff( void ) {
+
+#if defined(OG_JUMPERLESS)
+    // OG has no rotary encoder. The quadrature PIO program may also have failed
+    // to load (the RP2040's 2 PIO blocks are oversubscribed - boot logs "no
+    // instruction memory"), so reading pioEnc/smEnc here on core1 is both useless
+    // and a fault risk. No-op on OG.
+    return;
+#endif
 
     // Single-owner: only Core 1 runs the poll body. (Core 0 call sites in
     // menus/probing/apps are left in place as no-ops - cheaper than
