@@ -1416,9 +1416,11 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
             // them from the sanitized bridges so routing/colors stay consistent.
             connections.syncNetsFromBridges();
             markDirty(); // rewrite the cleaned slot on next save
-            Serial.print("Dropped ");
-            Serial.print(dropped);
-            Serial.println(" bridge(s) referencing nodes not present on this board");
+            if (jumperlessConfig.debug.show_node_errors) {
+                Serial.print("Dropped ");
+                Serial.print(dropped);
+                Serial.println(" bridge(s) referencing nodes not present on this board");
+            }
         }
     }
 
