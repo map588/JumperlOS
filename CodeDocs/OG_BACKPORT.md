@@ -455,6 +455,111 @@ firstLoop `#if !OG`) is a deferred follow-up. Host board test green (OG + V5).
   Note: that tree is a draft snapshot ("probably don't use this") — use it as a
   reference for OG topology/probe/DAC, not as production code.
 
+## Change inventory vs `main` (for V5-safety review) — 2026-06-27
+
+This is the audit map for a fresh review of everything the `OGbackport` branch
+touches relative to `main`. Generate the live list with
+`git diff --stat main OGbackport`.
+
+**Is V5 byte-identical to `main`? NO** — and that's expected. Two reasons:
+1. The board-descriptor layer (`src/boards/board.cpp`, `src/boards/v5/board_v5.cpp`)
+   is now compiled and LINKED into V5 (adds `board::currentBoard()` +
+   `v5BoardTopology`/`kV5XMap`/`kV5YMap`/`kV5BbNodesToChip`/`kV5Gpio/Adc/Dac`
+   rodata). This is mostly inert data on V5, but it grows the binary.
+2. A few SHARED files were refactored to be board-data-driven instead of
+   hardcoded. Those are behavior-preserving ONLY IF the V5 descriptor reproduces
+   the old hardcoded V5 values. The host test `test/test_boards/test_boards.cpp`
+   is meant to assert that parity — run it as part of review.
+
+To reproduce the V5 delta: build `-e jumperless_v5` on both branches and compare
+`firmware.bin` (sha256), or `arm-none-eabi-nm --print-size --size-sort firmware.elf`
+and diff. (`firmware.bin` is build-path independent: no `__FILE__/__DATE__/__TIME__`.)
+
+### Verify FIRST (shared, NOT `#ifdef`-gated — real V5 code-path changes)
+- `src/NetsToChipConnections.cpp` `findStartAndEndChips()`: corner-row chip
+  assignment was unified from hardcoded cases (29/59 -> `CHIP_K`, 30/60 ->
+  `CHIP_L`, 1..28/31..58 -> `bbNodesToChip[]`) to a single
+  `case 1..60 -> board::currentBoard().bbNodesToChip[node]`. V5 correctness now
+  depends on `v5BoardTopology.bbNodesToChip` matching the old logic. Also deleted
+  dead `newBridges[MAX_NETS][MAX_DUPLICATE][2]`.
+- `src/States.cpp` / `src/States.h`: `JumperlessState` made NON-copyable
+  (`= delete` copy ctor/assign) and the 5 copy sites rewritten in place; legacy
+  full-state history (`pushHistory`/`undo`/`redo`) no-op. Affects V5 too.
+- `src/FileParsing.cpp`: `isNodeValid()` grew and a new `isNodeOnBoard()` was
+  added (node validation now consults the board descriptor). Confirm V5 accepts
+  exactly the same node set as before.
+- `src/boards/v5/board_v5.cpp`: the V5 descriptor data is the new source of
+  truth for the above — review it against the old hardcoded V5 maps.
+
+### New files (no V5 source impact, except the board layer linkage noted above)
+- `src/boards/board.{h,cpp}`, `src/boards/v5/board_v5.cpp`,
+  `src/boards/og/board_og.cpp`, `src/boards/og/og_atomic.cpp`,
+  `src/boards/og/og_unique_id.c` — board contract + descriptors + RP2040 shims.
+- `src/NetsToChipConnections_OG.cpp` — entire body is `#ifdef OG_JUMPERLESS`, so
+  it compiles to ZERO symbols on V5 (the OG router; V5 still uses
+  `NetsToChipConnections.cpp`).
+- `boards/jumperless_og.json` (board package), `platformio.ini`
+  `[env:jumperless_og]`/`[env:jumperless_og_debug]` (the `[env:jumperless_v5]`
+  block is unchanged — verified), `.github/workflows/og-prerelease.yml`,
+  `test/test_boards/test_boards.cpp`, `CodeDocs/*.md`, `.vscode/*`.
+
+### Shared edits intended to be V5 no-ops (gated by `#if defined(OG_JUMPERLESS)`
+or `board::currentBoard().caps.*`) — verify the gating actually wraps every hunk
+- `src/main.cpp` — boot path: OG `ogStartupAnimation()` vs V5
+  `drawAnimatedImage()`; caps gating of probe stack / `fileCacheFlushService` /
+  `initRotaryEncoder` / startup animation.
+- `src/LEDs.cpp` / `src/LEDs.h` — bounds-checked pixel setters (`ledMaxPixels`,
+  both boards), OG overlay in `showNets()` (header dim-purple, hardwired pins,
+  rails at px 60-79, single logo LED), `ogStartupAnimation()`, OG branches in
+  `lightUpNet`/`showSkippedNodes`.
+- `src/Graphics.cpp` / `src/Graphics.h` — `dumpLEDs()` OG geometry
+  (`dumpGridRow`, header reads), `rowColumnToPixelIndex`/`wireStatusToPixelIndex`
+  gated by `caps.ledsPerRow`.
+- `src/Peripherals.cpp` — `setCSex` OG CS bank (chips 8-11 -> GPIO 20-23),
+  `initGPIO`/`setGPIO` OG early-return, `initDAC`/`initADC`/`initINA219` OG,
+  `updateLazyAdcReadings`, GPIO-function name table RP2350 guards.
+- `src/PersistentStuff.cpp` — `readSettingsFromConfig` GPIO-bank loop gated +
+  OG brightness floor; `updateStateFromGPIOConfig` OG early-return.
+- `src/CH446Q.cpp` — `initCH446Q` OG CS pin banks + LOW idle init; chip-K
+  voltage-source guard `#if !defined(OG_JUMPERLESS)`.
+- `src/RotaryEncoder.cpp`, `src/Debugs.cpp`, `src/Probing.cpp`,
+  `src/ArduinoStuff.cpp` — RP2350-only PIO/PSRAM/coproc paths guarded so RP2040
+  compiles; `rotaryEncoderStuff` OG early-return.
+- `src/SingleCharCommands.cpp` / `.h` — OG-only `cmd_testChipSelect` ('I')
+  wrapped in `#if defined(OG_JUMPERLESS)`.
+- `src/Undo.cpp` — `UNDO_ENABLED` feature group (0 on OG, 1 on V5 -> V5 keeps
+  undo + `toastScreen`).
+- `src/GraphicOverlays.{cpp,h}`, `src/MatrixState.{cpp,h}`, `src/MeasureMode.cpp`,
+  `src/MpRemoteService.h`, `src/JumperlessMicroPythonAPI.cpp`,
+  `src/Python_Proper.cpp`, `src/micropythonExamples.h`, `src/Ser3Backchannel.cpp`,
+  `src/AsyncPassthrough.cpp`, `src/Apps.cpp`, `src/usb_descriptors.cpp`,
+  `src/configManager.cpp`, `src/config.h` — OG memory/feature gating, USB CDC
+  count + strings, config additions.
+- `src/JumperlessDefines.h` — OG node ids (`NANO_VIN`, `NANO_3V3`, `NANO_5V`,
+  `NANO_RESET_0/1`, `NANO_GND_0/1`, ...) and feature-group flags. Verify these
+  are ADDITIONS only (no existing V5 node id / constant changed value).
+- `include/custom_tusb_config.h`, `include/usb_interface_config.h` — per-board
+  `USB_CDC_ENABLE_COUNT` / FIFO sizes; verify V5 path unchanged.
+- `lib/FatFS/src/ffconf.h` — `FF_FS_TINY` is `#if defined(OG_JUMPERLESS)` (V5
+  stays 0; confirmed OG-gated).
+
+### This session's specific work (2026-06-26/27)
+- Nano-routing root cause: chip selects for chips I-L (GPIO 20-23) were being
+  reconfigured to inputs by `readSettingsFromConfig` (and `updateStateFromGPIOConfig`);
+  both now OG-gated in `PersistentStuff.cpp`. (`setCSex` chip+12 mapping was
+  already correct.)
+- LEDs: `showNets()` OG overlay (dim-purple header, hardwired pins at px
+  82/83/96/97/106/107/108/109, rails 60-79), single logo LED sampled from
+  `LOGO_LED_START+0` and brightened, OG rainbow boot animation, `dumpLEDs` OG
+  geometry, OG brightness floor.
+- Routing: `routeDuplicateViaAltNanoChip()` in `NetsToChipConnections_OG.cpp`
+  (parallel BB<->NANO path via the alternate nano chip for lower resistance);
+  `showSkippedNodes` duplicate guard. (OG-only file -> no V5 impact.)
+- CI/version: `scripts/version_from_file.py` remaps the OG major to 1 (V5
+  5.x.x.x -> OG 1.x.x.x); `release.yml` builds + attaches both firmwares;
+  `og-prerelease.yml` manual OG pre-release. (Applied on `OGbackport`; `main`
+  left V5-only.)
+
 
 
 

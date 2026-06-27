@@ -367,7 +367,18 @@ const int nodesToPixelMap[120] = {
 };
 
 #define LOGO_COLOR_LENGTH 60
+#if defined(OG_JUMPERLESS)
+// The OG has ONE logo LED, so it only ever needs the rainbow palette (index 0).
+// Sizing the table to a single row reclaims ~3.1 KB SRAM and is self-consistent:
+// generateLogoPalette() already guards its writes with (paletteIndex <
+// LOGO_PALETTE_COUNT) and setLogoFromPaletteIndex() folds any index via
+// (paletteIndex % LOGO_PALETTE_COUNT) → 0, so the undo/fs/measure indicator
+// swirls simply reuse the rainbow. The lone direct non-rainbow write
+// (PALETTE_8V_SELECT, in setupSwirlColors) is OG-guarded there.
+#define LOGO_PALETTE_COUNT 1
+#else
 #define LOGO_PALETTE_COUNT 12  // Total number of logo color palettes
+#endif
 
 // ============================================================================
 // LOGO COLOR PALETTE INDICES - Use these to select palettes by name

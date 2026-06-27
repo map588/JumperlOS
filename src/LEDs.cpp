@@ -3369,7 +3369,12 @@ void setupSwirlColors(void) {
     logoColors8vSelect[i] = packRgb(
         logoColorsRGB[i].r / 8, logoColorsRGB[i].g / 8, logoColorsRGB[i].b / 8);
 
+#if !defined(OG_JUMPERLESS)
+    // OG's logoColorsAll is a single rainbow row (LOGO_PALETTE_COUNT == 1); the
+    // 8V-select palette index is out of bounds there. The standalone
+    // logoColors8vSelect[] above is still populated for any direct consumer.
     logoColorsAll[PALETTE_8V_SELECT][(LOGO_COLOR_LENGTH + 10) - i] = logoColors8vSelect[i];
+#endif
   }
 }
 

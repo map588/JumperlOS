@@ -907,6 +907,11 @@ dontshowmenu:
             // Note: DTR detection now happens in AsyncPassthrough::checkDTRState()
             // but we still need this for the auto-connect and active servicing
             secondSerialHandler( );
+
+            // Port-info (ENQ 0x05) reply, moved here from loop1/Core 2. It does
+            // USB-CDC I/O which must stay on Core 0 (the USB-owning core); see the
+            // note at its old call site in loop1. Throttled with secondSerialHandler.
+            replyWithSerialInfo( );
         }
         busyTimers[ 2 ] = micros( );
 
@@ -1453,7 +1458,17 @@ void loop1( ) {
     if ( pauseCore2 )
         return;
 
-    replyWithSerialInfo( );
+    // replyWithSerialInfo() was MOVED to Core 0's loop() (next to
+    // secondSerialHandler()). It does USB-CDC I/O (USBSerX.available()/peek()/
+    // print()), and on RP2040 arduino-pico those pump TinyUSB_Device_Task() via
+    // yield() ON THE CALLING CORE. TinyUSB must only be serviced from Core 0:
+    // running it here raced Core 0's USB use (REPL/commands) and wedged the
+    // board - SWD-confirmed core1 hang in
+    //   loop1 -> replyWithSerialInfo -> USBSer2.available -> yield
+    //         -> TinyUSB_Device_Task -> mutex_try_enter -> spin_unlock (0xd0000154)
+    // surfacing as "Core 2 ... sendAllPathsCore2 ... timeout" + USB disconnect.
+    // This matches the earlier move of AsyncPassthrough/secondSerialHandler off
+    // Core 2 (see note above). Applies to BOTH boards.
 
     // Check pauseCore2 before LED dump
     if ( pauseCore2 )
@@ -1622,7 +1637,7 @@ void core2stuff( ) // core 2 handles the LEDs and the CH446Q8
                 if ( defconDisplay >= 0 && probeActive == 0 && !SlotManager::getInstance( ).isPreviewMode( ) ) {
 
                     // core2busy = true;
-                    defcon( swirlCount, spread, defconDisplay );
+                    // defcon( swirlCount, spread, defconDisplay );
                     // core2busy = false;
                 } else {
 

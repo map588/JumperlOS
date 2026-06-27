@@ -242,7 +242,14 @@ int parseUartFunction(const char* str) {
 }
 
 int parseLinesWires(const char* str) {
+#if defined(OG_JUMPERLESS)
+    // OG renders 1 LED/row, so "wires" mode is meaningless and breaks the display.
+    // Force lines regardless of what the config file or a `set` command requests.
+    (void)str;
+    return 0;
+#else
     return parseFromTable(linesWiresTable, linesWiresTableSize, str);
+#endif
 }
 
 int parseNetColorMode(const char* str) {

@@ -94,13 +94,17 @@ struct specialRowAnimation {
 };
 
 // initRowAnimations() fills a fixed set of slots: indices 0..37 (3 rails +
-// 10 gpio idle + 20 gpio keeper hi/lo + warning/net/row/probe-connect). On the
-// OG (~96 B per slot) we size the array just above that high-water mark instead
-// of the V5 [50] to reclaim ~1 KB SRAM; V5 keeps spare slots. Keep this macro
-// the single source of truth - Graphics.cpp defines the array and Debugs.cpp
-// reads sizeof(rowAnimations) through this same extern.
+// 10 gpio idle + 20 gpio keeper hi/lo + warning/net/row/probe-connect) and
+// showAllRowAnimations() paints them across the 5-LED-per-row matrix. The OG
+// has 1 LED/row and renders nets as plain lines, so that matrix animation can't
+// render: the whole subsystem early-returns on OG (initRowAnimations /
+// assignRowAnimations / showAllRowAnimations / showRowAnimation, see
+// Graphics.cpp) and the table is sized to a single dummy slot to reclaim
+// ~3.7 KB SRAM. The [1] slot keeps the symbol valid for Debugs' sizeof() and
+// Highlighting's reset loop (bounded by numberOfRowAnimations, which stays 0 on
+// OG because initRowAnimations early-returns). V5 keeps the full [50].
 #if defined(OG_JUMPERLESS)
-#define ROW_ANIMATION_COUNT 40
+#define ROW_ANIMATION_COUNT 1
 #else
 #define ROW_ANIMATION_COUNT 50
 #endif
@@ -195,7 +199,7 @@ void printString(const char *s, uint32_t color = 0xFFFFFF,
 void drawWires(int net = -1);
 void printWireStatus(Stream* target = nullptr);
 
-void defcon(int start, int spread, int color = 0, int nudge = 1);
+// void defcon(int start, int spread, int color = 0, int nudge = 1);
 
 void printTextFromMenu(int print = 1);
 int attractMode(void);

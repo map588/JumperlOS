@@ -11,24 +11,32 @@
 #if defined(OG_JUMPERLESS)
 // RP2040 has only 264 KB SRAM and no PSRAM, shared with the whole firmware.
 // MicroPython is lazy-initialized (first REPL use), so this heap is malloc'd at
-// runtime and does NOT affect boot. Measured at runtime: ~30 KB total is free
-// for (MP heap + C runtime heap). Registering the native `jumperless` module
-// consumes ~12 KB of the GC heap, so a 16 KB heap left <4 KB free and every
-// init/exec script died with "MemoryError: allocating 4168 bytes". Measured
-// stability vs heap size: 16 KB boots stably (~14.5 KB C heap free) but MP init
-// scripts OOM; 24 KB fixed the OOM but left only ~6.5 KB C heap and the firmware
-// reboot-looped (a main-loop C-heap allocation aborts). 20 KB is the balance:
-// ~8 KB free inside the GC heap (fits the 4168 B alloc) while keeping ~10.5 KB
-// C heap. rp2.py provisioning (a ~10 KB C-heap spike) is skipped on OG so it
-// can't collide with the larger heap - see Python_Proper.cpp.
-// A static-RAM reclaim pass (~16.6 KB: uncompressed startup frames, undo group
-// off, dead newBridges deleted, rowAnimations + CDC FIFOs shrunk) restored a
-// contiguous 20 KB block so this malloc succeeds again; the rest became C-heap
-// headroom. OG static RAM dropped 69.9% -> 63.6%.
-// ponytail: ceiling is total SRAM; grow further only by reclaiming more V5-only
-// static RAM (logo palettes, globalState - see OG_BACKPORT.md).
-#define MICROPY_HEAP_SIZE       (20 * 1024)
-#define MICROPY_HEAP_SIZE_PSRAM (20 * 1024)
+// runtime FROM THE C HEAP and does NOT affect static RAM/boot. Registering the
+// native `jumperless` module permanently consumes ~12 KB of the GC heap, so the
+// effective per-script budget is (HEAP - 12 KB).
+//
+// Sizing history: 16 KB OOM'd on init scripts (<4 KB free → "MemoryError:
+// allocating 4168 bytes"); 24 KB once reboot-looped because it left only
+// ~6.5 KB C heap — BUT that was measured at 79.9% static RAM. A later reclaim
+// pass dropped static to ~63.7% (~16.6 KB more free: uncompressed startup
+// frames, undo group off, dead newBridges deleted, rowAnimations + CDC FIFOs
+// shrunk), so the C-heap math changed and that 24 KB finding is now stale —
+// there is headroom to enlarge the GC heap without starving the C heap.
+// Bumped 20 → 28 KB so a SECOND script run (whose module-level globals from the
+// first run linger until GC) doesn't blow the ~8 KB script budget and OOM.
+// WHY THIS MATTERS AS A CRASH, NOT A TRACEBACK: on OG an unhandled MemoryError
+// doesn't always print cleanly — it can cascade through nlr_jump_fail and reset
+// core 0 (USB drops), so undersizing this heap looks like a hard disconnect
+// mid-script, not a tidy MemoryError. rp2.py provisioning (a ~10 KB C-heap
+// spike) is skipped on OG so it can't collide with the larger heap.
+//
+// If the contiguous malloc ever fails (fragmented C heap), initMicroPythonProper
+// prints "[MP] FATAL: failed to malloc" and bails cleanly — it does not crash.
+// ponytail: ceiling is total SRAM split between this GC heap and the C heap;
+// grow further only by reclaiming more V5-only static RAM (logo palettes, menu
+// buffers, globalState - see OG_BACKPORT.md), NOT by taking more from C heap.
+#define MICROPY_HEAP_SIZE       (28 * 1024)
+#define MICROPY_HEAP_SIZE_PSRAM (28 * 1024)
 #else
 #define MICROPY_HEAP_SIZE       (96 * 1024)  // SRAM heap when no PSRAM
 #define MICROPY_HEAP_SIZE_PSRAM  (96 * 1024)  // Smaller SRAM heap when PSRAM provides extra GC space
