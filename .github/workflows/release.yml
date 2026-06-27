@@ -39,6 +39,10 @@ jobs:
       # only. When unset (e.g. on a fork or before the secret is added), the
       # JumperlessV5 mirror step below is skipped instead of failing the build.
       JUMPERLESSV5_TOKEN: ${{ secrets.JUMPERLESSV5_TOKEN }}
+      # PAT with write access to Architeuthis-Flux/Jumperless (the public OG repo).
+      # When set, the OG firmware is mirrored onto that repo's latest release as a
+      # separate asset; when unset the OG mirror step is skipped (not failed).
+      JUMPERLESS_OG_TOKEN: ${{ secrets.JUMPERLESS_OG_TOKEN }}
 
     steps:
       - name: Checkout (full history, tags and submodules)
@@ -75,6 +79,25 @@ jobs:
         # into FirmwareVersion.generated.h, so the binary matches the tag.
         run: pio run -e jumperless_v5
 
+      - name: Stage V5 firmware asset
+        # Capture the V5 uf2 into dist/ RIGHT AFTER its build (before the OG build
+        # and the version-bump commit) so the release/mirror reference a stable
+        # path that nothing downstream can clear. firmware.uf2 is no longer a
+        # tracked file, so it only exists if this build produced it -- fail loudly
+        # here (early + clear) rather than at release time if it's missing. Keep
+        # the exact name firmware.uf2 (the app + JumperlessV5 mirror fetch it by
+        # that name).
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ ! -f .pio/build/jumperless_v5/firmware.uf2 ]; then
+            echo "::error::V5 build did not produce firmware.uf2"
+            ls -la .pio/build/jumperless_v5 || true
+            exit 1
+          fi
+          cp .pio/build/jumperless_v5/firmware.uf2 dist/firmware.uf2
+          echo "Staged V5 firmware dist/firmware.uf2"
+
       - name: Build OG firmware
         # Same source/version cadence; version_from_file.py remaps the major to
         # 1 for the OG env, so this binary reports 1.x.x.x (e.g. 1.7.0.12).
@@ -89,9 +112,15 @@ jobs:
           # 5.7.0.12 -> 1.7.0.12 (swap the leading major component for 1).
           OG_VERSION="1.${VERSION#*.}"
           mkdir -p dist
-          cp .pio/build/jumperless_og/firmware.uf2 "dist/jumperless_og-${OG_VERSION}.uf2"
+          if [ ! -f .pio/build/jumperless_og/firmware.uf2 ]; then
+            echo "::error::OG build did not produce firmware.uf2"
+            ls -la .pio/build/jumperless_og || true
+            exit 1
+          fi
+          # Asset name shared by the JumperlOS release and the public-repo mirror.
+          cp .pio/build/jumperless_og/firmware.uf2 "dist/firmware_og_backport.${OG_VERSION}.uf2"
           echo "og_version=$OG_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Staged OG firmware dist/jumperless_og-${OG_VERSION}.uf2"
+          echo "Staged OG firmware dist/firmware_og_backport.${OG_VERSION}.uf2"
 
       - name: Commit version bump back to main
         if: steps.version.outputs.bumped == 'true'
@@ -107,7 +136,7 @@ jobs:
       - name: Create GitHub release
         # Publishes BOTH firmwares in one release: the V5 firmware.uf2 (asset name
         # kept as firmware.uf2 -- the app/mirror download it by that name) and the
-        # OG firmware as jumperless_og-<1.x.x.x>.uf2.
+        # OG firmware as firmware_og_backport.<1.x.x.x>.uf2.
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -115,8 +144,8 @@ jobs:
         run: |
           SHA="$(git rev-parse HEAD)"
           gh release create "$VERSION" \
-            ".pio/build/jumperless_v5/firmware.uf2#Jumperless V5 firmware (${VERSION})" \
-            "dist/jumperless_og-${OG_VERSION}.uf2#Jumperless OG firmware (${OG_VERSION})" \
+            "dist/firmware.uf2#Jumperless V5 firmware (${VERSION})" \
+            "dist/firmware_og_backport.${OG_VERSION}.uf2#Jumperless OG firmware backport (${OG_VERSION})" \
             --target "$SHA" \
             --title "$VERSION" \
             --generate-notes
@@ -151,5 +180,37 @@ jobs:
           # Bump the tag in place (keeps the existing title + release notes) and keep
           # it marked latest, then replace just the firmware.uf2 asset.
           gh release edit "$CUR_TAG" --repo "$REPO" --tag "$VERSION" --latest
-          gh release upload "$VERSION" ".pio/build/jumperless_v5/firmware.uf2" --repo "$REPO" --clobber
+          gh release upload "$VERSION" "dist/firmware.uf2" --repo "$REPO" --clobber
           echo "Updated $REPO: tag $CUR_TAG -> $VERSION, firmware.uf2 replaced (notes left untouched)."
+
+      - name: Mirror OG firmware onto the public Jumperless latest release
+        # Attaches the OG backport firmware to the CURRENT latest release on
+        # Architeuthis-Flux/Jumperless as a SEPARATE asset
+        # (firmware_og_backport.<1.x.x.x>.uf2). It deliberately does NOT touch the
+        # existing firmware.uf2 on that release, so the current auto-updater keeps
+        # grabbing the old firmware -- the OG build is just an extra download
+        # option on the latest release. Skipped (not failed) when the PAT is
+        # absent. Unlike the JumperlessV5 mirror, the tag is NOT bumped and the
+        # release notes are left untouched.
+        if: ${{ env.JUMPERLESS_OG_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ env.JUMPERLESS_OG_TOKEN }}
+          OG_VERSION: ${{ steps.og.outputs.og_version }}
+        run: |
+          set -euo pipefail
+          REPO="Architeuthis-Flux/Jumperless"
+          ASSET="firmware_og_backport.${OG_VERSION}.uf2"
+
+          CUR_TAG="$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null || true)"
+          echo "Jumperless latest tag: '${CUR_TAG:-<none>}'  |  OG firmware: '$ASSET'"
+          if [ -z "$CUR_TAG" ]; then
+            echo "::warning::No existing release on $REPO; nothing to attach the OG firmware to."
+            exit 0
+          fi
+
+          # Add/replace ONLY our OG asset (same name -> --clobber updates it on a
+          # re-run); firmware.uf2 and all other assets on the release are untouched.
+          gh release upload "$CUR_TAG" "dist/${ASSET}" --repo "$REPO" --clobber
+          # Make sure that release stays the published "latest".
+          gh release edit "$CUR_TAG" --repo "$REPO" --latest
+          echo "Attached $ASSET to $REPO release $CUR_TAG (existing firmware.uf2 left intact)."
