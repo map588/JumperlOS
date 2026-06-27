@@ -3267,6 +3267,7 @@ bool SlotManager::migrateOldSlotFile(int slotNum, String& errorMsg) {
     // this slot anyway (activeSlotNumber=slotNum below), so parsing in place is
     // correct. On failure the active state is left dirty and we return an error.
     if (!activeState.fromLegacyNodeFile(content, errorMsg)) {
+        activeState.clear();
         errorMsg = "Failed to migrate legacy slot " + String(slotNum) + ": " + errorMsg;
         return false;
     }
