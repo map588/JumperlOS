@@ -74,9 +74,9 @@ static const int8_t kOgBbNodesToChip[kBbNodesToChipLen] = {
 // GPIO_1. physicalPin for RP_GPIO_0 is left -1 pending OG schematic
 // confirmation; UART TX/RX are GPIO 0/1 on the RP2040.
 static const GpioEntry kOgGpio[] = {
-    {RP_GPIO_0, -1, "GPIO_0", true},
-    {RP_UART_TX, UART0_TX, "UART_TX", true},
-    {RP_UART_RX, UART0_RX, "UART_RX", true},
+    {RP_GPIO_0, 0, "GPIO_0", true},
+    {RP_UART_TX, 17, "UART_TX", true},
+    {RP_UART_RX, 16, "UART_RX", true},
 };
 
 // 4 ADCs: 0-2 buffered 0-5V, ADC3 raw +/-8V.
@@ -111,6 +111,7 @@ const BoardTopology ogBoardTopology = {
         /* hasOled                */ false,
         /* hasBreadboardText      */ false,
         /* hasPsram               */ false,
+        /* hasStartupAnimation    */ false,
         /* spiDac                 */ true,
         /* ledsPerRow             */ 1,
         /* ledCount               */ 111,

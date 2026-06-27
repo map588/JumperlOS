@@ -35,6 +35,8 @@ extern int netSlot;
 #include <algorithm>
 #include "hardware/structs/sio.h"
 
+#if UNDO_ENABLED
+
 // Per-area debug flag. psram_debug stays as a master that also enables this.
 // Matches the linkage of the declaration in Undo.h (inside extern "C" block).
 extern "C" {
@@ -2736,3 +2738,64 @@ void undoDumpStatus(void) {
 }
 
 }  // extern "C"
+
+#else  // !UNDO_ENABLED
+
+// ===========================================================================
+// Undo subsystem compiled out (e.g. OG_JUMPERLESS).
+// ===========================================================================
+// One flag (UNDO_ENABLED, see JumperlessDefines.h) removes the entire undo
+// implementation - the delta ring, persistence, AND the ~3.2 KB static
+// OledScreen undo-toast buffer - in a single place. These no-op stubs satisfy
+// the full Undo.h API + the two exported globals so every caller (States,
+// Commands, Probing, the MicroPython API, menus) and the UndoIngestGuard RAII
+// helper compile and link unchanged, with no per-call-site #ifdef. The
+// behavior matches the old runtime disable (undoInit early-returned and every
+// record hook null-checked into a no-op) but now the code and its statics are
+// dropped by the linker rather than carried dead.
+extern "C" {
+
+volatile int  undo_debug     = 0;
+volatile bool g_undoApplying = false;
+
+void        undoInit(void) {}
+void        undoShutdown(void) {}
+void        undoPersistHistory(void) {}
+bool        undoRestore(void) { return false; }
+void        undoWipeHistory(void) {}
+void        undoOnSlotSwitch(int) {}
+void        undoBeginIngest(void) {}
+void        undoEndIngest(void) {}
+bool        undoIsIngesting(void) { return false; }
+void        undoBeginTxn(const char*, UndoSource) {}
+void        undoEndTxn(void) {}
+bool        undoTxnInProgress(void) { return false; }
+void        undoRecordConnect(int, int, uint32_t) {}
+void        undoRecordDisconnect(int, int, uint32_t) {}
+void        undoRecordClearAll(void) {}
+void        undoRecordDacSet(int, float, float) {}
+void        undoRecordGpioSet(int, int, int) {}
+void        undoRecordGpioDir(int, int, int) {}
+void        undoRecordSlotSwitch(int, int) {}
+bool        undoCanUndo(void) { return false; }
+bool        undoCanRedo(void) { return false; }
+bool        undoUndo(void) { return false; }
+bool        undoRedo(void) { return false; }
+int         undoPosition(void) { return 0; }
+int         undoTotalTxns(void) { return 0; }
+const char* undoLabelAt(int) { return nullptr; }
+int         undoLabelSplitAt(int) { return -1; }
+bool        undoScrubTo(int) { return false; }
+int         undoNextWaypoint(int, int) { return 0; }
+void        undoMaybeTakeSnapshot(const char*) {}
+bool        undoForceSnapshot(const char*) { return false; }
+int         undoSnapshotCount(void) { return 0; }
+void        undoDumpStatus(void) {}
+void        undoToast(bool, const char*, int) {}
+const char* undoPeekUndoLabel(void) { return nullptr; }
+const char* undoPeekRedoLabel(void) { return nullptr; }
+void        undoFlashLogo(uint32_t) {}
+
+}  // extern "C"
+
+#endif  // UNDO_ENABLED

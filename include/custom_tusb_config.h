@@ -91,8 +91,12 @@ extern "C" {
 // RAM is precious and it's a full-speed (64-byte packet) device anyway, so use
 // small FIFOs there.
 #if defined(OG_JUMPERLESS)
-#define CFG_TUD_CDC_RX_BUFSIZE 256
-#define CFG_TUD_CDC_TX_BUFSIZE 256
+// RP2040 OG: 4 CDC interfaces each carry RX+TX FIFOs in TinyUSB's static state,
+// so every 128 bytes here costs 4 x 2 x 128 = 1 KB of scarce SRAM. At 128 B
+// (2x the 64-byte full-speed bulk packet) the REPL/passthrough still stream;
+// bursts just refill a packet sooner. Drops _cdcd_itf ~1 KB vs 256.
+#define CFG_TUD_CDC_RX_BUFSIZE 128
+#define CFG_TUD_CDC_TX_BUFSIZE 128
 #else
 #define CFG_TUD_CDC_RX_BUFSIZE 1024   // Keep RX buffer reasonable
 #define CFG_TUD_CDC_TX_BUFSIZE 1024  // Larger TX buffer for streaming - double the previous size

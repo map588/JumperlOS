@@ -21,13 +21,47 @@
 // ~8 KB free inside the GC heap (fits the 4168 B alloc) while keeping ~10.5 KB
 // C heap. rp2.py provisioning (a ~10 KB C-heap spike) is skipped on OG so it
 // can't collide with the larger heap - see Python_Proper.cpp.
-// ponytail: ceiling is total SRAM; grow further only by reclaiming V5-only
-// static RAM (rowAnimations/inflate window/logo buffers - see OG_BACKPORT.md).
+// A static-RAM reclaim pass (~16.6 KB: uncompressed startup frames, undo group
+// off, dead newBridges deleted, rowAnimations + CDC FIFOs shrunk) restored a
+// contiguous 20 KB block so this malloc succeeds again; the rest became C-heap
+// headroom. OG static RAM dropped 69.9% -> 63.6%.
+// ponytail: ceiling is total SRAM; grow further only by reclaiming more V5-only
+// static RAM (logo palettes, globalState - see OG_BACKPORT.md).
 #define MICROPY_HEAP_SIZE       (20 * 1024)
 #define MICROPY_HEAP_SIZE_PSRAM (20 * 1024)
 #else
 #define MICROPY_HEAP_SIZE       (96 * 1024)  // SRAM heap when no PSRAM
 #define MICROPY_HEAP_SIZE_PSRAM  (96 * 1024)  // Smaller SRAM heap when PSRAM provides extra GC space
+#endif
+
+// ===========================================================================
+// Feature groups (compile-time subsystem toggles)
+// ===========================================================================
+// Two distinct gating mechanisms exist in this firmware; use the right one:
+//
+//   * Feature-group flags (HERE): ONE flag per subsystem. When 0, the WHOLE
+//     group is compiled out - its code AND its static buffers. This is the
+//     only mechanism that actually frees .bss/heap (the linker drops the
+//     symbols), so it is what we use to claw back RAM on the RP2040 OG. The
+//     subsystem's header provides no-op stubs when its flag is 0, so call
+//     sites compile unchanged with no per-caller #ifdef.
+//   * Runtime BoardCaps (src/boards/board.h): gate compiled-IN hardware or
+//     behavior at runtime (probe, encoder, PSRAM cache, boot animation). Does
+//     NOT free .bss - both code paths stay linked. Use it for the board
+//     contract / honest capability advertisement, not for RAM reclaim.
+//
+// Each flag defaults to 1 (full firmware) and is forced to 0 for the OG, where
+// the subsystem is either unaffordable on the ~30 KB free RAM or meaningless on
+// the hardware. Adding a new group: define it here, wrap its .cpp body in
+// `#if <FLAG>` with an `#else` stub block matching its header API.
+#if defined(OG_JUMPERLESS)
+// Undo/redo (delta ring + persisted /undo.hist + OLED toast scene graph). Its
+// ring buffers are heap-allocated lazily (already skipped on OG), but the OLED
+// undo-toast carries a permanent ~3.2 KB static OledScreen; gating the group
+// off reclaims it and removes the dead code path entirely. See Undo.cpp/Undo.h.
+#define UNDO_ENABLED 0
+#else
+#define UNDO_ENABLED 1
 #endif
 
 #define TERM_SUPPORTS_RGB 0
@@ -209,7 +243,11 @@ extern int probeRev;
 // #define CS_L_EX 0b0001000000000000
 
 // #define DATAPIN 14
+#if defined(OG_JUMPERLESS)
+#define RESETPIN 24
+#else
 #define RESETPIN 16
+#endif
 // #define CLKPIN 15
 
 #define UART0_TX 0

@@ -114,11 +114,13 @@ static void testCapabilities() {
   CHECK(ogBoardTopology.caps.scanningProbe == true, "OG uses scanning probe");
   CHECK(ogBoardTopology.caps.spiDac == true, "OG uses SPI DAC");
   CHECK(ogBoardTopology.caps.hasPsram == false, "OG has no PSRAM");
+  CHECK(ogBoardTopology.caps.hasStartupAnimation == false, "OG skips startup animation");
   CHECK(ogBoardTopology.caps.ledsPerRow == 1, "OG 1 LED per row");
   CHECK(ogBoardTopology.caps.ledCount == 111, "OG 111 LEDs");
 
   CHECK(v5BoardTopology.caps.railsFirmwareControlled == true,
         "V5 rails ARE firmware controlled");
+  CHECK(v5BoardTopology.caps.hasStartupAnimation == true, "V5 plays startup animation");
   CHECK(v5BoardTopology.caps.ledsPerRow == 5, "V5 5 LEDs per row");
   CHECK(v5BoardTopology.caps.ledCount == 445, "V5 445 LEDs total");
 }
@@ -144,6 +146,7 @@ static void testCapabilityJson() {
   CHECK(n > 0, "OG capability JSON emitted");
   CHECK(contains(buf, "\"board\":\"jumperless_og\""), "JSON names the board");
   CHECK(contains(buf, "\"rails_firmware_controlled\":false"), "JSON reports no firmware rails");
+  CHECK(contains(buf, "\"startup_animation\":false"), "JSON reports no startup animation");
   CHECK(contains(buf, "\"gpio_count\":3"), "JSON reports 3 gpio");
   CHECK(contains(buf, "\"led_count\":111"), "JSON reports 111 leds");
 

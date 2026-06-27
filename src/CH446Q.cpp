@@ -56,12 +56,9 @@ void isrFromPio(void) {
   //  Serial.println("interrupt from pio  ");
   // Serial.print(chipSelect);
   // Serial.print(" \n\r");
-  //delayMicroseconds(10);
 
   setCSex(chipSelect, 0);
 
-  // Small delay to ensure signal stability
-  //delayMicroseconds(10);
   chipSelect = -1;
 
   // Clear the state machine interrupt (not PIO0_IRQ_0)
@@ -107,11 +104,27 @@ void initCH446Q(void) {
   // Serial.println(offset);
 
   pio_spi_ch446_multi_cs_init(pio, sm, offset, 8, 1, 0, 1, clk, dat);
-
+#if !defined(OG_JUMPERLESS)
   for (int i = 0; i < 12; i++) {
     pinMode(28 + i, OUTPUT_12MA);
     // digitalWrite(28+i, LOW);
     }
+    #else
+    // OG: crosspoint chip-selects are split across two GPIO banks - chips A-H on
+    // GPIO 6-13 and chips I-L on GPIO 20-23 (matching CS_A..CS_L in the OG
+    // reference firmware). The reference also drives every CS LOW (idle) right
+    // after pinMode; do the same so the pins are guaranteed SIO outputs at a
+    // known idle level before the first sendXYraw()/isrFromPio() CS pulse. The
+    // missing LOW init was a divergence from the known-good reference.
+    for (int i = 0; i < 8; i++) {
+      pinMode(6 + i, OUTPUT_12MA);
+      digitalWrite(6 + i, LOW);
+      }
+      for (int i = 0; i < 4; i++) {
+        pinMode(20 + i, OUTPUT_12MA);
+        digitalWrite(20 + i, LOW);
+        }
+    #endif
   // pio_spi_ch446_cs_handler_init(pio, smCS, offsetCS, 256, 1, 8, 20, 6);
   // pinMode(CS_A, OUTPUT);
   // digitalWrite(CS_A, HIGH);
@@ -181,7 +194,7 @@ void __not_in_flash_func(sendPaths)(int clean) {
 
 
 
-void refreshPaths(void) {
+void __not_in_flash_func(refreshPaths)(void) {
   for (int i = 0; i < MAX_BRIDGES; i++) {
     changedPaths[i] = -2;
     }
@@ -982,6 +995,7 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
       }
     }
 
+  #if !defined(OG_JUMPERLESS)
   // CRITICAL SAFETY: Chip K voltage source protection
   // Chip K X positions: 4=TOP_RAIL, 5=BOTTOM_RAIL, 6=DAC1, 7=DAC0, 15=GND
   // NEVER allow multiple voltage sources on the same Y (would short them together!)
@@ -1005,7 +1019,7 @@ void sendXYraw(int chip, int x, int y, int setOrClear) {
       }
     }
   }
-
+  #endif
   //unsigned long start = micros();
 
   int chYdata = y;

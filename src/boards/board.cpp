@@ -117,6 +117,8 @@ size_t boardCapabilitiesJson(const BoardTopology &b, char *buf, size_t cap) {
   a.s(",");
   a.b("psram", b.caps.hasPsram);
   a.s(",");
+  a.b("startup_animation", b.caps.hasStartupAnimation);
+  a.s(",");
   a.b("spi_dac", b.caps.spiDac);
   a.s(",");
   a.i("leds_per_row", b.caps.ledsPerRow);

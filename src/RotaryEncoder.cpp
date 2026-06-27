@@ -46,9 +46,11 @@ volatile int slotPreview = 0;
 // volatile enum { IDLE, PRESSED, HELD, RELEASED } encoderButtonState;
 
 void initRotaryEncoder( void ) {
+    #if !defined(OG_JUMPERLESS)
     pinMode( BUTTON_ENC, INPUT );
     pinMode( QUADRATURE_A_PIN, INPUT_PULLUP );
     pinMode( QUADRATURE_B_PIN, INPUT_PULLUP );
+    #endif
 
     // CRITICAL: Dynamically claim an unused PIO to avoid conflicts
     // Serial.println("◆ Initializing rotary encoder with dynamic PIO allocation...");

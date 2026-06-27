@@ -93,6 +93,18 @@ struct specialRowAnimation {
   int type;
 };
 
+// initRowAnimations() fills a fixed set of slots: indices 0..37 (3 rails +
+// 10 gpio idle + 20 gpio keeper hi/lo + warning/net/row/probe-connect). On the
+// OG (~96 B per slot) we size the array just above that high-water mark instead
+// of the V5 [50] to reclaim ~1 KB SRAM; V5 keeps spare slots. Keep this macro
+// the single source of truth - Graphics.cpp defines the array and Debugs.cpp
+// reads sizeof(rowAnimations) through this same extern.
+#if defined(OG_JUMPERLESS)
+#define ROW_ANIMATION_COUNT 40
+#else
+#define ROW_ANIMATION_COUNT 50
+#endif
+
 
 // The current-sense overlay animates a path across the 5-LED-per-row breadboard
 // matrix. On the OG (1 LED/row) it can't render, so the three pixel arrays in
@@ -134,7 +146,7 @@ static CurrentSenseOverlayState currentSenseOverlayState;
 
 extern int defNudge;
 
-extern specialRowAnimation rowAnimations[50];
+extern specialRowAnimation rowAnimations[ROW_ANIMATION_COUNT];
 
 extern specialRowAnimation warningRowAnimation;
 extern specialRowAnimation warningNetAnimation;

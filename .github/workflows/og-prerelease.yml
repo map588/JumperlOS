@@ -1,0 +1,196 @@
+name: OG firmware pre-release
+
+# OPTIONAL, manually-triggered pre-release of the OG Jumperless (RP2040)
+# firmware (the `jumperless_og` PlatformIO env, the backport tracked in
+# CodeDocs/OG_BACKPORT.md). Unlike release.yml (which auto-releases the V5
+# firmware on every push to main), this never runs on its own -- you start it
+# from the Actions tab when you want to cut an OG test build.
+#
+# It builds firmware.uf2, attaches it to a GitHub PRE-RELEASE on THIS repo
+# (tag `og-<VERSION>` so it never collides with the V5 release tags), and writes
+# release notes describing what the OG firmware currently does and doesn't do.
+#
+# If the optional secret JUMPERLESS_OG_TOKEN is set (a PAT with Contents:
+# read/write on Architeuthis-Flux/Jumperless, the public OG repo that ships the
+# original firmware), it ALSO publishes the same pre-release there so OG owners
+# can find it. Without the secret that mirror step is skipped, not failed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (blank = og-<VERSION> from the VERSION file)"
+        required: false
+        default: ""
+      mirror_to_public:
+        description: "Also publish to Architeuthis-Flux/Jumperless (needs JUMPERLESS_OG_TOKEN)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: og-prerelease
+  cancel-in-progress: false
+
+jobs:
+  og-prerelease:
+    runs-on: ubuntu-latest
+
+    env:
+      # Optional PAT with write access to the public OG repo. Unset -> the
+      # mirror step is skipped gracefully (the local pre-release still happens).
+      JUMPERLESS_OG_TOKEN: ${{ secrets.JUMPERLESS_OG_TOKEN }}
+
+    steps:
+      - name: Checkout (tags + submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-og-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-og-${{ runner.os }}-
+            pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Resolve version and tag
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "$VERSION" ]; then echo "VERSION file is empty" >&2; exit 1; fi
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="og-${VERSION}"; fi
+          SHA="$(git rev-parse HEAD)"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          echo "version=$VERSION"     >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"             >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA"             >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Building OG pre-release '$TAG' (version $VERSION, $SHORT_SHA)"
+
+      - name: Build OG firmware
+        # version_from_file.py (pre-build) bakes the VERSION into
+        # FirmwareVersion.generated.h so the binary reports the right version.
+        run: pio run -e jumperless_og
+
+      - name: Stage release assets
+        id: assets
+        run: |
+          set -euo pipefail
+          OUT=.pio/build/jumperless_og
+          VERSION="${{ steps.meta.outputs.version }}"
+          mkdir -p dist
+          cp "$OUT/firmware.uf2" "dist/jumperless_og-${VERSION}.uf2"
+          # Include the ELF for SWD flashing / debugging.
+          if [ -f "$OUT/firmware.elf" ]; then
+            cp "$OUT/firmware.elf" "dist/jumperless_og-${VERSION}.elf"
+          fi
+          ls -la dist
+
+      - name: Write release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          cat > dist/RELEASE_NOTES.md <<EOF
+          ## Jumperless **OG** (RP2040) firmware — experimental PRE-RELEASE
+
+          > ⚠️ This is an early, **experimental** build of the JumperlOS core
+          > backported to the original Jumperless (RP2040) hardware. It is **not**
+          > for the Jumperless V5. Expect rough edges and please report issues.
+
+          Built from JumperlOS \`${VERSION}\` (commit \`${SHORT_SHA}\`).
+
+          ### Flashing
+          1. Hold **BOOTSEL** while plugging in the OG over USB — it mounts as a
+             drive named \`RPI-RP2\`.
+          2. Copy \`jumperless_og-${VERSION}.uf2\` onto that drive. It reboots into
+             the new firmware.
+          3. (Advanced) \`firmware.elf\` can be flashed over SWD with a debug probe.
+
+          The board enumerates over USB as **"Jumperless OG" / "JLOGport"** with 4
+          serial ports (commands, UART passthrough, MicroPython, status backchannel).
+
+          ### What works
+          - **Boots stably** on real RP2040 OG hardware.
+          - **Serial + LLM control** over USB (the 4 CDC ports above).
+          - **MicroPython REPL** with the native \`jumperless\` module.
+          - **Crossbar routing**: breadboard↔breadboard, breadboard↔Arduino-Nano
+            header, and nano↔nano connections, including optional parallel paths
+            for lower contact resistance.
+          - **LEDs**: per-row net colors, power-rail glow, hardwired header pins
+            (GND / 5V / 3V3 / VIN / RST / AREF), single-LED logo that cycles the
+            spectrum, and the rainbow boot animation.
+          - **Measurement**: ADC readings + INA219 current/voltage sensing.
+          - **Slots**: save / load connection state.
+
+          ### What does NOT work yet
+          - **DAC outputs** (MCP4822 over SPI) — not implemented yet.
+          - **Scanning probe** (tap-a-pad to connect) — not implemented yet.
+          - **Routable GPIO** beyond the UART pins — the OG GPIO bank isn't wired up.
+          - **Rail voltage control** — the OG rails are a physical switch (read-only),
+            not firmware-settable.
+          - **No on-device UI** — the OG has no OLED / rotary encoder / menus;
+            control is via serial and MicroPython only.
+
+          See \`CodeDocs/OG_BACKPORT.md\` for the full backport status.
+          EOF
+          echo "Wrote release notes:"; cat dist/RELEASE_NOTES.md
+
+      - name: Publish pre-release on this repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Re-runnable: drop any existing release+tag with this name first.
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" \
+            dist/jumperless_og-*.uf2 \
+            dist/jumperless_og-*.elf \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "OG firmware ${{ steps.meta.outputs.version }} (pre-release)" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --prerelease
+
+      - name: Mirror pre-release to Architeuthis-Flux/Jumperless (optional)
+        if: ${{ github.event.inputs.mirror_to_public == 'true' && env.JUMPERLESS_OG_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ env.JUMPERLESS_OG_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REPO="Architeuthis-Flux/Jumperless"
+          gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" \
+            dist/jumperless_og-*.uf2 \
+            dist/jumperless_og-*.elf \
+            --repo "$REPO" \
+            --title "OG firmware ${{ steps.meta.outputs.version }} (pre-release)" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --prerelease
+          echo "Mirrored pre-release '$TAG' to $REPO."
+
+      - name: Skipped public mirror (no token)
+        if: ${{ github.event.inputs.mirror_to_public == 'true' && env.JUMPERLESS_OG_TOKEN == '' }}
+        run: echo "::warning::mirror_to_public was requested but JUMPERLESS_OG_TOKEN is not set; skipped the Architeuthis-Flux/Jumperless mirror."

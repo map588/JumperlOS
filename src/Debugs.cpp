@@ -1186,10 +1186,9 @@ extern "C" {
     extern uint8_t _FS_end;            // end of the FatFS partition (EEPROM follows)
 }
 
-// Two big static buffers we want to mark on the SRAM map but that lack a usable
-// public declaration: both are defined at global scope in their .cpp but the
-// header decl is either commented out (newBridges) or namespaced (uartReceived).
-extern int     newBridges[MAX_NETS][MAX_DUPLICATE][2];  // NetsToChipConnections.cpp
+// A big static buffer we want to mark on the SRAM map but that lacks a usable
+// public declaration: it's defined at global scope in its .cpp but the header
+// decl is namespaced (uartReceived).
 // Size must match the definition in AsyncPassthrough.cpp (board-gated ring).
 #if defined(OG_JUMPERLESS)
 extern uint8_t uartReceived[2048];                      // AsyncPassthrough.cpp (DMA RX ring)
@@ -1493,7 +1492,6 @@ int collectNamedStatics(NamedAlloc* out, int cap) {
         { "graphicOverlay",   (uintptr_t)&graphicOverlayState, sizeof(graphicOverlayState), 0 },
         { "uart RX ring",     (uintptr_t)&uartReceived,        sizeof(uartReceived),        0 },
         { "rowAnimations",    (uintptr_t)&rowAnimations,       sizeof(rowAnimations),       0 },
-        { "newBridges",       (uintptr_t)&newBridges,          sizeof(newBridges),          0 },
         { "logoColors",       (uintptr_t)&logoColorsAll,       sizeof(logoColorsAll),       0 },
         { "newBridge",        (uintptr_t)&newBridge,           sizeof(newBridge),           0 },
         { "changedNetColors", (uintptr_t)&changedNetColors,    sizeof(changedNetColors),    0 },

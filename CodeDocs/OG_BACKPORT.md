@@ -310,10 +310,25 @@ session held without interruption.
   removed flooding / invalid reads and sped boot.
 - FOLLOW-UP (not blocking): the OG still oversubscribes PIO (encoder + probe
   button + WS2812 strips on 2 PIO blocks). Now that the encoder is off, audit PIO
-  allocation so the WS2812 LED program is guaranteed a slot — this is the likely
-  remaining cause of any "LEDs not displaying" (the LED *show* path may be on an
-  SM that lost the PIO-memory race). `core1_stack` is only 2 KB; fine now but
-  watch it if core1 work grows.
+  allocation so the WS2812 LED program is guaranteed a slot. `core1_stack` is only
+  2 KB; fine now but watch it if core1 work grows.
+
+### ✅ RESOLVED: OG LEDs completely unlit was initGPIO() clobbering the LED pin
+SYMPTOM: the OG's WS2812 strip was completely dark; the GPIO status dump showed
+pin 25 (the OG LED data line, `LED_PIN 25`) in SIO mode with free PIO SMs
+available. ROOT CAUSE: `initGPIO()`/`setGPIO()` (Peripherals.cpp) iterate the
+**V5** routable-GPIO bank (pins 20-27 = RP_GPIO_1..8). On the OG that map is wrong
+- pin 25 is the LED strip and 26-29 are the ADC inputs. `initLEDs()` (core1)
+claims pin 25 for the WS2812 PIO, but `initDAC()->initGPIO()` (core0, after
+`configLoaded=1` releases core1) calls `gpio_init(25)` which re-muxes the pad back
+to SIO, winning the cross-core race and killing the strip. FIX: both `initGPIO()`
+and `setGPIO()` early-return on `#if defined(OG_JUMPERLESS)` (the OG's only
+routable GPIO - RP_GPIO_0 + UART - are owned by their own subsystems). V5
+byte-identical (the guard compiles out). Also fixed a `platformio.ini` parse error
+(tab-indented `upload_port`/`monitor_port` were folded into `extra_scripts`).
+ponytail: Phase 2 should make initGPIO/setGPIO iterate `board::currentBoard().gpio`
+instead of the hard-coded V5 pin bank. **NOT yet verified on hardware** - flash
+and confirm the strip lights.
 - Workflow gotchas learned: do NOT `monitor halt` a *running* OG for register
   reads — halting mid-flash-write/lockup double-faults a core and USB never comes
   back (recover with `program ... verify reset exit`, or `program ... reset exit`
@@ -364,6 +379,36 @@ How to flash + debug the OG (workflow established this session):
 - Gotchas: don't `pkill -f openocd` (matches & kills your own shell); zsh aborts
   the line on a no-match glob (use `ls /dev/ | grep usbmodem`).
 
+### Session 2026-06-24 — static-RAM reclaim + grouped feature flags + caps-gated scheduler
+Reclaimed ~16.6 KB of OG static RAM (69.9% -> **63.6%**, 166,660 B) so the 20 KB
+MicroPython heap malloc has a contiguous block again. Introduced a clean
+**two-tier gating model** (documented in `JumperlessDefines.h`):
+- **Compile-time feature-group flags** (the only thing that frees `.bss`): one
+  flag per subsystem, header provides no-op stubs when off so call sites are
+  untouched. First group: `UNDO_ENABLED` (0 on OG). `Undo.cpp`'s whole body is
+  now `#if UNDO_ENABLED` with an `#else` stub block for the entire `Undo.h` API +
+  `undo_debug`/`g_undoApplying`. This drops the ~3.2 KB static `OledScreen
+  toastScreen` and the dead code, replacing the old runtime `undoInit`
+  early-return. Undo + `undoToast` gate as ONE unit (not piecemeal).
+- **Runtime `BoardCaps`** (correctness / contract, does NOT free `.bss`): added
+  `hasStartupAnimation`; `main.cpp` now gates the probe stack on `hasProbePads`,
+  `fileCacheFlushService` on `hasPsram`, `initRotaryEncoder()` on
+  `hasRotaryEncoder` (real win: stops OG claiming the quadrature PIO slot), and
+  the boot `drawAnimatedImage()` on `hasStartupAnimation` - all replacing OG
+  `#ifdef`s. V5 caps are all `true` so V5 is byte-identical (verified: V5 builds,
+  RAM 49.1%).
+Individual cuts: `-DJL_USE_COMPRESSED_STARTUP_FRAMES=0` on OG (drops the 4 KB
+inflate window + 2.6 KB frame_buf, ~6.6 KB; uncompressed frames -> flash);
+deleted dead `newBridges` (~3.8 KB, both boards, also removed its Debugs.cpp
+RAM-map entry); `rowAnimations[50]->[40]` on OG via shared `ROW_ANIMATION_COUNT`
+(~1 KB); OG CDC FIFOs 256->128 (~1 KB). `s_uart_response_queue` left unchanged
+(per request). **OLED preserved on OG** (a user can wire an SSD1306 to
+GP16=GND/17=Vcc/18=SCL/19=SDA): OLED services stay registered (inert without a
+panel); actually bringing up an OG panel on GP18/19 (config defaults + the
+firstLoop `#if !OG`) is a deferred follow-up. Host board test green (OG + V5).
+**NOT yet verified on hardware** - needs a BOOTSEL/SWD reflash + REPL smoke test
+(`import jumperless`, confirm no "FATAL: failed to malloc 20 KB heap").
+
 ### Phase 2 — analog + probe
 - [ ] SPI `MCP4822` DAC backend (DAC0 0–5 V, DAC1 ±8 V) behind the HAL.
 - [ ] 4 ADCs (ADC3 ±8 V), INA219 current sense.
@@ -409,3 +454,44 @@ How to flash + debug the OG (workflow established this session):
   `JumperlessDefinesRP2040.h`, `Probing.cpp`, `Peripherals.cpp`, `LEDs.h`).
   Note: that tree is a draft snapshot ("probably don't use this") — use it as a
   reference for OG topology/probe/DAC, not as production code.
+
+
+
+
+
+
+
+## To fix
+- diagram.json should be bidirectional, so editing the text will update the board
+- we should preload at startup
+  "version": 1,
+  "author": "JumperIDE",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-breadboard-half",
+      "id": "bb1",
+      "top": -41.4,
+      "left": -54.8,
+      "attrs": {
+        "color": "#575756"
+      }
+    },
+    {
+      "type": "wokwi-arduino-nano",
+      "id": "nano",
+      "top": -129.6,
+      "left": 28.3,
+      "attrs": {}
+    }
+  ],
+  "connections": [],
+  "dependencies": {}
+}
+
+- we shouldn't need to select ports when we 
+
+- If I drag something from the main editor tab into the bottom repl tab, the tab expands to the top and resizing is backwards
+- when we do windows, dome content doesn't load
+- in windowing, the tabs from the main ditor area should be able to be free floating, so wokwi tab can be next to a serial terminal tab
+- when we flash, it should show the debug log while its happening then auto hide

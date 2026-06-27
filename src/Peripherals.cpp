@@ -369,6 +369,19 @@ volatile uint32_t gpioSlowPWMPeriod[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 volatile uint32_t gpioSlowPWMDutyTicks[ 10 ] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 void initGPIO( void ) {
+#if defined(OG_JUMPERLESS)
+    // The pins-20-27 bank is the V5 routable-GPIO map; it does NOT apply to the
+    // OG. On the OG pin 25 is the WS2812 breadboard-LED data line (claimed by
+    // PIO in initLEDs on core1) and pins 26-29 are the RP2040 ADC inputs. Running
+    // gpio_init() over 20-27 here re-muxes pin 25 from PIO back to SIO - and
+    // because initDAC()->initGPIO() on core0 races initLEDs() on core1, it wins
+    // and leaves the whole strip dark (observed: pin 25 stuck in SIO). It would
+    // also stomp the ADC pins. The OG's only routable GPIO (RP_GPIO_0 + UART
+    // TX/RX) are owned by their own subsystems, so skip this bank entirely.
+    // ponytail: when the OG routable-GPIO map is finalized (Phase 2) this should
+    // iterate board::currentBoard().gpio instead of the hard-coded V5 pins.
+    return;
+#endif
     for ( int i = 0; i < 8; i++ ) {
         int gpio_pin = 0;
         if ( i < 8 ) {         // Regular GPIO pins 0-7 are on pins 20-27
@@ -679,6 +692,13 @@ int convertPullToJumperless(int pull) {
 
 void setGPIO( void ) {
     ///return;
+#if defined(OG_JUMPERLESS)
+    // See initGPIO(): the V5 routable-GPIO bank (pins 20-27) isn't present on the
+    // OG, and pins 25 (WS2812 LED) / 26-29 (ADC) must never be driven as SIO here.
+    // setGPIO() runs on every refreshConnections(), so leaving it active would
+    // re-assert gpio_set_dir()/gpio_put() on the LED pin each refresh. Skip.
+    return;
+#endif
     // Restore GPIO configurations from jumperlessConfig after
     // refreshConnections()
     for ( int i = 0; i < 10; i++ ) {
@@ -1479,6 +1499,7 @@ void setCSex( int chip, int value ) {
     if ( chip > 11 ) {
         return;
     }
+    #if !defined(OG_JUMPERLESS)
 
     if ( value > 0 ) {
         gpio_put( chip + 28, 1 );
@@ -1489,6 +1510,24 @@ void setCSex( int chip, int value ) {
         // digitalWrite(chip + 28, LOW);
         //  Serial.println(chip+28);
     }
+    #else
+    // OG chip-select GPIO map: crosspoint chips A..H (0-7) -> GPIO 6-13,
+    // chips I..L (8-11) -> GPIO 20-23. chip 8 must land on GPIO 20, so the
+    // offset for the second bank is +12 (chip - 8 + 20), NOT +20.
+    if ( chip >= 0 && chip <= 7 ) {
+        if ( value > 0 ) {
+            gpio_put( chip + 6, 1 );
+        } else {
+            gpio_put( chip + 6, 0 );
+        }
+    } else if ( chip >= 8 && chip <= 11 ) {
+        if ( value > 0 ) {
+            gpio_put( chip + 12, 1 );
+        } else {
+            gpio_put( chip + 12, 0 );
+        }
+    }
+    #endif
 }
 
 void erattaClearGPIO( int gpio ) {

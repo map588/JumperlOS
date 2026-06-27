@@ -1385,7 +1385,43 @@ bool JumperlessState::fromYAML(const String& input, String& errorMsg) {
     } else {
         connections.syncNetsFromBridges();
     }
-    
+
+    // Drop any bridge whose node doesn't physically exist on the ACTIVE board.
+    // This is what lets a slot saved on a V5 (which may reference BUF_IN / node
+    // 139, the routable analog buffer) load on the OG, where that node has no
+    // hardware. Without it, validate() below would reject the whole slot and the
+    // load would fail. isNodeValid() consults board::currentBoard(), so this is a
+    // no-op on a board where every saved node is real (e.g. a V5 slot on a V5).
+    {
+        extern int isNodeValid(int node);
+        int writeIdx = 0;
+        int dropped = 0;
+        for (int readIdx = 0; readIdx < connections.numBridges; readIdx++) {
+            if (isNodeValid(connections.bridges[readIdx][0]) != 1 ||
+                isNodeValid(connections.bridges[readIdx][1]) != 1) {
+                dropped++;
+                continue;
+            }
+            if (writeIdx != readIdx) {
+                connections.bridges[writeIdx][0] = connections.bridges[readIdx][0];
+                connections.bridges[writeIdx][1] = connections.bridges[readIdx][1];
+                connections.bridges[writeIdx][2] = connections.bridges[readIdx][2];
+                connections.bridgeColors[writeIdx] = connections.bridgeColors[readIdx];
+            }
+            writeIdx++;
+        }
+        if (dropped > 0) {
+            connections.numBridges = writeIdx;
+            // The nets were just derived from the now-stale bridge list; rebuild
+            // them from the sanitized bridges so routing/colors stay consistent.
+            connections.syncNetsFromBridges();
+            markDirty(); // rewrite the cleaned slot on next save
+            Serial.print("Dropped ");
+            Serial.print(dropped);
+            Serial.println(" bridge(s) referencing nodes not present on this board");
+        }
+    }
+
     bool isValid = validate(errorMsg);
     if (isValid) {
         clearDirty();
@@ -2563,7 +2599,17 @@ void applyStateToHardware() {
 
 
 
-    // Apply GPIO configurations from globalState to hardware
+#if !defined(OG_JUMPERLESS)
+    // Apply GPIO configurations from globalState to hardware.
+    // SKIPPED on OG: the gpioDef bank (pins 20-27) is the V5 routable-GPIO map.
+    // On the OG those pins are the CH446Q chip selects for chips I/J/K/L
+    // (20-23), RESET (24), the WS2812 LED data line (25) and ADC inputs (26-27).
+    // applyStateToHardware() runs at boot (slot load) and on every slot load, so
+    // driving this bank with gpio_set_dir()/gpio_set_pulls() here re-muxes the
+    // SF chip-select pins into GPIO inputs -- after which setCSex() can no longer
+    // assert them and every breadboard<->SF (nano/DAC/ADC) connection silently
+    // fails to program while A-H (CS 6-13) keep working. Matches the OG guards in
+    // initGPIO()/setGPIO()/updateGPIOConfigFromState().
     for (int i = 0; i < 10; i++) {
         uint8_t gpio_pin = gpioDef[i][0];
         
@@ -2613,6 +2659,7 @@ void applyStateToHardware() {
             gpio_put(gpio_pin, gpioState[i]);
         }
     }
+#endif
     
     if (debugFP) {
         Serial.println("✓ Applied state to hardware (power, GPIO)");

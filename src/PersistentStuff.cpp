@@ -376,6 +376,14 @@ void saveLEDbrightness(int forceDefaults) {
 
 
 void updateStateFromGPIOConfig(void) {
+#if defined(OG_JUMPERLESS)
+  // SKIPPED on OG: same hazard as readSettingsFromConfig()/setGPIO() etc - the
+  // gpioDef bank (pins 20-27) is the V5 routable-GPIO map, but on the OG pins
+  // 20-23 are the CH446Q chip selects for chips I/J/K/L. Driving them here
+  // (reachable via the probe GPIO-direction selection, a Phase-2 path on OG)
+  // would re-mux those CS lines to inputs and break all SF routing.
+  return;
+#endif
   for (int i = 0; i < 10; i++) {  // Changed from 8 to 10 to include UART pins
     // Map gpioState to direction and pull settings
 
@@ -426,6 +434,18 @@ void updateStateFromGPIOConfig(void) {
   }
 
 void updateGPIOConfigFromState(void) {
+#if defined(OG_JUMPERLESS)
+  // The V5 routable-GPIO bank described by gpioDef (pins 20-27) does NOT exist
+  // on the OG. There, pins 20-23 are the CH446Q chip selects for chips I/J/K/L,
+  // pin 24 is RESET, pin 25 is the WS2812 LED data line and 26-27 are ADC
+  // inputs. Running gpio_set_dir()/gpio_set_pulls() over that bank here re-muxes
+  // the SF chip-select pins into GPIO inputs, after which setCSex() can no
+  // longer assert them -- so every breadboard<->SF (nano/DAC/ADC) connection
+  // silently fails to program while A-H (CS 6-13, untouched) keep working. The
+  // OG has no user-routable GPIO bank here, so skip entirely (matches
+  // initGPIO()/setGPIO()).
+  return;
+#endif
   // Serial.println("updateGPIOConfigFromState");
   // Serial.flush();
   // return;
@@ -542,6 +562,18 @@ void readSettingsFromConfig() {
   menuBrightnessSetting = jumperlessConfig.display.menu_brightness;
   netColorMode = jumperlessConfig.display.net_color_mode;
 
+#if defined(OG_JUMPERLESS)
+  // The OG lights ONE LED per breadboard row; V5 lights five, so the same
+  // brightness value reads ~5x dimmer on the OG (and the shipped default
+  // led_brightness is only 10). Floor the per-net/rail/special brightness well
+  // up so nets, rails and the header are clearly visible. This only raises the
+  // runtime variables (not the saved config), so the 'l' command can still set
+  // any higher value at runtime and nothing compounds on the next config load.
+  if (LEDbrightness < 90) LEDbrightness = 90;
+  if (LEDbrightnessRail < 100) LEDbrightnessRail = 100;
+  if (LEDbrightnessSpecial < 100) LEDbrightnessSpecial = 100;
+#endif
+
   // // Routing settings
   // pathDuplicates = jumperlessConfig.routing.stack_paths;
   // powerDuplicates = jumperlessConfig.routing.stack_rails;  // powerDuplicates is used for rail stacking
@@ -589,6 +621,17 @@ void readSettingsFromConfig() {
   probePowerDAC = jumperlessConfig.dacs.probe_power_dac;
 
   //GPIO settings
+#if !defined(OG_JUMPERLESS)
+  // SKIPPED on OG: the gpioDef bank (pins 20-27) is the V5 routable-GPIO map.
+  // On the OG pins 20-23 are the CH446Q chip selects for chips I/J/K/L, 24 is
+  // RESET, 25 is the WS2812 LED data line and 26-27 are ADC inputs.
+  // readSettingsFromConfig() runs at boot and on every config change, AFTER
+  // initCH446Q() has set 20-23 to OUTPUT on core1. The default routable-GPIO
+  // config is input+pulldown, so this loop drives pins 20-23 back to inputs
+  // (gpio_set_dir false) -- setCSex() can then no longer assert them and every
+  // breadboard<->SF (nano/DAC/ADC) connection silently fails to program while
+  // A-H (CS 6-13, untouched) keep working. Matches the OG guards in
+  // initGPIO()/setGPIO()/updateGPIOConfigFromState()/applyStateToHardware().
   for (int i = 0; i < 10; i++) {  // Changed from 8 to 10 to include UART pins
 
     // Combine direction and pull settings into a single value
@@ -649,6 +692,7 @@ void readSettingsFromConfig() {
         }
      // }
     }
+#endif // !OG_JUMPERLESS
 
   // Serial
   baudRateUSBSer1 = jumperlessConfig.serial_1.baud_rate;

@@ -310,7 +310,7 @@ uint32_t specialColors[13][5] = {
 int menuBrightnessSetting = -40; // -100 - 100 (0 default)
 
 bool animationsEnabled = true;
-specialRowAnimation rowAnimations[50];
+specialRowAnimation rowAnimations[ROW_ANIMATION_COUNT];
 volatile int doomOn = 0;
 
 int wireStatus[64][5]; // row, led (net stored)
@@ -3136,6 +3136,13 @@ void __not_in_flash_func(printGraphicsRow)(uint8_t data, int row, uint32_t color
   uint8_t columnMask[5] = // 'JumperlessFontmap', 500x5px
       {0b00010000, 0b00001000, 0b00000100, 0b00000010, 0b00000001};
 
+  // OG (ledsPerRow == 1) has no 5-wide breadboard text grid: writing row*5+0..4
+  // would smear one "row" of glyph data across five physical rows. The board
+  // can't render breadboard text (caps.hasBreadboardText == false), so skip.
+  if (board::currentBoard().caps.ledsPerRow == 1) {
+    return;
+  }
+
   // Breadboard rows only (0-59). Row 60+ would write pixels 300+ — the rails.
   if (row < 0 || row > 59) {
     return;
@@ -3191,6 +3198,12 @@ int nodeToPrintRow(int node) {
 
 void printChar(const char c, uint32_t color, uint32_t bg, int position,
                int topBottom, int nudge, int lowercaseNumber) {
+
+  // OG (ledsPerRow == 1) cannot render breadboard text; the column*5+j writes
+  // below would corrupt five physical rows per glyph column. Skip on OG.
+  if (board::currentBoard().caps.ledsPerRow == 1) {
+    return;
+  }
 
   int charPosition = position;
 
@@ -3876,18 +3889,41 @@ static void dumpPins(Stream *s, int first, int count,
 // Re-emit the color escape every few cells so slow terminals don't lose it.
 static const int resendColorAfterCells = 1;
 
+#if defined(OG_JUMPERLESS)
+// OG strip is 1 LED per breadboard row (no per-row 5-pixel block, no rail
+// LEDs), so the V5 screenMap[14*30] layout reads aliased/off-strip pixels.
+// Map a dump grid cell (display row 0-13, col 0-29) to the single OG pixel:
+//   rows 0,1,12,13 = rails (no OG LED), rows 2-6 = breadboard rows 1-30,
+//   rows 7-11 = breadboard rows 31-60. col 0->row1/31 ... col 29->row30/60.
+static int ogGridPixel(int row, int col) {
+  if (row <= 1 || row >= 12) return -1;        // rails: no addressable OG LED
+  int bbRow = (row <= 6) ? (col + 1) : (col + 31);
+  if (bbRow < 1 || bbRow > 60) return -1;
+  return nodesToPixelMap[bbRow];
+}
+#endif
+
 static void dumpGridRow(Stream *s, int row, bool rail, int &fg, int &bg) {
   s->print("│ ");
   const char *glyph = rail ? "▐█" : "█▏";
   int sinceLast = 0;
   for (int col = 0; col < 30; col++) {
     if (rail && (col + 1) % 6 == 0) { s->print("  "); sinceLast = 0; continue; }
+#if defined(OG_JUMPERLESS)
+    int ogPix = ogGridPixel(row, col);
+    uint32_t c = (ogPix >= 0) ? leds.getPixelColor(ogPix) : 0;
+#else
     uint32_t c = leds.getPixelColor(screenMap[row * 30 + col]);
+#endif
     int tc = c ? colorToVT100(c, 256) : 0;
     if (tc != fg || sinceLast >= resendColorAfterCells) {
       s->printf("\033[38;5;%dm", tc); fg = tc; sinceLast = 0;
     }
-    s->print(glyph);
+    if (c == 0) {
+      s->print(". ");
+    } else {
+      s->print(glyph);
+    }
     sinceLast++;
   }
   s->print("\033[0m│"); fg = -1; bg = -1;
@@ -3986,7 +4022,16 @@ void dumpLEDs(int posX, int posY, int pixelsOrRows, int header, int rgbOrRaw,
 
   int hdrTC[30];
   for (int i = 0; i < 30; i++) {
+#if defined(OG_JUMPERLESS)
+    // headerMap[].pixel is the V5 special-LED index (off the 111-px OG strip,
+    // so every nano header pin read back 0 = blank). Map the header NODE to the
+    // OG pixel instead; nodes with no OG LED (rails/RST/VIN/etc) stay 0.
+    int node = headerMap[i].node;
+    int ogPix = (node >= 0 && node < 120) ? nodesToPixelMap[node] : -1;
+    uint32_t c = (ogPix >= 0) ? leds.getPixelColor(ogPix) : 0;
+#else
     uint32_t c = leds.getPixelColor(headerMap[i].pixel);
+#endif
     hdrTC[i] = c ? colorToVT100(c, 256) : 0;
   }
 

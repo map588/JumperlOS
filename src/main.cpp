@@ -36,6 +36,7 @@ KevinC@ppucc.io
 #include "Apps.h"
 #include "ArduinoStuff.h"
 #include "AsyncPassthrough.h"
+#include "boards/board.h"  // board::currentBoard().caps - runtime hardware gating
 #include "CommandBuffer.h" // New simplified command buffer system
 #include "Debugs.h"
 #include "FakeGpio.h"
@@ -321,10 +322,12 @@ void setup( ) {
     // Serial.println("DAC initialized");
     // Serial.flush();
 
+    #if !defined(OG_JUMPERLESS)
     pinMode( PROBE_PIN, OUTPUT_8MA );
     pinMode( BUTTON_PIN, INPUT_PULLDOWN );
     // pinMode(buttonPin, INPUT_PULLDOWN);
     digitalWrite( PROBE_PIN, HIGH );
+    #endif
 
     // digitalWrite(BUTTON_PIN, HIGH);
     startupTimers[ 2 ] = millis( );
@@ -352,14 +355,20 @@ void setup( ) {
     // Serial.flush();
 
     startupTimers[ 4 ] = millis( );
-#if !defined(OG_JUMPERLESS)
-    drawAnimatedImage( 0 );
+#if defined(OG_JUMPERLESS)
+    // The OG runs its own short rainbow-swirl boot animation (ported from the OG
+    // reference firmware) instead of the V5 image animation, which renders
+    // imagery meaningless on the OG's 111-LED strip. core0 owns the strip here
+    // (it waited on core2initFinished above, so initLEDs() is done), so this is
+    // safe to drive directly.
+    ogStartupAnimation( );
+#else
+    // V5 image boot animation. (drawAnimatedImage stays bounds-safe via the
+    // LEDs.cpp guards regardless of board.)
+    if ( board::currentBoard( ).caps.hasStartupAnimation ) {
+        drawAnimatedImage( 0 );
+    }
 #endif
-    // OG: skip the multi-second V5 boot animation. It renders V5 imagery that is
-    // meaningless on the OG's 111-LED strip, was the site of the original boot
-    // heap-corruption crash, and is a long blocking delay loop in setup() that
-    // can starve the core watchdog/USB. (drawAnimatedImage stays bounds-safe via
-    // the LEDs.cpp guards regardless.)
     startupAnimationFinished = 1;
     // Serial.println("Startup animation finished");
     // Serial.flush();
@@ -440,14 +449,18 @@ void setup( ) {
     jOS.registerService( &slotManager );     // HIGH - states auto-save
    
 
-    #if !defined(OG_JUMPERLESS)
-      jOS.registerService( &probeButton );             // HIGH - high-frequency button checking
-    jOS.registerService( &probing );         // HIGH - user interaction sensitive (probe reading)
-    jOS.registerService( &highlighting );    // HIGH - visual feedback
-    jOS.registerService( &measureModeService );
-    jOS.registerService( &probeSwitch );         // LOW - switch position (not time-critical)
-    jOS.registerService( &probePads );           // LOW - expensive ADC pad reading
-    #endif
+    // Probe stack is gated on the board having resistive probe pads (V5). The OG
+    // has no probe pads (its scanning probe is Phase 2 work), so registering
+    // these would poll nonexistent ADC channels and spam measure mode. Runtime
+    // cap instead of #ifdef so the contract - not a board macro - drives it.
+    if ( board::currentBoard( ).caps.hasProbePads ) {
+        jOS.registerService( &probeButton );      // HIGH - high-frequency button checking
+        jOS.registerService( &probing );          // HIGH - user interaction sensitive (probe reading)
+        jOS.registerService( &highlighting );     // HIGH - visual feedback
+        jOS.registerService( &measureModeService );
+        jOS.registerService( &probeSwitch );      // LOW - switch position (not time-critical)
+        jOS.registerService( &probePads );        // LOW - expensive ADC pad reading
+    }
 
 
     jOS.registerService( &mpRemoteService ); // HIGH - mpremote/ViperIDE raw REPL on USBSer2
@@ -462,10 +475,13 @@ void setup( ) {
     jOS.registerService( &oledGuiService );      // NORMAL - retained OLED screen render + live bindings (inert until a screen is active)
 
     // LOW priority services - background tasks
-    jOS.registerService( &oledService );         // LOW - display updates
+    jOS.registerService( &oledService );         // LOW - display updates (OLED preserved on OG: a user can wire a panel to GP18/19)
     jOS.registerService( &liveCrossbarService ); // LOW - live crossbar terminal display
     jOS.registerService( &configSaveService );   // LOW - background config save (non-blocking)
-    jOS.registerService( &fileCacheFlushService ); // LOW - write-back PSRAM cache flush
+    // Write-back file cache lives in PSRAM; only boards with PSRAM run its flush.
+    if ( board::currentBoard( ).caps.hasPsram ) {
+        jOS.registerService( &fileCacheFlushService ); // LOW - write-back PSRAM cache flush
+    }
 
     // Initialize context stack with MAIN_MENU as the root context
     // This provides proper navigation tracking for all child contexts
@@ -509,7 +525,15 @@ void setupCore2stuff( ) {
     startupCore2timers[ 4 ] = millis( );
 
     startupCore2timers[ 5 ] = millis( );
-    initRotaryEncoder( );
+    // Only initialize the quadrature encoder on boards that have one. On the OG
+    // this matters beyond a no-op: initRotaryEncoder() claims a PIO state machine
+    // and loads the quadrature program, and the RP2040's 2 PIO blocks are already
+    // oversubscribed (probe button + WS2812 strips). Loading a dead encoder
+    // program there starved the LED program and the core1 poll of the unloaded SM
+    // caused the documented periodic reset. The cap keeps that PIO slot free.
+    if ( board::currentBoard( ).caps.hasRotaryEncoder ) {
+        initRotaryEncoder( );
+    }
     startupCore2timers[ 6 ] = millis( );
     initSecondSerial( );
     core2initFinished = 1;
