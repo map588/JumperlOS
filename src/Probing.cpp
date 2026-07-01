@@ -4872,7 +4872,11 @@ float Probing::voltageSelect( int fiveOrEight ) {
 
             jOS.serviceCritical( );
             int reading = justReadProbe( );
-            rotaryEncoderStuff( );
+
+            if (core_sync_acquire_timeout_ms(1)) {   // same mutex core 2 holds
+                rotaryEncoderStuff();
+                core_sync_release();
+            } // if the mutex isn't free this pass, skip — the knob just updates next loop
 
             int encodeEdit = 0;
             if ( encoderDirectionState == UP || reading == -19 ) {
@@ -6909,3 +6913,4 @@ int Probing::readRails( int pin ) {
 
     return state;
 }
+

@@ -3510,7 +3510,12 @@ void printTextFromMenu(int print) {
   }
   while (Jerial.available() == 0) {
     if (scroll == 1) {
-      rotaryEncoderStuff();
+
+    if (core_sync_acquire_timeout_ms(1)) {   // same mutex core 2 holds
+        rotaryEncoderStuff();
+        core_sync_release();
+    } // if the mutex isn't free this pass, skip — the knob just updates next loop
+
       if (encoderDirectionState == UP) {
         if (speed > 10000) {
           speed = speed - 10000;
@@ -3522,16 +3527,15 @@ void printTextFromMenu(int print) {
         }
         // Jerial.print("\r                          \rspeed = ");
         // Jerial.print(speed);
-
-        // encoderDirectionState = NONE;
-      } else if (encoderDirectionState == DOWN) {
-        speed = speed + 10000;
-        //           Jerial.print("\r                          \rspeed = ");
-        // Jerial.print(speed);
-        // encoderDirectionState = NONE;
-        if (speed > 1000000) {
-          speed = 1000000;
-        }
+        encoderDirectionState = NONE; // ack latched direction
+      } else if ( encoderDirectionState == DOWN ) {
+          speed = speed + 10000;
+          //           Jerial.print("\r                          \rspeed = ");
+          // Jerial.print(speed);
+          encoderDirectionState = NONE; // ack latched direction
+          if ( speed > 1000000 ) {
+              speed = 1000000;
+          }
       }
 
       if ((micros() - timerScrollTimer) > speed) {
