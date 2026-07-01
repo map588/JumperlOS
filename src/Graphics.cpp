@@ -3524,14 +3524,14 @@ void printTextFromMenu(int print) {
         // Jerial.print("\r                          \rspeed = ");
         // Jerial.print(speed);
         encoderDirectionState = NONE; // ack latched direction
-      } else if ( encoderDirectionState == DOWN ) {
-          speed = speed + 10000;
-          //           Jerial.print("\r                          \rspeed = ");
-          // Jerial.print(speed);
-          encoderDirectionState = NONE; // ack latched direction
-          if ( speed > 1000000 ) {
-              speed = 1000000;
-          }
+      } else if (encoderDirectionState == DOWN) {
+        speed = speed + 10000;
+        //           Jerial.print("\r                          \rspeed = ");
+        // Jerial.print(speed);
+        encoderDirectionState = NONE; // ack latched direction
+        if (speed > 1000000) {
+          speed = 1000000;
+        }
       }
 
       if ((micros() - timerScrollTimer) > speed) {
