@@ -3510,11 +3510,7 @@ void printTextFromMenu(int print) {
   }
   while (Jerial.available() == 0) {
     if (scroll == 1) {
-
-    if (core_sync_acquire_timeout_ms(1)) {   // same mutex core 2 holds
-        rotaryEncoderStuff();
-        core_sync_release();
-    } // if the mutex isn't free this pass, skip — the knob just updates next loop
+      rotaryEncoderStuff();
 
       if (encoderDirectionState == UP) {
         if (speed > 10000) {
